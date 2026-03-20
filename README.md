@@ -85,8 +85,8 @@ Settings are persisted in the Electron userData directory.
 | Cmd+T | New tab |
 | Cmd+W | Close current tab |
 | Cmd+Shift+T | Reopen closed tab |
-| Cmd+Tab | Next tab |
-| Cmd+Shift+Tab | Previous tab |
+| Ctrl+Tab | Next tab |
+| Ctrl+Shift+Tab | Previous tab |
 | Cmd+D | Bookmark current page |
 | Cmd+L | Focus address bar |
 | Cmd+Opt+L | Copy current URL |

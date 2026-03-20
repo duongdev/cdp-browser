@@ -285,6 +285,18 @@ export default function App() {
   // Global hotkeys (capture phase to intercept before CDP forwarding)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs
+      if (e.ctrlKey && e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.shiftKey) {
+          switchToPrevTab();
+        } else {
+          switchToNextTab();
+        }
+        return;
+      }
+
       if (!e.metaKey) return;
 
       // Cmd+Shift combos
@@ -294,11 +306,6 @@ export default function App() {
             e.preventDefault();
             e.stopPropagation();
             reopenClosedTab();
-            return;
-          case "Tab": // Cmd+Shift+Tab: previous tab
-            e.preventDefault();
-            e.stopPropagation();
-            switchToPrevTab();
             return;
         }
       }
@@ -364,15 +371,9 @@ export default function App() {
         case "f":
           e.preventDefault();
           e.stopPropagation();
-          // Trigger find in page on the remote browser
           window.cdp.send("Runtime.evaluate", {
             expression: "window.find(prompt('Find in page:') || '')",
           });
-          break;
-        case "Tab":
-          e.preventDefault();
-          e.stopPropagation();
-          switchToNextTab();
           break;
       }
     };
