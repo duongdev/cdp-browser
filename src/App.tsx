@@ -260,6 +260,10 @@ export default function App() {
         refreshTabs();
         updateNavHistory();
       }
+      // New window opened (e.g. Cmd+click, middle-click on link)
+      if (msg.method === "Page.windowOpen") {
+        setTimeout(() => refreshTabs(), 500);
+      }
       // Page loading state
       if (msg.method === "Page.frameStartedLoading") {
         setPageLoading(true);
@@ -375,6 +379,32 @@ export default function App() {
             expression: "window.find(prompt('Find in page:') || '')",
           });
           break;
+        case "c": {
+          // Cmd+C: copy selected text from remote browser to local clipboard
+          const target = e.target as HTMLElement;
+          if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break; // let native copy work
+          e.preventDefault();
+          e.stopPropagation();
+          window.cdp.invoke("Runtime.evaluate", {
+            expression: "document.getSelection().toString()",
+            returnByValue: true,
+          }).then((result: any) => {
+            const text = result?.result?.value;
+            if (text) window.cdp.copyToClipboard(text);
+          });
+          break;
+        }
+        case "a": {
+          // Cmd+A: select all on remote page
+          const target = e.target as HTMLElement;
+          if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break;
+          e.preventDefault();
+          e.stopPropagation();
+          window.cdp.send("Runtime.evaluate", {
+            expression: "document.execCommand('selectAll')",
+          });
+          break;
+        }
       }
     };
     document.addEventListener("keydown", handleKeyDown, true);

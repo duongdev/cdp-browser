@@ -169,6 +169,26 @@ export function Viewport({
     };
   }, []);
 
+  const getModifiers = useCallback((e: React.MouseEvent | MouseEvent) => {
+    let m = 0;
+    if (e.altKey) m |= 1;
+    if (e.ctrlKey) m |= 2;
+    if (e.metaKey) m |= 4;
+    if (e.shiftKey) m |= 8;
+    return m;
+  }, []);
+
+  const getCdpButton = useCallback((button: number) => {
+    switch (button) {
+      case 0: return "left";
+      case 1: return "middle";
+      case 2: return "right";
+      default: return "left";
+    }
+  }, []);
+
+  const buttonsDownRef = useRef(0);
+
   const handleMouse = useCallback(
     (type: string, e: React.MouseEvent<HTMLCanvasElement>, clickCount = 1) => {
       const pos = getPos(e);
@@ -176,11 +196,13 @@ export function Viewport({
         type,
         x: pos.x,
         y: pos.y,
-        button: "left",
+        button: getCdpButton(e.button),
+        buttons: e.buttons,
         clickCount,
+        modifiers: getModifiers(e),
       });
     },
-    [getPos]
+    [getPos, getCdpButton, getModifiers]
   );
 
   return (
@@ -213,19 +235,30 @@ export function Viewport({
       <canvas
         ref={canvasRef}
         className="w-full h-full block cursor-default"
-        onMouseDown={(e) => handleMouse("mousePressed", e)}
-        onMouseUp={(e) => handleMouse("mouseReleased", e)}
+        onMouseDown={(e) => {
+          buttonsDownRef.current = e.buttons;
+          handleMouse("mousePressed", e);
+        }}
+        onMouseUp={(e) => {
+          buttonsDownRef.current = e.buttons;
+          handleMouse("mouseReleased", e);
+        }}
         onMouseMove={(e) => {
           const pos = getPos(e);
           window.cdp.send("Input.dispatchMouseEvent", {
             type: "mouseMoved",
             x: pos.x,
             y: pos.y,
+            buttons: e.buttons,
+            modifiers: getModifiers(e),
           });
         }}
         onDoubleClick={(e) => {
           handleMouse("mousePressed", e, 2);
           handleMouse("mouseReleased", e, 2);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault(); // prevent Electron's native context menu
         }}
         onWheel={(e) => {
           const pos = getPos(e);
@@ -235,6 +268,7 @@ export function Viewport({
             y: pos.y,
             deltaX: e.deltaX,
             deltaY: e.deltaY,
+            modifiers: getModifiers(e),
           });
           e.preventDefault();
         }}
