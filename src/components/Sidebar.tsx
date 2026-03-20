@@ -336,6 +336,7 @@ function SortableBookmarkItem({
             {bookmark.title}
           </span>
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               onRemove();
@@ -426,6 +427,7 @@ function SortableTabItem({
                 {displayTitle}
               </span>
               <button
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   onClose();

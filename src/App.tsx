@@ -43,6 +43,8 @@ export default function App() {
   const systemDarkRef = useRef(true);
   const toolbarRef = useRef<ToolbarHandle>(null);
   const closedTabsRef = useRef<string[]>([]);
+  const tabsRef = useRef<TabInfo[]>([]);
+  const activeTabIdRef = useRef<string | null>(null);
 
   // Theme initialization
   useEffect(() => {
@@ -182,23 +184,33 @@ export default function App() {
   const closeTab = useCallback(
     async (tabId: string) => {
       // Save URL for reopen
-      const tab = tabs.find((t) => t.id === tabId);
+      const tab = tabsRef.current.find((t) => t.id === tabId);
       if (tab?.url) {
         closedTabsRef.current.push(tab.url);
       }
 
+      const wasActive = tabId === activeTabIdRef.current;
+
       await window.cdp.closeTab(tabId);
-      if (tabId === activeTabId) {
+
+      // Remove from local tab order immediately
+      tabOrderRef.current = tabOrderRef.current.filter((id) => id !== tabId);
+
+      if (wasActive) {
         setActiveTabId(null);
         setLoading(true);
         setLoadingText("No tab selected");
       }
+
+      // Small delay for remote browser to finish closing
+      await new Promise((r) => setTimeout(r, 300));
+
       const ordered = await refreshTabs();
-      if (tabId === activeTabId && ordered && ordered.length > 0) {
+      if (wasActive && ordered && ordered.length > 0) {
         await switchTab(ordered[0].id);
       }
     },
-    [activeTabId, refreshTabs, switchTab, tabs]
+    [refreshTabs, switchTab]
   );
 
   const reopenClosedTab = useCallback(async () => {
@@ -240,6 +252,10 @@ export default function App() {
     const prev = (idx - 1 + tabs.length) % tabs.length;
     switchTab(tabs[prev].id);
   }, [tabs, activeTabId, switchTab]);
+
+  // Keep refs in sync
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
 
   // Update URL when active tab changes
   useEffect(() => {

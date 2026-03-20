@@ -136,6 +136,11 @@ ipcMain.handle('cdp:connect', async (_, tabId) => {
           id: 3, method: 'Page.startScreencast',
           params: { format: 'jpeg', quality: 80, maxWidth: bounds.width * 2, maxHeight: bounds.height * 2 }
         }))
+        // Suppress native context menu (invisible in screencast and blocks interaction)
+        ws.send(JSON.stringify({
+          id: 4, method: 'Runtime.evaluate',
+          params: { expression: "document.addEventListener('contextmenu', e => e.preventDefault(), true)" }
+        }))
       })
 
       ws.on('message', (data) => {
