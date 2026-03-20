@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7C5CFC"/>
+      <stop offset="100%" style="stop-color:#4F46E5"/>
+    </linearGradient>
+    <linearGradient id="globe" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.95"/>
+      <stop offset="100%" style="stop-color:#e0e0ff;stop-opacity:0.9"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+  <!-- Globe circle -->
+  <circle cx="512" cy="512" r="280" fill="none" stroke="url(#globe)" stroke-width="42"/>
+  <!-- Horizontal line -->
+  <ellipse cx="512" cy="512" rx="280" ry="100" fill="none" stroke="url(#globe)" stroke-width="32"/>
+  <!-- Vertical meridian -->
+  <ellipse cx="512" cy="512" rx="100" ry="280" fill="none" stroke="url(#globe)" stroke-width="32"/>
+  <!-- Horizontal axis -->
+  <line x1="232" y1="512" x2="792" y2="512" stroke="url(#globe)" stroke-width="32" stroke-linecap="round"/>
+  <!-- Connection dot (CDP) -->
+  <circle cx="720" cy="340" r="64" fill="#22D3EE"/>
+  <circle cx="720" cy="340" r="32" fill="#ffffff"/>
+</svg>
