@@ -2,7 +2,7 @@
 
 A lightweight Electron app that connects to a remote Chromium-based browser via [Chrome DevTools Protocol (CDP)](https://chromedevtools.github.io/devtools-protocol/), providing a native-like browsing experience with real-time screencast, tab management, and full input forwarding.
 
-![CDP Browser](build/icon.png)
+![CDP Browser Screenshot](build/screenshot.png)
 
 ## Features
 
