@@ -84,9 +84,21 @@ Settings are persisted in the Electron userData directory.
 |----------|--------|
 | Cmd+T | New tab |
 | Cmd+W | Close current tab |
+| Cmd+Shift+T | Reopen closed tab |
+| Cmd+Tab | Next tab |
+| Cmd+Shift+Tab | Previous tab |
 | Cmd+D | Bookmark current page |
 | Cmd+L | Focus address bar |
+| Cmd+Opt+L | Copy current URL |
+| Cmd+R | Reload page |
+| Cmd+[ | Go back |
+| Cmd+] | Go forward |
+| Cmd+S | Toggle sidebar |
+| Cmd+, | Open settings |
+| Cmd+F | Find in page |
 | Escape | Unfocus address bar |
+
+Trackpad swipe left/right is also supported for back/forward navigation.
 
 ## How It Works
 

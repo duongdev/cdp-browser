@@ -18,6 +18,7 @@ interface ToolbarProps {
   onReload: () => void;
   canGoBack: boolean;
   canGoForward: boolean;
+  pageLoading: boolean;
   status: string;
   fps: string;
   resolution: string;
@@ -42,6 +43,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   onReload,
   canGoBack,
   canGoForward,
+  pageLoading,
   status,
   fps,
   resolution,
@@ -143,7 +145,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
 
       {/* URL bar */}
       <div
-        className="flex-1 mx-2"
+        className="flex-1 mx-2 relative"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
         <input
@@ -160,6 +162,11 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           placeholder="Search or enter URL..."
           className="w-full h-7 px-3 text-xs bg-background border border-border rounded-full text-foreground placeholder:text-muted-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 transition-all"
         />
+        {pageLoading && (
+          <div className="absolute bottom-0 left-3 right-3 h-0.5 rounded-full overflow-hidden">
+            <div className="h-full bg-primary/60 rounded-full animate-loading-bar" />
+          </div>
+        )}
       </div>
 
       {/* Right side actions */}

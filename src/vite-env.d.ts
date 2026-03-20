@@ -21,6 +21,8 @@ interface CdpBridge {
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>;
   getThemeSource: () => Promise<"system" | "light" | "dark">;
   onNativeThemeChanged: (cb: (isDark: boolean) => void) => void;
+  copyToClipboard: (text: string) => Promise<void>;
+  onSwipe: (cb: (direction: string) => void) => void;
   // Bookmarks
   getBookmarks: () => Promise<Bookmark[]>;
   addBookmark: (bookmark: Bookmark) => Promise<Bookmark[]>;

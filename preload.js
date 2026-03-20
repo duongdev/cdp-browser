@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('cdp', {
   setThemeSource: (source) => ipcRenderer.invoke('cdp:set-theme-source', source),
   getThemeSource: () => ipcRenderer.invoke('cdp:get-theme-source'),
   onNativeThemeChanged: (cb) => ipcRenderer.on('cdp:native-theme-changed', (_, isDark) => cb(isDark)),
+  copyToClipboard: (text) => ipcRenderer.invoke('cdp:copy-to-clipboard', text),
+  onSwipe: (cb) => ipcRenderer.on('cdp:swipe', (_, direction) => cb(direction)),
   // Bookmarks
   getBookmarks: () => ipcRenderer.invoke('cdp:get-bookmarks'),
   addBookmark: (bookmark) => ipcRenderer.invoke('cdp:add-bookmark', bookmark),

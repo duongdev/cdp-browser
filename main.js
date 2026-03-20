@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron')
+const { app, BrowserWindow, ipcMain, nativeTheme, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const WebSocket = require('ws')
@@ -56,6 +56,17 @@ app.whenReady().then(() => {
       mainWindow.webContents.send('cdp:native-theme-changed', nativeTheme.shouldUseDarkColors)
     }
   })
+
+  // Trackpad swipe gestures (macOS)
+  mainWindow.on('swipe', (_, direction) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('cdp:swipe', direction)
+    }
+  })
+})
+
+ipcMain.handle('cdp:copy-to-clipboard', (_, text) => {
+  clipboard.writeText(text)
 })
 
 ipcMain.handle('cdp:list-tabs', async () => {

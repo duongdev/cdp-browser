@@ -30,6 +30,7 @@ export default function App() {
   const [resolution, setResolution] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadingText, setLoadingText] = useState("Connecting...");
+  const [pageLoading, setPageLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [theme, setTheme] = useState<ThemeSource>("system");
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
@@ -41,6 +42,7 @@ export default function App() {
   const tabOrderRef = useRef<string[]>([]);
   const systemDarkRef = useRef(true);
   const toolbarRef = useRef<ToolbarHandle>(null);
+  const closedTabsRef = useRef<string[]>([]);
 
   // Theme initialization
   useEffect(() => {
@@ -179,6 +181,12 @@ export default function App() {
 
   const closeTab = useCallback(
     async (tabId: string) => {
+      // Save URL for reopen
+      const tab = tabs.find((t) => t.id === tabId);
+      if (tab?.url) {
+        closedTabsRef.current.push(tab.url);
+      }
+
       await window.cdp.closeTab(tabId);
       if (tabId === activeTabId) {
         setActiveTabId(null);
@@ -190,8 +198,15 @@ export default function App() {
         await switchTab(ordered[0].id);
       }
     },
-    [activeTabId, refreshTabs, switchTab]
+    [activeTabId, refreshTabs, switchTab, tabs]
   );
+
+  const reopenClosedTab = useCallback(async () => {
+    const lastUrl = closedTabsRef.current.pop();
+    if (lastUrl) {
+      await newTab(lastUrl);
+    }
+  }, [newTab]);
 
   const navigate = useCallback((navUrl: string) => {
     let u = navUrl;
@@ -212,6 +227,20 @@ export default function App() {
     window.cdp.send("Page.reload");
   }, []);
 
+  const switchToNextTab = useCallback(() => {
+    if (tabs.length === 0) return;
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    const next = (idx + 1) % tabs.length;
+    switchTab(tabs[next].id);
+  }, [tabs, activeTabId, switchTab]);
+
+  const switchToPrevTab = useCallback(() => {
+    if (tabs.length === 0) return;
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    const prev = (idx - 1 + tabs.length) % tabs.length;
+    switchTab(tabs[prev].id);
+  }, [tabs, activeTabId, switchTab]);
+
   // Update URL when active tab changes
   useEffect(() => {
     const tab = tabs.find((t) => t.id === activeTabId);
@@ -231,6 +260,13 @@ export default function App() {
         refreshTabs();
         updateNavHistory();
       }
+      // Page loading state
+      if (msg.method === "Page.frameStartedLoading") {
+        setPageLoading(true);
+      }
+      if (msg.method === "Page.frameStoppedLoading" || msg.method === "Page.loadEventFired") {
+        setPageLoading(false);
+      }
     });
 
     window.cdp.onDisconnected(() => {
@@ -238,10 +274,47 @@ export default function App() {
     });
   }, [refreshTabs, updateNavHistory]);
 
+  // Trackpad swipe gestures
+  useEffect(() => {
+    window.cdp.onSwipe((direction) => {
+      if (direction === "left") goBack();
+      if (direction === "right") goForward();
+    });
+  }, [goBack, goForward]);
+
   // Global hotkeys (capture phase to intercept before CDP forwarding)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
+
+      // Cmd+Shift combos
+      if (e.shiftKey) {
+        switch (e.key) {
+          case "T": // Cmd+Shift+T: reopen closed tab
+            e.preventDefault();
+            e.stopPropagation();
+            reopenClosedTab();
+            return;
+          case "Tab": // Cmd+Shift+Tab: previous tab
+            e.preventDefault();
+            e.stopPropagation();
+            switchToPrevTab();
+            return;
+        }
+      }
+
+      // Cmd+Alt combos
+      if (e.altKey) {
+        switch (e.key) {
+          case "l": // Cmd+Opt+L: copy URL
+          case "L":
+            e.preventDefault();
+            e.stopPropagation();
+            if (url) window.cdp.copyToClipboard(url);
+            return;
+        }
+      }
+
       switch (e.key) {
         case "t":
           e.preventDefault();
@@ -263,11 +336,60 @@ export default function App() {
           e.stopPropagation();
           toolbarRef.current?.focusUrlBar();
           break;
+        case "s":
+          e.preventDefault();
+          e.stopPropagation();
+          setSidebarCollapsed((prev) => !prev);
+          break;
+        case ",":
+          e.preventDefault();
+          e.stopPropagation();
+          setSettingsOpen(true);
+          break;
+        case "r":
+          e.preventDefault();
+          e.stopPropagation();
+          reload();
+          break;
+        case "[":
+          e.preventDefault();
+          e.stopPropagation();
+          goBack();
+          break;
+        case "]":
+          e.preventDefault();
+          e.stopPropagation();
+          goForward();
+          break;
+        case "f":
+          e.preventDefault();
+          e.stopPropagation();
+          // Trigger find in page on the remote browser
+          window.cdp.send("Runtime.evaluate", {
+            expression: "window.find(prompt('Find in page:') || '')",
+          });
+          break;
+        case "Tab":
+          e.preventDefault();
+          e.stopPropagation();
+          switchToNextTab();
+          break;
       }
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [activeTabId, closeTab, handleBookmarkClick]);
+  }, [
+    activeTabId,
+    closeTab,
+    handleBookmarkClick,
+    reopenClosedTab,
+    reload,
+    goBack,
+    goForward,
+    switchToNextTab,
+    switchToPrevTab,
+    url,
+  ]);
 
   // Initial load + refresh interval
   useEffect(() => {
@@ -307,6 +429,7 @@ export default function App() {
             onReload={reload}
             canGoBack={canGoBack}
             canGoForward={canGoForward}
+            pageLoading={pageLoading}
             status={status}
             fps={fps}
             resolution={resolution}
