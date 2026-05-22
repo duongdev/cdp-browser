@@ -45,6 +45,7 @@ export type Event =
   | { type: "disable" }
   | { type: "resize"; canvas: Size; bounds: Bounds }
   | { type: "rebaseline"; bounds: Bounds }
+  | { type: "rearm"; canvas: Size; bounds: Bounds }
   | { type: "poll"; bounds: Bounds };
 
 export type Effect =
@@ -90,6 +91,16 @@ export function reduce(state: State, event: Event): { state: State; effects: Eff
       // override — the main process re-applies it on connect from its cache.
       if (!isActive(state)) return { state, effects: [] };
       return { state: { ...state, baseline: event.bounds }, effects: [] };
+    case "rearm": {
+      // Coming back to the CDP browser (focus + interaction) after a graceful
+      // back-off: exit dormant and re-impose the client-derived size.
+      if (!state.enabled || !state.dormant) return { state, effects: [] };
+      const metrics = deviceMetrics(event.canvas);
+      return {
+        state: { ...state, dormant: false, baseline: event.bounds },
+        effects: [{ type: "applyOverride", metrics }],
+      };
+    }
     case "poll": {
       if (!isActive(state) || !state.baseline) return { state, effects: [] };
       if (!drifted(state.baseline, event.bounds)) return { state, effects: [] };

@@ -33,8 +33,12 @@ The letterbox mapping between canvas pixels and Remote Page pixels, since a Scre
 _Avoid_: scaling, getPos, coordinate math.
 
 **Adaptive Viewport**:
-An optional mode that eliminates letterbox bars by resizing the remote page itself (via `Emulation.setDeviceMetricsOverride`) to match the canvas dimensions, instead of fitting a fixed-aspect frame. Managed by a pure state machine in `src/lib/adaptive-viewport.ts`; effects (apply/clear override) are executed by the main process.
+An optional mode that eliminates letterbox bars by resizing the remote page itself (via `Emulation.setDeviceMetricsOverride`) to match the canvas dimensions, instead of fitting a fixed-aspect frame. Managed by a pure state machine in `src/lib/adaptive-viewport.ts`; effects (apply/clear override) are executed by the main process. The state machine can go **dormant** when a host-side window resize is detected (back-off); the **auto-recover** preference (`forceOnClient`) controls whether the next user interaction re-arms it automatically or the setting must be toggled manually.
 _Avoid_: stretch mode, fill mode, device emulation.
+
+**Switch Effect**:
+A CSS `filter` (`none`, `blur`, `grayscale`, or `blur + grayscale`) applied to the canvas during a tab switch, eased back to rest when the new tab's first frame arrives. Persisted as `switchEffect` in `settings.json`; replaces the legacy `switchBlur` boolean.
+_Avoid_: tab blur, switch blur, transition filter.
 
 ## Relationships
 

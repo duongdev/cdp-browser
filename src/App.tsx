@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar, type ToolbarHandle } from "@/components/Toolbar";
+import type { SwitchEffect } from "@/components/SettingsDialog";
 import { Viewport } from "@/components/Viewport";
 import { StatusBar } from "@/components/StatusBar";
 import { NewTabDialog } from "@/components/NewTabDialog";
@@ -37,7 +38,9 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [adaptiveViewport, setAdaptiveViewport] = useState(false);
-  const [switchBlur, setSwitchBlur] = useState(true);
+  const [forceOnClient, setForceOnClient] = useState(false);
+  const [switchEffect, setSwitchEffect] = useState<SwitchEffect>("blur");
+  const [emulatedSize, setEmulatedSize] = useState<{ w: number; h: number } | null>(null);
   // Bumped on every successful (re)connect so the Viewport re-applies the adaptive
   // override on a fresh socket — a tab switch doesn't change the container size, so
   // the ResizeObserver alone wouldn't re-trigger it.
@@ -52,6 +55,10 @@ export default function App() {
   const [newTabOpen, setNewTabOpen] = useState(false);
   const [addBookmarkOpen, setAddBookmarkOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // True when the drawer was opened via keyboard (Cmd+,) or promoted by a keypress —
+  // a committed drawer ignores the mouse-leave auto-close timer.
+  const [settingsCommitted, setSettingsCommitted] = useState(false);
+  const settingsOpenRef = useRef(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const tabOrderRef = useRef<string[]>([]);
@@ -88,7 +95,8 @@ export default function App() {
       setSidebarCollapsed(s.sidebarCollapsed);
       setPinnedOpen(s.pinnedOpen);
       setAdaptiveViewport(s.adaptiveViewport ?? false);
-      setSwitchBlur(s.switchBlur ?? true);
+      setForceOnClient(s.forceOnClient ?? false);
+      setSwitchEffect(s.switchEffect ?? "blur");
       uiStateLoadedRef.current = true;
     });
   }, []);
@@ -101,6 +109,9 @@ export default function App() {
   useEffect(() => {
     if (uiStateLoadedRef.current) window.cdp.setUiState({ pinnedOpen });
   }, [pinnedOpen]);
+  useEffect(() => {
+    settingsOpenRef.current = settingsOpen;
+  }, [settingsOpen]);
 
   // Drop focus from buttons when the window loses focus, so refocusing the app
   // (e.g. Cmd+Tab back) doesn't re-trigger a focus-driven tooltip. Leave text
@@ -121,17 +132,33 @@ export default function App() {
     window.cdp.setUiState({ adaptiveViewport: enabled });
   }, []);
 
-  const handleSwitchBlurChange = useCallback((enabled: boolean) => {
-    setSwitchBlur(enabled);
-    window.cdp.setUiState({ switchBlur: enabled });
+  const handleForceOnClientChange = useCallback((enabled: boolean) => {
+    setForceOnClient(enabled);
+    window.cdp.setUiState({ forceOnClient: enabled });
   }, []);
 
-  // A host-side window resize backs adaptive mode off; reflect that in the setting so
-  // the toggle no longer shows on and re-arming is a normal off→on.
+  // Host resize backed adaptive off and auto-recover is disabled: turn the setting off
+  // so the toggle reflects it (re-arming is then a normal off→on).
   const handleAdaptivePaused = useCallback(
     () => handleAdaptiveViewportChange(false),
     [handleAdaptiveViewportChange]
   );
+
+  const handleSwitchEffectChange = useCallback((effect: SwitchEffect) => {
+    setSwitchEffect(effect);
+    window.cdp.setUiState({ switchEffect: effect });
+  }, []);
+
+  // Settings drawer open/commit choreography (see the drawer's hybrid close behavior).
+  const handleSettingsOpenChange = useCallback((open: boolean) => {
+    setSettingsOpen(open);
+    if (!open) setSettingsCommitted(false);
+  }, []);
+  const handleSettingsRequestOpenMouse = useCallback(() => {
+    setSettingsOpen(true);
+    setSettingsCommitted(false);
+  }, []);
+  const handleSettingsCommit = useCallback(() => setSettingsCommitted(true), []);
 
   const handleThemeChange = useCallback((newTheme: ThemeSource) => {
     setTheme(newTheme);
@@ -208,14 +235,14 @@ export default function App() {
   }, []);
 
   const switchTab = useCallback(async (tabId: string) => {
-    const isSameTab = tabId === activeTabIdRef.current;
+    // Re-clicking the already-active tab is a no-op — no reconnect, no repaint.
+    if (tabId === activeTabIdRef.current) return;
     setActiveTabId(tabId);
     setLoading(true);
     setLoadingText("Connecting...");
     setStatus("Connecting...");
-    // Freeze/blur immediately, before the connect round-trip — but not when re-clicking
-    // the already-active tab (nothing changes, so no transition).
-    if (!isSameTab) setSwitchSignal((s) => s + 1);
+    // Freeze/blur immediately, before the connect round-trip.
+    setSwitchSignal((s) => s + 1);
 
     const result = await window.cdp.connect(tabId);
     if (result.error && result.error !== "cancelled") {
@@ -437,11 +464,14 @@ export default function App() {
           e.stopPropagation();
           setSidebarCollapsed((prev) => !prev);
           break;
-        case ",":
+        case ",": {
           e.preventDefault();
           e.stopPropagation();
-          setSettingsOpen(true);
+          const next = !settingsOpenRef.current;
+          setSettingsOpen(next);
+          setSettingsCommitted(next); // keyboard-opened drawers start committed
           break;
+        }
         case "r":
           e.preventDefault();
           e.stopPropagation();
@@ -554,27 +584,35 @@ export default function App() {
             isBookmarked={isCurrentUrlBookmarked}
             onToggleBookmark={handleBookmarkClick}
             settingsOpen={settingsOpen}
-            onSettingsOpenChange={setSettingsOpen}
+            settingsCommitted={settingsCommitted}
+            onSettingsOpenChange={handleSettingsOpenChange}
+            onSettingsRequestOpenMouse={handleSettingsRequestOpenMouse}
+            onSettingsCommit={handleSettingsCommit}
             onConfigSaved={handleConfigSaved}
             adaptiveViewport={adaptiveViewport}
             onAdaptiveViewportChange={handleAdaptiveViewportChange}
-            switchBlur={switchBlur}
-            onSwitchBlurChange={handleSwitchBlurChange}
+            forceOnClient={forceOnClient}
+            onForceOnClientChange={handleForceOnClientChange}
+            emulatedSize={emulatedSize}
+            switchEffect={switchEffect}
+            onSwitchEffectChange={handleSwitchEffectChange}
           />
           <Viewport
             page={page}
             onFpsUpdate={setFps}
             onResolutionUpdate={setResolution}
             adaptiveEnabled={adaptiveViewport}
-            switchBlur={switchBlur}
+            forceOnClient={forceOnClient}
+            switchEffect={switchEffect}
             connectEpoch={connectEpoch}
             switchSignal={switchSignal}
+            onEmulatedSizeChange={setEmulatedSize}
             onAdaptivePaused={handleAdaptivePaused}
           />
           <StatusBar
             loading={loading}
             loadingText={loadingText}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={handleSettingsRequestOpenMouse}
           />
         </div>
         <NewTabDialog

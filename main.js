@@ -27,6 +27,14 @@ function saveSettings(settings) {
 }
 
 let settings = loadSettings()
+
+// Migrate the legacy boolean `switchBlur` to the `switchEffect` enum.
+if (settings.switchEffect === undefined && settings.switchBlur !== undefined) {
+  settings.switchEffect = settings.switchBlur ? 'blur' : 'none'
+  delete settings.switchBlur
+  saveSettings(settings)
+}
+
 let cdpHost = settings.host
 let cdpPort = settings.port
 
@@ -153,6 +161,14 @@ ipcMain.handle('cdp:connect', async (_, tabId) => {
         // frame is already sized to the window — prevents the tab-switch jiggle.
         if (settings.adaptiveViewport && cachedMetrics) {
           ws.send(JSON.stringify({ id: 5, method: 'Emulation.setDeviceMetricsOverride', params: cachedMetrics }))
+        } else if (!settings.adaptiveViewport) {
+          // Adaptive is off: release any device-metrics override a prior crash left
+          // pinned on the host. A clean quit clears it; a force-kill can't. A bare clear
+          // is a no-op on an override owned by the now-dead session, so first re-assert
+          // one (taking ownership in this session), then clear it — releasing to native.
+          const b = mainWindow.getBounds()
+          ws.send(JSON.stringify({ id: 5, method: 'Emulation.setDeviceMetricsOverride', params: { width: b.width, height: b.height, deviceScaleFactor: 1, mobile: false } }))
+          ws.send(JSON.stringify({ id: 6, method: 'Emulation.clearDeviceMetricsOverride', params: {} }))
         }
         ws.send(JSON.stringify({
           id: 3, method: 'Page.startScreencast',
@@ -260,14 +276,16 @@ ipcMain.handle('cdp:get-ui-state', () => ({
   sidebarCollapsed: settings.sidebarCollapsed ?? false,
   pinnedOpen: settings.pinnedOpen ?? true,
   adaptiveViewport: settings.adaptiveViewport ?? false,
-  switchBlur: settings.switchBlur ?? true,
+  forceOnClient: settings.forceOnClient ?? false,
+  switchEffect: settings.switchEffect ?? 'blur',
 }))
 
 ipcMain.handle('cdp:set-ui-state', (_, partial) => {
   if ('sidebarCollapsed' in partial) settings.sidebarCollapsed = partial.sidebarCollapsed
   if ('pinnedOpen' in partial) settings.pinnedOpen = partial.pinnedOpen
   if ('adaptiveViewport' in partial) settings.adaptiveViewport = partial.adaptiveViewport
-  if ('switchBlur' in partial) settings.switchBlur = partial.switchBlur
+  if ('forceOnClient' in partial) settings.forceOnClient = partial.forceOnClient
+  if ('switchEffect' in partial) settings.switchEffect = partial.switchEffect
   saveSettings(settings)
 })
 

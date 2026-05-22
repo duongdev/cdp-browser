@@ -7,6 +7,7 @@ import {
   type Bounds,
 } from "@/lib/adaptive-viewport";
 import type { RemotePage } from "@/lib/remote-page";
+import type { SwitchEffect } from "@/components/SettingsDialog";
 
 /** During a tab-switch settle, how long screencast frames must go quiet before we treat
  *  the reflow as finished and reveal the tab. Adapts the freeze to connection speed and
@@ -18,20 +19,37 @@ const SETTLE_CAP_MS = 1500;
  *  reveal so the swap reads as a focus pull instead of a hard snap. */
 const SWITCH_BLUR_PX = 8;
 
+/** The CSS `filter` for a switch effect: `active` during the freeze, `rest` once revealed.
+ *  Both filters name every property so the transition always interpolates (never jumps). */
+function effectFilters(effect: SwitchEffect): { active: string; rest: string } {
+  const blur = effect === "blur" || effect === "blur-grayscale";
+  const gray = effect === "grayscale" || effect === "blur-grayscale";
+  return {
+    active: `blur(${blur ? SWITCH_BLUR_PX : 0}px) grayscale(${gray ? 1 : 0})`,
+    rest: "blur(0px) grayscale(0)",
+  };
+}
+
 interface ViewportProps {
   page: RemotePage;
   onFpsUpdate: (fps: string) => void;
   onResolutionUpdate: (res: string) => void;
   /** When on, the remote viewport is resized to fill the canvas (no letterbox). */
   adaptiveEnabled: boolean;
-  /** When on, tab switches ease focus in/out with a blur (works in both modes). */
-  switchBlur: boolean;
+  /** When on, a host-resize back-off auto-recovers (re-imposes the client size on the
+   *  next viewport interaction). When off, a host resize disables adaptive mode entirely
+   *  (the previous behavior) — see onAdaptivePaused. */
+  forceOnClient: boolean;
+  /** Visual effect easing a tab switch in/out (works in both modes). */
+  switchEffect: SwitchEffect;
   /** Bumped on each successful (re)connect so the override re-applies on a fresh socket. */
   connectEpoch: number;
-  /** Bumped the instant a tab switch starts, so the freeze/blur begins immediately. */
+  /** Bumped the instant a tab switch starts, so the freeze/effect begins immediately. */
   switchSignal: number;
-  /** Called when a host-side window resize forces adaptive mode to back off, so the
-   *  setting (and its toggle) can reflect that it's no longer active. */
+  /** Reports the device-metrics size currently imposed (null when none) for the readout. */
+  onEmulatedSizeChange: (size: { w: number; h: number } | null) => void;
+  /** A host resize backed adaptive off and auto-recover is disabled: tell App to turn
+   *  the setting off so the toggle reflects it and re-arming is a normal off→on. */
   onAdaptivePaused: () => void;
 }
 
@@ -40,9 +58,11 @@ export function Viewport({
   onFpsUpdate,
   onResolutionUpdate,
   adaptiveEnabled,
-  switchBlur,
+  forceOnClient,
+  switchEffect,
   connectEpoch,
   switchSignal,
+  onEmulatedSizeChange,
   onAdaptivePaused,
 }: ViewportProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -58,7 +78,10 @@ export function Viewport({
   // path A (override) still works but path B (host-resize back-off) stays disabled.
   const adaptiveRef = useRef(initial);
   const adaptiveEnabledRef = useRef(adaptiveEnabled);
-  const switchBlurRef = useRef(switchBlur);
+  const forceOnClientRef = useRef(forceOnClient);
+  const switchEffectRef = useRef(switchEffect);
+  const onEmulatedSizeChangeRef = useRef(onEmulatedSizeChange);
+  onEmulatedSizeChangeRef.current = onEmulatedSizeChange;
   const pollableRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   // While true (during a tab-switch transition), incoming frames are held back: in
@@ -117,8 +140,10 @@ export function Viewport({
     for (const eff of effects) {
       if (eff.type === "applyOverride") {
         window.cdp.send("Emulation.setDeviceMetricsOverride", eff.metrics);
+        onEmulatedSizeChangeRef.current({ w: eff.metrics.width, h: eff.metrics.height });
       } else {
         window.cdp.send("Emulation.clearDeviceMetricsOverride", {});
+        onEmulatedSizeChangeRef.current(null);
       }
     }
     return state;
@@ -129,9 +154,16 @@ export function Viewport({
   const getHostBounds = useCallback(async (): Promise<Bounds | null> => {
     const r = await window.cdp.invoke("Browser.getWindowForTarget");
     const b = r?.bounds;
-    return b && typeof b.width === "number" && typeof b.height === "number"
-      ? { width: b.width, height: b.height }
-      : null;
+    const bounds =
+      b && typeof b.width === "number" && typeof b.height === "number"
+        ? { width: b.width, height: b.height }
+        : null;
+    // Arm/disarm host-resize polling based on whether the Browser domain answers.
+    // Set here (not only in applyAdaptive) so the reconnect path, which queries bounds
+    // after the socket is up, also flips pollable on — applyAdaptive often runs while
+    // still disconnected ("not connected") and would otherwise leave it stuck false.
+    pollableRef.current = bounds !== null;
+    return bounds;
   }, []);
 
   const stopPoll = useCallback(() => {
@@ -148,9 +180,13 @@ export function Viewport({
       if (!s.enabled || s.dormant) return stopPoll();
       const bounds = await getHostBounds();
       if (!bounds) return;
+      // Host-resize drift: the reducer goes dormant and clears the override. When
+      // "auto-recover" (forceOnClient) is on, the setting stays on and re-arms on the
+      // next viewport interaction (see maybeRearm). When off, fall back to the previous
+      // behavior — turn the setting off so the toggle reflects it (manual re-enable).
       if (dispatchAdaptive({ type: "poll", bounds }).dormant) {
         stopPoll();
-        onAdaptivePaused();
+        if (!forceOnClientRef.current) onAdaptivePaused();
       }
     }, 1500);
   }, [dispatchAdaptive, getHostBounds, stopPoll, onAdaptivePaused]);
@@ -160,7 +196,6 @@ export function Viewport({
     const vp = containerRef.current;
     if (!vp) return;
     const bounds = await getHostBounds();
-    pollableRef.current = bounds !== null;
     dispatchAdaptive({
       type: "resize",
       canvas: { w: vp.clientWidth, h: vp.clientHeight },
@@ -168,7 +203,25 @@ export function Viewport({
     });
   }, [dispatchAdaptive, getHostBounds]);
 
-  // End the tab-switch freeze: paint the latest (now-settled) frame and ease the blur
+  // Interacting with the viewport after a graceful back-off means the user is back on
+  // the CDP browser (interaction implies window focus) — re-impose the client size.
+  const maybeRearm = useCallback(() => {
+    const s = adaptiveRef.current;
+    if (!s.enabled || !s.dormant) return;
+    const vp = containerRef.current;
+    if (!vp) return;
+    getHostBounds().then((bounds) => {
+      dispatchAdaptive({
+        type: "rearm",
+        canvas: { w: vp.clientWidth, h: vp.clientHeight },
+        bounds: bounds ?? { width: 0, height: 0 },
+      });
+      reissueScreencast();
+      startPoll();
+    });
+  }, [getHostBounds, dispatchAdaptive, reissueScreencast, startPoll]);
+
+  // End the tab-switch freeze: paint the latest (now-settled) frame and ease the effect
   // back out — the new tab pulls into focus.
   const revealSettled = useCallback(() => {
     if (!settlingRef.current) return;
@@ -176,7 +229,9 @@ export function Viewport({
     clearTimeout(settleCapRef.current);
     clearTimeout(quietTimerRef.current);
     paint();
-    if (canvasRef.current) canvasRef.current.style.filter = "blur(0px)";
+    if (canvasRef.current) {
+      canvasRef.current.style.filter = effectFilters(switchEffectRef.current).rest;
+    }
   }, [paint]);
 
   // Draw each frame. While settling after a tab switch, frames are held back until the
@@ -219,10 +274,10 @@ export function Viewport({
     });
   }, [page, paint, onFpsUpdate, onResolutionUpdate, revealSettled]);
 
-  // Start at an explicit blur(0px) (not `none`) so the first switch's blur transition
+  // Start at an explicit resting filter (not `none`) so the first switch transition
   // interpolates instead of jumping.
   useEffect(() => {
-    if (canvasRef.current) canvasRef.current.style.filter = "blur(0px)";
+    if (canvasRef.current) canvasRef.current.style.filter = "blur(0px) grayscale(0)";
   }, []);
 
   // The Viewport owns the canvas geometry, so it supplies the coordinate resolver
@@ -282,19 +337,24 @@ export function Viewport({
       settlingRef.current = false;
       clearTimeout(settleCapRef.current);
       clearTimeout(quietTimerRef.current);
-      if (canvasRef.current) canvasRef.current.style.filter = "blur(0px)";
+      if (canvasRef.current) canvasRef.current.style.filter = "blur(0px) grayscale(0)";
       reissueScreencast(); // override gone — frame returns to the host's native size
     }
     return () => stopPoll();
   }, [adaptiveEnabled, dispatchAdaptive, applyAdaptive, startPoll, stopPoll, reissueScreencast]);
+
+  // Mirror the auto-recover preference for use inside the poll callback.
+  useEffect(() => {
+    forceOnClientRef.current = forceOnClient;
+  }, [forceOnClient]);
 
   // A tab switch reconnects on a fresh socket. The main process re-applies the cached
   // override before the first frame (so no jiggle), so here we only re-anchor the
   // host-resize baseline and resume the poll — never re-send the override ourselves.
   // Skipped while dormant: a host takeover must not be silently re-armed.
   useEffect(() => {
-    switchBlurRef.current = switchBlur;
-  }, [switchBlur]);
+    switchEffectRef.current = switchEffect;
+  }, [switchEffect]);
 
   useEffect(() => {
     // The new connection has landed: frames from here on are the new tab.
@@ -312,11 +372,12 @@ export function Viewport({
   // once the new tab is ready — see the frame loop — with this cap as a backstop.
   useEffect(() => {
     if (switchSignal === 0) return;
-    if (!adaptiveEnabledRef.current && !switchBlurRef.current) return;
+    const effect = switchEffectRef.current;
+    if (!adaptiveEnabledRef.current && effect === "none") return;
     settlingRef.current = true;
     connectedSinceSwitchRef.current = false;
-    if (switchBlurRef.current && canvasRef.current) {
-      canvasRef.current.style.filter = `blur(${SWITCH_BLUR_PX}px)`;
+    if (effect !== "none" && canvasRef.current) {
+      canvasRef.current.style.filter = effectFilters(effect).active;
     }
     clearTimeout(settleCapRef.current);
     settleCapRef.current = setTimeout(revealSettled, SETTLE_CAP_MS);
@@ -340,6 +401,7 @@ export function Viewport({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isField(e)) return;
       e.preventDefault();
+      maybeRearm();
       page.forwardInput({ kind: "key", phase: "down", event: e });
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -352,7 +414,7 @@ export function Viewport({
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keyup", handleKeyUp);
     };
-  }, [page]);
+  }, [page, maybeRearm]);
 
   return (
     <div ref={containerRef} className="flex-1 relative bg-black overflow-hidden">
@@ -361,6 +423,7 @@ export function Viewport({
         className="w-full h-full block cursor-default transition-[filter] duration-200 ease-out"
         onMouseDown={(e) => {
           e.preventDefault(); // stop native focus/drag stealing the gesture
+          maybeRearm();
           // e.detail carries the consecutive-click count: 2 = word, 3 = paragraph
           page.forwardInput({ kind: "mouse", phase: "pressed", event: e, clickCount: e.detail || 1 });
         }}
@@ -374,6 +437,7 @@ export function Viewport({
           e.preventDefault(); // prevent Electron's native context menu
         }}
         onWheel={(e) => {
+          maybeRearm();
           page.forwardInput({ kind: "wheel", event: e });
           e.preventDefault();
         }}

@@ -20,7 +20,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Tab activation**: CDP only allows one active debugger session per tab. Switching tabs calls `/json/activate/{id}` first, then reconnects WS.
 - **Edge compatibility**: Edge requires `PUT` method for `/json/new` (Chrome accepts `GET`).
 - **Adaptive Viewport**: An optional mode that eliminates letterbox bars by resizing the remote page to match the canvas via `Emulation.setDeviceMetricsOverride`. The main process caches the last override and re-applies it before `Page.startScreencast` on every (re)connect. See `docs/adr/0002-adaptive-viewport.md`.
-- **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, and `switchBlur` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab.
+- **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, and `switchEffect` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect` on first load.
 
 ## File Structure
 
@@ -54,16 +54,16 @@ cdp-browser/
         ├── Toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings
         ├── Viewport.tsx       # Screencast canvas + input forwarding; ResizeObserver repaints on container resize
         ├── StatusBar.tsx      # Bottom status bar for loading/error states (replaces mid-viewport overlay)
-        ├── SettingsDialog.tsx  # Theme + CDP address config, test-connection button
+        ├── SettingsDialog.tsx  # Non-modal right Sheet drawer; grouped cards (Appearance/Viewport/Connection); hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
         ├── NewTabDialog.tsx    # URL input + bookmark quick-launch
         ├── AddBookmarkDialog.tsx # Edit title/URL before saving bookmark
-        └── ui/                # shadcn components
+        └── ui/                # shadcn components (accordion, button, checkbox, dialog, input, label, scroll-area, select, sheet, switch, tooltip)
 ```
 
 ## Testing
 
 ```bash
-npm test          # Vitest unit tests (46 tests across src/lib/)
+npm test          # Vitest unit tests (48 tests across src/lib/)
 npx tsc --noEmit  # Type check
 ```
 

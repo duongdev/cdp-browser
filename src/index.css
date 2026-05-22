@@ -84,6 +84,16 @@
   --color-sidebar-border: var(--sidebar-border-color);
 }
 
+/* Default every bare `border`/`outline` utility to the theme token. Without this,
+   Tailwind v4 falls back to `currentColor`, so borders read black on light / white
+   on dark (e.g. Sheet edge, Select popover). */
+@layer base {
+  * {
+    border-color: var(--color-border);
+    outline-color: color-mix(in oklab, var(--color-ring) 50%, transparent);
+  }
+}
+
 body {
   background: var(--color-background);
   color: var(--color-foreground);

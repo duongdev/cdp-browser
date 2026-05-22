@@ -104,4 +104,31 @@ describe("adaptive reducer", () => {
     const dormant: typeof initial = { enabled: true, dormant: true, baseline: null };
     expect(reduce(dormant, { type: "rebaseline", bounds: bounds(1, 1) }).state.baseline).toBeNull();
   });
+
+  it("re-applies the override on rearm after going dormant", () => {
+    const dormant: typeof initial = { enabled: true, dormant: true, baseline: null };
+    const { state, effects } = reduce(dormant, {
+      type: "rearm",
+      canvas: { w: 1280, h: 720 },
+      bounds: bounds(1500, 900),
+    });
+    expect(state.dormant).toBe(false);
+    expect(state.baseline).toEqual(bounds(1500, 900));
+    expect(effects).toEqual([
+      { type: "applyOverride", metrics: deviceMetrics({ w: 1280, h: 720 }) },
+    ]);
+  });
+
+  it("ignores rearm when not dormant", () => {
+    const active = reduce(
+      reduce(initial, { type: "enable" }).state,
+      resize(1280, 720, bounds(1500, 900))
+    ).state;
+    const { effects } = reduce(active, {
+      type: "rearm",
+      canvas: { w: 1280, h: 720 },
+      bounds: bounds(1500, 900),
+    });
+    expect(effects).toEqual([]);
+  });
 });

@@ -7,7 +7,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { SettingsDialog } from "@/components/SettingsDialog";
+import { SettingsDialog, type SwitchEffect } from "@/components/SettingsDialog";
 
 interface ToolbarProps {
   url: string;
@@ -26,13 +26,19 @@ interface ToolbarProps {
   onThemeChange: (theme: "system" | "light" | "dark") => void;
   isBookmarked: boolean;
   onToggleBookmark: () => void;
-  settingsOpen?: boolean;
-  onSettingsOpenChange?: (open: boolean) => void;
+  settingsOpen: boolean;
+  settingsCommitted: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
+  onSettingsRequestOpenMouse: () => void;
+  onSettingsCommit: () => void;
   onConfigSaved?: () => void;
   adaptiveViewport: boolean;
   onAdaptiveViewportChange: (enabled: boolean) => void;
-  switchBlur: boolean;
-  onSwitchBlurChange: (enabled: boolean) => void;
+  forceOnClient: boolean;
+  onForceOnClientChange: (enabled: boolean) => void;
+  emulatedSize: { w: number; h: number } | null;
+  switchEffect: SwitchEffect;
+  onSwitchEffectChange: (effect: SwitchEffect) => void;
 }
 
 export interface ToolbarHandle {
@@ -57,12 +63,18 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   isBookmarked,
   onToggleBookmark,
   settingsOpen,
+  settingsCommitted,
   onSettingsOpenChange,
+  onSettingsRequestOpenMouse,
+  onSettingsCommit,
   onConfigSaved,
   adaptiveViewport,
   onAdaptiveViewportChange,
-  switchBlur,
-  onSwitchBlurChange,
+  forceOnClient,
+  onForceOnClientChange,
+  emulatedSize,
+  switchEffect,
+  onSwitchEffectChange,
 }, ref) {
   const isConnected = status === "Connected";
   const isError = status.startsWith("Error");
@@ -241,14 +253,20 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         {/* Settings */}
         <SettingsDialog
           open={settingsOpen}
+          committed={settingsCommitted}
           onOpenChange={onSettingsOpenChange}
+          onRequestOpenMouse={onSettingsRequestOpenMouse}
+          onCommit={onSettingsCommit}
           theme={theme}
           onThemeChange={onThemeChange}
           onConfigSaved={onConfigSaved}
           adaptiveViewport={adaptiveViewport}
           onAdaptiveViewportChange={onAdaptiveViewportChange}
-          switchBlur={switchBlur}
-          onSwitchBlurChange={onSwitchBlurChange}
+          forceOnClient={forceOnClient}
+          onForceOnClientChange={onForceOnClientChange}
+          emulatedSize={emulatedSize}
+          switchEffect={switchEffect}
+          onSwitchEffectChange={onSwitchEffectChange}
         />
       </div>
     </div>

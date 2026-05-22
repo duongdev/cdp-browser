@@ -27,14 +27,16 @@ interface CdpBridge {
     sidebarCollapsed: boolean;
     pinnedOpen: boolean;
     adaptiveViewport: boolean;
-    switchBlur: boolean;
+    forceOnClient: boolean;
+    switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale";
   }>;
   setUiState: (
     partial: Partial<{
       sidebarCollapsed: boolean;
       pinnedOpen: boolean;
       adaptiveViewport: boolean;
-      switchBlur: boolean;
+      forceOnClient: boolean;
+      switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale";
     }>
   ) => Promise<void>;
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>;
