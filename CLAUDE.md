@@ -31,8 +31,12 @@ cdp-browser/
 ├── index.html           # Vite entry HTML
 ├── vite.config.ts       # Vite + React + Tailwind config
 ├── CONTEXT.md           # Domain glossary (Remote Page, Tab, Screencast Frame, …)
+├── scripts/
+│   └── install-local.sh # Build + install to /Applications (strips quarantine)
 ├── docs/
-│   └── adr/             # Append-only architecture decision records
+│   ├── adr/             # Append-only architecture decision records
+│   ├── agents/          # Skill instructions (issue tracker, triage, domain)
+│   └── guides/          # How-to guides (e.g. remote CDP over Tailscale)
 ├── build/               # App icon assets
 │   ├── icon.png
 │   ├── icon.icns
@@ -63,8 +67,9 @@ cdp-browser/
 ## Testing
 
 ```bash
-npm test          # Vitest unit tests (48 tests across src/lib/)
-npx tsc --noEmit  # Type check
+npm test                # Vitest unit tests (48 tests across src/lib/)
+npx tsc --noEmit        # Type check
+npm run install:local   # Build + install CDP Browser.app to /Applications
 ```
 
 ## Known Limitations

@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dist": "vite build && electron-builder --mac",
-    "dist:dir": "vite build && electron-builder --mac --dir"
+    "dist:dir": "vite build && electron-builder --mac --dir",
+    "install:local": "bash scripts/install-local.sh"
   },
   "build": {
     "appId": "dev.duong.cdp-browser",

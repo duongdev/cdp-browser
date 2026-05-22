@@ -32,7 +32,7 @@ msedge --remote-debugging-port=9222
 chromium --remote-debugging-port=9222
 ```
 
-The browser can be on the same machine or accessible over the network (e.g., via SSH tunnel).
+The browser can be on the same machine or accessible over the network (e.g., via SSH tunnel). To reach a browser on a machine you can't connect to directly, see [Reaching a remote CDP browser through a Tailscale jump host](docs/guides/remote-cdp-over-tailscale.md).
 
 ## Installation
 

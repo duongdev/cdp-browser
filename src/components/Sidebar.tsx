@@ -300,11 +300,21 @@ export function Sidebar({
             <button
               onClick={onNewTab}
               className={cn(
-                "flex items-center w-full rounded-lg px-2.5 py-1.5 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors",
-                collapsed ? "gap-0" : "gap-2"
+                "group/new flex w-full items-center overflow-hidden rounded-lg border py-1.5 text-muted-foreground transition-[background-color,border-color,color] duration-200 hover:text-foreground",
+                // Collapsed: an outline button. Expanded: borderless ghost row with a
+                // hover fill. Both keep the 1px border (transparent when expanded) so the
+                // outline only fades in — no width shift.
+                collapsed
+                  ? "border-border bg-background dark:bg-input/30"
+                  : "border-transparent hover:bg-accent/50"
               )}
             >
-              <Plus className="size-3.5 shrink-0" />
+              {/* Fixed-width leading slot = the collapsed rail's inner width, so the icon
+                  stays at the rail centre in both states. Collapsing only shrinks the
+                  label — the icon never moves, so there's no jump. */}
+              <span className="grid w-9 shrink-0 place-items-center">
+                <Plus className="size-5 transition-transform group-hover/new:scale-110" />
+              </span>
               <span
                 className={cn(
                   "text-xs truncate transition-all duration-200",
