@@ -297,29 +297,6 @@ describe("RemotePage isLoading", () => {
   });
 });
 
-describe("RemotePage captureStill", () => {
-  it("draws the current page through onFrame without acking (forces a paint)", async () => {
-    const t = fakeTransport();
-    t.invoke.mockResolvedValue({ data: "STILL" });
-    const page = createRemotePage(t.transport);
-    const frames: any[] = [];
-    page.onFrame((f) => frames.push(f));
-
-    const ok = await page.captureStill();
-
-    expect(t.invoke).toHaveBeenCalledWith("Page.captureScreenshot", { format: "jpeg", quality: 80 });
-    expect(ok).toBe(true);
-    expect(frames).toEqual([{ data: "STILL", sessionId: -1 }]);
-    expect(t.sends).toEqual([]); // a still is not a screencast frame — never ack
-  });
-
-  it("returns false when the screenshot fails", async () => {
-    const t = fakeTransport();
-    t.invoke.mockResolvedValue({ error: "not connected" });
-    expect(await createRemotePage(t.transport).captureStill()).toBe(false);
-  });
-});
-
 describe("RemotePage copySelection", () => {
   it("returns the remote selection text, unwrapping the evaluate result", async () => {
     const t = fakeTransport();

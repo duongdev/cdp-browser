@@ -36,6 +36,15 @@ export default function App() {
   const [pageLoading, setPageLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(true);
+  const [adaptiveViewport, setAdaptiveViewport] = useState(false);
+  const [switchBlur, setSwitchBlur] = useState(true);
+  // Bumped on every successful (re)connect so the Viewport re-applies the adaptive
+  // override on a fresh socket — a tab switch doesn't change the container size, so
+  // the ResizeObserver alone wouldn't re-trigger it.
+  const [connectEpoch, setConnectEpoch] = useState(0);
+  // Bumped the instant a tab switch starts (before the connect round-trip) so the
+  // Viewport can begin its freeze/blur immediately rather than after the connection.
+  const [switchSignal, setSwitchSignal] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const uiStateLoadedRef = useRef(false);
   const [theme, setTheme] = useState<ThemeSource>("system");
@@ -78,6 +87,8 @@ export default function App() {
     window.cdp.getUiState().then((s) => {
       setSidebarCollapsed(s.sidebarCollapsed);
       setPinnedOpen(s.pinnedOpen);
+      setAdaptiveViewport(s.adaptiveViewport ?? false);
+      setSwitchBlur(s.switchBlur ?? true);
       uiStateLoadedRef.current = true;
     });
   }, []);
@@ -104,6 +115,23 @@ export default function App() {
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
   }, []);
+
+  const handleAdaptiveViewportChange = useCallback((enabled: boolean) => {
+    setAdaptiveViewport(enabled);
+    window.cdp.setUiState({ adaptiveViewport: enabled });
+  }, []);
+
+  const handleSwitchBlurChange = useCallback((enabled: boolean) => {
+    setSwitchBlur(enabled);
+    window.cdp.setUiState({ switchBlur: enabled });
+  }, []);
+
+  // A host-side window resize backs adaptive mode off; reflect that in the setting so
+  // the toggle no longer shows on and re-arming is a normal off→on.
+  const handleAdaptivePaused = useCallback(
+    () => handleAdaptiveViewportChange(false),
+    [handleAdaptiveViewportChange]
+  );
 
   const handleThemeChange = useCallback((newTheme: ThemeSource) => {
     setTheme(newTheme);
@@ -180,10 +208,14 @@ export default function App() {
   }, []);
 
   const switchTab = useCallback(async (tabId: string) => {
+    const isSameTab = tabId === activeTabIdRef.current;
     setActiveTabId(tabId);
     setLoading(true);
     setLoadingText("Connecting...");
     setStatus("Connecting...");
+    // Freeze/blur immediately, before the connect round-trip — but not when re-clicking
+    // the already-active tab (nothing changes, so no transition).
+    if (!isSameTab) setSwitchSignal((s) => s + 1);
 
     const result = await window.cdp.connect(tabId);
     if (result.error && result.error !== "cancelled") {
@@ -192,10 +224,9 @@ export default function App() {
     } else {
       // Overlay means "connecting to CDP" — clear it the moment we're connected.
       // The page's own load progress shows in the toolbar reload button, not here.
-      // captureStill paints content immediately (static SPAs emit no frame on connect).
       setStatus("Connected");
       setLoading(false);
-      page.captureStill();
+      setConnectEpoch((e) => e + 1);
       updateNavHistory();
     }
   }, [updateNavHistory, page]);
@@ -525,11 +556,20 @@ export default function App() {
             settingsOpen={settingsOpen}
             onSettingsOpenChange={setSettingsOpen}
             onConfigSaved={handleConfigSaved}
+            adaptiveViewport={adaptiveViewport}
+            onAdaptiveViewportChange={handleAdaptiveViewportChange}
+            switchBlur={switchBlur}
+            onSwitchBlurChange={handleSwitchBlurChange}
           />
           <Viewport
             page={page}
             onFpsUpdate={setFps}
             onResolutionUpdate={setResolution}
+            adaptiveEnabled={adaptiveViewport}
+            switchBlur={switchBlur}
+            connectEpoch={connectEpoch}
+            switchSignal={switchSignal}
+            onAdaptivePaused={handleAdaptivePaused}
           />
           <StatusBar
             loading={loading}

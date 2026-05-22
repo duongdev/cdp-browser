@@ -23,9 +23,19 @@ interface CdpBridge {
   >;
   getSidebarWidth: () => Promise<number>;
   setSidebarWidth: (width: number) => Promise<void>;
-  getUiState: () => Promise<{ sidebarCollapsed: boolean; pinnedOpen: boolean }>;
+  getUiState: () => Promise<{
+    sidebarCollapsed: boolean;
+    pinnedOpen: boolean;
+    adaptiveViewport: boolean;
+    switchBlur: boolean;
+  }>;
   setUiState: (
-    partial: Partial<{ sidebarCollapsed: boolean; pinnedOpen: boolean }>
+    partial: Partial<{
+      sidebarCollapsed: boolean;
+      pinnedOpen: boolean;
+      adaptiveViewport: boolean;
+      switchBlur: boolean;
+    }>
   ) => Promise<void>;
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>;
   getThemeSource: () => Promise<"system" | "light" | "dark">;

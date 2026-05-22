@@ -6,6 +6,10 @@ const WebSocket = require('ws')
 let mainWindow
 let activeWs = null
 let connectId = 0
+// Last device-metrics override the renderer applied. Re-sent on every (re)connect
+// before the screencast starts so a tab switch lands already sized — no native-size
+// first frame and the resulting jiggle. Cleared when the override is cleared.
+let cachedMetrics = null
 
 // Settings persistence
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
@@ -25,6 +29,18 @@ function saveSettings(settings) {
 let settings = loadSettings()
 let cdpHost = settings.host
 let cdpPort = settings.port
+
+// When Adaptive Viewport is on we override the remote's device metrics. The renderer
+// can't reliably clear them on a tab switch (the socket is torn down first), so the
+// main process clears on the outgoing socket — otherwise the host browser stays
+// pinned to our emulated size when the user drives it directly.
+function clearAdaptiveOverride(ws) {
+  if (!settings.adaptiveViewport) return
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+  try {
+    ws.send(JSON.stringify({ id: cmdId++, method: 'Emulation.clearDeviceMetricsOverride', params: {} }))
+  } catch (e) {}
+}
 
 const isDev = !app.isPackaged && !fs.existsSync(path.join(__dirname, 'dist', 'index.html'))
 
@@ -101,6 +117,7 @@ ipcMain.handle('cdp:connect', async (_, tabId) => {
   if (activeWs) {
     const old = activeWs
     activeWs = null
+    clearAdaptiveOverride(old)
     try { old.close() } catch(e) {}
   }
 
@@ -132,6 +149,11 @@ ipcMain.handle('cdp:connect', async (_, tabId) => {
         const bounds = mainWindow.getBounds()
         ws.send(JSON.stringify({ id: 1, method: 'Page.enable', params: {} }))
         ws.send(JSON.stringify({ id: 2, method: 'Input.enable', params: {} }))
+        // Re-apply the cached adaptive override before the screencast so the first
+        // frame is already sized to the window — prevents the tab-switch jiggle.
+        if (settings.adaptiveViewport && cachedMetrics) {
+          ws.send(JSON.stringify({ id: 5, method: 'Emulation.setDeviceMetricsOverride', params: cachedMetrics }))
+        }
         ws.send(JSON.stringify({
           id: 3, method: 'Page.startScreencast',
           params: { format: 'jpeg', quality: 80, maxWidth: bounds.width * 2, maxHeight: bounds.height * 2 }
@@ -173,6 +195,8 @@ ipcMain.handle('cdp:connect', async (_, tabId) => {
 
 let cmdId = 100
 ipcMain.on('cdp:send', (_, method, params) => {
+  if (method === 'Emulation.setDeviceMetricsOverride') cachedMetrics = params
+  else if (method === 'Emulation.clearDeviceMetricsOverride') cachedMetrics = null
   if (activeWs && activeWs.readyState === WebSocket.OPEN) {
     activeWs.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
   }
@@ -235,11 +259,15 @@ ipcMain.handle('cdp:set-sidebar-width', (_, width) => {
 ipcMain.handle('cdp:get-ui-state', () => ({
   sidebarCollapsed: settings.sidebarCollapsed ?? false,
   pinnedOpen: settings.pinnedOpen ?? true,
+  adaptiveViewport: settings.adaptiveViewport ?? false,
+  switchBlur: settings.switchBlur ?? true,
 }))
 
 ipcMain.handle('cdp:set-ui-state', (_, partial) => {
   if ('sidebarCollapsed' in partial) settings.sidebarCollapsed = partial.sidebarCollapsed
   if ('pinnedOpen' in partial) settings.pinnedOpen = partial.pinnedOpen
+  if ('adaptiveViewport' in partial) settings.adaptiveViewport = partial.adaptiveViewport
+  if ('switchBlur' in partial) settings.switchBlur = partial.switchBlur
   saveSettings(settings)
 })
 
@@ -282,6 +310,9 @@ ipcMain.handle('cdp:get-theme-source', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (activeWs) { try { activeWs.close() } catch(e) {} }
+  if (activeWs) {
+    clearAdaptiveOverride(activeWs)
+    try { activeWs.close() } catch(e) {}
+  }
   app.quit()
 })

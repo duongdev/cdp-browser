@@ -32,12 +32,17 @@ _Avoid_: input dispatch, event forwarding.
 The letterbox mapping between canvas pixels and Remote Page pixels, since a Screencast Frame may not fill the canvas (black bars from aspect-ratio mismatch). The same transform must drive both drawing and Input Forwarding hit-testing.
 _Avoid_: scaling, getPos, coordinate math.
 
+**Adaptive Viewport**:
+An optional mode that eliminates letterbox bars by resizing the remote page itself (via `Emulation.setDeviceMetricsOverride`) to match the canvas dimensions, instead of fitting a fixed-aspect frame. Managed by a pure state machine in `src/lib/adaptive-viewport.ts`; effects (apply/clear override) are executed by the main process.
+_Avoid_: stretch mode, fill mode, device emulation.
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
 - The **Active Tab** is rendered as the **Remote Page** (the single live connection).
 - The **Remote Page** emits **Screencast Frames** and accepts **Input Forwarding**.
 - **Viewport Transform** maps canvas coordinates to **Remote Page** coordinates for both drawing **Screencast Frames** and hit-testing **Input Forwarding**.
+- **Adaptive Viewport** (when enabled) resizes the **Remote Page** to the canvas so **Screencast Frames** fill it without letterbox bars.
 
 ## Example dialogue
 

@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -29,6 +30,10 @@ interface SettingsDialogProps {
   theme: "system" | "light" | "dark";
   onThemeChange: (theme: "system" | "light" | "dark") => void;
   onConfigSaved?: () => void;
+  adaptiveViewport: boolean;
+  onAdaptiveViewportChange: (enabled: boolean) => void;
+  switchBlur: boolean;
+  onSwitchBlurChange: (enabled: boolean) => void;
 }
 
 type TestState =
@@ -43,6 +48,10 @@ export function SettingsDialog({
   theme,
   onThemeChange,
   onConfigSaved,
+  adaptiveViewport,
+  onAdaptiveViewportChange,
+  switchBlur,
+  onSwitchBlurChange,
 }: SettingsDialogProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -117,6 +126,31 @@ export function SettingsDialog({
                 <SelectItem value="dark">Dark</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Adaptive viewport */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-0.5">
+              <Label>Adaptive viewport</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Resize the remote page to fill the window — no letterbox bars.
+              </p>
+            </div>
+            <Switch
+              checked={adaptiveViewport}
+              onCheckedChange={onAdaptiveViewportChange}
+            />
+          </div>
+
+          {/* Tab-switch blur */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-0.5">
+              <Label>Blur on tab switch</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Ease focus in/out when switching tabs.
+              </p>
+            </div>
+            <Switch checked={switchBlur} onCheckedChange={onSwitchBlurChange} />
           </div>
 
           {/* Remote connection */}

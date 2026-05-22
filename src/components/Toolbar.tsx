@@ -29,6 +29,10 @@ interface ToolbarProps {
   settingsOpen?: boolean;
   onSettingsOpenChange?: (open: boolean) => void;
   onConfigSaved?: () => void;
+  adaptiveViewport: boolean;
+  onAdaptiveViewportChange: (enabled: boolean) => void;
+  switchBlur: boolean;
+  onSwitchBlurChange: (enabled: boolean) => void;
 }
 
 export interface ToolbarHandle {
@@ -55,6 +59,10 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   settingsOpen,
   onSettingsOpenChange,
   onConfigSaved,
+  adaptiveViewport,
+  onAdaptiveViewportChange,
+  switchBlur,
+  onSwitchBlurChange,
 }, ref) {
   const isConnected = status === "Connected";
   const isError = status.startsWith("Error");
@@ -237,6 +245,10 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           theme={theme}
           onThemeChange={onThemeChange}
           onConfigSaved={onConfigSaved}
+          adaptiveViewport={adaptiveViewport}
+          onAdaptiveViewportChange={onAdaptiveViewportChange}
+          switchBlur={switchBlur}
+          onSwitchBlurChange={onSwitchBlurChange}
         />
       </div>
     </div>

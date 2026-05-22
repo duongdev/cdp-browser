@@ -109,9 +109,6 @@ export interface RemotePage {
   /** True while the page is still loading (document.readyState !== "complete"). */
   isLoading(): Promise<boolean>;
   copySelection(): Promise<string>;
-  /** Draws one screenshot of the current page through onFrame. Forces a paint on
-   *  static pages that emit no screencast frame after (re)connect. */
-  captureStill(): Promise<boolean>;
   on(cb: (event: RemotePageEvent) => void): Unsubscribe;
   onFrame(cb: (frame: ScreencastFrame) => void): Unsubscribe;
   forwardInput(intent: InputIntent): void;
@@ -279,22 +276,6 @@ export function createRemotePage(
         returnByValue: true,
       });
       return r?.result?.value ?? "";
-    },
-    async captureStill() {
-      const r = await transport.invoke("Page.captureScreenshot", {
-        format: "jpeg",
-        quality: 80,
-      });
-      if (typeof r?.data !== "string") return false;
-      // Deliver as a frame but never ack — a still has no screencast session.
-      frameListeners.forEach((cb) => {
-        try {
-          cb({ data: r.data, sessionId: -1 });
-        } catch {
-          /* drawing errors are non-fatal */
-        }
-      });
-      return true;
     },
   };
 }
