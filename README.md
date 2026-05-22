@@ -14,7 +14,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Light / Dark / System theme** — with smooth transitions
 - **Navigation history** — back/forward buttons reflect actual browser history
 - **Keyboard shortcuts** — Cmd+T, Cmd+W, Cmd+D, Cmd+L
-- **Configurable** — remote CDP host/port via settings dialog
+- **Configurable** — remote CDP host/port via settings dialog, with test-connection button and immediate reconnect on save
 - **macOS native** — hidden title bar with traffic light integration
 
 ## Prerequisites

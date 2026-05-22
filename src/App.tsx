@@ -3,6 +3,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar, type ToolbarHandle } from "@/components/Toolbar";
 import { Viewport } from "@/components/Viewport";
+import { StatusBar } from "@/components/StatusBar";
 import { NewTabDialog } from "@/components/NewTabDialog";
 import { AddBookmarkDialog } from "@/components/AddBookmarkDialog";
 import { useRemotePage } from "@/hooks/useRemotePage";
@@ -34,6 +35,9 @@ export default function App() {
   const [loadingText, setLoadingText] = useState("Connecting...");
   const [pageLoading, setPageLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(220);
+  const uiStateLoadedRef = useRef(false);
   const [theme, setTheme] = useState<ThemeSource>("system");
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [newTabOpen, setNewTabOpen] = useState(false);
@@ -67,9 +71,38 @@ export default function App() {
     });
   }, []);
 
-  // Load bookmarks
+  // Load bookmarks + persisted sidebar width + UI state
   useEffect(() => {
     window.cdp.getBookmarks().then(setBookmarks);
+    window.cdp.getSidebarWidth().then(setSidebarWidth);
+    window.cdp.getUiState().then((s) => {
+      setSidebarCollapsed(s.sidebarCollapsed);
+      setPinnedOpen(s.pinnedOpen);
+      uiStateLoadedRef.current = true;
+    });
+  }, []);
+
+  // Persist UI state on change (guard avoids overwriting stored values with the
+  // initial defaults before getUiState resolves).
+  useEffect(() => {
+    if (uiStateLoadedRef.current) window.cdp.setUiState({ sidebarCollapsed });
+  }, [sidebarCollapsed]);
+  useEffect(() => {
+    if (uiStateLoadedRef.current) window.cdp.setUiState({ pinnedOpen });
+  }, [pinnedOpen]);
+
+  // Drop focus from buttons when the window loses focus, so refocusing the app
+  // (e.g. Cmd+Tab back) doesn't re-trigger a focus-driven tooltip. Leave text
+  // fields focused so in-progress URL editing survives an app switch.
+  useEffect(() => {
+    const onBlur = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (el && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") {
+        el.blur();
+      }
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
   }, []);
 
   const handleThemeChange = useCallback((newTheme: ThemeSource) => {
@@ -211,6 +244,19 @@ export default function App() {
     },
     [refreshTabs, switchTab]
   );
+
+  // Changing the CDP address invalidates all tab IDs, so reconnect to the
+  // first tab on the new host instead of waiting for a manual tab switch.
+  const handleConfigSaved = useCallback(async () => {
+    const ordered = await refreshTabs();
+    if (ordered && ordered.length > 0) {
+      switchTab(ordered[0].id);
+    } else {
+      setActiveTabId(null);
+      setLoading(true);
+      setLoadingText("No tab selected");
+    }
+  }, [refreshTabs, switchTab]);
 
   const reopenClosedTab = useCallback(async () => {
     const lastUrl = closedTabsRef.current.popLast();
@@ -445,6 +491,11 @@ export default function App() {
           onNewTab={() => setNewTabOpen(true)}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          width={sidebarWidth}
+          onResize={setSidebarWidth}
+          onResizeEnd={(w) => window.cdp.setSidebarWidth(w)}
+          pinnedOpen={pinnedOpen}
+          onPinnedToggle={() => setPinnedOpen((prev) => !prev)}
           bookmarks={bookmarks}
           onNavigateBookmark={navigate}
           onOpenBookmarkInNewTab={newTab}
@@ -473,13 +524,16 @@ export default function App() {
             onToggleBookmark={handleBookmarkClick}
             settingsOpen={settingsOpen}
             onSettingsOpenChange={setSettingsOpen}
+            onConfigSaved={handleConfigSaved}
           />
           <Viewport
             page={page}
-            loading={loading}
-            loadingText={loadingText}
             onFpsUpdate={setFps}
             onResolutionUpdate={setResolution}
+          />
+          <StatusBar
+            loading={loading}
+            loadingText={loadingText}
             onOpenSettings={() => setSettingsOpen(true)}
           />
         </div>

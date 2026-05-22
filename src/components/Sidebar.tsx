@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   X,
   Plus,
@@ -40,6 +41,11 @@ interface SidebarProps {
   onNewTab: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  width: number;
+  onResize: (width: number) => void;
+  onResizeEnd: (width: number) => void;
+  pinnedOpen: boolean;
+  onPinnedToggle: () => void;
   bookmarks: Bookmark[];
   onNavigateBookmark: (url: string) => void;
   onOpenBookmarkInNewTab: (url: string) => void;
@@ -47,6 +53,9 @@ interface SidebarProps {
   onReorderBookmarks: (bookmarks: Bookmark[]) => void;
   onReorderTabs: (tabs: TabInfo[]) => void;
 }
+
+const MIN_WIDTH = 180;
+const MAX_WIDTH = 480;
 
 export function Sidebar({
   tabs,
@@ -56,6 +65,11 @@ export function Sidebar({
   onNewTab,
   collapsed,
   onToggleCollapse,
+  width,
+  onResize,
+  onResizeEnd,
+  pinnedOpen,
+  onPinnedToggle,
   bookmarks,
   onNavigateBookmark,
   onOpenBookmarkInNewTab,
@@ -63,7 +77,30 @@ export function Sidebar({
   onReorderBookmarks,
   onReorderTabs,
 }: SidebarProps) {
-  const [pinnedOpen, setPinnedOpen] = useState(true);
+  const [resizing, setResizing] = useState(false);
+
+  const handleResizeStart = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    setResizing(true);
+    const startX = e.clientX;
+    const startWidth = width;
+    let latest = startWidth;
+    const onMove = (ev: PointerEvent) => {
+      latest = Math.min(
+        MAX_WIDTH,
+        Math.max(MIN_WIDTH, startWidth + ev.clientX - startX)
+      );
+      onResize(latest);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizing(false);
+      onResizeEnd(latest);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 3 } })
@@ -90,10 +127,33 @@ export function Sidebar({
   return (
     <div
       className={cn(
-        "relative flex flex-col bg-sidebar border-r border-sidebar-border transition-all duration-200 shrink-0",
-        collapsed ? "w-[52px]" : "w-[220px]"
+        // min-w-0 so a long tab title can't force the sidebar wider than its set
+        // width (otherwise flexbox min-width:auto grows it to the longest label).
+        "relative flex flex-col bg-sidebar shrink-0 min-w-0",
+        !resizing && "transition-all duration-200"
       )}
+      style={collapsed ? { width: 52 } : { width }}
     >
+      {/* Right divider. Lower part is always shown; the top (traffic-light)
+          segment fades out when collapsing so it stops cutting the traffic
+          lights, in sync with the width animation. */}
+      <div className="pointer-events-none absolute right-0 top-11 bottom-0 w-px bg-sidebar-border" />
+      <div
+        className={cn(
+          "pointer-events-none absolute right-0 top-0 h-11 w-px bg-sidebar-border transition-opacity duration-200",
+          collapsed ? "opacity-0" : "opacity-100"
+        )}
+      />
+
+      {/* Resize handle (expanded only) */}
+      {!collapsed && (
+        <div
+          onPointerDown={handleResizeStart}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          className="absolute -right-1 top-0 bottom-0 z-20 w-2 cursor-col-resize hover:bg-primary/30"
+        />
+      )}
+
       {/* Drag region (traffic lights area) */}
       <div
         className="h-11 shrink-0 relative"
@@ -146,7 +206,7 @@ export function Sidebar({
         <div className="shrink-0">
           {!collapsed && (
             <button
-              onClick={() => setPinnedOpen(!pinnedOpen)}
+              onClick={onPinnedToggle}
               className="flex items-center justify-between px-3 pb-1 w-full"
             >
               <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground select-none">
@@ -235,20 +295,25 @@ export function Sidebar({
 
       {/* New tab button */}
       <div className="p-2 border-t border-sidebar-border shrink-0">
-        <Tooltip>
+        <Tooltip delayDuration={collapsed ? 0 : 600}>
           <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size={collapsed ? "icon-xs" : "sm"}
+            <button
               onClick={onNewTab}
               className={cn(
-                "text-muted-foreground hover:text-foreground",
-                !collapsed && "w-full justify-start gap-2"
+                "flex items-center w-full rounded-lg px-2.5 py-1.5 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors",
+                collapsed ? "gap-0" : "gap-2"
               )}
             >
-              <Plus className="size-3.5" />
-              {!collapsed && <span className="text-xs">New Tab</span>}
-            </Button>
+              <Plus className="size-3.5 shrink-0" />
+              <span
+                className={cn(
+                  "text-xs truncate transition-all duration-200",
+                  collapsed ? "max-w-0 opacity-0" : "max-w-[600px] opacity-100"
+                )}
+              >
+                New Tab
+              </span>
+            </button>
           </TooltipTrigger>
           {collapsed && (
             <TooltipContent side="right">New Tab</TooltipContent>
@@ -285,39 +350,17 @@ function SortableBookmarkItem({
 
   const style = {
     transform: CSS.Transform.toString(transform),
-    transition,
+    // Merge collapse animations into dnd-kit's inline transition (which would
+    // otherwise be transform-only and freeze these CSS transitions).
+    transition: [transition, "padding 200ms ease, background-color 150ms ease"]
+      .filter(Boolean)
+      .join(", "),
     zIndex: isDragging ? 50 : undefined,
     opacity: isDragging ? 0.8 : undefined,
   };
 
-  if (collapsed) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div
-            ref={setNodeRef}
-            style={style}
-            {...attributes}
-            {...listeners}
-            className={cn(
-              "flex items-center justify-center p-2 rounded-lg cursor-pointer text-sidebar-foreground hover:bg-accent/50 hover:text-foreground transition-colors",
-              isDragging && "bg-accent/50"
-            )}
-            onClick={onNavigate}
-            onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onMiddleClick(); } }}
-          >
-            <BookmarkFavicon favicon={bookmark.favicon} />
-          </div>
-        </TooltipTrigger>
-        <TooltipContent side="right" className="max-w-[200px]">
-          <p className="truncate">{bookmark.title}</p>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
   return (
-    <Tooltip delayDuration={600}>
+    <Tooltip delayDuration={collapsed ? 0 : 600}>
       <TooltipTrigger asChild>
         <div
           ref={setNodeRef}
@@ -325,33 +368,43 @@ function SortableBookmarkItem({
           {...attributes}
           {...listeners}
           className={cn(
-            "group relative flex items-center gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer text-sidebar-foreground hover:bg-accent/50 hover:text-foreground transition-colors",
+            "group relative flex items-center rounded-lg cursor-default text-sidebar-foreground hover:bg-accent/50 hover:text-foreground",
+            collapsed ? "px-2.5 py-1.5 gap-0" : "px-2.5 py-1.5 gap-2",
             isDragging && "bg-accent/50"
           )}
           onClick={onNavigate}
           onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onMiddleClick(); } }}
         >
           <BookmarkFavicon favicon={bookmark.favicon} />
-          <span className="flex-1 text-xs truncate min-w-0">
+          <span
+            className={cn(
+              "text-xs truncate transition-all duration-200",
+              collapsed ? "max-w-0 opacity-0 flex-none" : "flex-1 max-w-[600px] opacity-100"
+            )}
+          >
             {bookmark.title}
           </span>
-          <button
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemove();
-            }}
-            className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-3" />
-          </button>
+          {!collapsed && (
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemove();
+              }}
+              className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          )}
         </div>
       </TooltipTrigger>
       <TooltipContent side="right" className="max-w-[250px]">
         <p className="text-xs font-medium">{bookmark.title}</p>
-        <p className="text-[10px] text-muted-foreground truncate">
-          {bookmark.url}
-        </p>
+        {!collapsed && (
+          <p className="text-[10px] text-background/60 truncate">
+            {bookmark.url}
+          </p>
+        )}
       </TooltipContent>
     </Tooltip>
   );
@@ -383,7 +436,11 @@ function SortableTabItem({
 
   const style = {
     transform: CSS.Transform.toString(transform),
-    transition,
+    // Merge collapse animations into dnd-kit's inline transition (which would
+    // otherwise be transform-only and freeze these CSS transitions).
+    transition: [transition, "padding 200ms ease, background-color 150ms ease"]
+      .filter(Boolean)
+      .join(", "),
     zIndex: isDragging ? 50 : undefined,
     opacity: isDragging ? 0.8 : undefined,
   };
@@ -399,8 +456,8 @@ function SortableTabItem({
           {...attributes}
           {...listeners}
           className={cn(
-            "group relative flex items-center gap-2 rounded-lg cursor-pointer transition-colors",
-            collapsed ? "justify-center p-2" : "px-2.5 py-1.5",
+            "group relative flex items-center rounded-lg cursor-default",
+            collapsed ? "px-2.5 py-1.5 gap-0" : "px-2.5 py-1.5 gap-2",
             isDragging
               ? "bg-accent/50"
               : active
@@ -421,11 +478,23 @@ function SortableTabItem({
           ) : (
             <div className="size-4 rounded-sm bg-muted shrink-0" />
           )}
+          <span
+            className={cn(
+              "text-xs truncate transition-all duration-200",
+              collapsed ? "max-w-0 opacity-0 flex-none" : "flex-1 max-w-[600px] opacity-100"
+            )}
+          >
+            {displayTitle}
+          </span>
           {!collapsed && (
             <>
-              <span className="flex-1 text-xs truncate min-w-0">
-                {displayTitle}
-              </span>
+              {/* Fade so the close button stays legible over a long title */}
+              <div
+                className={cn(
+                  "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100",
+                  active ? "from-sidebar-accent" : "from-accent"
+                )}
+              />
               <button
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {

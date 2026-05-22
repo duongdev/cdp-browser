@@ -1,24 +1,17 @@
-import { useEffect, useRef } from "react";
-import { Globe, Settings } from "lucide-react";
+import { useCallback, useEffect, useRef } from "react";
 import { letterbox, toRemoteCoords } from "@/lib/viewport-transform";
 import type { RemotePage } from "@/lib/remote-page";
 
 interface ViewportProps {
   page: RemotePage;
-  loading: boolean;
-  loadingText: string;
   onFpsUpdate: (fps: string) => void;
   onResolutionUpdate: (res: string) => void;
-  onOpenSettings?: () => void;
 }
 
 export function Viewport({
   page,
-  loading,
-  loadingText,
   onFpsUpdate,
   onResolutionUpdate,
-  onOpenSettings,
 }: ViewportProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,32 +20,38 @@ export function Viewport({
   const frameCountRef = useRef(0);
   const lastFpsTimeRef = useRef(Date.now());
 
+  // Letterbox the current frame into the canvas at the container's live size.
+  // Used both on new frames and on container resize (e.g. sidebar toggle), so
+  // the viewport reflows without waiting for the next remote frame.
+  const paint = useCallback(() => {
+    const canvas = canvasRef.current;
+    const vp = containerRef.current;
+    const img = imgRef.current;
+    if (!canvas || !vp || !img.width) return;
+    const ctx = canvas.getContext("2d")!;
+
+    canvas.width = vp.clientWidth * window.devicePixelRatio;
+    canvas.height = vp.clientHeight * window.devicePixelRatio;
+    canvas.style.width = vp.clientWidth + "px";
+    canvas.style.height = vp.clientHeight + "px";
+
+    const { scale, dx, dy } = letterbox(
+      { w: img.width, h: img.height },
+      { w: canvas.width, h: canvas.height }
+    );
+
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
+  }, []);
+
   // Draw each Screencast Frame; the Remote Page auto-acks, so we only paint.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
     const img = imgRef.current;
 
     img.onload = () => {
       imgSizeRef.current = { width: img.width, height: img.height };
-
-      const vp = containerRef.current;
-      if (!vp) return;
-
-      canvas.width = vp.clientWidth * window.devicePixelRatio;
-      canvas.height = vp.clientHeight * window.devicePixelRatio;
-      canvas.style.width = vp.clientWidth + "px";
-      canvas.style.height = vp.clientHeight + "px";
-
-      const { scale, dx, dy } = letterbox(
-        { w: img.width, h: img.height },
-        { w: canvas.width, h: canvas.height }
-      );
-
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
+      paint();
 
       onResolutionUpdate(`${img.width}x${img.height}`);
       frameCountRef.current++;
@@ -67,7 +66,7 @@ export function Viewport({
     return page.onFrame(({ data }) => {
       img.src = "data:image/jpeg;base64," + data;
     });
-  }, [page, onFpsUpdate, onResolutionUpdate]);
+  }, [page, paint, onFpsUpdate, onResolutionUpdate]);
 
   // The Viewport owns the canvas geometry, so it supplies the coordinate resolver
   // the Remote Page uses to hit-test Input Forwarding.
@@ -85,21 +84,31 @@ export function Viewport({
     });
   }, [page]);
 
-  // Resize re-issues the screencast at the new canvas size (screencast config).
+  // Any container size change (window resize OR sidebar toggle) repaints the
+  // current frame immediately, then re-issues the screencast at the new size so
+  // the remote re-renders at the correct resolution.
   useEffect(() => {
-    const handleResize = () => {
-      const vp = containerRef.current;
-      if (!vp) return;
-      window.cdp.send("Page.startScreencast", {
-        format: "jpeg",
-        quality: 80,
-        maxWidth: Math.floor(vp.clientWidth * window.devicePixelRatio),
-        maxHeight: Math.floor(vp.clientHeight * window.devicePixelRatio),
-      });
+    const vp = containerRef.current;
+    if (!vp) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const observer = new ResizeObserver(() => {
+      paint();
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        window.cdp.send("Page.startScreencast", {
+          format: "jpeg",
+          quality: 80,
+          maxWidth: Math.floor(vp.clientWidth * window.devicePixelRatio),
+          maxHeight: Math.floor(vp.clientHeight * window.devicePixelRatio),
+        });
+      }, 150);
+    });
+    observer.observe(vp);
+    return () => {
+      observer.disconnect();
+      clearTimeout(timer);
     };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
+  }, [paint]);
 
   // Keyboard forwarding (canvas-level events that aren't app hotkeys go to the page)
   useEffect(() => {
@@ -126,31 +135,6 @@ export function Viewport({
 
   return (
     <div ref={containerRef} className="flex-1 relative bg-black overflow-hidden">
-      {loading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 gap-3">
-          {loadingText.startsWith("Error") ? (
-            <>
-              <Globe className="size-10 text-muted-foreground/40" />
-              <span className="text-sm text-muted-foreground">
-                {loadingText}
-              </span>
-              {onOpenSettings && (
-                <button
-                  onClick={onOpenSettings}
-                  className="flex items-center gap-1.5 text-xs text-primary hover:underline mt-1"
-                >
-                  <Settings className="size-3" />
-                  Check connection settings
-                </button>
-              )}
-            </>
-          ) : (
-            <span className="text-sm text-muted-foreground animate-pulse">
-              {loadingText}
-            </span>
-          )}
-        </div>
-      )}
       <canvas
         ref={canvasRef}
         className="w-full h-full block cursor-default"

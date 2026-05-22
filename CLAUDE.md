@@ -19,7 +19,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Mouse position mapping**: Screencast frames may not fill the canvas (black bars due to aspect ratio). `toRemoteCoords()` in `src/lib/viewport-transform.ts` (Viewport Transform) calculates the letterbox offset and scale to map mouse coordinates accurately; both the draw path and Input Forwarding use the same function.
 - **Tab activation**: CDP only allows one active debugger session per tab. Switching tabs calls `/json/activate/{id}` first, then reconnects WS.
 - **Edge compatibility**: Edge requires `PUT` method for `/json/new` (Chrome accepts `GET`).
-- **Settings persistence**: Host, port, theme, and bookmarks are stored in `userData/settings.json`.
+- **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, and pinned-open state are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab.
 
 ## File Structure
 
@@ -48,10 +48,11 @@ cdp-browser/
     │   ├── viewport-transform.ts # Letterbox math + coordinate mapping
     │   └── utils.ts           # cn() utility
     └── components/
-        ├── Sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable
+        ├── Sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width
         ├── Toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings
-        ├── Viewport.tsx       # Screencast canvas + input forwarding
-        ├── SettingsDialog.tsx  # Theme + CDP address config
+        ├── Viewport.tsx       # Screencast canvas + input forwarding; ResizeObserver repaints on container resize
+        ├── StatusBar.tsx      # Bottom status bar for loading/error states (replaces mid-viewport overlay)
+        ├── SettingsDialog.tsx  # Theme + CDP address config, test-connection button
         ├── NewTabDialog.tsx    # URL input + bookmark quick-launch
         ├── AddBookmarkDialog.tsx # Edit title/URL before saving bookmark
         └── ui/                # shadcn components

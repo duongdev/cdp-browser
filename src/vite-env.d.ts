@@ -18,6 +18,15 @@ interface CdpBridge {
   onDisconnected: (cb: () => void) => void;
   getConfig: () => Promise<{ host: string; port: number }>;
   setConfig: (config: { host: string; port: number }) => Promise<void>;
+  testConfig: (config: { host: string; port: number }) => Promise<
+    { ok: true; browser: string } | { error: string }
+  >;
+  getSidebarWidth: () => Promise<number>;
+  setSidebarWidth: (width: number) => Promise<void>;
+  getUiState: () => Promise<{ sidebarCollapsed: boolean; pinnedOpen: boolean }>;
+  setUiState: (
+    partial: Partial<{ sidebarCollapsed: boolean; pinnedOpen: boolean }>
+  ) => Promise<void>;
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>;
   getThemeSource: () => Promise<"system" | "light" | "dark">;
   onNativeThemeChanged: (cb: (isDark: boolean) => void) => void;

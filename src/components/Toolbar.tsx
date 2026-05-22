@@ -28,6 +28,7 @@ interface ToolbarProps {
   onToggleBookmark: () => void;
   settingsOpen?: boolean;
   onSettingsOpenChange?: (open: boolean) => void;
+  onConfigSaved?: () => void;
 }
 
 export interface ToolbarHandle {
@@ -53,6 +54,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   onToggleBookmark,
   settingsOpen,
   onSettingsOpenChange,
+  onConfigSaved,
 }, ref) {
   const isConnected = status === "Connected";
   const isError = status.startsWith("Error");
@@ -174,9 +176,13 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         className="flex items-center gap-1 text-[10px] text-muted-foreground select-none shrink-0"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
-        {fps && <span className="mr-1">{fps}</span>}
+        {fps && (
+          <span className="mr-1 inline-block w-[48px] text-right tabular-nums">
+            {fps}
+          </span>
+        )}
         {resolution && (
-          <span className="hidden sm:inline mr-1">{resolution}</span>
+          <span className="hidden sm:inline mr-1 tabular-nums">{resolution}</span>
         )}
 
         <Tooltip>
@@ -230,6 +236,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onOpenChange={onSettingsOpenChange}
           theme={theme}
           onThemeChange={onThemeChange}
+          onConfigSaved={onConfigSaved}
         />
       </div>
     </div>

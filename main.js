@@ -204,11 +204,42 @@ ipcMain.handle('cdp:invoke', async (_, method, params) => {
 
 ipcMain.handle('cdp:config', () => ({ host: cdpHost, port: cdpPort }))
 
+ipcMain.handle('cdp:test-config', async (_, config) => {
+  try {
+    const res = await fetch(`http://${config.host}:${config.port}/json/version`, {
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return { error: `HTTP ${res.status}` }
+    const info = await res.json()
+    return { ok: true, browser: info.Browser || 'Unknown browser' }
+  } catch (e) {
+    return { error: e.name === 'TimeoutError' ? 'Connection timed out' : e.message }
+  }
+})
+
 ipcMain.handle('cdp:set-config', (_, config) => {
   cdpHost = config.host
   cdpPort = config.port
   settings.host = config.host
   settings.port = config.port
+  saveSettings(settings)
+})
+
+ipcMain.handle('cdp:get-sidebar-width', () => settings.sidebarWidth || 220)
+
+ipcMain.handle('cdp:set-sidebar-width', (_, width) => {
+  settings.sidebarWidth = width
+  saveSettings(settings)
+})
+
+ipcMain.handle('cdp:get-ui-state', () => ({
+  sidebarCollapsed: settings.sidebarCollapsed ?? false,
+  pinnedOpen: settings.pinnedOpen ?? true,
+}))
+
+ipcMain.handle('cdp:set-ui-state', (_, partial) => {
+  if ('sidebarCollapsed' in partial) settings.sidebarCollapsed = partial.sidebarCollapsed
+  if ('pinnedOpen' in partial) settings.pinnedOpen = partial.pinnedOpen
   saveSettings(settings)
 })
 

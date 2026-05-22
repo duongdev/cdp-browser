@@ -28,13 +28,21 @@ interface SettingsDialogProps {
   onOpenChange?: (open: boolean) => void;
   theme: "system" | "light" | "dark";
   onThemeChange: (theme: "system" | "light" | "dark") => void;
+  onConfigSaved?: () => void;
 }
+
+type TestState =
+  | { status: "idle" }
+  | { status: "testing" }
+  | { status: "ok"; browser: string }
+  | { status: "error"; message: string };
 
 export function SettingsDialog({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   theme,
   onThemeChange,
+  onConfigSaved,
 }: SettingsDialogProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -43,9 +51,11 @@ export function SettingsDialog({
   const [host, setHost] = useState("");
   const [port, setPort] = useState("");
   const [saving, setSaving] = useState(false);
+  const [test, setTest] = useState<TestState>({ status: "idle" });
 
   useEffect(() => {
     if (open) {
+      setTest({ status: "idle" });
       window.cdp.getConfig().then((config) => {
         setHost(config.host);
         setPort(String(config.port));
@@ -53,11 +63,24 @@ export function SettingsDialog({
     }
   }, [open]);
 
+  const parsedConfig = () => ({ host, port: parseInt(port, 10) || 9222 });
+
+  const handleTest = async () => {
+    setTest({ status: "testing" });
+    const result = await window.cdp.testConfig(parsedConfig());
+    if ("ok" in result) {
+      setTest({ status: "ok", browser: result.browser });
+    } else {
+      setTest({ status: "error", message: result.error });
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
-    await window.cdp.setConfig({ host, port: parseInt(port, 10) || 9222 });
+    await window.cdp.setConfig(parsedConfig());
     setSaving(false);
     setOpen(false);
+    onConfigSaved?.();
   };
 
   return (
@@ -102,26 +125,52 @@ export function SettingsDialog({
             <div className="flex gap-2">
               <Input
                 value={host}
-                onChange={(e) => setHost(e.target.value)}
+                onChange={(e) => {
+                  setHost(e.target.value);
+                  setTest({ status: "idle" });
+                }}
                 placeholder="Host"
                 className="flex-1"
               />
               <Input
                 value={port}
-                onChange={(e) => setPort(e.target.value)}
+                onChange={(e) => {
+                  setPort(e.target.value);
+                  setTest({ status: "idle" });
+                }}
                 placeholder="Port"
                 className="w-20"
                 type="number"
               />
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Restart tab connection after changing.
-            </p>
+            {test.status === "ok" && (
+              <p className="text-[11px] text-emerald-500">
+                Connected — {test.browser}
+              </p>
+            )}
+            {test.status === "error" && (
+              <p className="text-[11px] text-red-500">{test.message}</p>
+            )}
+            {test.status !== "ok" && test.status !== "error" && (
+              <p className="text-[11px] text-muted-foreground">
+                Saving reconnects the active tab.
+              </p>
+            )}
           </div>
 
-          <Button onClick={handleSave} disabled={saving} className="w-full">
-            {saving ? "Saving..." : "Save"}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={handleTest}
+              disabled={test.status === "testing"}
+              className="flex-1"
+            >
+              {test.status === "testing" ? "Testing..." : "Test"}
+            </Button>
+            <Button onClick={handleSave} disabled={saving} className="flex-1">
+              {saving ? "Saving..." : "Save"}
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
