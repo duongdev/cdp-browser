@@ -1,7 +1,10 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { Globe, Settings } from "lucide-react";
+import { letterbox, toRemoteCoords } from "@/lib/viewport-transform";
+import type { RemotePage } from "@/lib/remote-page";
 
 interface ViewportProps {
+  page: RemotePage;
   loading: boolean;
   loadingText: string;
   onFpsUpdate: (fps: string) => void;
@@ -10,6 +13,7 @@ interface ViewportProps {
 }
 
 export function Viewport({
+  page,
   loading,
   loadingText,
   onFpsUpdate,
@@ -23,85 +27,65 @@ export function Viewport({
   const frameCountRef = useRef(0);
   const lastFpsTimeRef = useRef(Date.now());
 
-  const getPos = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return { x: 0, y: 0 };
-
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio;
-      const cw = rect.width * dpr;
-      const ch = rect.height * dpr;
-      const { width: imgWidth, height: imgHeight } = imgSizeRef.current;
-
-      const scale = Math.min(cw / imgWidth, ch / imgHeight);
-      const dw = imgWidth * scale;
-      const dh = imgHeight * scale;
-      const dx = (cw - dw) / 2;
-      const dy = (ch - dh) / 2;
-
-      const px = (e.clientX - rect.left) * dpr;
-      const py = (e.clientY - rect.top) * dpr;
-
-      return {
-        x: Math.round((px - dx) / scale),
-        y: Math.round((py - dy) / scale),
-      };
-    },
-    []
-  );
-
-  // Screencast frame handler
+  // Draw each Screencast Frame; the Remote Page auto-acks, so we only paint.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
     const img = imgRef.current;
 
-    window.cdp.onEvent((msg: any) => {
-      if (msg.method === "Page.screencastFrame") {
-        const { data, sessionId } = msg.params;
+    img.onload = () => {
+      imgSizeRef.current = { width: img.width, height: img.height };
 
-        img.onload = () => {
-          imgSizeRef.current = { width: img.width, height: img.height };
+      const vp = containerRef.current;
+      if (!vp) return;
 
-          const vp = containerRef.current;
-          if (!vp) return;
+      canvas.width = vp.clientWidth * window.devicePixelRatio;
+      canvas.height = vp.clientHeight * window.devicePixelRatio;
+      canvas.style.width = vp.clientWidth + "px";
+      canvas.style.height = vp.clientHeight + "px";
 
-          canvas.width = vp.clientWidth * window.devicePixelRatio;
-          canvas.height = vp.clientHeight * window.devicePixelRatio;
-          canvas.style.width = vp.clientWidth + "px";
-          canvas.style.height = vp.clientHeight + "px";
+      const { scale, dx, dy } = letterbox(
+        { w: img.width, h: img.height },
+        { w: canvas.width, h: canvas.height }
+      );
 
-          const scale = Math.min(
-            canvas.width / img.width,
-            canvas.height / img.height
-          );
-          const dw = img.width * scale;
-          const dh = img.height * scale;
-          const dx = (canvas.width - dw) / 2;
-          const dy = (canvas.height - dh) / 2;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
 
-          ctx.fillStyle = "#000";
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, dx, dy, dw, dh);
-
-          onResolutionUpdate(`${img.width}x${img.height}`);
-          frameCountRef.current++;
-          const now = Date.now();
-          if (now - lastFpsTimeRef.current >= 1000) {
-            onFpsUpdate(`${frameCountRef.current} FPS`);
-            frameCountRef.current = 0;
-            lastFpsTimeRef.current = now;
-          }
-        };
-        img.src = "data:image/jpeg;base64," + data;
-        window.cdp.send("Page.screencastFrameAck", { sessionId });
+      onResolutionUpdate(`${img.width}x${img.height}`);
+      frameCountRef.current++;
+      const now = Date.now();
+      if (now - lastFpsTimeRef.current >= 1000) {
+        onFpsUpdate(`${frameCountRef.current} FPS`);
+        frameCountRef.current = 0;
+        lastFpsTimeRef.current = now;
       }
-    });
-  }, [onFpsUpdate, onResolutionUpdate]);
+    };
 
-  // Resize handler
+    return page.onFrame(({ data }) => {
+      img.src = "data:image/jpeg;base64," + data;
+    });
+  }, [page, onFpsUpdate, onResolutionUpdate]);
+
+  // The Viewport owns the canvas geometry, so it supplies the coordinate resolver
+  // the Remote Page uses to hit-test Input Forwarding.
+  useEffect(() => {
+    page.setCoordResolver((clientX, clientY) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return { x: 0, y: 0 };
+      const { width: w, height: h } = imgSizeRef.current;
+      return toRemoteCoords(
+        { x: clientX, y: clientY },
+        canvas.getBoundingClientRect(),
+        window.devicePixelRatio,
+        { w, h }
+      );
+    });
+  }, [page]);
+
+  // Resize re-issues the screencast at the new canvas size (screencast config).
   useEffect(() => {
     const handleResize = () => {
       const vp = containerRef.current;
@@ -117,93 +101,28 @@ export function Viewport({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Keyboard forwarding
+  // Keyboard forwarding (canvas-level events that aren't app hotkeys go to the page)
   useEffect(() => {
+    const isField = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      return tag === "INPUT" || tag === "TEXTAREA";
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        (e.target as HTMLElement).tagName === "INPUT" ||
-        (e.target as HTMLElement).tagName === "TEXTAREA"
-      )
-        return;
+      if (isField(e)) return;
       e.preventDefault();
-      let m = 0;
-      if (e.altKey) m |= 1;
-      if (e.ctrlKey) m |= 2;
-      if (e.metaKey) m |= 4;
-      if (e.shiftKey) m |= 8;
-      window.cdp.send("Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: e.key,
-        code: e.code,
-        text: e.key.length === 1 ? e.key : "",
-        windowsVirtualKeyCode: e.keyCode,
-        modifiers: m,
-      });
+      page.forwardInput({ kind: "key", phase: "down", event: e });
     };
-
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (
-        (e.target as HTMLElement).tagName === "INPUT" ||
-        (e.target as HTMLElement).tagName === "TEXTAREA"
-      )
-        return;
-      let m = 0;
-      if (e.altKey) m |= 1;
-      if (e.ctrlKey) m |= 2;
-      if (e.metaKey) m |= 4;
-      if (e.shiftKey) m |= 8;
-      window.cdp.send("Input.dispatchKeyEvent", {
-        type: "keyUp",
-        key: e.key,
-        code: e.code,
-        windowsVirtualKeyCode: e.keyCode,
-        modifiers: m,
-      });
+      if (isField(e)) return;
+      page.forwardInput({ kind: "key", phase: "up", event: e });
     };
-
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("keyup", handleKeyUp);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keyup", handleKeyUp);
     };
-  }, []);
-
-  const getModifiers = useCallback((e: React.MouseEvent | MouseEvent) => {
-    let m = 0;
-    if (e.altKey) m |= 1;
-    if (e.ctrlKey) m |= 2;
-    if (e.metaKey) m |= 4;
-    if (e.shiftKey) m |= 8;
-    return m;
-  }, []);
-
-  const getCdpButton = useCallback((button: number) => {
-    switch (button) {
-      case 0: return "left";
-      case 1: return "middle";
-      case 2: return "right";
-      default: return "left";
-    }
-  }, []);
-
-  const buttonsDownRef = useRef(0);
-
-  const handleMouse = useCallback(
-    (type: string, e: React.MouseEvent<HTMLCanvasElement>, clickCount = 1) => {
-      const pos = getPos(e);
-      window.cdp.send("Input.dispatchMouseEvent", {
-        type,
-        x: pos.x,
-        y: pos.y,
-        button: getCdpButton(e.button),
-        buttons: e.buttons,
-        clickCount,
-        modifiers: getModifiers(e),
-      });
-    },
-    [getPos, getCdpButton, getModifiers]
-  );
+  }, [page]);
 
   return (
     <div ref={containerRef} className="flex-1 relative bg-black overflow-hidden">
@@ -236,40 +155,21 @@ export function Viewport({
         ref={canvasRef}
         className="w-full h-full block cursor-default"
         onMouseDown={(e) => {
-          buttonsDownRef.current = e.buttons;
-          handleMouse("mousePressed", e);
+          e.preventDefault(); // stop native focus/drag stealing the gesture
+          // e.detail carries the consecutive-click count: 2 = word, 3 = paragraph
+          page.forwardInput({ kind: "mouse", phase: "pressed", event: e, clickCount: e.detail || 1 });
         }}
-        onMouseUp={(e) => {
-          buttonsDownRef.current = e.buttons;
-          handleMouse("mouseReleased", e);
-        }}
-        onMouseMove={(e) => {
-          const pos = getPos(e);
-          window.cdp.send("Input.dispatchMouseEvent", {
-            type: "mouseMoved",
-            x: pos.x,
-            y: pos.y,
-            buttons: e.buttons,
-            modifiers: getModifiers(e),
-          });
-        }}
-        onDoubleClick={(e) => {
-          handleMouse("mousePressed", e, 2);
-          handleMouse("mouseReleased", e, 2);
-        }}
+        onMouseUp={(e) =>
+          page.forwardInput({ kind: "mouse", phase: "released", event: e, clickCount: e.detail || 1 })
+        }
+        onMouseMove={(e) =>
+          page.forwardInput({ kind: "mouse", phase: "moved", event: e })
+        }
         onContextMenu={(e) => {
           e.preventDefault(); // prevent Electron's native context menu
         }}
         onWheel={(e) => {
-          const pos = getPos(e);
-          window.cdp.send("Input.dispatchMouseEvent", {
-            type: "mouseWheel",
-            x: pos.x,
-            y: pos.y,
-            deltaX: e.deltaX,
-            deltaY: e.deltaY,
-            modifiers: getModifiers(e),
-          });
+          page.forwardInput({ kind: "wheel", event: e });
           e.preventDefault();
         }}
       />

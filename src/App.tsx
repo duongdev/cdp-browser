@@ -5,6 +5,8 @@ import { Toolbar, type ToolbarHandle } from "@/components/Toolbar";
 import { Viewport } from "@/components/Viewport";
 import { NewTabDialog } from "@/components/NewTabDialog";
 import { AddBookmarkDialog } from "@/components/AddBookmarkDialog";
+import { useRemotePage } from "@/hooks/useRemotePage";
+import { reconcile, nextTab, prevTab, createClosedTabStack, type Tab } from "@/lib/tabs";
 
 export interface TabInfo {
   id: string;
@@ -42,9 +44,10 @@ export default function App() {
   const tabOrderRef = useRef<string[]>([]);
   const systemDarkRef = useRef(true);
   const toolbarRef = useRef<ToolbarHandle>(null);
-  const closedTabsRef = useRef<string[]>([]);
+  const closedTabsRef = useRef(createClosedTabStack());
   const tabsRef = useRef<TabInfo[]>([]);
   const activeTabIdRef = useRef<string | null>(null);
+  const page = useRemotePage();
 
   // Theme initialization
   useEffect(() => {
@@ -125,12 +128,10 @@ export default function App() {
   const isCurrentUrlBookmarked = bookmarks.some((b) => b.url === url);
 
   const updateNavHistory = useCallback(async () => {
-    const result = await window.cdp.invoke("Page.getNavigationHistory");
-    if (result && !result.error && result.entries) {
-      setCanGoBack(result.currentIndex > 0);
-      setCanGoForward(result.currentIndex < result.entries.length - 1);
-    }
-  }, []);
+    const state = await page.getNavState();
+    setCanGoBack(state.canGoBack);
+    setCanGoForward(state.canGoForward);
+  }, [page]);
 
   const refreshTabs = useCallback(async () => {
     const result = await window.cdp.listTabs();
@@ -138,17 +139,9 @@ export default function App() {
       setStatus("Error: " + result.error);
       return;
     }
-    const pages = result.filter((t: any) => t.type === "page");
-    const newIds = pages.map((t: any) => t.id);
-    tabOrderRef.current = tabOrderRef.current.filter((id) =>
-      newIds.includes(id)
-    );
-    for (const id of newIds) {
-      if (!tabOrderRef.current.includes(id)) tabOrderRef.current.push(id);
-    }
-    const ordered = tabOrderRef.current
-      .map((id) => pages.find((t: any) => t.id === id))
-      .filter(Boolean);
+    const pages = (result as Tab[]).filter((t) => t.type === "page");
+    const ordered = reconcile(tabOrderRef.current, pages) as TabInfo[];
+    tabOrderRef.current = ordered.map((t) => t.id);
     setTabs(ordered);
     return ordered;
   }, []);
@@ -164,9 +157,15 @@ export default function App() {
       setStatus("Error: " + result.error);
       setLoadingText("Error: " + result.error);
     } else {
+      // Overlay means "connecting to CDP" — clear it the moment we're connected.
+      // The page's own load progress shows in the toolbar reload button, not here.
+      // captureStill paints content immediately (static SPAs emit no frame on connect).
+      setStatus("Connected");
+      setLoading(false);
+      page.captureStill();
       updateNavHistory();
     }
-  }, [updateNavHistory]);
+  }, [updateNavHistory, page]);
 
   const newTab = useCallback(
     async (tabUrl?: string) => {
@@ -214,43 +213,34 @@ export default function App() {
   );
 
   const reopenClosedTab = useCallback(async () => {
-    const lastUrl = closedTabsRef.current.pop();
+    const lastUrl = closedTabsRef.current.popLast();
     if (lastUrl) {
       await newTab(lastUrl);
     }
   }, [newTab]);
 
-  const navigate = useCallback((navUrl: string) => {
-    let u = navUrl;
-    if (!u.match(/^https?:\/\//)) u = "https://" + u;
-    setUrl(u);
-    window.cdp.send("Page.navigate", { url: u });
-  }, []);
+  const navigate = useCallback(
+    (navUrl: string) => {
+      let u = navUrl;
+      if (!u.match(/^https?:\/\//)) u = "https://" + u;
+      setUrl(u);
+      page.navigate(u);
+    },
+    [page]
+  );
 
-  const goBack = useCallback(() => {
-    window.cdp.send("Runtime.evaluate", { expression: "history.back()" });
-  }, []);
-
-  const goForward = useCallback(() => {
-    window.cdp.send("Runtime.evaluate", { expression: "history.forward()" });
-  }, []);
-
-  const reload = useCallback(() => {
-    window.cdp.send("Page.reload");
-  }, []);
+  const goBack = useCallback(() => page.back(), [page]);
+  const goForward = useCallback(() => page.forward(), [page]);
+  const reload = useCallback(() => page.reload(), [page]);
 
   const switchToNextTab = useCallback(() => {
     if (tabs.length === 0) return;
-    const idx = tabs.findIndex((t) => t.id === activeTabId);
-    const next = (idx + 1) % tabs.length;
-    switchTab(tabs[next].id);
+    switchTab(nextTab(tabs, activeTabId));
   }, [tabs, activeTabId, switchTab]);
 
   const switchToPrevTab = useCallback(() => {
     if (tabs.length === 0) return;
-    const idx = tabs.findIndex((t) => t.id === activeTabId);
-    const prev = (idx - 1 + tabs.length) % tabs.length;
-    switchTab(tabs[prev].id);
+    switchTab(prevTab(tabs, activeTabId));
   }, [tabs, activeTabId, switchTab]);
 
   // Keep refs in sync
@@ -263,36 +253,40 @@ export default function App() {
     if (tab) setUrl(tab.url || "");
   }, [activeTabId, tabs]);
 
-  // CDP events
+  // CDP events — demuxed by the Remote Page into a typed stream
   useEffect(() => {
-    window.cdp.onEvent((msg: any) => {
-      if (msg.method === "Page.screencastFrame") {
-        setLoading(false);
-        setStatus("Connected");
-      }
-      if (msg.method === "Page.frameNavigated") {
-        const frameUrl = msg.params?.frame?.url;
-        if (frameUrl) setUrl(frameUrl);
-        refreshTabs();
-        updateNavHistory();
-      }
-      // New window opened (e.g. Cmd+click, middle-click on link)
-      if (msg.method === "Page.windowOpen") {
-        setTimeout(() => refreshTabs(), 500);
-      }
-      // Page loading state
-      if (msg.method === "Page.frameStartedLoading") {
-        setPageLoading(true);
-      }
-      if (msg.method === "Page.frameStoppedLoading" || msg.method === "Page.loadEventFired") {
-        setPageLoading(false);
+    const offEvent = page.on((e) => {
+      switch (e.type) {
+        case "navigated":
+          setUrl(e.url);
+          refreshTabs();
+          updateNavHistory();
+          break;
+        case "loadingChanged":
+          setPageLoading(e.loading);
+          // Any load activity means we're past the connect overlay; show content.
+          setLoading(false);
+          // frameNavigated is unreliable for history navigations; refresh on settle.
+          if (!e.loading) updateNavHistory();
+          break;
+        case "windowOpened":
+          setTimeout(() => refreshTabs(), 500);
+          break;
+        case "disconnected":
+          setStatus("Disconnected");
+          break;
       }
     });
-
-    window.cdp.onDisconnected(() => {
-      setStatus("Disconnected");
+    // First screencast frame means the connection is live.
+    const offFrame = page.onFrame(() => {
+      setLoading(false);
+      setStatus("Connected");
     });
-  }, [refreshTabs, updateNavHistory]);
+    return () => {
+      offEvent();
+      offFrame();
+    };
+  }, [page, refreshTabs, updateNavHistory]);
 
   // Trackpad swipe gestures
   useEffect(() => {
@@ -319,15 +313,13 @@ export default function App() {
 
       if (!e.metaKey) return;
 
-      // Cmd+Shift combos
-      if (e.shiftKey) {
-        switch (e.key) {
-          case "T": // Cmd+Shift+T: reopen closed tab
-            e.preventDefault();
-            e.stopPropagation();
-            reopenClosedTab();
-            return;
-        }
+      // Cmd+Shift+T: reopen closed tab. macOS reports e.key lowercase even with
+      // Shift while Cmd is held, so compare case-insensitively.
+      if (e.shiftKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        e.stopPropagation();
+        reopenClosedTab();
+        return;
       }
 
       // Cmd+Alt combos
@@ -401,11 +393,7 @@ export default function App() {
           if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break; // let native copy work
           e.preventDefault();
           e.stopPropagation();
-          window.cdp.invoke("Runtime.evaluate", {
-            expression: "document.getSelection().toString()",
-            returnByValue: true,
-          }).then((result: any) => {
-            const text = result?.result?.value;
+          page.copySelection().then((text) => {
             if (text) window.cdp.copyToClipboard(text);
           });
           break;
@@ -416,9 +404,7 @@ export default function App() {
           if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break;
           e.preventDefault();
           e.stopPropagation();
-          window.cdp.send("Runtime.evaluate", {
-            expression: "document.execCommand('selectAll')",
-          });
+          page.selectAll();
           break;
         }
       }
@@ -436,6 +422,7 @@ export default function App() {
     switchToNextTab,
     switchToPrevTab,
     url,
+    page,
   ]);
 
   // Initial load + refresh interval
@@ -488,6 +475,7 @@ export default function App() {
             onSettingsOpenChange={setSettingsOpen}
           />
           <Viewport
+            page={page}
             loading={loading}
             loadingText={loadingText}
             onFpsUpdate={setFps}
