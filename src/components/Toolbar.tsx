@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { SettingsDialog, type SwitchEffect } from "@/components/SettingsDialog";
+import { NotificationBell, type NotifEntry } from "@/components/NotificationBell";
 
 interface ToolbarProps {
   url: string;
@@ -39,6 +40,14 @@ interface ToolbarProps {
   emulatedSize: { w: number; h: number } | null;
   switchEffect: SwitchEffect;
   onSwitchEffectChange: (effect: SwitchEffect) => void;
+  notifications: NotifEntry[];
+  bellOpen: boolean;
+  onBellOpenChange: (open: boolean) => void;
+  onNotificationClick: (entry: NotifEntry) => void;
+  onMarkAllRead: () => void;
+  onClearNotifications: () => void;
+  notificationsEnabled: boolean;
+  onNotificationsEnabledChange: (enabled: boolean) => void;
 }
 
 export interface ToolbarHandle {
@@ -75,6 +84,14 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   emulatedSize,
   switchEffect,
   onSwitchEffectChange,
+  notifications,
+  bellOpen,
+  onBellOpenChange,
+  onNotificationClick,
+  onMarkAllRead,
+  onClearNotifications,
+  notificationsEnabled,
+  onNotificationsEnabledChange,
 }, ref) {
   const isConnected = status === "Connected";
   const isError = status.startsWith("Error");
@@ -250,6 +267,16 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           </TooltipContent>
         </Tooltip>
 
+        {/* Notifications */}
+        <NotificationBell
+          notifications={notifications}
+          open={bellOpen}
+          onOpenChange={onBellOpenChange}
+          onClickItem={onNotificationClick}
+          onMarkAllRead={onMarkAllRead}
+          onClearAll={onClearNotifications}
+        />
+
         {/* Settings */}
         <SettingsDialog
           open={settingsOpen}
@@ -267,6 +294,8 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           emulatedSize={emulatedSize}
           switchEffect={switchEffect}
           onSwitchEffectChange={onSwitchEffectChange}
+          notificationsEnabled={notificationsEnabled}
+          onNotificationsEnabledChange={onNotificationsEnabledChange}
         />
       </div>
     </div>

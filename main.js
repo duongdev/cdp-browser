@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, nativeTheme, clipboard, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const WebSocket = require('ws')
 
 let mainWindow
 let activeWs = null
+let activeTabId = null
 let connectId = 0
 // Last device-metrics override the renderer applied. Re-sent on every (re)connect
 // before the screencast starts so a tab switch lands already sized — no native-size
@@ -133,6 +134,7 @@ ipcMain.handle('cdp:connect', async (_, tabId) => {
   }
 
   const myId = ++connectId
+  activeTabId = tabId
 
   try {
     // Activate the tab first
@@ -281,6 +283,7 @@ ipcMain.handle('cdp:get-ui-state', () => ({
   adaptiveViewport: settings.adaptiveViewport ?? false,
   forceOnClient: settings.forceOnClient ?? false,
   switchEffect: settings.switchEffect ?? 'blur',
+  notificationsEnabled: settings.notificationsEnabled ?? true,
 }))
 
 ipcMain.handle('cdp:set-ui-state', (_, partial) => {
@@ -289,6 +292,7 @@ ipcMain.handle('cdp:set-ui-state', (_, partial) => {
   if ('adaptiveViewport' in partial) settings.adaptiveViewport = partial.adaptiveViewport
   if ('forceOnClient' in partial) settings.forceOnClient = partial.forceOnClient
   if ('switchEffect' in partial) settings.switchEffect = partial.switchEffect
+  if ('notificationsEnabled' in partial) settings.notificationsEnabled = partial.notificationsEnabled
   saveSettings(settings)
 })
 
@@ -330,10 +334,155 @@ ipcMain.handle('cdp:get-theme-source', () => {
   return settings.themeSource || 'system'
 })
 
+// ---------------------------------------------------------------------------
+// Notifications: per-target read-only side-channels capture each site's in-app
+// toast (independent of the active-tab screencast socket). See docs/adr/0003.
+// ---------------------------------------------------------------------------
+
+// Adapters identify notification-capable sites by URL host. The injected script
+// (per adapter) ships captures through the `__cdpNotify` binding.
+const { matchAdapter, ingest, shouldNotifyOs, markRead, markAllRead, unreadCount } = require('./notifications')
+const NOTIFY_BINDING = '__cdpNotify'
+const injectSource = fs.readFileSync(path.join(__dirname, 'inject', 'teams-notify.js'), 'utf8')
+const ADAPTERS = [
+  {
+    name: 'teams',
+    match: (h) => /(^|\.)teams\.(microsoft|cloud\.microsoft)\.com$/.test(h),
+    source: injectSource,
+    iconUrl: 'https://statics.teams.cdn.office.net/evergreen-assets/icons/microsoft_teams_logo_refresh.ico',
+  },
+]
+const adapterFor = (url) => matchAdapter(url, ADAPTERS)
+
+// Persisted store (separate from settings.json to keep that file lean).
+const notificationsPath = path.join(app.getPath('userData'), 'notifications.json')
+let notifications = (() => {
+  try { return JSON.parse(fs.readFileSync(notificationsPath, 'utf8')) } catch { return [] }
+})()
+const NOTIF_CAP = 50
+function saveNotifications() {
+  try { fs.writeFileSync(notificationsPath, JSON.stringify(notifications)) } catch (e) {}
+}
+
+// Dock badge mirrors total unread (macOS). 0 clears it.
+function updateBadge() {
+  if (typeof app.setBadgeCount === 'function') app.setBadgeCount(unreadCount(notifications))
+}
+
+const sideChannels = new Map() // targetId -> ws
+
+function ingestNotification(raw, targetId, targetUrl) {
+  let n
+  try { n = JSON.parse(raw) } catch { return }
+  if (!n || typeof n !== 'object') return
+  const { list, entry } = ingest(notifications, {
+    id: n.id,
+    source: n.source || '',
+    title: n.title || '',
+    body: n.body || '',
+    targetId,
+    targetUrl,
+    targetEntity: n.targetEntity || null,
+    icon: (adapterFor(targetUrl) || {}).iconUrl || null,
+    ts: n.ts || Date.now(),
+  }, NOTIF_CAP)
+  if (!entry) return // rejected: missing id or duplicate (cross-tab safe)
+  notifications = list
+  saveNotifications()
+  updateBadge()
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('cdp:notification', entry)
+  }
+
+  const windowFocused = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
+  if (shouldNotifyOs(entry, { activeTabId, enabled: settings.notificationsEnabled ?? true, windowFocused }) && Notification.isSupported()) {
+    const osN = new Notification({ title: entry.title || entry.source, body: entry.body })
+    osN.on('click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+        mainWindow.webContents.send('cdp:notification-activate', entry)
+      }
+    })
+    osN.show()
+  }
+}
+
+function attachSideChannel(target) {
+  const adapter = adapterFor(target.url)
+  if (!adapter || !target.webSocketDebuggerUrl) return
+  const ws = new WebSocket(target.webSocketDebuggerUrl)
+  sideChannels.set(target.id, ws)
+  ws.on('open', () => {
+    ws.send(JSON.stringify({ id: 1, method: 'Runtime.enable', params: {} }))
+    ws.send(JSON.stringify({ id: 2, method: 'Page.enable', params: {} }))
+    ws.send(JSON.stringify({ id: 3, method: 'Runtime.addBinding', params: { name: NOTIFY_BINDING } }))
+    // Future loads (document-start) + the already-loaded document.
+    ws.send(JSON.stringify({ id: 4, method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: adapter.source } }))
+    ws.send(JSON.stringify({ id: 5, method: 'Runtime.evaluate', params: { expression: adapter.source } }))
+  })
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString())
+      if (msg.method === 'Runtime.bindingCalled' && msg.params.name === NOTIFY_BINDING) {
+        ingestNotification(msg.params.payload, target.id, target.url)
+      }
+    } catch (e) {}
+  })
+  ws.on('close', () => { if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id) })
+  ws.on('error', () => { if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id) })
+}
+
+// Poll /json: attach to newly-seen matching targets, drop vanished ones.
+async function reconcileSideChannels() {
+  if (!cdpHost) return
+  let targets
+  try {
+    const res = await fetch(`http://${cdpHost}:${cdpPort}/json`)
+    targets = await res.json()
+  } catch { return }
+  if (!Array.isArray(targets)) return
+  const matched = targets.filter((t) => t.type === 'page' && adapterFor(t.url))
+  const liveIds = new Set(matched.map((t) => t.id))
+  for (const [id, ws] of sideChannels) {
+    if (!liveIds.has(id)) { try { ws.close() } catch (e) {} sideChannels.delete(id) }
+  }
+  for (const t of matched) {
+    if (!sideChannels.has(t.id)) attachSideChannel(t)
+  }
+}
+setInterval(reconcileSideChannels, 5000)
+app.whenReady().then(() => {
+  updateBadge() // restore dock badge from persisted unread
+  setTimeout(reconcileSideChannels, 1000)
+})
+
+ipcMain.handle('cdp:get-notifications', () => notifications)
+ipcMain.handle('cdp:mark-notification-read', (_, id) => {
+  notifications = markRead(notifications, id)
+  saveNotifications()
+  updateBadge()
+  return notifications
+})
+ipcMain.handle('cdp:mark-notifications-read', () => {
+  notifications = markAllRead(notifications)
+  saveNotifications()
+  updateBadge()
+  return notifications
+})
+ipcMain.handle('cdp:clear-notifications', () => {
+  notifications = []
+  saveNotifications()
+  updateBadge()
+  return notifications
+})
+
 app.on('window-all-closed', () => {
   if (activeWs) {
     clearAdaptiveOverride(activeWs)
     try { activeWs.close() } catch(e) {}
   }
+  for (const ws of sideChannels.values()) { try { ws.close() } catch (e) {} }
   app.quit()
 })

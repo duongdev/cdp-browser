@@ -46,6 +46,8 @@ interface SettingsDialogProps {
   emulatedSize: { w: number; h: number } | null;
   switchEffect: SwitchEffect;
   onSwitchEffectChange: (effect: SwitchEffect) => void;
+  notificationsEnabled: boolean;
+  onNotificationsEnabledChange: (enabled: boolean) => void;
 }
 
 type TestState =
@@ -90,6 +92,8 @@ export function SettingsDialog({
   emulatedSize,
   switchEffect,
   onSwitchEffectChange,
+  notificationsEnabled,
+  onNotificationsEnabledChange,
 }: SettingsDialogProps) {
   const [host, setHost] = useState("");
   const [port, setPort] = useState("");
@@ -294,6 +298,24 @@ export function SettingsDialog({
             </Card>
 
             {/* Connection */}
+            {/* Notifications */}
+            <Card title="Notifications">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label className="text-[13px]">Desktop notifications</Label>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Show a system notification for Teams messages when its tab
+                    isn't in view.
+                  </p>
+                </div>
+                <Switch
+                  checked={notificationsEnabled}
+                  onCheckedChange={onNotificationsEnabledChange}
+                  className="mt-0.5"
+                />
+              </div>
+            </Card>
+
             <Card title="Connection">
               <div className="space-y-2">
                 <Label className="text-[13px]">Remote CDP address</Label>

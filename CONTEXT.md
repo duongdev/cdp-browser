@@ -40,6 +40,18 @@ _Avoid_: stretch mode, fill mode, device emulation.
 A CSS `filter` (`none`, `blur`, `grayscale`, or `blur + grayscale`) applied to the canvas during a tab switch, eased back to rest when the new tab's first frame arrives. Persisted as `switchEffect` in `settings.json`; replaces the legacy `switchBlur` boolean.
 _Avoid_: tab blur, switch blur, transition filter.
 
+**Notification Side-Channel**:
+A read-only CDP WebSocket attached to a background tab's target — no screencast, no input — used to capture in-app toasts via an injected capture script and a `__cdpNotify` binding. Operates independently of the active-tab screencast socket; does not need teardown on tab switch. Edge 148 (Chromium 148) allows multiple concurrent clients per target, which makes this possible.
+_Avoid_: background session, helper socket, spy socket.
+
+**Notification Adapter**:
+Per-site configuration that declares which URL hostname to match and which capture script to inject. Teams is the first adapter; the structure generalises to other notification-capable sites.
+_Avoid_: plugin, connector, integration.
+
+**Notification Capture**:
+The act of a `MutationObserver` inside an injected script observing the site's own in-app toast node, extracting text and `targetEntity` from the DOM/React fiber, and shipping the result through the `__cdpNotify` binding. Pure capture — never navigates.
+_Avoid_: scraping, hooking, interception.
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
@@ -47,6 +59,7 @@ _Avoid_: tab blur, switch blur, transition filter.
 - The **Remote Page** emits **Screencast Frames** and accepts **Input Forwarding**.
 - **Viewport Transform** maps canvas coordinates to **Remote Page** coordinates for both drawing **Screencast Frames** and hit-testing **Input Forwarding**.
 - **Adaptive Viewport** (when enabled) resizes the **Remote Page** to the canvas so **Screencast Frames** fill it without letterbox bars.
+- A **Notification Side-Channel** attaches to a background **Tab**'s target and uses a **Notification Adapter** to run **Notification Capture** — independent of the **Active Tab**'s screencast socket.
 
 ## Example dialogue
 
@@ -56,3 +69,4 @@ _Avoid_: tab blur, switch blur, transition filter.
 ## Flagged ambiguities
 
 - "session" was used loosely for both the WebSocket connection and the tab set — resolved: the live connection is the **Remote Page** (`src/lib/remote-page.ts`); the ordered tab set is owned by `src/lib/tabs.ts` (`reconcile`, `nextTab`, `prevTab`, `createClosedTabStack`).
+- "one debugger per tab" — the old CDP constraint no longer holds on Edge 148 (Chromium 148). The **Remote Page** rule governs the rendering/screencast socket only; auxiliary **Notification Side-Channel** sockets are permitted as separate concurrent clients to the same target. See `docs/adr/0003-notifications-side-channel.md`.

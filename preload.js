@@ -26,4 +26,11 @@ contextBridge.exposeInMainWorld('cdp', {
   addBookmark: (bookmark) => ipcRenderer.invoke('cdp:add-bookmark', bookmark),
   removeBookmark: (url) => ipcRenderer.invoke('cdp:remove-bookmark', url),
   reorderBookmarks: (bookmarks) => ipcRenderer.invoke('cdp:reorder-bookmarks', bookmarks),
+  // Notifications
+  getNotifications: () => ipcRenderer.invoke('cdp:get-notifications'),
+  markNotificationRead: (id) => ipcRenderer.invoke('cdp:mark-notification-read', id),
+  markNotificationsRead: () => ipcRenderer.invoke('cdp:mark-notifications-read'),
+  clearNotifications: () => ipcRenderer.invoke('cdp:clear-notifications'),
+  onNotification: (cb) => ipcRenderer.on('cdp:notification', (_, entry) => cb(entry)),
+  onNotificationActivate: (cb) => ipcRenderer.on('cdp:notification-activate', (_, entry) => cb(entry)),
 })

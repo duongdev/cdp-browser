@@ -7,6 +7,16 @@ export interface Tab {
 }
 
 /**
+ * Strip a leading unread count some web apps prepend to the document title
+ * (e.g. Teams "(3) Chat | Microsoft Teams"). We surface unread via our own tab
+ * badge, so the title shouldn't carry a redundant count. Only a leading "(N) "
+ * is removed — parenthetical text elsewhere is left intact.
+ */
+export function stripTitleBadge(title: string): string {
+  return title.replace(/^\(\d+\)\s*/, "");
+}
+
+/**
  * The stable-ordering rule: tab order is owned locally, not by the Remote Browser
  * (CDP's `/json` reorders by activity — we ignore that). Tabs keep their current
  * order; tabs gone from the Remote Browser drop out; newly-seen tabs append at the end.

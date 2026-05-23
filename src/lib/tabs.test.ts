@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { reconcile, nextTab, prevTab, createClosedTabStack } from "./tabs";
+import { reconcile, nextTab, prevTab, createClosedTabStack, stripTitleBadge } from "./tabs";
+
+describe("stripTitleBadge", () => {
+  it("strips a leading unread count Teams prepends to the title", () => {
+    expect(stripTitleBadge("(3) Chat | Microsoft Teams")).toBe("Chat | Microsoft Teams");
+    expect(stripTitleBadge("(1) Outlook")).toBe("Outlook");
+  });
+  it("leaves a normal title untouched", () => {
+    expect(stripTitleBadge("Chat | Microsoft Teams")).toBe("Chat | Microsoft Teams");
+  });
+  it("does not strip parenthetical text that isn't a leading count", () => {
+    expect(stripTitleBadge("Meeting (notes) | Teams")).toBe("Meeting (notes) | Teams");
+  });
+});
 
 const tab = (id: string, url = id) => ({ id, title: id, url, type: "page" });
 

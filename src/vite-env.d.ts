@@ -7,6 +7,19 @@ interface Bookmark {
   favicon?: string;
 }
 
+interface CdpNotification {
+  id: string;
+  source: string;
+  title: string;
+  body: string;
+  targetId: string;
+  targetUrl?: string;
+  targetEntity?: unknown;
+  icon?: string | null;
+  ts: number;
+  read: boolean;
+}
+
 interface CdpBridge {
   listTabs: () => Promise<any>;
   newTab: (url?: string) => Promise<any>;
@@ -29,6 +42,7 @@ interface CdpBridge {
     adaptiveViewport: boolean;
     forceOnClient: boolean;
     switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale";
+    notificationsEnabled: boolean;
   }>;
   setUiState: (
     partial: Partial<{
@@ -37,6 +51,7 @@ interface CdpBridge {
       adaptiveViewport: boolean;
       forceOnClient: boolean;
       switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale";
+      notificationsEnabled: boolean;
     }>
   ) => Promise<void>;
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>;
@@ -49,6 +64,13 @@ interface CdpBridge {
   addBookmark: (bookmark: Bookmark) => Promise<Bookmark[]>;
   removeBookmark: (url: string) => Promise<Bookmark[]>;
   reorderBookmarks: (bookmarks: Bookmark[]) => Promise<Bookmark[]>;
+  // Notifications
+  getNotifications: () => Promise<CdpNotification[]>;
+  markNotificationRead: (id: string) => Promise<CdpNotification[]>;
+  markNotificationsRead: () => Promise<CdpNotification[]>;
+  clearNotifications: () => Promise<CdpNotification[]>;
+  onNotification: (cb: (entry: CdpNotification) => void) => void;
+  onNotificationActivate: (cb: (entry: CdpNotification) => void) => void;
 }
 
 interface Window {

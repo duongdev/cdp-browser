@@ -36,6 +36,7 @@ import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifi
 interface SidebarProps {
   tabs: TabInfo[];
   activeTabId: string | null;
+  unreadByTab: Record<string, number>;
   onSwitchTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onNewTab: () => void;
@@ -60,6 +61,7 @@ const MAX_WIDTH = 480;
 export function Sidebar({
   tabs,
   activeTabId,
+  unreadByTab,
   onSwitchTab,
   onCloseTab,
   onNewTab,
@@ -284,6 +286,7 @@ export function Sidebar({
                   tab={tab}
                   active={tab.id === activeTabId}
                   collapsed={collapsed}
+                  unread={unreadByTab[tab.id] || 0}
                   onSwitch={() => onSwitchTab(tab.id)}
                   onClose={() => onCloseTab(tab.id)}
                 />
@@ -426,12 +429,14 @@ function SortableTabItem({
   tab,
   active,
   collapsed,
+  unread,
   onSwitch,
   onClose,
 }: {
   tab: TabInfo;
   active: boolean;
   collapsed: boolean;
+  unread: number;
   onSwitch: () => void;
   onClose: () => void;
 }) {
@@ -477,17 +482,24 @@ function SortableTabItem({
           onClick={onSwitch}
           onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose(); } }}
         >
-          {tab.faviconUrl ? (
-            <img
-              src={tab.faviconUrl}
-              className="size-4 rounded-sm shrink-0"
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = "none";
-              }}
-            />
-          ) : (
-            <div className="size-4 rounded-sm bg-muted shrink-0" />
-          )}
+          <span className="relative shrink-0">
+            {tab.faviconUrl ? (
+              <img
+                src={tab.faviconUrl}
+                className="size-4 rounded-sm"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
+              />
+            ) : (
+              <div className="size-4 rounded-sm bg-muted" />
+            )}
+            {unread > 0 && (
+              <span className="absolute -right-1.5 -top-1.5 flex h-3 min-w-3 items-center justify-center rounded-full bg-primary px-0.5 text-[8px] font-medium leading-none text-primary-foreground tabular-nums ring-1 ring-sidebar">
+                {unread > 9 ? "9+" : unread}
+              </span>
+            )}
+          </span>
           <span
             className={cn(
               "text-xs truncate transition-all duration-200",

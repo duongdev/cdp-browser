@@ -1,14 +1,15 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/Sidebar";
 import { Toolbar, type ToolbarHandle } from "@/components/Toolbar";
+import { type NotifEntry } from "@/components/NotificationBell";
 import type { SwitchEffect } from "@/components/SettingsDialog";
 import { Viewport } from "@/components/Viewport";
 import { StatusBar } from "@/components/StatusBar";
 import { NewTabDialog } from "@/components/NewTabDialog";
 import { AddBookmarkDialog } from "@/components/AddBookmarkDialog";
 import { useRemotePage } from "@/hooks/useRemotePage";
-import { reconcile, nextTab, prevTab, createClosedTabStack, type Tab } from "@/lib/tabs";
+import { reconcile, nextTab, prevTab, createClosedTabStack, stripTitleBadge, type Tab } from "@/lib/tabs";
 
 export interface TabInfo {
   id: string;
@@ -52,6 +53,9 @@ export default function App() {
   const uiStateLoadedRef = useRef(false);
   const [theme, setTheme] = useState<ThemeSource>("system");
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [notifications, setNotifications] = useState<NotifEntry[]>([]);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [bellOpen, setBellOpen] = useState(false);
   const [newTabOpen, setNewTabOpen] = useState(false);
   const [addBookmarkOpen, setAddBookmarkOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -97,7 +101,14 @@ export default function App() {
       setAdaptiveViewport(s.adaptiveViewport ?? false);
       setForceOnClient(s.forceOnClient ?? false);
       setSwitchEffect(s.switchEffect ?? "blur");
+      setNotificationsEnabled(s.notificationsEnabled ?? true);
       uiStateLoadedRef.current = true;
+    });
+    window.cdp.getNotifications().then(setNotifications);
+    window.cdp.onNotification((entry) => {
+      setNotifications((prev) =>
+        prev.some((n) => n.id === entry.id) ? prev : [entry, ...prev]
+      );
     });
   }, []);
 
@@ -228,7 +239,10 @@ export default function App() {
       return;
     }
     const pages = (result as Tab[]).filter((t) => t.type === "page");
-    const ordered = reconcile(tabOrderRef.current, pages) as TabInfo[];
+    const ordered = (reconcile(tabOrderRef.current, pages) as TabInfo[]).map((t) => ({
+      ...t,
+      title: stripTitleBadge(t.title),
+    }));
     tabOrderRef.current = ordered.map((t) => t.id);
     setTabs(ordered);
     return ordered;
@@ -257,6 +271,54 @@ export default function App() {
       updateNavHistory();
     }
   }, [updateNavHistory, page]);
+
+  // Clicking a notification (toolbar popover or OS toast) activates the tab that
+  // captured it. v1 stops at activation; deep-conversation open is deferred (no
+  // verified navigation target — see docs/adr/0003).
+  const handleNotificationClick = useCallback(
+    (entry: NotifEntry) => {
+      setBellOpen(false);
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n))
+      );
+      window.cdp.markNotificationRead(entry.id);
+      switchTab(entry.targetId);
+    },
+    [switchTab]
+  );
+
+  // Opening the popover does NOT mark read — unread clears only via a row click or
+  // the explicit "Mark all read", so the dock/tab badges stay meaningful.
+  const handleMarkAllRead = useCallback(() => {
+    window.cdp.markNotificationsRead();
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  }, []);
+
+  const handleClearNotifications = useCallback(() => {
+    window.cdp.clearNotifications();
+    setNotifications([]);
+  }, []);
+
+  // Keyed by CDP target id (== tab id), for the sidebar badge.
+  const unreadByTab = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const n of notifications) if (!n.read) m[n.targetId] = (m[n.targetId] || 0) + 1;
+    return m;
+  }, [notifications]);
+
+  const handleNotificationsEnabledChange = useCallback((enabled: boolean) => {
+    setNotificationsEnabled(enabled);
+    window.cdp.setUiState({ notificationsEnabled: enabled });
+  }, []);
+
+  // OS-toast click arrives from main; route it through the same activation path.
+  // Use a ref so we only register one ipcRenderer listener (no cleanup API on the
+  // bridge), and always call the latest handleNotificationClick without re-registering.
+  const handleNotificationClickRef = useRef(handleNotificationClick);
+  useEffect(() => { handleNotificationClickRef.current = handleNotificationClick; }, [handleNotificationClick]);
+  useEffect(() => {
+    window.cdp.onNotificationActivate((entry) => handleNotificationClickRef.current(entry));
+  }, []);
 
   const newTab = useCallback(
     async (tabUrl?: string) => {
@@ -547,6 +609,7 @@ export default function App() {
         <Sidebar
           tabs={tabs}
           activeTabId={activeTabId}
+          unreadByTab={unreadByTab}
           onSwitchTab={switchTab}
           onCloseTab={closeTab}
           onNewTab={() => setNewTabOpen(true)}
@@ -596,6 +659,14 @@ export default function App() {
             emulatedSize={emulatedSize}
             switchEffect={switchEffect}
             onSwitchEffectChange={handleSwitchEffectChange}
+            notifications={notifications}
+            bellOpen={bellOpen}
+            onBellOpenChange={setBellOpen}
+            onNotificationClick={handleNotificationClick}
+            onMarkAllRead={handleMarkAllRead}
+            onClearNotifications={handleClearNotifications}
+            notificationsEnabled={notificationsEnabled}
+            onNotificationsEnabledChange={handleNotificationsEnabledChange}
           />
           <Viewport
             page={page}

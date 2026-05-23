@@ -1,16 +1,18 @@
 # src/lib — Domain Modules
 
-Four modules that form the renderer's domain layer, plus a React hook that wires them to the component tree. Use the vocabulary from `CONTEXT.md` when reading or changing these files.
+Five modules that form the renderer's domain layer, plus a React hook that wires them to the component tree. Use the vocabulary from `CONTEXT.md` when reading or changing these files.
 
 ## Modules
 
 **`remote-page.ts`** — the Remote Page. `createRemotePage(transport)` wraps the CDP Transport seam into named intentions (`navigate`, `back`, `forward`, `reload`, `selectAll`, `copySelection`, `getNavState`, `isLoading`) and the two subscription surfaces (`on` for typed events, `onFrame` for Screencast Frames). One registration on the raw transport; subscribers come and go — no re-registration, no leaks. Auto-acks every Screencast Frame before passing it to `onFrame` listeners. `forwardInput(InputIntent)` is the single Input Forwarding extension seam: new input kinds (IME, paste, drag) become new variants on `InputIntent` plus one `case` in `forwardInput`; no other interface changes.
 
-**`tabs.ts`** — Tab ordering and lifecycle. `reconcile(order, remoteTabs)` merges the Remote Browser's tab list against the locally-owned order: existing tabs keep position, gone tabs drop out, new tabs append. `nextTab`/`prevTab` wrap around. `createClosedTabStack` tracks closed URLs for Cmd+Shift+T reopen.
+**`tabs.ts`** — Tab ordering and lifecycle. `reconcile(order, remoteTabs)` merges the Remote Browser's tab list against the locally-owned order: existing tabs keep position, gone tabs drop out, new tabs append. `nextTab`/`prevTab` wrap around. `createClosedTabStack` tracks closed URLs for Cmd+Shift+T reopen. `stripTitleBadge(title)` strips a leading `(N)` unread count that some apps (e.g. Teams) prepend to the document title — the app surfaces unread counts via its own tab badge, so the title shouldn't duplicate it.
 
 **`viewport-transform.ts`** — Viewport Transform. `letterbox(frame, canvas)` computes the scale and offset when a Screencast Frame doesn't fill the canvas (aspect-ratio mismatch). `toRemoteCoords(client, rect, dpr, frame)` maps a canvas-relative point to Remote Page pixels. Both the draw path in `Viewport.tsx` and Input Forwarding hit-testing call these — keeping coordinate math in one place prevents drift.
 
 **`adaptive-viewport.ts`** — Adaptive Viewport. Pure state machine: `deviceMetrics(canvas)` produces the `Emulation.setDeviceMetricsOverride` payload (CSS-pixel dimensions, `deviceScaleFactor` pinned to 1). `reduce(state, event)` drives the controller — `enable`/`disable`, `resize` (canvas changed), `rebaseline` (reconnect without re-applying), `rearm` (user interaction after a graceful back-off — exits dormant and re-imposes client size when `forceOnClient` is on), and `poll` (host-resize detection via drift check). Returns `{ state, effects }` where effects are `applyOverride` or `clearOverride`. No side effects; effects are executed by callers (`App.tsx` / main process).
+
+**`notifications-view.ts`** — Pure presentation logic for the notification popover. `groupByConversation(list)` groups a newest-first `ViewEntry` list into `ConversationGroup` entries keyed by `targetEntity.id` (falls back to title or source). No rendering; tested by `notifications-view.test.ts`. The companion pure store for notification ingestion, dedup, and OS-toast gating is `notifications.js` in the repo root (CommonJS, main-process side).
 
 ## Transport seam
 
@@ -27,6 +29,7 @@ Four modules that form the renderer's domain layer, plus a React hook that wires
 - `Page.screencastFrameAck` is sent inside `createRemotePage`, not in the caller. Callers must not ack frames manually.
 - Viewport Transform functions are pure — no state, safe to call from both draw and input paths.
 - Adaptive Viewport's `reduce` is pure — all side effects (CDP calls) are executed by the caller, never inside the module.
+- Notifications View (`notifications-view.ts`) is pure — no I/O, no IPC. Effects and persistence live in `main.js`.
 
 ## Testing
 

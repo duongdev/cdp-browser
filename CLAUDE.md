@@ -10,27 +10,32 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 
 - **Main process** (`main.js`): Manages CDP HTTP API calls and WebSocket connections. All WS connections run in Node.js (not renderer) to avoid browser sandbox restrictions.
 - **Preload** (`preload.js`): IPC bridge between main and renderer via `contextBridge`.
-- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on four domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), and Adaptive Viewport (device-metrics state machine). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
+- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on five domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), and Notifications View (presentation grouping). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
 
 ## Key Design Decisions
 
 - **WebSocket in main process**: Renderer cannot connect to arbitrary WS endpoints due to Electron security. All CDP WS connections are managed in main process and events are forwarded via IPC.
 - **Stable tab ordering**: Tabs are tracked in a `tabOrderRef` array. New tabs append to the end. CDP `/json` endpoint reorders tabs by activity — we ignore that ordering. Tabs are drag-reorderable.
 - **Mouse position mapping**: Screencast frames may not fill the canvas (black bars due to aspect ratio). `toRemoteCoords()` in `src/lib/viewport-transform.ts` (Viewport Transform) calculates the letterbox offset and scale to map mouse coordinates accurately; both the draw path and Input Forwarding use the same function.
-- **Tab activation**: CDP only allows one active debugger session per tab. Switching tabs calls `/json/activate/{id}` first, then reconnects WS.
+- **Tab activation**: Switching tabs calls `/json/activate/{id}` first, then reconnects the screencast WS. Edge 148 (Chromium 148) allows multiple concurrent CDP clients per target, so read-only side-channel sockets can stay attached to background tabs without disrupting the active screencast session. See `docs/adr/0003-notifications-side-channel.md`.
 - **Edge compatibility**: Edge requires `PUT` method for `/json/new` (Chrome accepts `GET`).
 - **Adaptive Viewport**: An optional mode that eliminates letterbox bars by resizing the remote page to match the canvas via `Emulation.setDeviceMetricsOverride`. The main process caches the last override and re-applies it before `Page.startScreencast` on every (re)connect. See `docs/adr/0002-adaptive-viewport.md`.
-- **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, and `switchEffect` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect` on first load.
+- **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, `switchEffect`, and `notificationsEnabled` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect` on first load.
+- **Notifications side-channel**: A per-target read-only CDP socket (no screencast, no input) stays attached to background tabs that match a notification adapter (Teams now). A `MutationObserver` capture script is injected at document-start and ships toasts through a `__cdpNotify` binding. Pure logic (`notifications.js`) handles dedup, cap, and OS-toast gating; effects (WS, Electron `Notification`, IPC, persistence to `notifications.json`) live in main process. See `docs/adr/0003-notifications-side-channel.md`.
 
 ## File Structure
 
 ```
 cdp-browser/
-├── main.js              # Electron main process, CDP API + WS management
+├── main.js              # Electron main process, CDP API + WS management + notification side-channels
 ├── preload.js           # IPC bridge (contextBridge)
+├── notifications.js     # Pure notification logic (dedup, cap, OS-toast gating); tested by notifications.test.ts
+├── notifications.test.ts
 ├── index.html           # Vite entry HTML
 ├── vite.config.ts       # Vite + React + Tailwind config
 ├── CONTEXT.md           # Domain glossary (Remote Page, Tab, Screencast Frame, …)
+├── inject/
+│   └── teams-notify.js  # MutationObserver capture script injected into Teams pages
 ├── scripts/
 │   └── install-local.sh # Build + install to /Applications (strips quarantine)
 ├── docs/
@@ -49,25 +54,27 @@ cdp-browser/
     │   └── useRemotePage.ts   # Stable Remote Page ref across renders
     ├── lib/              # Domain modules — see src/lib/CLAUDE.md
     │   ├── remote-page.ts     # Remote Page: navigate/input/events
-    │   ├── tabs.ts            # Tab reconcile, next/prev, closed-tab stack
+    │   ├── tabs.ts            # Tab reconcile, next/prev, closed-tab stack, stripTitleBadge
     │   ├── viewport-transform.ts # Letterbox math + coordinate mapping
     │   ├── adaptive-viewport.ts  # Adaptive Viewport: deviceMetrics + reduce state machine
+    │   ├── notifications-view.ts # Presentation grouping (groupByConversation) for notification popover
     │   └── utils.ts           # cn() utility
     └── components/
-        ├── Sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width
-        ├── Toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings
+        ├── Sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width; unread tab badges
+        ├── Toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings, NotificationBell
         ├── Viewport.tsx       # Screencast canvas + input forwarding; ResizeObserver repaints on container resize
         ├── StatusBar.tsx      # Bottom status bar for loading/error states (replaces mid-viewport overlay)
-        ├── SettingsDialog.tsx  # Non-modal right Sheet drawer; grouped cards (Appearance/Viewport/Connection); hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
+        ├── SettingsDialog.tsx  # Non-modal right Sheet drawer; grouped cards (Appearance/Viewport/Connection/Notifications); hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
+        ├── NotificationBell.tsx # Bell icon + badge + popover; grouped by conversation
         ├── NewTabDialog.tsx    # URL input + bookmark quick-launch
         ├── AddBookmarkDialog.tsx # Edit title/URL before saving bookmark
-        └── ui/                # shadcn components (accordion, button, checkbox, dialog, input, label, scroll-area, select, sheet, switch, tooltip)
+        └── ui/                # shadcn components (accordion, button, checkbox, dialog, input, label, popover, scroll-area, select, sheet, switch, tooltip)
 ```
 
 ## Testing
 
 ```bash
-npm test                # Vitest unit tests (48 tests across src/lib/)
+npm test                # Vitest unit tests (69 tests across src/lib/ + notifications.test.ts)
 npx tsc --noEmit        # Type check
 npm run install:local   # Build + install CDP Browser.app to /Applications
 ```
