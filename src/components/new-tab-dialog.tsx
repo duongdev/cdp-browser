@@ -1,61 +1,54 @@
-import { useState, useRef, useEffect } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Globe } from "lucide-react";
-import { cn } from "@/lib/utils";
-import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
+import { Globe02Icon } from "@hugeicons/core-free-icons"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { VisuallyHidden } from "radix-ui"
+import { useEffect, useRef, useState } from "react"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { cn } from "@/lib/utils"
 
 interface NewTabDialogProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  bookmarks: Bookmark[];
-  onNewTab: (url: string) => void;
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  bookmarks: Bookmark[]
+  onNewTab: (url: string) => void
 }
 
-export function NewTabDialog({
-  open,
-  onOpenChange,
-  bookmarks,
-  onNewTab,
-}: NewTabDialogProps) {
-  const [query, setQuery] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+export function NewTabDialog({ open, onOpenChange, bookmarks, onNewTab }: NewTabDialogProps) {
+  const [query, setQuery] = useState("")
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (open) {
-      setQuery("");
+      setQuery("")
       // Focus input after dialog animation
-      setTimeout(() => inputRef.current?.focus(), 50);
+      const t = setTimeout(() => inputRef.current?.focus(), 50)
+      return () => clearTimeout(t)
     }
-  }, [open]);
+  }, [open])
 
   const handleSubmit = () => {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    let url = trimmed;
-    if (!url.match(/^https?:\/\//)) url = "https://" + url;
-    onNewTab(url);
-    onOpenChange(false);
-  };
+    const trimmed = query.trim()
+    if (!trimmed) return
+    let url = trimmed
+    if (!url.match(/^https?:\/\//)) url = `https://${url}`
+    onNewTab(url)
+    onOpenChange(false)
+  }
 
   const handleBookmarkClick = (url: string) => {
-    onNewTab(url);
-    onOpenChange(false);
-  };
+    onNewTab(url)
+    onOpenChange(false)
+  }
 
   const filtered = query.trim()
     ? bookmarks.filter(
         (b) =>
           b.title.toLowerCase().includes(query.toLowerCase()) ||
-          b.url.toLowerCase().includes(query.toLowerCase())
+          b.url.toLowerCase().includes(query.toLowerCase()),
       )
-    : bookmarks;
+    : bookmarks
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="sm:max-w-[420px] p-0 gap-0 overflow-hidden">
         <VisuallyHidden.Root>
           <DialogTitle>New Tab</DialogTitle>
@@ -63,17 +56,17 @@ export function NewTabDialog({
 
         {/* URL input */}
         <div className="flex items-center border-b border-border px-4">
-          <Globe className="size-4 text-muted-foreground shrink-0" />
+          <HugeiconsIcon className="size-4 text-muted-foreground shrink-0" icon={Globe02Icon} />
           <input
+            className="flex-1 h-12 px-3 text-sm bg-transparent text-foreground placeholder:text-muted-foreground outline-none"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSubmit()
+            }}
+            placeholder="Enter URL or search bookmarks..."
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSubmit();
-            }}
-            placeholder="Enter URL or search bookmarks..."
-            className="flex-1 h-12 px-3 text-sm bg-transparent text-foreground placeholder:text-muted-foreground outline-none"
           />
         </div>
 
@@ -86,19 +79,18 @@ export function NewTabDialog({
             <div className="space-y-0.5">
               {filtered.map((b) => (
                 <button
-                  key={b.id}
-                  onClick={() => handleBookmarkClick(b.url)}
                   className={cn(
                     "w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left",
-                    "text-foreground hover:bg-accent transition-colors"
+                    "text-foreground hover:bg-accent transition-colors",
                   )}
+                  key={b.id}
+                  onClick={() => handleBookmarkClick(b.url)}
+                  type="button"
                 >
                   <BookmarkIcon favicon={b.favicon} />
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium truncate">{b.title}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">
-                      {b.url}
-                    </p>
+                    <p className="text-[10px] text-muted-foreground truncate">{b.url}</p>
                   </div>
                 </button>
               ))}
@@ -121,20 +113,22 @@ export function NewTabDialog({
         )}
       </DialogContent>
     </Dialog>
-  );
+  )
 }
 
 function BookmarkIcon({ favicon }: { favicon?: string }) {
   if (favicon) {
     return (
       <img
-        src={favicon}
+        alt=""
+        aria-hidden="true"
         className="size-5 rounded shrink-0"
         onError={(e) => {
-          (e.target as HTMLImageElement).style.display = "none";
+          ;(e.target as HTMLImageElement).style.display = "none"
         }}
+        src={favicon}
       />
-    );
+    )
   }
-  return <Globe className="size-5 shrink-0 text-muted-foreground" />;
+  return <HugeiconsIcon className="size-5 shrink-0 text-muted-foreground" icon={Globe02Icon} />
 }

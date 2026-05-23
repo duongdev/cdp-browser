@@ -1,0 +1,172 @@
+# TDD discipline
+
+Test-driven development for the parts that can be. This codebase has three distinct layers: pure logic that demands TDD, CDP/IPC glue that demands manual verification, and a UI that demands visual review. Each layer has a clear scope and discipline. Mixing the approaches — writing unit tests for CDP plumbing, or skipping TDD for pure state machines — is the failure mode.
+
+## The three layers
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│  3. VISUAL REVIEW — UI via Chrome MCP against vite dev            │  human gate
+│     Claude Code drives browser; screenshots committed             │
+├───────────────────────────────────────────────────────────────────┤
+│  2. MANUAL SMOKE — CDP/IPC glue; no fake-CDP harness              │  per-task checklist
+│     human verifies behavior with a live Remote Browser            │
+├───────────────────────────────────────────────────────────────────┤
+│  1. STRICT TDD — pure functions in src/lib/* and notifications.js │  fast, automated
+│     vitest; no external deps; runs in <5 seconds total            │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+Build every layer that applies. A pure state machine without unit tests is untested. An IPC handler "verified" only by unit tests has never actually communicated with Electron.
+
+---
+
+## Layer 1 — Strict TDD for pure logic
+
+**Scope:** everything in `src/lib/` and `notifications.js`. These are pure functions — no I/O, no IPC, no React. They are fully testable in isolation and they *must* be tested this way.
+
+**Tools:** Vitest. All dependencies are either passed in (fake `Transport` for `createRemotePage`) or are pure computations (no mocking needed for math).
+
+**Location:** colocated with source — `foo.ts` ↔ `foo.test.ts`.
+
+**Run:** `pnpm test` — completes in under 5 seconds, no external services.
+
+**The TDD cycle, strictly:**
+
+```
+write failing test  →  minimum code to pass  →  refactor with tests green  →  commit
+```
+
+No exceptions for pure logic. If a test feels impossible to write, the design is wrong — the function is probably doing I/O or relying on hidden state. Fix the design first.
+
+**Discipline:**
+
+- One concept per `describe` block.
+- Each `it` tests one behavior.
+- Arrange → Act → Assert clearly separated. Blank lines between sections.
+- No setup that exceeds the test it serves. Long setup = test is too coarse.
+
+**Current coverage (as of 2026-05-23):**
+
+| Module | Test file | What's covered |
+|---|---|---|
+| `remote-page.ts` | `remote-page.test.ts` | navigation, Input Forwarding variants, event demux, frame auto-ack |
+| `tabs.ts` | `tabs.test.ts` | reconcile order, nextTab/prevTab wrapping, closed-tab stack, stripTitleBadge |
+| `viewport-transform.ts` | `viewport-transform.test.ts` | letterbox math, toRemoteCoords coordinate mapping, edge cases |
+| `adaptive-viewport.ts` | `adaptive-viewport.test.ts` | reduce state machine, all transitions, effect generation |
+| `notifications-view.ts` | `notifications-view.test.ts` | groupByConversation, dedup, fallback grouping |
+| `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating |
+
+Every new module under `src/lib/` or pure-logic file at root gets a colocated test file from its first commit.
+
+**Example shape:**
+
+```ts
+import { describe, it, expect } from "vitest"
+import { reconcile } from "./tabs"
+
+describe("reconcile", () => {
+  it("preserves existing tab order when remote list changes", () => {
+    const order = ["a", "b", "c"]
+    const remote = [
+      { id: "c", title: "C", url: "https://c.test", type: "page" },
+      { id: "a", title: "A", url: "https://a.test", type: "page" },
+    ]
+
+    const result = reconcile(order, remote)
+
+    expect(result.map(t => t.id)).toEqual(["a", "c"])
+  })
+})
+```
+
+---
+
+## Layer 2 — Manual smoke for CDP/IPC glue
+
+**Scope:** `main.js` WebSocket handlers, IPC bridges in `preload.js`, CDP API calls, Notification Side-Channel setup, screencast lifecycle, settings persistence.
+
+**Why no fake-CDP harness:** building a synthetic CDP server that accurately simulates a live Remote Browser (screencast flow, concurrent clients, Page events, timing) would be a substantial separate project and would inevitably diverge from real browser behavior. The cost of maintaining it exceeds the value. The IPC layer is thin; the value-bearing logic lives in Layer 1.
+
+**What "manual smoke" means:** each task that touches the main process includes a concrete HITL (human-in-the-loop) verification checklist. Run it before merging. Examples:
+
+- "Connect to a live Edge instance at `localhost:9222`; verify tabs appear within 2 seconds."
+- "Switch tabs; verify the Switch Effect applies and clears on the first new frame."
+- "Send a Teams message to yourself; verify the notification bell shows the unread badge."
+- "Toggle Adaptive Viewport; verify the letterbox disappears and re-appears on toggle."
+
+These checklists live in the task file's **Test plan** section and in the PR description. They are not automated — that is intentional.
+
+**When to escalate a smoke failure:** if a smoke test reliably fails in a reproducible way, that's a signal the behavior can be extracted into a pure function and tested at Layer 1. Do that extraction before re-running smoke.
+
+---
+
+## Layer 3 — Visual review for the renderer
+
+**Scope:** React components in `src/components/`, UI state in `app.tsx`, anything visible to the user.
+
+**Tools:** Chrome MCP driven by Claude Code, against `pnpm dev` (Vite dev server + Electron). Screenshots committed to the PR for async review.
+
+**Discipline:**
+
+- **Mock-first.** Build every new screen or significant component with hardcoded data first. Get visual sign-off on layout, copy, and states before wiring live IPC.
+- **Four-state coverage.** Every screen must visibly handle: loading, empty, error, and the normal populated state. Visual review checks all four. See [frontend.md](frontend.md#state-coverage).
+- **Screenshots committed.** For any UI-touching PR, capture screenshots via Chrome MCP and commit them to the branch. PR reviewers see the visual state without running the app.
+- **Verify the feature works end-to-end** — not just that it renders, but that clicking, keyboard shortcuts, and state transitions all behave as designed.
+
+**When to write a `*.visual.md` checklist:** for any UI area that's complex enough to have multiple states or interactions worth verifying systematically. Store in `docs/visual/` (create as needed). Keep it short — bullet list of what Claude should verify, not pixel coordinates.
+
+---
+
+## Test naming and organization
+
+```
+src/
+├── lib/
+│   ├── tabs.ts
+│   └── tabs.test.ts           # layer 1
+├── components/
+│   ├── sidebar.tsx
+│   └── sidebar.test.tsx       # layer 3 unit (if warranted)
+notifications.js
+notifications.test.ts          # layer 1
+```
+
+Naming:
+- Pure logic: `*.test.ts`
+- React components: `*.test.tsx` (when unit-testable in isolation; otherwise visual review is sufficient)
+
+---
+
+## Coverage philosophy
+
+- **No coverage thresholds as gates.** Coverage is a signal, not a target. 100% coverage of trivial coordinate math with 0% coverage of the state machine logic is worse than the inverse.
+- Every reported bug in a pure module → first action is "write a failing test that reproduces it." Then fix.
+- If you can't write a reproducing test, the bug is in the glue layer — document the reproduction steps in the task file and use Layer 2 to verify the fix.
+
+---
+
+## What each layer is NOT for
+
+| Don't use Layer 1 for | Use instead |
+|---|---|
+| Verifying that `ipcMain.handle` fires correctly | Layer 2 smoke |
+| Checking that a WebSocket message triggers a React re-render | Layer 2 + Layer 3 |
+| Screenshot baseline diffs | Layer 3 via Chrome MCP |
+
+| Don't use Layer 2 for | Use instead |
+|---|---|
+| Testing pure coordinate math | Layer 1 unit test |
+| Testing Zustand store transitions | Layer 1 unit test |
+| Verifying UI layout | Layer 3 visual review |
+
+| Don't use Layer 3 for | Use instead |
+|---|---|
+| Testing business logic | Layer 1 unit test |
+| Verifying IPC message payloads | Layer 2 smoke |
+
+---
+
+_Test discipline is the difference between a project that survives and one that dies. Don't negotiate with yourself on this._
+
+_Last revisited: 2026-05-23_

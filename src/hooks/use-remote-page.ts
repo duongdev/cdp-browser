@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import { createRemotePage, type RemotePage } from "@/lib/remote-page";
+import { useRef } from "react"
+import { createRemotePage, type RemotePage } from "@/lib/remote-page"
 
 /**
  * The single Remote Page for the app's lifetime (see docs/adr/0001). It funnels over
@@ -8,9 +8,9 @@ import { createRemotePage, type RemotePage } from "@/lib/remote-page";
  * exactly once, which is what keeps the event stream leak-free.
  */
 export function useRemotePage(): RemotePage {
-  const ref = useRef<RemotePage | null>(null);
+  const ref = useRef<RemotePage | null>(null)
   if (!ref.current) {
-    ref.current = createRemotePage(window.cdp);
+    ref.current = createRemotePage(window.cdp)
   }
-  return ref.current;
+  return ref.current
 }

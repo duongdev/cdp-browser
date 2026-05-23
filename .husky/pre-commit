@@ -1,0 +1,2 @@
+[ "$CI" = "true" ] && exit 0
+pnpm exec lint-staged

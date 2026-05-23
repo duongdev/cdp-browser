@@ -1,10 +1,10 @@
-import type { Size } from "./viewport-transform";
+import type { Size } from "./viewport-transform"
 
 export interface DeviceMetrics {
-  width: number;
-  height: number;
-  deviceScaleFactor: number;
-  mobile: false;
+  width: number
+  height: number
+  deviceScaleFactor: number
+  mobile: false
 }
 
 /**
@@ -20,13 +20,13 @@ export function deviceMetrics(canvas: Size): DeviceMetrics {
     height: Math.round(canvas.h),
     deviceScaleFactor: 1,
     mobile: false,
-  };
+  }
 }
 
 /** The remote OS window rect, as reported by `Browser.getWindowForTarget`. */
 export interface Bounds {
-  width: number;
-  height: number;
+  width: number
+  height: number
 }
 
 /**
@@ -35,9 +35,9 @@ export interface Bounds {
  * latches until an explicit re-enable, so reconnects never silently re-impose.
  */
 export interface State {
-  enabled: boolean;
-  dormant: boolean;
-  baseline: Bounds | null;
+  enabled: boolean
+  dormant: boolean
+  baseline: Bounds | null
 }
 
 export type Event =
@@ -46,68 +46,65 @@ export type Event =
   | { type: "resize"; canvas: Size; bounds: Bounds }
   | { type: "rebaseline"; bounds: Bounds }
   | { type: "rearm"; canvas: Size; bounds: Bounds }
-  | { type: "poll"; bounds: Bounds };
+  | { type: "poll"; bounds: Bounds }
 
-export type Effect =
-  | { type: "applyOverride"; metrics: DeviceMetrics }
-  | { type: "clearOverride" };
+export type Effect = { type: "applyOverride"; metrics: DeviceMetrics } | { type: "clearOverride" }
 
-export const initial: State = { enabled: false, dormant: false, baseline: null };
+export const initial: State = { enabled: false, dormant: false, baseline: null }
 
 /** An override is in force only while enabled and not backed off. */
 function isActive(state: State): boolean {
-  return state.enabled && !state.dormant;
+  return state.enabled && !state.dormant
 }
 
 /** Slack (px) absorbing window-chrome rounding before a host resize counts. */
-const DRIFT_THRESHOLD = 2;
+const DRIFT_THRESHOLD = 2
 
 function drifted(a: Bounds, b: Bounds): boolean {
   return (
-    Math.abs(a.width - b.width) > DRIFT_THRESHOLD ||
-    Math.abs(a.height - b.height) > DRIFT_THRESHOLD
-  );
+    Math.abs(a.width - b.width) > DRIFT_THRESHOLD || Math.abs(a.height - b.height) > DRIFT_THRESHOLD
+  )
 }
 
 export function reduce(state: State, event: Event): { state: State; effects: Effect[] } {
   switch (event.type) {
     case "enable":
-      return { state: { ...state, enabled: true, dormant: false }, effects: [] };
+      return { state: { ...state, enabled: true, dormant: false }, effects: [] }
     case "disable":
       return {
         state: initial,
         effects: isActive(state) ? [{ type: "clearOverride" }] : [],
-      };
+      }
     case "resize": {
-      if (!isActive(state)) return { state, effects: [] };
-      const metrics = deviceMetrics(event.canvas);
+      if (!isActive(state)) return { state, effects: [] }
+      const metrics = deviceMetrics(event.canvas)
       return {
         state: { ...state, baseline: event.bounds },
         effects: [{ type: "applyOverride", metrics }],
-      };
+      }
     }
     case "rebaseline":
       // Re-anchor the host-resize baseline after a reconnect without re-applying the
       // override — the main process re-applies it on connect from its cache.
-      if (!isActive(state)) return { state, effects: [] };
-      return { state: { ...state, baseline: event.bounds }, effects: [] };
+      if (!isActive(state)) return { state, effects: [] }
+      return { state: { ...state, baseline: event.bounds }, effects: [] }
     case "rearm": {
       // Coming back to the CDP browser (focus + interaction) after a graceful
       // back-off: exit dormant and re-impose the client-derived size.
-      if (!state.enabled || !state.dormant) return { state, effects: [] };
-      const metrics = deviceMetrics(event.canvas);
+      if (!state.enabled || !state.dormant) return { state, effects: [] }
+      const metrics = deviceMetrics(event.canvas)
       return {
         state: { ...state, dormant: false, baseline: event.bounds },
         effects: [{ type: "applyOverride", metrics }],
-      };
+      }
     }
     case "poll": {
-      if (!isActive(state) || !state.baseline) return { state, effects: [] };
-      if (!drifted(state.baseline, event.bounds)) return { state, effects: [] };
+      if (!isActive(state) || !state.baseline) return { state, effects: [] }
+      if (!drifted(state.baseline, event.bounds)) return { state, effects: [] }
       return {
         state: { ...state, dormant: true, baseline: null },
         effects: [{ type: "clearOverride" }],
-      };
+      }
     }
   }
 }

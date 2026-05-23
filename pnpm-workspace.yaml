@@ -1,0 +1,6 @@
+allowBuilds:
+  electron: true
+  esbuild: true
+  "@biomejs/biome": true
+  electron-winstaller: false
+  msw: false

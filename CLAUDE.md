@@ -2,6 +2,30 @@
 
 A lightweight Electron app that connects to a remote Chromium-based browser via Chrome DevTools Protocol (CDP), providing a native-like browsing experience with tab management and input forwarding.
 
+## Where to look
+
+| Topic | Path |
+|---|---|
+| How we work day-to-day | [docs/conventions/](docs/conventions/) |
+| Bite-sized work items (the spine) | [docs/tasks/](docs/tasks/) |
+| Decisions we've made and why | [docs/adr/](docs/adr/) |
+| Risks, ideas, learnings | [docs/memories/](docs/memories/) |
+| Domain glossary | [CONTEXT.md](CONTEXT.md) |
+| Dev skills (slash commands) | [.claude/skills/](.claude/skills/) |
+
+## Working principles (the short version)
+
+1. **Convention before code.** `docs/conventions/` is written first; if a convention is missing, write it before the code that needs it.
+2. **Product, not software.** Daily-driver feel over technical correctness — pixel-perfect, no jiggling, never-stuck. The bar is "I'd want to use this." See [product.md](docs/conventions/product.md).
+3. **Atomic delivery.** Each task is one in-repo `docs/tasks/NNN-*.md` spec sized to one session; it ships and closes (moved to `done/`) in the same commit, with the `tNNN` ID in branch + commit. See [dev-lifecycle.md](docs/conventions/dev-lifecycle.md). GitHub Issues is external bug intake only.
+4. **Research, don't assume.** Verify libraries/APIs against current docs (Context7) before adopting. [research.md](docs/conventions/research.md).
+5. **Test-first for pure logic.** Strict TDD for `src/lib/` + `notifications.js`; manual smoke + HITL for CDP/IPC glue; mock-first + visual review for UI. [tdd.md](docs/conventions/tdd.md).
+6. **SOLID, atomic, fresh-not-patched.** Each change does one thing; rewrite scar tissue instead of layering conditionals. [code-quality.md](docs/conventions/code-quality.md).
+7. **Claude-Code-first.** Predictable patterns, strong types, **kebab-case for all filenames** (incl. components). [agentic-coding.md](docs/conventions/agentic-coding.md).
+8. **shadcn-first frontend.** Vite + React + Tailwind + shadcn (radix-nova / HugeIcons) + Zustand + a hotkey-registry/⌘K-palette/`?`-overlay. Four-state coverage, instant UI, auto-reconnect. No router/GraphQL/i18n. [frontend.md](docs/conventions/frontend.md), [ux.md](docs/conventions/ux.md).
+9. **Docs stay alive.** Same-commit doc updates; ADRs append-only; `CONTEXT.md` is the glossary; cap docs ~400 lines. [docs-discipline.md](docs/conventions/docs-discipline.md).
+10. **OSS-ready, no AI attribution.** Docs/code read for an unknown operator; never attribute work to AI. [git.md](docs/conventions/git.md).
+
 ## Architecture
 
 ```
@@ -49,10 +73,10 @@ cdp-browser/
 │   └── icon.svg
 └── src/
     ├── main.tsx          # React entry
-    ├── App.tsx           # Root component, state management
+    ├── app.tsx           # Root component, state management
     ├── index.css         # Tailwind + theme (light/dark)
     ├── hooks/
-    │   └── useRemotePage.ts   # Stable Remote Page ref across renders
+    │   └── use-remote-page.ts   # Stable Remote Page ref across renders
     ├── lib/              # Domain modules — see src/lib/CLAUDE.md
     │   ├── remote-page.ts     # Remote Page: navigate/input/events
     │   ├── tabs.ts            # Tab reconcile, next/prev, closed-tab stack, stripTitleBadge
@@ -60,24 +84,27 @@ cdp-browser/
     │   ├── adaptive-viewport.ts  # Adaptive Viewport: deviceMetrics + reduce state machine
     │   ├── notifications-view.ts # Presentation grouping (groupByConversation) for notification popover
     │   └── utils.ts           # cn() utility
-    └── components/
-        ├── Sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width; unread tab badges
-        ├── Toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings, NotificationBell
-        ├── Viewport.tsx       # Screencast canvas + input forwarding; ResizeObserver repaints on container resize
-        ├── StatusBar.tsx      # Bottom status bar for loading/error states (replaces mid-viewport overlay)
-        ├── SettingsDialog.tsx  # Non-modal right Sheet drawer; grouped cards (Appearance/Viewport/Connection/Notifications); hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
-        ├── NotificationBell.tsx # Bell icon + badge + popover; grouped by conversation
-        ├── NewTabDialog.tsx    # URL input + bookmark quick-launch
-        ├── AddBookmarkDialog.tsx # Edit title/URL before saving bookmark
-        └── ui/                # shadcn components (accordion, button, checkbox, dialog, input, label, popover, scroll-area, select, sheet, switch, tooltip)
+    └── components/        # kebab-case files, PascalCase exports
+        ├── sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width; unread tab badges
+        ├── toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings, NotificationBell
+        ├── viewport.tsx       # Screencast canvas + input forwarding; ResizeObserver repaints on container resize
+        ├── status-bar.tsx     # Bottom status bar for loading/error states (replaces mid-viewport overlay)
+        ├── settings-dialog.tsx  # Non-modal right Sheet drawer (showOverlay=false); grouped cards; hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
+        ├── notification-bell.tsx # Bell icon + badge + popover; grouped by conversation
+        ├── new-tab-dialog.tsx  # URL input + bookmark quick-launch
+        ├── add-bookmark-dialog.tsx # Edit title/URL before saving bookmark
+        └── ui/                # shadcn (radix-nova style, HugeIcons); regenerate via CLI, owned locally
 ```
+
+Styling: shadcn **radix-nova** preset (`bH58`) + **HugeIcons** (`@hugeicons/react`, not lucide) + **Manrope**/**DM Mono** fonts. Toolchain: **pnpm** (Node 24, `node-linker=hoisted`), **Biome** (lint+format), **husky**+**commitlint**+**lint-staged**.
 
 ## Testing
 
 ```bash
-npm test                # Vitest unit tests (69 tests across src/lib/ + notifications.test.ts)
-npx tsc --noEmit        # Type check
-npm run install:local   # Build + install CDP Browser.app to /Applications
+pnpm test               # Vitest (src/lib/ + notifications.test.ts + scripts/cdp-commands/*.test.mjs)
+pnpm typecheck          # tsc --noEmit
+pnpm check              # Biome lint + format check (matches CI / pre-commit)
+pnpm install:local      # Build + install CDP Browser.app to /Applications
 ```
 
 ## Known Limitations
@@ -97,13 +124,13 @@ npm run install:local   # Build + install CDP Browser.app to /Applications
 
 ## Agent skills
 
-### Issue tracker
+### Dev lifecycle skills
 
-Issues live in GitHub Issues (`duongdev/cdp-browser`), managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Project-local slash commands in `.claude/skills/` (thin SKILL.md → unit-tested `scripts/cdp-commands/*.mjs`): `idea`, `learn`, `risk` (capture to `docs/memories/`), `new-task`/`task`/`status` (the `docs/tasks/` lifecycle), `adr` (scaffold `docs/adr/NNNN-*`), `frontend` (conventions checkpoint), `pr-monitor`. Branch naming is enforced by `.claude/hooks/branch-name-check.sh`.
 
-### Triage labels
+### Issue tracker (external intake only)
 
-Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+Planned work lives in `docs/tasks/` (the spine). GitHub Issues (`duongdev/cdp-browser`) is for **externally-reported bugs** only; a bug picked up gets promoted to a task or fixed directly. See `docs/agents/issue-tracker.md`.
 
 ### Domain docs
 
