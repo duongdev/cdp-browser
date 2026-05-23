@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react"
 import type { SwitchEffect } from "@/components/settings-dialog"
 import { type Event as AdaptiveEvent, type Bounds, initial, reduce } from "@/lib/adaptive-viewport"
+import { isOsReservedKey } from "@/lib/key-routing"
 import type { RemotePage } from "@/lib/remote-page"
 import { letterbox, toRemoteCoords } from "@/lib/viewport-transform"
 
@@ -394,13 +395,13 @@ export function Viewport({
       return tag === "INPUT" || tag === "TEXTAREA"
     }
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (isField(e)) return
+      if (isField(e) || isOsReservedKey(e)) return
       e.preventDefault()
       maybeRearm()
       page.forwardInput({ kind: "key", phase: "down", event: e })
     }
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (isField(e)) return
+      if (isField(e) || isOsReservedKey(e)) return
       page.forwardInput({ kind: "key", phase: "up", event: e })
     }
     document.addEventListener("keydown", handleKeyDown)

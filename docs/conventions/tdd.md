@@ -56,6 +56,7 @@ No exceptions for pure logic. If a test feels impossible to write, the design is
 | `adaptive-viewport.ts` | `adaptive-viewport.test.ts` | reduce state machine, all transitions, effect generation |
 | `notifications-view.ts` | `notifications-view.test.ts` | groupByConversation, dedup, fallback grouping |
 | `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating |
+| `key-routing.ts` | `key-routing.test.ts` | isOsReservedKey — reserved combos, Option-rewrite safety, non-Cmd pass-through |
 
 Every new module under `src/lib/` or pure-logic file at root gets a colocated test file from its first commit.
 

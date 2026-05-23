@@ -59,7 +59,7 @@ export function NotificationBell({
         </TooltipTrigger>
         <TooltipContent>Notifications</TooltipContent>
       </Tooltip>
-      <PopoverContent className="p-0">
+      <PopoverContent align="end" className="p-0" collisionPadding={12} sideOffset={8}>
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <span className="text-xs font-medium">Notifications</span>
           {notifications.length > 0 && (

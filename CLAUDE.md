@@ -18,7 +18,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 1. **Convention before code.** `docs/conventions/` is written first; if a convention is missing, write it before the code that needs it.
 2. **Product, not software.** Daily-driver feel over technical correctness — pixel-perfect, no jiggling, never-stuck. The bar is "I'd want to use this." See [product.md](docs/conventions/product.md).
 3. **Atomic delivery.** Each task is one in-repo `docs/tasks/NNN-*.md` spec sized to one session; it ships and closes (moved to `done/`) in the same commit, with the `tNNN` ID in branch + commit. See [dev-lifecycle.md](docs/conventions/dev-lifecycle.md). GitHub Issues is external bug intake only.
-4. **Research, don't assume.** Verify libraries/APIs against current docs (Context7) before adopting. [research.md](docs/conventions/research.md).
+4. **Research, don't assume.** Verify libraries/APIs against current docs (Context7) before adopting.
 5. **Test-first for pure logic.** Strict TDD for `src/lib/` + `notifications.js`; manual smoke + HITL for CDP/IPC glue; mock-first + visual review for UI. [tdd.md](docs/conventions/tdd.md).
 6. **SOLID, atomic, fresh-not-patched.** Each change does one thing; rewrite scar tissue instead of layering conditionals. [code-quality.md](docs/conventions/code-quality.md).
 7. **Claude-Code-first.** Predictable patterns, strong types, **kebab-case for all filenames** (incl. components). [agentic-coding.md](docs/conventions/agentic-coding.md).
@@ -34,7 +34,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 
 - **Main process** (`main.js`): Manages CDP HTTP API calls and WebSocket connections. All WS connections run in Node.js (not renderer) to avoid browser sandbox restrictions.
 - **Preload** (`preload.js`): IPC bridge between main and renderer via `contextBridge`.
-- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on five domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), and Notifications View (presentation grouping). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
+- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on six domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), Notifications View (presentation grouping), and Key Routing (macOS OS-reserved combo predicate). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
 
 ## Key Design Decisions
 
@@ -83,6 +83,7 @@ cdp-browser/
     │   ├── viewport-transform.ts # Letterbox math + coordinate mapping
     │   ├── adaptive-viewport.ts  # Adaptive Viewport: deviceMetrics + reduce state machine
     │   ├── notifications-view.ts # Presentation grouping (groupByConversation) for notification popover
+    │   ├── key-routing.ts     # isOsReservedKey — gates Input Forwarding for macOS-reserved combos
     │   └── utils.ts           # cn() utility
     └── components/        # kebab-case files, PascalCase exports
         ├── sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width; unread tab badges
@@ -111,7 +112,7 @@ pnpm install:local      # Build + install CDP Browser.app to /Applications
 
 - CDP screencast only works for the **active tab** on the remote browser.
 - Screencast frames are **CSS-resolution** (`Page.startScreencast` ignores `deviceScaleFactor`), so on a high-DPI display they're upscaled and look soft. Sharp device-resolution frames are only available via `Page.captureScreenshot`, which is too heavy to stream and color-shifts vs the screencast — see `docs/adr/0002-adaptive-viewport.md`. Not currently fixed.
-- Text input goes through `Input.dispatchKeyEvent`. Common macOS editing shortcuts (Cmd/Alt + arrows, line/word deletion) are translated to Blink editor commands, but full IME (CJK composition) is not supported.
+- Text input goes through `Input.dispatchKeyEvent`. macOS-reserved combos (Cmd+H hide, Cmd+M minimize, Cmd+Q quit, Ctrl+Cmd+F fullscreen, Cmd+` cycle windows) are detected by `isOsReservedKey` in `src/lib/key-routing.ts` and fall through to native macOS handlers rather than being forwarded. Common editing shortcuts (Cmd/Alt + arrows, line/word deletion) are translated to Blink editor commands, but full IME (CJK composition) is not supported.
 - No file download/upload support.
 - Tab favicons may not load if the remote browser blocks cross-origin favicon requests.
 

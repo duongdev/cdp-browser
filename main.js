@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, clipboard, Notification } = require("electron")
+const { app, BrowserWindow, ipcMain, nativeTheme, clipboard, Notification, Menu } =
+  require("electron")
 const path = require("path")
 const fs = require("fs")
 const WebSocket = require("ws")
@@ -58,7 +59,25 @@ function clearAdaptiveOverride(ws) {
 // hide live Vite edits. `start`/`preview` run electron without the flag → load dist.
 const isDev = !app.isPackaged && process.env.ELECTRON_DEV === "1"
 
+// The renderer forwards keystrokes to the Active Tab and `preventDefault`s them,
+// which suppresses menu accelerators (this is why Cmd+R reloads the remote page, not
+// the shell). The Viewport now lets OS-reserved combos fall through (see
+// src/lib/key-routing.ts); this menu gives them the standard macOS roles to land on —
+// Hide/Hide Others/Quit, Minimize/Zoom, Fullscreen. Content combos the renderer keeps
+// (Cmd+R/W/C/V/…) stay suppressed before the menu ever sees them, so no conflict.
+function buildAppMenu() {
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      { role: "appMenu" },
+      { role: "editMenu" },
+      { role: "viewMenu" },
+      { role: "windowMenu" },
+    ]),
+  )
+}
+
 app.whenReady().then(() => {
+  buildAppMenu()
   nativeTheme.themeSource = settings.themeSource || "system"
 
   mainWindow = new BrowserWindow({

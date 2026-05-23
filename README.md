@@ -7,14 +7,16 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 ## Features
 
 - **Real-time screencast** — JPEG frame stream from the remote browser rendered on a canvas
-- **Full input forwarding** — mouse clicks, movement, scroll, keyboard events
-- **Tab management** — create, close, switch, and drag-reorder tabs
+- **Full input forwarding** — mouse clicks, movement, scroll, keyboard events; macOS-reserved combos fall through to native handlers
+- **Tab management** — create, close, switch, drag-reorder, and reopen closed tabs
 - **Bookmarks** — pin pages, drag-reorder, middle-click to open in new tab
+- **Notifications** — Teams toast capture via a read-only CDP side-channel; bell badge + OS alerts
 - **Arc-like UI** — collapsible sidebar, pill-shaped URL bar, shadcn/ui components
 - **Light / Dark / System theme** — with smooth transitions
+- **Adaptive Viewport** — optional mode that eliminates letterbox bars by resizing the remote page to match the canvas
 - **Navigation history** — back/forward buttons reflect actual browser history
-- **Keyboard shortcuts** — Cmd+T, Cmd+W, Cmd+D, Cmd+L
-- **Configurable** — remote CDP host/port via settings dialog, with test-connection button and immediate reconnect on save
+- **Keyboard shortcuts** — see table below
+- **Configurable** — remote CDP host/port via settings drawer, with immediate reconnect on save
 - **macOS native** — hidden title bar with traffic light integration
 
 ## Prerequisites
@@ -32,22 +34,24 @@ msedge --remote-debugging-port=9222
 chromium --remote-debugging-port=9222
 ```
 
-The browser can be on the same machine or accessible over the network (e.g., via SSH tunnel). To reach a browser on a machine you can't connect to directly, see [Reaching a remote CDP browser through a Tailscale jump host](docs/guides/remote-cdp-over-tailscale.md).
+The browser can be on the same machine or accessible over the network (e.g., via SSH tunnel or Tailscale). See [Reaching a remote CDP browser through a Tailscale jump host](docs/guides/remote-cdp-over-tailscale.md).
 
 ## Installation
 
 ```bash
 git clone https://github.com/duongdev/cdp-browser.git
 cd cdp-browser
-npm install
+pnpm install
 ```
+
+Requires Node 24 (`node-linker=hoisted` is set in `.npmrc`).
 
 ## Usage
 
 ### Development
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 Starts Vite dev server + Electron with hot reload.
@@ -55,7 +59,7 @@ Starts Vite dev server + Electron with hot reload.
 ### Production
 
 ```bash
-npm start
+pnpm start
 ```
 
 Builds the renderer and launches Electron.
@@ -63,15 +67,21 @@ Builds the renderer and launches Electron.
 ### Package for distribution
 
 ```bash
-npm run dist        # Creates DMG + ZIP
-npm run dist:dir    # Creates unpacked app (faster, for testing)
+pnpm dist        # Creates DMG + ZIP
+pnpm dist:dir    # Creates unpacked app (faster, for testing)
 ```
 
 Output goes to `release/`.
 
+### Install to /Applications
+
+```bash
+pnpm install:local   # Build + install CDP Browser.app (strips quarantine)
+```
+
 ## Configuration
 
-On first launch, configure the remote CDP address via the settings icon (gear) in the toolbar:
+On first launch, configure the remote CDP address via `⌘,` (Settings):
 
 - **Host**: IP or hostname of the machine running the remote browser (default: `localhost`)
 - **Port**: CDP debugging port (default: `9222`)
@@ -81,24 +91,22 @@ Settings are persisted in the Electron userData directory.
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
-|----------|--------|
-| Cmd+T | New tab |
-| Cmd+W | Close current tab |
-| Cmd+Shift+T | Reopen closed tab |
-| Ctrl+Tab | Next tab |
-| Ctrl+Shift+Tab | Previous tab |
-| Cmd+D | Bookmark current page |
-| Cmd+L | Focus address bar |
-| Cmd+Opt+L | Copy current URL |
-| Cmd+R | Reload page |
-| Cmd+[ | Go back |
-| Cmd+] | Go forward |
-| Cmd+S | Toggle sidebar |
-| Cmd+, | Open settings |
-| Cmd+F | Find in page |
-| Escape | Unfocus address bar |
+|---|---|
+| `⌘,` | Open Settings |
+| `⌘T` | New tab |
+| `⌘W` | Close current tab |
+| `⌘⇧T` | Reopen last closed tab |
+| `⌃Tab` / `⌃⇧Tab` | Next / Previous tab |
+| `⌘1`–`⌘9` | Switch to tab by position (9 = last) |
+| `⌘L` | Focus address bar |
+| `⌘⌥L` | Copy current URL |
+| `⌘R` | Reload page |
+| `⌘[` / `⌘]` | Back / Forward |
+| `⌘D` | Bookmark current page |
+| `⌘S` | Toggle sidebar |
+| `Esc` | Unfocus address bar |
 
-Trackpad swipe left/right is also supported for back/forward navigation.
+Trackpad swipe left/right is supported for back/forward navigation.
 
 ## How It Works
 
@@ -107,21 +115,21 @@ Trackpad swipe left/right is also supported for back/forward navigation.
 [CDP Browser] --WS----> [Remote Browser WS endpoint]   (screencast, input, navigation)
 ```
 
-1. The app connects to the CDP HTTP API to list and manage tabs
-2. When a tab is selected, it opens a WebSocket to that tab's debugger endpoint
-3. `Page.startScreencast` streams JPEG frames which are drawn to a canvas
-4. Mouse and keyboard events are mapped and forwarded via `Input.dispatch*` methods
-5. Navigation events update the URL bar and tab list in real-time
+1. The app connects to the CDP HTTP API to list and manage tabs.
+2. When a tab is selected, it opens a WebSocket to that tab's debugger endpoint.
+3. `Page.startScreencast` streams JPEG frames drawn to a canvas.
+4. Mouse and keyboard events are mapped and forwarded via `Input.dispatch*` methods.
+5. A read-only side-channel socket attaches to notification-capable tabs (Teams) and captures in-app toasts.
 
 ## Tech Stack
 
 - [Electron](https://www.electronjs.org/) — desktop runtime
 - [React 19](https://react.dev/) — UI framework
 - [Tailwind CSS 4](https://tailwindcss.com/) — styling
-- [shadcn/ui](https://ui.shadcn.com/) — component library
+- [shadcn/ui](https://ui.shadcn.com/) — component library (radix-nova preset)
+- [HugeIcons](https://hugeicons.com/) — icon set
 - [dnd-kit](https://dndkit.com/) — drag and drop
 - [Vite](https://vite.dev/) — build tool
-- [Lucide](https://lucide.dev/) — icons
 
 ## License
 

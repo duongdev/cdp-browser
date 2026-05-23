@@ -413,6 +413,15 @@ export default function App() {
     switchTab(prevTab(tabs, activeTabId))
   }, [tabs, activeTabId, switchTab])
 
+  // Cmd+1..8 jump to that tab; Cmd+9 jumps to the last (browser convention).
+  const switchToTabIndex = useCallback(
+    (index: number) => {
+      const target = index === -1 ? tabs[tabs.length - 1] : tabs[index]
+      if (target) switchTab(target.id)
+    },
+    [tabs, switchTab],
+  )
+
   // Keep refs in sync
   useEffect(() => {
     tabsRef.current = tabs
@@ -488,6 +497,17 @@ export default function App() {
       }
 
       if (!e.metaKey) return
+
+      // Cmd+1..9: jump to tab by position (9 = last).
+      if (!e.altKey && e.code.startsWith("Digit")) {
+        const n = Number(e.code.slice(5))
+        if (n >= 1 && n <= 9) {
+          e.preventDefault()
+          e.stopPropagation()
+          switchToTabIndex(n === 9 ? -1 : n - 1)
+          return
+        }
+      }
 
       // Cmd+Shift+T: reopen closed tab. macOS reports e.key lowercase even with
       // Shift while Cmd is held, so compare case-insensitively.
@@ -600,6 +620,7 @@ export default function App() {
     goForward,
     switchToNextTab,
     switchToPrevTab,
+    switchToTabIndex,
     url,
     page,
   ])
