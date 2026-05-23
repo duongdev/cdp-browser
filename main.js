@@ -50,7 +50,10 @@ function clearAdaptiveOverride(ws) {
   } catch (e) {}
 }
 
-const isDev = !app.isPackaged && !fs.existsSync(path.join(__dirname, 'dist', 'index.html'))
+// Dev mode is signalled explicitly by the `dev` script (ELECTRON_DEV=1), not inferred
+// from a missing dist/ — a leftover build must not silently force the prod bundle and
+// hide live Vite edits. `start`/`preview` run electron without the flag → load dist.
+const isDev = !app.isPackaged && process.env.ELECTRON_DEV === '1'
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = settings.themeSource || 'system'

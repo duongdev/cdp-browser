@@ -6,7 +6,7 @@
   "author": "duongdev",
   "main": "main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"sleep 2 && electron .\"",
+    "dev": "concurrently -k \"vite\" \"sleep 2 && ELECTRON_DEV=1 electron .\"",
     "build": "vite build",
     "start": "vite build && electron .",
     "preview": "electron .",
