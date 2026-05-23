@@ -129,6 +129,13 @@ export function createRemotePage(
   const frameListeners = new Set<(frame: ScreencastFrame) => void>();
   const fan = (event: RemotePageEvent) => listeners.forEach((cb) => cb(event));
 
+  // The top frame's id. Loading events for subframes (Teams keeps long-lived
+  // telemetry/presence iframes loading) must not drive the loading bar, else the
+  // bar runs forever after a reload. Learned from frameNavigated (main frame has no
+  // parentId); seeded from the first loading event when still unknown, and reset on
+  // disconnect so each tab tracks its own frame.
+  let mainFrameId: string | undefined;
+
   // One registration on the raw transport, demuxed to typed subscribers. Subscribers
   // come and go via `on`'s unsubscribe — the transport listener is registered once.
   transport.onEvent((msg) => {
@@ -149,14 +156,23 @@ export function createRemotePage(
         transport.send("Page.screencastFrameAck", { sessionId: frame.sessionId });
         break;
       }
-      case "Page.frameNavigated":
-        if (msg.params?.frame?.url) fan({ type: "navigated", url: msg.params.frame.url });
+      case "Page.frameNavigated": {
+        const frame = msg.params?.frame;
+        if (frame?.url) fan({ type: "navigated", url: frame.url });
+        if (frame && !frame.parentId) mainFrameId = frame.id;
         break;
+      }
       case "Page.frameStartedLoading":
-        fan({ type: "loadingChanged", loading: true });
+        if (mainFrameId === undefined) mainFrameId = msg.params?.frameId;
+        if (msg.params?.frameId === mainFrameId)
+          fan({ type: "loadingChanged", loading: true });
         break;
       case "Page.frameStoppedLoading":
+        if (msg.params?.frameId === mainFrameId)
+          fan({ type: "loadingChanged", loading: false });
+        break;
       case "Page.loadEventFired":
+        // Main document finished — authoritative "done" regardless of subframes.
         fan({ type: "loadingChanged", loading: false });
         break;
       case "Page.windowOpen":
@@ -164,7 +180,10 @@ export function createRemotePage(
         break;
     }
   });
-  transport.onDisconnected(() => fan({ type: "disconnected" }));
+  transport.onDisconnected(() => {
+    mainFrameId = undefined;
+    fan({ type: "disconnected" });
+  });
 
   return {
     on(cb) {

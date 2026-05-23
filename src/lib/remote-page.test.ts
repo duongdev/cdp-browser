@@ -71,6 +71,48 @@ describe("RemotePage event demux", () => {
     ]);
   });
 
+  it("ignores subframe load activity so a lingering iframe can't pin the loading bar", () => {
+    // Reproduces the Teams reload bug: the main document is served instantly from
+    // the service-worker cache, but a background iframe (telemetry/presence) keeps
+    // loading. With "last event wins" that trailing subframe pinned loading=true.
+    const t = fakeTransport();
+    const page = createRemotePage(t.transport);
+    const events: any[] = [];
+    page.on((e) => events.push(e));
+
+    t.emit("Page.frameNavigated", { frame: { id: "main", url: "https://teams" } });
+    t.emit("Page.frameStartedLoading", { frameId: "main" });
+    t.emit("Page.frameStoppedLoading", { frameId: "main" });
+    // Subframe keeps loading after the main frame settled — must not light the bar.
+    t.emit("Page.frameStartedLoading", { frameId: "sub" });
+
+    expect(events).toEqual([
+      { type: "navigated", url: "https://teams" },
+      { type: "loadingChanged", loading: true },
+      { type: "loadingChanged", loading: false },
+    ]);
+  });
+
+  it("resets main-frame tracking on disconnect so the next tab tracks its own frame", () => {
+    const t = fakeTransport();
+    const page = createRemotePage(t.transport);
+    const events: any[] = [];
+    page.on((e) => events.push(e));
+
+    t.emit("Page.frameNavigated", { frame: { id: "tabA", url: "https://a" } });
+    t.emitDisconnected();
+    // New tab's first loading event (before any frameNavigated) seeds the new main.
+    t.emit("Page.frameStartedLoading", { frameId: "tabB" });
+    t.emit("Page.frameStoppedLoading", { frameId: "tabB" });
+
+    expect(events).toEqual([
+      { type: "navigated", url: "https://a" },
+      { type: "disconnected" },
+      { type: "loadingChanged", loading: true },
+      { type: "loadingChanged", loading: false },
+    ]);
+  });
+
   it("stops delivering after unsubscribe (no listener leak)", () => {
     const t = fakeTransport();
     const page = createRemotePage(t.transport);
