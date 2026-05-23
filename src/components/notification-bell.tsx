@@ -1,5 +1,6 @@
 import { Notification03Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -14,6 +15,7 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onClickItem: (entry: ViewEntry) => void
+  onToggleRead: (entry: ViewEntry) => void
   onMarkAllRead: () => void
   onClearAll: () => void
 }
@@ -31,11 +33,14 @@ export function NotificationBell({
   open,
   onOpenChange,
   onClickItem,
+  onToggleRead,
   onMarkAllRead,
   onClearAll,
 }: Props) {
+  const [unreadOnly, setUnreadOnly] = useState(false)
   const unread = notifications.filter((n) => !n.read).length
-  const groups = groupByConversation(notifications)
+  const visible = unreadOnly ? notifications.filter((n) => !n.read) : notifications
+  const groups = groupByConversation(visible)
 
   return (
     <Popover onOpenChange={onOpenChange} open={open}>
@@ -59,11 +64,30 @@ export function NotificationBell({
         </TooltipTrigger>
         <TooltipContent>Notifications</TooltipContent>
       </Tooltip>
-      <PopoverContent align="end" className="p-0" collisionPadding={12} sideOffset={8}>
+      <PopoverContent
+        align="end"
+        className="p-0"
+        collisionPadding={12}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        sideOffset={8}
+      >
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <span className="text-xs font-medium">Notifications</span>
           {notifications.length > 0 && (
             <div className="flex items-center gap-3">
+              <button
+                aria-pressed={unreadOnly}
+                className={cn(
+                  "text-[10px]",
+                  unreadOnly
+                    ? "font-medium text-primary"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setUnreadOnly((v) => !v)}
+                type="button"
+              >
+                Unread only
+              </button>
               <button
                 className="text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:hover:text-muted-foreground"
                 disabled={unread === 0}
@@ -82,12 +106,12 @@ export function NotificationBell({
             </div>
           )}
         </div>
-        {notifications.length === 0 ? (
+        {visible.length === 0 ? (
           <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-            No notifications
+            {unreadOnly ? "No unread notifications" : "No notifications"}
           </div>
         ) : (
-          <ScrollArea className="max-h-80">
+          <ScrollArea className="max-h-80 [&>[data-slot=scroll-area-viewport]>div]:!block">
             {groups.map((g) => (
               <div key={g.key}>
                 <div className="sticky top-0 flex items-center gap-1.5 bg-popover px-3 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">
@@ -101,7 +125,7 @@ export function NotificationBell({
                       src={g.icon}
                     />
                   )}
-                  <span className="truncate">{g.label}</span>
+                  <span className="min-w-0 truncate">{g.label}</span>
                   {g.unread > 0 && (
                     <span className="ml-auto shrink-0 rounded-full bg-primary/15 px-1.5 text-[9px] font-medium text-primary tabular-nums">
                       {g.unread}
@@ -110,34 +134,50 @@ export function NotificationBell({
                 </div>
                 <ul className="pb-1">
                   {g.items.map((n) => (
-                    <li key={n.id}>
+                    <li
+                      className={cn(
+                        "group/noti relative hover:bg-accent",
+                        !n.read && "bg-accent/40",
+                      )}
+                      key={n.id}
+                    >
                       <button
-                        className={cn(
-                          "flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-accent",
-                          !n.read && "bg-accent/40",
-                        )}
+                        className="flex w-full flex-col gap-0.5 py-2 pl-3 pr-12 text-left"
                         onClick={() => onClickItem(n)}
                         type="button"
                       >
-                        <div className="flex items-baseline justify-between gap-2">
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            {!n.read && (
-                              <span className="size-1.5 shrink-0 rounded-full bg-primary" />
-                            )}
-                            <span className="truncate text-xs font-medium">
-                              {n.title || n.source}
-                            </span>
-                          </span>
-                          <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
-                            {relativeTime(n.ts)}
-                          </span>
-                        </div>
+                        <span className="line-clamp-2 text-xs font-medium">
+                          {n.title || n.source}
+                        </span>
                         {n.body && (
                           <span className="line-clamp-2 text-[11px] text-muted-foreground">
                             {n.body}
                           </span>
                         )}
                       </button>
+                      <div className="pointer-events-none absolute top-2 right-3 flex flex-col items-end gap-1.5">
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          {relativeTime(n.ts)}
+                        </span>
+                        <button
+                          aria-label={n.read ? "Mark as unread" : "Mark as read"}
+                          className="pointer-events-auto -m-1 p-1"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onToggleRead(n)
+                          }}
+                          type="button"
+                        >
+                          <span
+                            className={cn(
+                              "block size-2 rounded-full transition-colors",
+                              n.read
+                                ? "border border-muted-foreground/40 opacity-0 group-hover/noti:opacity-100 hover:bg-muted-foreground/20"
+                                : "bg-primary hover:bg-primary/70",
+                            )}
+                          />
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>

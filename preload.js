@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("cdp", {
   // Notifications
   getNotifications: () => ipcRenderer.invoke("cdp:get-notifications"),
   markNotificationRead: (id) => ipcRenderer.invoke("cdp:mark-notification-read", id),
+  markNotificationUnread: (id) => ipcRenderer.invoke("cdp:mark-notification-unread", id),
   markNotificationsRead: () => ipcRenderer.invoke("cdp:mark-notifications-read"),
   clearNotifications: () => ipcRenderer.invoke("cdp:clear-notifications"),
   onNotification: (cb) => ipcRenderer.on("cdp:notification", (_, entry) => cb(entry)),

@@ -45,7 +45,7 @@ A read-only CDP WebSocket attached to a background tab's target — no screencas
 _Avoid_: background session, helper socket, spy socket.
 
 **Notification Adapter**:
-Per-site configuration that declares which URL hostname to match and which capture script to inject. Teams is the first adapter; the structure generalises to other notification-capable sites.
+Per-site configuration that declares which URL hostname to match and which capture script to inject. Teams and Outlook (OWA) are the current adapters; the structure generalises to other notification-capable sites.
 _Avoid_: plugin, connector, integration.
 
 **Notification Capture**:

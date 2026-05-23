@@ -19,3 +19,11 @@ So the single-Remote-Page rule is narrowed: it governs the **rendering/screencas
 ## Deferred: deep-conversation open
 
 Teams' real click handler routes through `activateToast(targetEntity)`; the **test** notification is deliberately no-op'd (`id === "testNotification"` → dismiss), so the test path cannot validate navigation. There is no `<a href>` or URL in the toast, and Teams v2 keeps a single SPA URL regardless of conversation. v1 therefore stops at **activate the tab**. Deep-opening the exact conversation from a captured `targetEntity` needs validation against a *real* notification's `id` format and a working deep-link/route — deferred until then.
+
+## Addendum: Outlook adapter + SPA deep-open (2026-05-23)
+
+The second adapter (`outlook`, `inject/outlook-notify.js`) proves the abstraction generalises and adds the deep-open the Teams path lacked. Verified against Edge 148 / OWA:
+
+- **Same capture model.** OWA renders its in-app notification into `div[data-app-section="NotificationPane"]` **even when the tab is `document.hidden`** — so the read-only side-channel scrapes it exactly like Teams, with no permission grant, no `Notification`-API hook, and no reload. (OWA does **not** use the Web Notification API for mail; it was checked and never fires.) Stable anchors: `button[aria-roledescription="Notification"]`, `aria-label="New mail from <sender>"`; subject/body live in hashed Fluent classes (best-effort, aria is the durable part).
+- **Dedup id = message ItemID.** OWA exposes a per-message base64 ItemID (`A[AQM][MQ]k…`) in the notification button's React fiber — cross-tab safe. Content-hash (`source|title|body`) is the fallback. OWA has no conversation id in the toast, so `groupByConversation` falls back to subject.
+- **Deep-open via SPA navigation.** Unlike Teams, OWA has a per-message route: `<origin>/mail/inbox/id/<encodeURIComponent(ItemID)>`. The adapter ships it as `targetEntity.deepLink`. Clicking a notification activates the tab, then calls `RemotePage.navigateSpa(deepLink)` — `history.pushState` + a synthetic `popstate` (with a full-navigation `location.href` fallback). This drives react-router client-side (verified: OWA issues the message fetch, no document reload), avoiding the flash/state-loss of `Page.navigate`. `navigateSpa` is adapter-agnostic; any future adapter that supplies a `deepLink` gets deep-open for free.

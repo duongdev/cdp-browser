@@ -431,4 +431,27 @@ describe("RemotePage navigation", () => {
       { method: "Runtime.evaluate", params: { expression: "document.execCommand('selectAll')" } },
     ])
   })
+
+  it("navigateSpa drives client-side routing via pushState + popstate", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.navigateSpa("https://outlook.cloud.microsoft/mail/inbox/id/ABC%3D")
+
+    expect(t.sends).toHaveLength(1)
+    expect(t.sends[0].method).toBe("Runtime.evaluate")
+    const expr = t.sends[0].params.expression
+    expect(expr).toContain("history.pushState")
+    expect(expr).toContain("popstate")
+    expect(expr).toContain(JSON.stringify("https://outlook.cloud.microsoft/mail/inbox/id/ABC%3D"))
+  })
+
+  it("navigateSpa falls back to a full navigation if pushState throws", () => {
+    const t = fakeTransport()
+    createRemotePage(t.transport).navigateSpa("https://outlook.cloud.microsoft/mail/")
+
+    const expr = t.sends[0].params.expression
+    expect(expr).toContain("catch")
+    expect(expr).toContain("location.href")
+  })
 })

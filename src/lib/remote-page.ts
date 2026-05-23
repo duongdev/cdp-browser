@@ -114,6 +114,12 @@ function editingCommands(e: KeyEventLike): string[] {
 
 export interface RemotePage {
   navigate(url: string): void
+  /**
+   * Client-side navigation within a single-page app (react-router et al.): pushes the
+   * URL and dispatches `popstate` so the app's router renders the new route without a
+   * document reload. Falls back to a full navigation if `pushState` throws.
+   */
+  navigateSpa(url: string): void
   reload(): void
   back(): void
   forward(): void
@@ -266,6 +272,12 @@ export function createRemotePage(
     },
     navigate(url) {
       transport.send("Page.navigate", { url: normalizeUrl(url) })
+    },
+    navigateSpa(url) {
+      const u = JSON.stringify(normalizeUrl(url))
+      transport.send("Runtime.evaluate", {
+        expression: `(()=>{try{history.pushState({},'',${u});dispatchEvent(new PopStateEvent('popstate',{state:history.state}))}catch(e){location.href=${u}}})()`,
+      })
     },
     reload() {
       transport.send("Page.reload", {})

@@ -36,6 +36,10 @@ function markRead(list, id) {
   return list.map((n) => (n.id === id ? { ...n, read: true } : n))
 }
 
+function markUnread(list, id) {
+  return list.map((n) => (n.id === id ? { ...n, read: false } : n))
+}
+
 function markAllRead(list) {
   return list.map((n) => (n.read ? n : { ...n, read: true }))
 }
@@ -58,6 +62,7 @@ module.exports = {
   ingest,
   shouldNotifyOs,
   markRead,
+  markUnread,
   markAllRead,
   unreadCount,
   unreadByTarget,

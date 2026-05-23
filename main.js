@@ -420,11 +420,13 @@ const {
   ingest,
   shouldNotifyOs,
   markRead,
+  markUnread,
   markAllRead,
   unreadCount,
 } = require("./notifications")
 const NOTIFY_BINDING = "__cdpNotify"
 const injectSource = fs.readFileSync(path.join(__dirname, "inject", "teams-notify.js"), "utf8")
+const outlookSource = fs.readFileSync(path.join(__dirname, "inject", "outlook-notify.js"), "utf8")
 const ADAPTERS = [
   {
     name: "teams",
@@ -432,6 +434,12 @@ const ADAPTERS = [
     source: injectSource,
     iconUrl:
       "https://statics.teams.cdn.office.net/evergreen-assets/icons/microsoft_teams_logo_refresh.ico",
+  },
+  {
+    name: "outlook",
+    match: (h) => /(^|\.)outlook\.(office\.com|live\.com|cloud\.microsoft)$/.test(h),
+    source: outlookSource,
+    iconUrl: "https://outlook.office365.com/owa/favicon.ico",
   },
 ]
 const adapterFor = (url) => matchAdapter(url, ADAPTERS)
@@ -585,6 +593,12 @@ app.whenReady().then(() => {
 ipcMain.handle("cdp:get-notifications", () => notifications)
 ipcMain.handle("cdp:mark-notification-read", (_, id) => {
   notifications = markRead(notifications, id)
+  saveNotifications()
+  updateBadge()
+  return notifications
+})
+ipcMain.handle("cdp:mark-notification-unread", (_, id) => {
+  notifications = markUnread(notifications, id)
   saveNotifications()
   updateBadge()
   return notifications

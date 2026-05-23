@@ -4,6 +4,7 @@ import {
   ingest,
   markAllRead,
   markRead,
+  markUnread,
   matchAdapter,
   shouldNotifyOs,
   unreadByTarget,
@@ -70,6 +71,13 @@ describe("read model", () => {
 
   it("marks every entry read", () => {
     expect(markAllRead(sample()).every((n) => n.read)).toBe(true)
+  })
+
+  it("marks one entry unread by id without touching others", () => {
+    const out = markUnread(sample(), "b")
+    expect(out.find((n) => n.id === "b")?.read).toBe(false)
+    expect(out.find((n) => n.id === "a")?.read).toBe(false)
+    expect(out.find((n) => n.id === "c")?.read).toBe(false)
   })
 })
 

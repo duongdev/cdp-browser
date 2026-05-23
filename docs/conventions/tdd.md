@@ -46,16 +46,16 @@ No exceptions for pure logic. If a test feels impossible to write, the design is
 - Arrange → Act → Assert clearly separated. Blank lines between sections.
 - No setup that exceeds the test it serves. Long setup = test is too coarse.
 
-**Current coverage (as of 2026-05-23):**
+**Current coverage (as of 2026-05-24):**
 
 | Module | Test file | What's covered |
 |---|---|---|
-| `remote-page.ts` | `remote-page.test.ts` | navigation, Input Forwarding variants, event demux, frame auto-ack |
+| `remote-page.ts` | `remote-page.test.ts` | navigation, navigateSpa (pushState+popstate + full-nav fallback), Input Forwarding variants, event demux, frame auto-ack |
 | `tabs.ts` | `tabs.test.ts` | reconcile order, nextTab/prevTab wrapping, closed-tab stack, stripTitleBadge |
 | `viewport-transform.ts` | `viewport-transform.test.ts` | letterbox math, toRemoteCoords coordinate mapping, edge cases |
 | `adaptive-viewport.ts` | `adaptive-viewport.test.ts` | reduce state machine, all transitions, effect generation |
 | `notifications-view.ts` | `notifications-view.test.ts` | groupByConversation, dedup, fallback grouping |
-| `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating |
+| `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating, markUnread, unreadCount, unreadByTarget |
 | `theme-emulation.js` | `theme-emulation.test.ts` | emulatedMediaParams — sync on/off, dark/light mapping, reset to empty params |
 | `key-routing.ts` | `key-routing.test.ts` | isOsReservedKey — reserved combos, Option-rewrite safety, non-Cmd pass-through |
 
@@ -171,4 +171,4 @@ Naming:
 
 _Test discipline is the difference between a project that survives and one that dies. Don't negotiate with yourself on this._
 
-_Last revisited: 2026-05-23_
+_Last revisited: 2026-05-24_

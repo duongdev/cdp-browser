@@ -281,16 +281,18 @@ export default function App() {
   )
 
   // Clicking a notification (toolbar popover or OS toast) activates the tab that
-  // captured it. v1 stops at activation; deep-conversation open is deferred (no
-  // verified navigation target — see docs/adr/0003).
+  // captured it, then deep-opens the message if the adapter supplied a deep-link
+  // (Outlook does; Teams keeps a single SPA URL — see docs/adr/0003).
   const handleNotificationClick = useCallback(
-    (entry: NotifEntry) => {
+    async (entry: NotifEntry) => {
       setBellOpen(false)
       setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)))
       window.cdp.markNotificationRead(entry.id)
-      switchTab(entry.targetId)
+      await switchTab(entry.targetId)
+      const deepLink = (entry.targetEntity as { deepLink?: string } | null)?.deepLink
+      if (deepLink) page.navigateSpa(deepLink)
     },
-    [switchTab],
+    [switchTab, page],
   )
 
   // Opening the popover does NOT mark read — unread clears only via a row click or
@@ -303,6 +305,14 @@ export default function App() {
   const handleClearNotifications = useCallback(() => {
     window.cdp.clearNotifications()
     setNotifications([])
+  }, [])
+
+  // Toggling the per-row indicator flips read state without opening the notification.
+  const handleToggleRead = useCallback((entry: NotifEntry) => {
+    const read = !entry.read
+    setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read } : n)))
+    if (read) window.cdp.markNotificationRead(entry.id)
+    else window.cdp.markNotificationUnread(entry.id)
   }, [])
 
   // Keyed by CDP target id (== tab id), for the sidebar badge.
@@ -688,6 +698,7 @@ export default function App() {
             onNavigate={navigate}
             onNotificationClick={handleNotificationClick}
             onNotificationsEnabledChange={handleNotificationsEnabledChange}
+            onNotificationToggleRead={handleToggleRead}
             onReload={reload}
             onSettingsCommit={handleSettingsCommit}
             onSettingsOpenChange={handleSettingsOpenChange}

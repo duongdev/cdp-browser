@@ -40,6 +40,7 @@ interface ToolbarProps {
   bellOpen: boolean
   onBellOpenChange: (open: boolean) => void
   onNotificationClick: (entry: NotifEntry) => void
+  onNotificationToggleRead: (entry: NotifEntry) => void
   onMarkAllRead: () => void
   onClearNotifications: () => void
   notificationsEnabled: boolean
@@ -86,6 +87,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     bellOpen,
     onBellOpenChange,
     onNotificationClick,
+    onNotificationToggleRead,
     onMarkAllRead,
     onClearNotifications,
     notificationsEnabled,
@@ -260,6 +262,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onClickItem={onNotificationClick}
           onMarkAllRead={onMarkAllRead}
           onOpenChange={onBellOpenChange}
+          onToggleRead={onNotificationToggleRead}
           open={bellOpen}
         />
 

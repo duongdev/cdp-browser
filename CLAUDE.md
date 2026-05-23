@@ -46,7 +46,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Adaptive Viewport**: An optional mode that eliminates letterbox bars by resizing the remote page to match the canvas via `Emulation.setDeviceMetricsOverride`. The main process caches the last override and re-applies it before `Page.startScreencast` on every (re)connect. See `docs/adr/0002-adaptive-viewport.md`.
 - **Packaging allowlist**: `build.files` in `package.json` is an explicit allowlist, not a denylist. Any new file `main.js` requires/reads at runtime (e.g. `notifications.js`, anything under `inject/`) must be added there, or it gets stripped from the asar and the packaged app throws `Cannot find module` on launch. Renderer code is safe — it's bundled into `dist/` by Vite.
 - **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, `switchEffect`, `notificationsEnabled`, and `syncTheme` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect` on first load.
-- **Notifications side-channel**: A per-target read-only CDP socket (no screencast, no input) stays attached to background tabs that match a notification adapter (Teams now). A `MutationObserver` capture script is injected at document-start and ships toasts through a `__cdpNotify` binding. Pure logic (`notifications.js`) handles dedup, cap, and OS-toast gating; effects (WS, Electron `Notification`, IPC, persistence to `notifications.json`) live in main process. See `docs/adr/0003-notifications-side-channel.md`.
+- **Notifications side-channel**: A per-target read-only CDP socket (no screencast, no input) stays attached to background tabs that match a notification adapter (Teams + Outlook). A `MutationObserver` capture script is injected at document-start and ships toasts through a `__cdpNotify` binding. Pure logic (`notifications.js`) handles dedup, cap, and OS-toast gating; effects (WS, Electron `Notification`, IPC, persistence to `notifications.json`) live in main process. Each adapter scrapes its app's own in-app notification, which both apps render even when their tab is backgrounded. Outlook additionally ships a per-message deep-link (`targetEntity.deepLink`); clicking a notification activates the tab then calls `RemotePage.navigateSpa` (client-side `pushState`+`popstate`, full-navigation fallback) to open the exact message without a reload. See `docs/adr/0003-notifications-side-channel.md`.
 
 ## File Structure
 
@@ -62,7 +62,8 @@ cdp-browser/
 ├── vite.config.ts       # Vite + React + Tailwind config
 ├── CONTEXT.md           # Domain glossary (Remote Page, Tab, Screencast Frame, …)
 ├── inject/
-│   └── teams-notify.js  # MutationObserver capture script injected into Teams pages
+│   ├── teams-notify.js  # MutationObserver capture script injected into Teams pages
+│   └── outlook-notify.js # MutationObserver capture for OWA NotificationPane; ships ItemID deep-link
 ├── scripts/
 │   └── install-local.sh # Build + install to /Applications (strips quarantine)
 ├── docs/

@@ -70,6 +70,7 @@ interface CdpBridge {
   // Notifications
   getNotifications: () => Promise<CdpNotification[]>
   markNotificationRead: (id: string) => Promise<CdpNotification[]>
+  markNotificationUnread: (id: string) => Promise<CdpNotification[]>
   markNotificationsRead: () => Promise<CdpNotification[]>
   clearNotifications: () => Promise<CdpNotification[]>
   onNotification: (cb: (entry: CdpNotification) => void) => void

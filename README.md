@@ -10,7 +10,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Full input forwarding** — mouse clicks, movement, scroll, keyboard events; macOS-reserved combos fall through to native handlers
 - **Tab management** — create, close, switch, drag-reorder, and reopen closed tabs
 - **Bookmarks** — pin pages, drag-reorder, middle-click to open in new tab
-- **Notifications** — Teams toast capture via a read-only CDP side-channel; bell badge + OS alerts
+- **Notifications** — Teams and Outlook (OWA) toast capture via read-only CDP side-channels; bell badge + OS alerts; deep-open exact message from notification
 - **Arc-like UI** — collapsible sidebar, pill-shaped URL bar, shadcn/ui components
 - **Light / Dark / System theme** — with smooth transitions
 - **Adaptive Viewport** — optional mode that eliminates letterbox bars by resizing the remote page to match the canvas
@@ -119,7 +119,7 @@ Trackpad swipe left/right is supported for back/forward navigation.
 2. When a tab is selected, it opens a WebSocket to that tab's debugger endpoint.
 3. `Page.startScreencast` streams JPEG frames drawn to a canvas.
 4. Mouse and keyboard events are mapped and forwarded via `Input.dispatch*` methods.
-5. A read-only side-channel socket attaches to notification-capable tabs (Teams) and captures in-app toasts.
+5. Read-only side-channel sockets attach to notification-capable tabs (Teams, Outlook/OWA) and capture in-app toasts; clicking a notification activates the tab and, for Outlook, deep-opens the exact message via SPA navigation.
 
 ## Tech Stack
 
