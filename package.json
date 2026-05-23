@@ -30,6 +30,8 @@
     "files": [
       "main.js",
       "preload.js",
+      "notifications.js",
+      "inject/**/*",
       "dist/**/*",
       "!node_modules/**/*",
       "node_modules/ws/**/*"
