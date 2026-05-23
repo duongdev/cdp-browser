@@ -44,6 +44,7 @@ interface CdpBridge {
     forceOnClient: boolean
     switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale"
     notificationsEnabled: boolean
+    syncTheme: boolean
   }>
   setUiState: (
     partial: Partial<{
@@ -53,6 +54,7 @@ interface CdpBridge {
       forceOnClient: boolean
       switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale"
       notificationsEnabled: boolean
+      syncTheme: boolean
     }>,
   ) => Promise<void>
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>

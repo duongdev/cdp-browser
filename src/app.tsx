@@ -63,6 +63,7 @@ export default function App() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [notifications, setNotifications] = useState<NotifEntry[]>([])
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
+  const [syncTheme, setSyncTheme] = useState(true)
   const [bellOpen, setBellOpen] = useState(false)
   const [newTabOpen, setNewTabOpen] = useState(false)
   const [addBookmarkOpen, setAddBookmarkOpen] = useState(false)
@@ -110,6 +111,7 @@ export default function App() {
       setForceOnClient(s.forceOnClient ?? false)
       setSwitchEffect(s.switchEffect ?? "blur")
       setNotificationsEnabled(s.notificationsEnabled ?? true)
+      setSyncTheme(s.syncTheme ?? true)
       uiStateLoadedRef.current = true
     })
     window.cdp.getNotifications().then(setNotifications)
@@ -313,6 +315,11 @@ export default function App() {
   const handleNotificationsEnabledChange = useCallback((enabled: boolean) => {
     setNotificationsEnabled(enabled)
     window.cdp.setUiState({ notificationsEnabled: enabled })
+  }, [])
+
+  const handleSyncThemeChange = useCallback((enabled: boolean) => {
+    setSyncTheme(enabled)
+    window.cdp.setUiState({ syncTheme: enabled })
   }, [])
 
   // OS-toast click arrives from main; route it through the same activation path.
@@ -686,6 +693,7 @@ export default function App() {
             onSettingsOpenChange={handleSettingsOpenChange}
             onSettingsRequestOpenMouse={handleSettingsRequestOpenMouse}
             onSwitchEffectChange={handleSwitchEffectChange}
+            onSyncThemeChange={handleSyncThemeChange}
             onThemeChange={handleThemeChange}
             onToggleBookmark={handleBookmarkClick}
             pageLoading={pageLoading}
@@ -695,6 +703,7 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             status={status}
             switchEffect={switchEffect}
+            syncTheme={syncTheme}
             theme={theme}
             url={url}
           />

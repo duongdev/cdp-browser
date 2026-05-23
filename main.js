@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, nativeTheme, clipboard, Notification, Menu 
 const path = require("path")
 const fs = require("fs")
 const WebSocket = require("ws")
+const { emulatedMediaParams } = require("./theme-emulation")
 
 let mainWindow
 let activeWs = null
@@ -51,6 +52,16 @@ function clearAdaptiveOverride(ws) {
     ws.send(
       JSON.stringify({ id: cmdId++, method: "Emulation.clearDeviceMetricsOverride", params: {} }),
     )
+  } catch (e) {}
+}
+
+// Push the app's resolved light/dark scheme to the remote page so sites (and extensions)
+// that read `prefers-color-scheme` follow the shell theme. Pure mapping in theme-emulation.js.
+function applyThemeEmulation(ws) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+  const params = emulatedMediaParams(settings.syncTheme ?? true, nativeTheme.shouldUseDarkColors)
+  try {
+    ws.send(JSON.stringify({ id: cmdId++, method: "Emulation.setEmulatedMedia", params }))
   } catch (e) {}
 }
 
@@ -104,6 +115,7 @@ app.whenReady().then(() => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("cdp:native-theme-changed", nativeTheme.shouldUseDarkColors)
     }
+    applyThemeEmulation(activeWs)
   })
 
   // Trackpad swipe gestures (macOS)
@@ -190,6 +202,7 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
         const bounds = mainWindow.getBounds()
         ws.send(JSON.stringify({ id: 1, method: "Page.enable", params: {} }))
         ws.send(JSON.stringify({ id: 2, method: "Input.enable", params: {} }))
+        applyThemeEmulation(ws)
         // Re-apply the cached adaptive override before the screencast so the first
         // frame is already sized to the window — prevents the tab-switch jiggle.
         if (settings.adaptiveViewport && cachedMetrics) {
@@ -339,6 +352,7 @@ ipcMain.handle("cdp:get-ui-state", () => ({
   forceOnClient: settings.forceOnClient ?? false,
   switchEffect: settings.switchEffect ?? "blur",
   notificationsEnabled: settings.notificationsEnabled ?? true,
+  syncTheme: settings.syncTheme ?? true,
 }))
 
 ipcMain.handle("cdp:set-ui-state", (_, partial) => {
@@ -349,6 +363,10 @@ ipcMain.handle("cdp:set-ui-state", (_, partial) => {
   if ("switchEffect" in partial) settings.switchEffect = partial.switchEffect
   if ("notificationsEnabled" in partial)
     settings.notificationsEnabled = partial.notificationsEnabled
+  if ("syncTheme" in partial) {
+    settings.syncTheme = partial.syncTheme
+    applyThemeEmulation(activeWs)
+  }
   saveSettings(settings)
 })
 

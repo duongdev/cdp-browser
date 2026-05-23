@@ -40,6 +40,8 @@ interface SettingsDialogProps {
   onSwitchEffectChange: (effect: SwitchEffect) => void
   notificationsEnabled: boolean
   onNotificationsEnabledChange: (enabled: boolean) => void
+  syncTheme: boolean
+  onSyncThemeChange: (enabled: boolean) => void
 }
 
 type TestState =
@@ -97,6 +99,8 @@ export function SettingsDialog({
   onSwitchEffectChange,
   notificationsEnabled,
   onNotificationsEnabledChange,
+  syncTheme,
+  onSyncThemeChange,
 }: SettingsDialogProps) {
   const [host, setHost] = useState("")
   const [port, setPort] = useState("")
@@ -223,6 +227,19 @@ export function SettingsDialog({
                     <SelectItem value="dark">Dark</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="mt-3 flex items-start justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label className="text-[13px]">Sync theme to page</Label>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Make the remote page follow this theme via prefers-color-scheme.
+                  </p>
+                </div>
+                <Switch
+                  checked={syncTheme}
+                  className="mt-0.5"
+                  onCheckedChange={onSyncThemeChange}
+                />
               </div>
             </Card>
 

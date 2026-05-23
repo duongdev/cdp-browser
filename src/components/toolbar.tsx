@@ -44,6 +44,8 @@ interface ToolbarProps {
   onClearNotifications: () => void
   notificationsEnabled: boolean
   onNotificationsEnabledChange: (enabled: boolean) => void
+  syncTheme: boolean
+  onSyncThemeChange: (enabled: boolean) => void
 }
 
 export interface ToolbarHandle {
@@ -88,6 +90,8 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onClearNotifications,
     notificationsEnabled,
     onNotificationsEnabledChange,
+    syncTheme,
+    onSyncThemeChange,
   },
   ref,
 ) {
@@ -274,9 +278,11 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onOpenChange={onSettingsOpenChange}
           onRequestOpenMouse={onSettingsRequestOpenMouse}
           onSwitchEffectChange={onSwitchEffectChange}
+          onSyncThemeChange={onSyncThemeChange}
           onThemeChange={onThemeChange}
           open={settingsOpen}
           switchEffect={switchEffect}
+          syncTheme={syncTheme}
           theme={theme}
         />
       </div>
