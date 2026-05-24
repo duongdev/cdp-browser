@@ -38,6 +38,14 @@ if (settings.switchEffect === undefined && settings.switchBlur !== undefined) {
   saveSettings(settings)
 }
 
+// Migrate legacy `bookmarks` to `pins` (pins are live-tab holders; the saved
+// fields are a superset of a bookmark, so the array carries over verbatim).
+if (settings.pins === undefined && settings.bookmarks !== undefined) {
+  settings.pins = settings.bookmarks
+  delete settings.bookmarks
+  saveSettings(settings)
+}
+
 let cdpHost = settings.host
 let cdpPort = settings.port
 
@@ -370,32 +378,43 @@ ipcMain.handle("cdp:set-ui-state", (_, partial) => {
   saveSettings(settings)
 })
 
-// Bookmarks
-ipcMain.handle("cdp:get-bookmarks", () => {
-  return settings.bookmarks || []
+// Pins (live-tab holders). The renderer owns link state (`targetId`); main is the
+// persistent store. `reorder-pins` replaces the whole array, so it also persists
+// link/unlink changes.
+ipcMain.handle("cdp:get-pins", () => {
+  return settings.pins || []
 })
 
-ipcMain.handle("cdp:add-bookmark", (_, bookmark) => {
-  if (!settings.bookmarks) settings.bookmarks = []
+ipcMain.handle("cdp:add-pin", (_, pin) => {
+  if (!settings.pins) settings.pins = []
   // Avoid duplicates by URL
-  if (!settings.bookmarks.some((b) => b.url === bookmark.url)) {
-    settings.bookmarks.push(bookmark)
+  if (!settings.pins.some((p) => p.url === pin.url)) {
+    settings.pins.push(pin)
     saveSettings(settings)
   }
-  return settings.bookmarks
+  return settings.pins
 })
 
-ipcMain.handle("cdp:remove-bookmark", (_, url) => {
-  if (!settings.bookmarks) settings.bookmarks = []
-  settings.bookmarks = settings.bookmarks.filter((b) => b.url !== url)
+ipcMain.handle("cdp:update-pin", (_, id, patch) => {
+  if (!settings.pins) settings.pins = []
+  settings.pins = settings.pins.map((p) =>
+    p.id === id ? { ...p, title: patch.title, url: patch.url } : p,
+  )
   saveSettings(settings)
-  return settings.bookmarks
+  return settings.pins
 })
 
-ipcMain.handle("cdp:reorder-bookmarks", (_, bookmarks) => {
-  settings.bookmarks = bookmarks
+ipcMain.handle("cdp:remove-pin", (_, id) => {
+  if (!settings.pins) settings.pins = []
+  settings.pins = settings.pins.filter((p) => p.id !== id)
   saveSettings(settings)
-  return settings.bookmarks
+  return settings.pins
+})
+
+ipcMain.handle("cdp:reorder-pins", (_, pins) => {
+  settings.pins = pins
+  saveSettings(settings)
+  return settings.pins
 })
 
 ipcMain.handle("cdp:set-theme-source", (_, source) => {

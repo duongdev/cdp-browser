@@ -1,6 +1,6 @@
 # UX conventions
 
-CDP Browser's primary user drives it as a daily browser replacement — opening tabs, navigating pages, managing bookmarks, reviewing notifications, adjusting settings. The UX optimization is **keyboard-first**: every action reachable from the keyboard should be. Mouse is the fallback, not the default.
+CDP Browser's primary user drives it as a daily browser replacement — opening tabs, navigating pages, managing pins, reviewing notifications, adjusting settings. The UX optimization is **keyboard-first**: every action reachable from the keyboard should be. Mouse is the fallback, not the default.
 
 This convention covers the *interaction model*. Implementation (state, components, hotkey registry) lives in [frontend.md](frontend.md). Visual quality discipline is summarized here and detailed in [product.md](product.md).
 
@@ -42,9 +42,8 @@ Naming follows mainstream tools (Arc, Linear, Raycast) so muscle memory transfer
 
 | Shortcut | Action |
 |---|---|
-| `⌘⌥→` / `⌘⇧]` | Next tab |
-| `⌘⌥←` / `⌘⇧[` | Previous tab |
-| `⌘1` – `⌘9` | Switch to tab by position |
+| `⌃Tab` / `⌃⇧Tab` | Next / previous (open pins then visible tabs; dormant pins skipped) |
+| `⌘1` – `⌘9` | Switch to pin/tab by position (all pins first, then visible tabs; 9 = last) |
 
 ### Address bar
 
@@ -76,10 +75,10 @@ Single entry point for everything. Patterned after Arc and Raycast.
 
 **It can:**
 
-- Navigate (`Switch to GitHub tab`, `Open bookmarks`)
+- Navigate (`Switch to GitHub tab`, `Open pins`)
 - Run actions (`Reload`, `Close tab`, `Open Settings`)
 - Toggle flags (`Toggle Adaptive Viewport`, `Toggle notifications`)
-- Open URLs from bookmarks (`Open Linear`)
+- Open URLs from pins (`Open Linear`)
 
 **Implementation:** shadcn `Command` primitive (which wraps `cmdk`). Each action registers with metadata: name, hotkey hint if any, icon, group, run-fn.
 
@@ -126,7 +125,7 @@ Every click is a chance to lose focus. Before adding one, ask if it's necessary.
 
 - **Defaults that match intent.** If 90% of the time you want the same thing, make it the default — not a question.
 - **Inline edit over modal.** The Settings drawer lets you edit host/port inline and commit on blur. A modal for a two-field form is overhead.
-- **One-click primary actions** with an undo or cancel affordance. Switching tabs, reloading, opening bookmarks — no confirmation step.
+- **One-click primary actions** with an undo or cancel affordance. Switching tabs, reloading, activating pins — no confirmation step (un-pin requires a confirm dialog).
 - **Bundle related actions** when dual outcome dominates: "Save and reconnect" in Settings.
 - **Keyboard for power users.** Every primary action has a shortcut (see above).
 

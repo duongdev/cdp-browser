@@ -16,6 +16,10 @@ _Avoid_: target, window.
 The single Tab currently connected over WebSocket — the only one receiving Screencast Frames and Input Forwarding. CDP permits exactly one at a time.
 _Avoid_: current tab, selected tab.
 
+**Pin**:
+A persisted shortcut that holds a Tab. A Pin remembers a title and a saved URL, and optionally **links** to one live remote target (`targetId`). Clicking a Pin shows its content — the linked Tab if alive, otherwise a fresh Tab opened on the saved URL and linked. A Pin's linked Tab is hidden from the Tabs list and lives only in the Pinned section; closing it returns the Pin to unlinked, un-pinning returns the Tab to the Tabs list. Link resolution is pure (`src/lib/pins.ts`); persistence and tab effects live in the main process / `app.tsx`. Replaces the earlier read-only "bookmark".
+_Avoid_: bookmark, favorite.
+
 **Remote Page**:
 The live connection to the Active Tab's page — the thing callers navigate, reload, copy from, and forward input to. Exactly one exists at a time; it owns the WebSocket lifecycle and demuxes CDP events.
 _Avoid_: session, webview, connection.

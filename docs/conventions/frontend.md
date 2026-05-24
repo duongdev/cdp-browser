@@ -59,7 +59,7 @@ src/components/
 ├── notification-bell.tsx        exports NotificationBell
 ├── settings-dialog.tsx          exports SettingsDialog
 ├── new-tab-dialog.tsx           exports NewTabDialog
-└── add-bookmark-dialog.tsx      exports AddBookmarkDialog
+└── edit-pin-dialog.tsx          exports EditPinDialog
 ```
 
 Co-locate tests (`*.test.tsx`) for components with non-trivial logic; visual review is sufficient for layout-only components.
@@ -129,7 +129,7 @@ See [ux.md](ux.md#standard-shortcuts) for the full shortcut table.
 ### 1. Preload — fetch before the user asks
 
 - Call `window.cdp.getTabs()` on startup before the user switches tabs.
-- Prefetch bookmark favicons on idle.
+- Prefetch pin favicons on idle.
 - On tab switch, send the activate call immediately (before the WS reconnects) so the remote browser starts rendering the new page without waiting for the renderer to catch up.
 
 ### 2. Skeleton over spinner
@@ -155,7 +155,7 @@ Every screen, list, and async block must visibly handle four states. **No except
 | State | When | What renders |
 |---|---|---|
 | **Loading** | Connecting to Remote Browser, waiting for first tab list | Skeleton or "Connecting…" pill |
-| **Empty** | Connected but no tabs, empty bookmarks list | Placeholder with a clear next action |
+| **Empty** | Connected but no tabs, empty pins list | Placeholder with a clear next action |
 | **Error** | CDP connection failed, IPC error | Recovery path explicit (retry button, settings link). Never a raw stack trace. |
 | **Not found** | Deep-linked tab ID no longer exists | Distinct from empty. Offer "Back" + reason. |
 
@@ -199,7 +199,7 @@ Every failure path that *could* be retried *must* offer a retry. The user must n
 
 ### Soft reload, never hard refresh
 
-The user must never need to press Cmd+R to fix a stuck state. Cmd+R drops in-memory tab state, bookmarks, and the IPC connection — it's an admission the app failed.
+The user must never need to press Cmd+R to fix a stuck state. Cmd+R drops in-memory tab state, pins, and the IPC connection — it's an admission the app failed.
 
 - Build a "Reload connection" affordance in the Settings drawer.
 - Auto-soft-reload on focus return after a long idle: re-fetch the tab list, re-establish the screencast.

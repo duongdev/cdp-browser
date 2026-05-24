@@ -8,11 +8,18 @@ import { cn } from "@/lib/utils"
 interface NewTabDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  bookmarks: Bookmark[]
+  pins: Pin[]
   onNewTab: (url: string) => void
+  onActivatePin: (pin: Pin) => void
 }
 
-export function NewTabDialog({ open, onOpenChange, bookmarks, onNewTab }: NewTabDialogProps) {
+export function NewTabDialog({
+  open,
+  onOpenChange,
+  pins,
+  onNewTab,
+  onActivatePin,
+}: NewTabDialogProps) {
   const [query, setQuery] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -34,18 +41,18 @@ export function NewTabDialog({ open, onOpenChange, bookmarks, onNewTab }: NewTab
     onOpenChange(false)
   }
 
-  const handleBookmarkClick = (url: string) => {
-    onNewTab(url)
+  const handlePinClick = (pin: Pin) => {
+    onActivatePin(pin)
     onOpenChange(false)
   }
 
   const filtered = query.trim()
-    ? bookmarks.filter(
-        (b) =>
-          b.title.toLowerCase().includes(query.toLowerCase()) ||
-          b.url.toLowerCase().includes(query.toLowerCase()),
+    ? pins.filter(
+        (p) =>
+          p.title.toLowerCase().includes(query.toLowerCase()) ||
+          p.url.toLowerCase().includes(query.toLowerCase()),
       )
-    : bookmarks
+    : pins
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -63,34 +70,34 @@ export function NewTabDialog({ open, onOpenChange, bookmarks, onNewTab }: NewTab
             onKeyDown={(e) => {
               if (e.key === "Enter") handleSubmit()
             }}
-            placeholder="Enter URL or search bookmarks..."
+            placeholder="Enter URL or search pins..."
             ref={inputRef}
             type="text"
             value={query}
           />
         </div>
 
-        {/* Bookmarks grid */}
+        {/* Pinned quick-launch */}
         {filtered.length > 0 && (
           <div className="p-3 max-h-[300px] overflow-y-auto">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-1 pb-2 select-none">
               {query.trim() ? "Matches" : "Pinned"}
             </p>
             <div className="space-y-0.5">
-              {filtered.map((b) => (
+              {filtered.map((p) => (
                 <button
                   className={cn(
                     "w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left",
                     "text-foreground hover:bg-accent transition-colors",
                   )}
-                  key={b.id}
-                  onClick={() => handleBookmarkClick(b.url)}
+                  key={p.id}
+                  onClick={() => handlePinClick(p)}
                   type="button"
                 >
-                  <BookmarkIcon favicon={b.favicon} />
+                  <PinFavicon favicon={p.favicon} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium truncate">{b.title}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">{b.url}</p>
+                    <p className="text-xs font-medium truncate">{p.title}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{p.url}</p>
                   </div>
                 </button>
               ))}
@@ -99,14 +106,14 @@ export function NewTabDialog({ open, onOpenChange, bookmarks, onNewTab }: NewTab
         )}
 
         {/* Empty state when filtering yields nothing */}
-        {query.trim() && filtered.length === 0 && bookmarks.length > 0 && (
+        {query.trim() && filtered.length === 0 && pins.length > 0 && (
           <div className="p-4 text-center text-xs text-muted-foreground">
-            No matching bookmarks. Press Enter to open URL.
+            No matching pins. Press Enter to open URL.
           </div>
         )}
 
-        {/* Hint when no bookmarks */}
-        {bookmarks.length === 0 && (
+        {/* Hint when no pins */}
+        {pins.length === 0 && (
           <div className="p-4 text-center text-xs text-muted-foreground">
             Type a URL and press Enter to open a new tab.
           </div>
@@ -116,7 +123,7 @@ export function NewTabDialog({ open, onOpenChange, bookmarks, onNewTab }: NewTab
   )
 }
 
-function BookmarkIcon({ favicon }: { favicon?: string }) {
+function PinFavicon({ favicon }: { favicon?: string }) {
   if (favicon) {
     return (
       <img

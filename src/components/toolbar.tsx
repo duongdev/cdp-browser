@@ -1,4 +1,4 @@
-import { ArrowLeft01Icon, ArrowRight01Icon, ReloadIcon, StarIcon } from "@hugeicons/core-free-icons"
+import { ArrowLeft01Icon, ArrowRight01Icon, PinIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
 import { type NotifEntry, NotificationBell } from "@/components/notification-bell"
@@ -21,8 +21,8 @@ interface ToolbarProps {
   fps: string
   theme: "system" | "light" | "dark"
   onThemeChange: (theme: "system" | "light" | "dark") => void
-  isBookmarked: boolean
-  onToggleBookmark: () => void
+  isPinned: boolean
+  onTogglePin: () => void
   settingsOpen: boolean
   settingsCommitted: boolean
   onSettingsOpenChange: (open: boolean) => void
@@ -68,8 +68,8 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     fps,
     theme,
     onThemeChange,
-    isBookmarked,
-    onToggleBookmark,
+    isPinned,
+    onTogglePin,
     settingsOpen,
     settingsCommitted,
     onSettingsOpenChange,
@@ -233,26 +233,26 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           <TooltipContent>{status}</TooltipContent>
         </Tooltip>
 
-        {/* Bookmark */}
+        {/* Pin */}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               className={cn(
                 "hover:text-foreground",
-                isBookmarked ? "text-primary" : "text-muted-foreground",
+                isPinned ? "text-primary" : "text-muted-foreground",
               )}
-              onClick={onToggleBookmark}
+              onClick={onTogglePin}
               size="icon-xs"
               variant="ghost"
             >
               <HugeiconsIcon
                 className="size-3.5"
-                fill={isBookmarked ? "currentColor" : "none"}
-                icon={StarIcon}
+                fill={isPinned ? "currentColor" : "none"}
+                icon={PinIcon}
               />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>{isBookmarked ? "Remove bookmark" : "Bookmark this page"}</TooltipContent>
+          <TooltipContent>{isPinned ? "Unpin this tab" : "Pin this tab"}</TooltipContent>
         </Tooltip>
 
         {/* Notifications */}

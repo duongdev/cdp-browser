@@ -34,7 +34,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 
 - **Main process** (`main.js`): Manages CDP HTTP API calls and WebSocket connections. All WS connections run in Node.js (not renderer) to avoid browser sandbox restrictions.
 - **Preload** (`preload.js`): IPC bridge between main and renderer via `contextBridge`.
-- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on six domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), Notifications View (presentation grouping), and Key Routing (macOS OS-reserved combo predicate). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
+- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on seven domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), Notifications View (presentation grouping), Key Routing (macOS OS-reserved combo predicate), and Pins (live-tab link resolution). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
 
 ## Key Design Decisions
 
@@ -45,7 +45,9 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Edge compatibility**: Edge requires `PUT` method for `/json/new` (Chrome accepts `GET`).
 - **Adaptive Viewport**: An optional mode that eliminates letterbox bars by resizing the remote page to match the canvas via `Emulation.setDeviceMetricsOverride`. The main process caches the last override and re-applies it before `Page.startScreencast` on every (re)connect. See `docs/adr/0002-adaptive-viewport.md`.
 - **Packaging allowlist**: `build.files` in `package.json` is an explicit allowlist, not a denylist. Any new file `main.js` requires/reads at runtime (e.g. `notifications.js`, anything under `inject/`) must be added there, or it gets stripped from the asar and the packaged app throws `Cannot find module` on launch. Renderer code is safe — it's bundled into `dist/` by Vite.
-- **Settings persistence**: Host, port, theme, bookmarks, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, `switchEffect`, `notificationsEnabled`, and `syncTheme` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect` on first load.
+- **Settings persistence**: Host, port, theme, pins, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, `switchEffect`, `notificationsEnabled`, and `syncTheme` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect`, and legacy `bookmarks` to `pins`, on first load.
+- **Pins (live-tab holders)**: A pin holds a remote tab (`targetId`), hidden from the Tabs list while linked. Click activates the linked tab or opens+links a fresh one; cmd/middle-click opens an unlinked throwaway tab. Created from a live tab only (toolbar star, right-click tab → Pin, or drag a tab into the Pinned section). A linked pin mirrors its tab's live title/favicon (restoring the saved title when the tab closes); the active pin shows an Arc-style URL-drift cue (a `/` separator and a favicon "Back to Pinned URL" button) when its tab navigates off the saved URL. Closing a pin's tab reverts it to unlinked; un-pinning (confirm dialog) returns the tab to the Tabs list. Cmd+1..9 indexes all pins then visible tabs; Ctrl+Tab cycles open pins + tabs. Link resolution is pure (`src/lib/pins.ts`); persistence/effects live in main + `app.tsx`. See `docs/adr/0004-pin-live-tab-model.md`.
+- **Unread badges by origin**: Sidebar unread counts are grouped by URL origin (`unreadByOrigin` in `app.tsx`), so every tab/pin of an app (all Teams, all Outlook) shares one count whether or not it captured the notification, and a dormant pin still badges by its saved URL's origin.
 - **Notifications side-channel**: A per-target read-only CDP socket (no screencast, no input) stays attached to background tabs that match a notification adapter (Teams + Outlook). A `MutationObserver` capture script is injected at document-start and ships toasts through a `__cdpNotify` binding. Pure logic (`notifications.js`) handles dedup, cap, and OS-toast gating; effects (WS, Electron `Notification`, IPC, persistence to `notifications.json`) live in main process. Each adapter scrapes its app's own in-app notification, which both apps render even when their tab is backgrounded. Outlook additionally ships a per-message deep-link (`targetEntity.deepLink`); clicking a notification activates the tab then calls `RemotePage.navigateSpa` (client-side `pushState`+`popstate`, full-navigation fallback) to open the exact message without a reload. See `docs/adr/0003-notifications-side-channel.md`.
 
 ## File Structure
@@ -87,20 +89,21 @@ cdp-browser/
     │   ├── adaptive-viewport.ts  # Adaptive Viewport: deviceMetrics + reduce state machine
     │   ├── notifications-view.ts # Presentation grouping (groupByConversation) for notification popover
     │   ├── key-routing.ts     # isOsReservedKey — gates Input Forwarding for macOS-reserved combos
+    │   ├── pins.ts            # Pin link resolution: resolvePinLink, pinForTarget, dropDeadLinks
     │   └── utils.ts           # cn() utility
     └── components/        # kebab-case files, PascalCase exports
-        ├── sidebar.tsx        # Tab list + bookmarks (pinned), DnD sortable, drag-resizable width; unread tab badges
-        ├── toolbar.tsx        # Nav buttons, URL bar, status, bookmark, settings, NotificationBell
+        ├── sidebar.tsx        # Pinned (live-tab holders) + Tabs list, single DnD context (cross-section pin-on-drag), context menus, active highlight, drag-resizable width; unread tab badges
+        ├── toolbar.tsx        # Nav buttons, URL bar, status, pin toggle, settings, NotificationBell
         ├── viewport.tsx       # Screencast canvas + input forwarding; ResizeObserver repaints on container resize
         ├── status-bar.tsx     # Bottom status bar for loading/error states (replaces mid-viewport overlay)
         ├── settings-dialog.tsx  # Non-modal right Sheet drawer (showOverlay=false); grouped cards; hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
         ├── notification-bell.tsx # Bell icon + badge + popover; grouped by conversation
-        ├── new-tab-dialog.tsx  # URL input + bookmark quick-launch
-        ├── add-bookmark-dialog.tsx # Edit title/URL before saving bookmark
+        ├── new-tab-dialog.tsx  # URL input + pin quick-launch
+        ├── edit-pin-dialog.tsx # Edit pin title/URL, with "Use current tab URL" when the linked tab has drifted
         └── ui/                # shadcn (radix-nova style, HugeIcons); regenerate via CLI, owned locally
 ```
 
-Styling: shadcn **radix-nova** preset (`bH58`) + **HugeIcons** (`@hugeicons/react`, not lucide) + **Manrope**/**DM Mono** fonts. Toolchain: **pnpm** (Node 24, `node-linker=hoisted`), **Biome** (lint+format), **husky**+**commitlint**+**lint-staged**.
+Styling: shadcn **radix-nova** preset (`bH58`) + **HugeIcons** (`@hugeicons/react`, not lucide) + **Manrope**/**DM Mono** fonts. Animation: **motion** (`motion/react`, formerly framer-motion) for sidebar row enter/exit — dnd-kit owns the drag transform, motion only wraps a presence-only outer node so the two never fight. Toolchain: **pnpm** (Node 24, `node-linker=hoisted`), **Biome** (lint+format), **husky**+**commitlint**+**lint-staged**.
 
 ## Testing
 

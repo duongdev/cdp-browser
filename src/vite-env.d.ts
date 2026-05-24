@@ -1,10 +1,12 @@
 /// <reference types="vite/client" />
 
-interface Bookmark {
+interface Pin {
   id: string
   title: string
   url: string
   favicon?: string
+  /** Linked remote target id; absent when the pin has no live tab. */
+  targetId?: string
 }
 
 interface CdpNotification {
@@ -62,11 +64,12 @@ interface CdpBridge {
   onNativeThemeChanged: (cb: (isDark: boolean) => void) => void
   copyToClipboard: (text: string) => Promise<void>
   onSwipe: (cb: (direction: string) => void) => void
-  // Bookmarks
-  getBookmarks: () => Promise<Bookmark[]>
-  addBookmark: (bookmark: Bookmark) => Promise<Bookmark[]>
-  removeBookmark: (url: string) => Promise<Bookmark[]>
-  reorderBookmarks: (bookmarks: Bookmark[]) => Promise<Bookmark[]>
+  // Pins
+  getPins: () => Promise<Pin[]>
+  addPin: (pin: Pin) => Promise<Pin[]>
+  updatePin: (id: string, patch: { title: string; url: string }) => Promise<Pin[]>
+  removePin: (id: string) => Promise<Pin[]>
+  reorderPins: (pins: Pin[]) => Promise<Pin[]>
   // Notifications
   getNotifications: () => Promise<CdpNotification[]>
   markNotificationRead: (id: string) => Promise<CdpNotification[]>

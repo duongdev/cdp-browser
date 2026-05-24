@@ -9,7 +9,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Real-time screencast** — JPEG frame stream from the remote browser rendered on a canvas
 - **Full input forwarding** — mouse clicks, movement, scroll, keyboard events; macOS-reserved combos fall through to native handlers
 - **Tab management** — create, close, switch, drag-reorder, and reopen closed tabs
-- **Bookmarks** — pin pages, drag-reorder, middle-click to open in new tab
+- **Pins** — hold live tabs; click shows the tab's content, cmd/middle-click opens an independent tab; drag-reorder; edit title/URL
 - **Notifications** — Teams and Outlook (OWA) toast capture via read-only CDP side-channels; bell badge + OS alerts; deep-open exact message from notification
 - **Arc-like UI** — collapsible sidebar, pill-shaped URL bar, shadcn/ui components
 - **Light / Dark / System theme** — with smooth transitions
@@ -97,12 +97,12 @@ Settings are persisted in the Electron userData directory.
 | `⌘W` | Close current tab |
 | `⌘⇧T` | Reopen last closed tab |
 | `⌃Tab` / `⌃⇧Tab` | Next / Previous tab |
-| `⌘1`–`⌘9` | Switch to tab by position (9 = last) |
+| `⌘1`–`⌘9` | Switch to pin/tab by position (pins first, 9 = last) |
 | `⌘L` | Focus address bar |
 | `⌘⌥L` | Copy current URL |
 | `⌘R` | Reload page |
 | `⌘[` / `⌘]` | Back / Forward |
-| `⌘D` | Bookmark current page |
+| `⌘D` | Pin / unpin current tab |
 | `⌘S` | Toggle sidebar |
 | `Esc` | Unfocus address bar |
 

@@ -22,11 +22,12 @@ contextBridge.exposeInMainWorld("cdp", {
     ipcRenderer.on("cdp:native-theme-changed", (_, isDark) => cb(isDark)),
   copyToClipboard: (text) => ipcRenderer.invoke("cdp:copy-to-clipboard", text),
   onSwipe: (cb) => ipcRenderer.on("cdp:swipe", (_, direction) => cb(direction)),
-  // Bookmarks
-  getBookmarks: () => ipcRenderer.invoke("cdp:get-bookmarks"),
-  addBookmark: (bookmark) => ipcRenderer.invoke("cdp:add-bookmark", bookmark),
-  removeBookmark: (url) => ipcRenderer.invoke("cdp:remove-bookmark", url),
-  reorderBookmarks: (bookmarks) => ipcRenderer.invoke("cdp:reorder-bookmarks", bookmarks),
+  // Pins
+  getPins: () => ipcRenderer.invoke("cdp:get-pins"),
+  addPin: (pin) => ipcRenderer.invoke("cdp:add-pin", pin),
+  updatePin: (id, patch) => ipcRenderer.invoke("cdp:update-pin", id, patch),
+  removePin: (id) => ipcRenderer.invoke("cdp:remove-pin", id),
+  reorderPins: (pins) => ipcRenderer.invoke("cdp:reorder-pins", pins),
   // Notifications
   getNotifications: () => ipcRenderer.invoke("cdp:get-notifications"),
   markNotificationRead: (id) => ipcRenderer.invoke("cdp:mark-notification-read", id),
