@@ -134,6 +134,15 @@
   }
 }
 
+/* Toast (sonner): align the icon to the first line of the title, not the
+   vertical centre of a multi-line toast. */
+[data-sonner-toast] {
+  align-items: flex-start;
+}
+[data-sonner-toast] [data-icon] {
+  margin-top: 2px;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

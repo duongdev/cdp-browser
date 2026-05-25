@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { createClosedTabStack, nextTab, prevTab, reconcile, stripTitleBadge } from "./tabs"
+import { nextTab, prevTab, reconcile, stripTitleBadge } from "./tabs"
 
 describe("stripTitleBadge", () => {
   it("strips a leading unread count Teams prepends to the title", () => {
@@ -44,20 +44,5 @@ describe("nextTab / prevTab", () => {
   it("cycles backward and wraps past the start", () => {
     expect(prevTab(tabs, "a")).toBe("c")
     expect(prevTab(tabs, "b")).toBe("a")
-  })
-})
-
-describe("closed-tab stack", () => {
-  it("pops the most recently closed url (LIFO)", () => {
-    const stack = createClosedTabStack()
-    stack.push("a.com")
-    stack.push("b.com")
-
-    expect(stack.popLast()).toBe("b.com")
-    expect(stack.popLast()).toBe("a.com")
-  })
-
-  it("returns undefined when empty", () => {
-    expect(createClosedTabStack().popLast()).toBeUndefined()
   })
 })

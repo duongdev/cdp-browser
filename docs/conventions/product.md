@@ -78,9 +78,9 @@ The bar isn't "passes review." The bar is "I'd want to use this."
 
 ## Scope of the product
 
-CDP Browser is a desktop Electron app wrapping a Remote Browser. It is not:
+CDP Browser is a desktop Electron app wrapping a Remote Browser, with Local Tabs as a first-class companion surface. It is not:
 
-- A general-purpose web browser (no downloads, no file system access, no extensions).
+- A general-purpose web browser — no file downloads, no upload UI, no full extension ecosystem. Local Tabs support unpacked MV3 extensions scoped to the local session only.
 - A mobile app (no mobile targets, no touch-first UX).
 - A multi-window app (one window, one Remote Browser connection at a time).
 
@@ -90,4 +90,4 @@ Scope creep toward any of these is a design decision, not a task. Open an ADR.
 
 _Software is the means. A native-feeling, never-stuck browser is the point._
 
-_Last revisited: 2026-05-23_
+_Last revisited: 2026-05-25_

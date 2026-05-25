@@ -1,6 +1,16 @@
 import { Settings01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -42,6 +52,13 @@ interface SettingsDialogProps {
   onNotificationsEnabledChange: (enabled: boolean) => void
   syncTheme: boolean
   onSyncThemeChange: (enabled: boolean) => void
+  autoGrantLocalMedia: boolean
+  onAutoGrantLocalMediaChange: (enabled: boolean) => void
+  localExtensions: LocalExtensionInfo[]
+  onAddLocalExtension: () => void
+  onReloadLocalExtension: (path: string) => void
+  onRemoveLocalExtension: (path: string) => void
+  onOpenExtensionUrl: (url: string) => void
 }
 
 type TestState =
@@ -101,7 +118,16 @@ export function SettingsDialog({
   onNotificationsEnabledChange,
   syncTheme,
   onSyncThemeChange,
+  autoGrantLocalMedia,
+  onAutoGrantLocalMediaChange,
+  localExtensions,
+  onAddLocalExtension,
+  onReloadLocalExtension,
+  onRemoveLocalExtension,
+  onOpenExtensionUrl,
 }: SettingsDialogProps) {
+  const [tab, setTab] = useState<"remote" | "local">("remote")
+  const [pendingRemoveExt, setPendingRemoveExt] = useState<LocalExtensionInfo | null>(null)
   const [host, setHost] = useState("")
   const [port, setPort] = useState("")
   const [saved, setSaved] = useState({ host: "", port: "" })
@@ -209,185 +235,345 @@ export function SettingsDialog({
           </SheetHeader>
 
           <div className="flex flex-col gap-3 overflow-y-auto px-5 pt-2 pb-6">
-            {/* Appearance */}
-            <Card title="Appearance">
-              <div className="space-y-2">
-                <Label className="text-[13px]">Theme</Label>
-                <Select
-                  onOpenChange={setSelectOpen}
-                  onValueChange={(v) => onThemeChange(v as "system" | "light" | "dark")}
-                  value={theme}
+            {/* Remote (CDP) vs Local tabs */}
+            <div className="flex gap-1 rounded-lg bg-foreground/[0.06] p-0.5 text-xs">
+              {(["remote", "local"] as const).map((t) => (
+                <button
+                  className={
+                    "flex-1 rounded-md px-2 py-1 font-medium transition-colors " +
+                    (tab === t
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground")
+                  }
+                  key={t}
+                  onClick={() => setTab(t)}
+                  type="button"
                 >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="system">System</SelectItem>
-                    <SelectItem value="light">Light</SelectItem>
-                    <SelectItem value="dark">Dark</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="mt-3 flex items-start justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label className="text-[13px]">Sync theme to page</Label>
-                  <p className="text-[11px] leading-snug text-muted-foreground">
-                    Make the remote page follow this theme via prefers-color-scheme.
-                  </p>
-                </div>
-                <Switch
-                  checked={syncTheme}
-                  className="mt-0.5"
-                  onCheckedChange={onSyncThemeChange}
-                />
-              </div>
-            </Card>
+                  {t === "remote" ? "Remote (CDP)" : "Local tabs"}
+                </button>
+              ))}
+            </div>
 
-            {/* Viewport */}
-            <Card title="Viewport">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label className="text-[13px]">Adaptive viewport</Label>
-                  <p className="text-[11px] leading-snug text-muted-foreground">
-                    Resize the remote page to fill the window — no letterbox bars.
-                  </p>
-                </div>
-                <Switch
-                  checked={adaptiveViewport}
-                  className="mt-0.5"
-                  onCheckedChange={onAdaptiveViewportChange}
-                />
-              </div>
+            {tab === "remote" && (
+              <>
+                {/* Appearance */}
+                <Card title="Appearance">
+                  <div className="space-y-2">
+                    <Label className="text-[13px]">Theme</Label>
+                    <Select
+                      onOpenChange={setSelectOpen}
+                      onValueChange={(v) => onThemeChange(v as "system" | "light" | "dark")}
+                      value={theme}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="system">System</SelectItem>
+                        <SelectItem value="light">Light</SelectItem>
+                        <SelectItem value="dark">Dark</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="mt-3 flex items-start justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <Label className="text-[13px]">Sync theme to page</Label>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        Make the remote page follow this theme via prefers-color-scheme.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={syncTheme}
+                      className="mt-0.5"
+                      onCheckedChange={onSyncThemeChange}
+                    />
+                  </div>
+                </Card>
 
-              <div
-                className={
-                  "mt-3 border-l border-border/60 pl-3 transition-opacity " +
-                  (adaptiveViewport ? "" : "pointer-events-none opacity-40")
-                }
-              >
-                <label
-                  className="flex cursor-pointer items-start gap-2.5"
-                  htmlFor="force-on-client"
-                >
-                  <Checkbox
-                    checked={forceOnClient}
-                    className="mt-0.5"
-                    disabled={!adaptiveViewport}
-                    id="force-on-client"
-                    onCheckedChange={(v) => onForceOnClientChange(v === true)}
-                  />
-                  <span className="space-y-0.5">
-                    <span className="block text-[12.5px] leading-snug text-foreground">
-                      Auto-recover after the host takes over
-                    </span>
-                    <span className="block text-[11px] leading-snug text-muted-foreground">
-                      Re-applies the client size when you return, instead of switching off.
-                    </span>
-                  </span>
-                </label>
-                <p className="mt-2.5 text-[11px] tabular-nums text-muted-foreground/70">
-                  {emulatedSize
-                    ? `Emulating ${emulatedSize.w} × ${emulatedSize.h}`
-                    : "Active once connected."}
-                </p>
-              </div>
+                {/* Viewport */}
+                <Card title="Viewport">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <Label className="text-[13px]">Adaptive viewport</Label>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        Resize the remote page to fill the window — no letterbox bars.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={adaptiveViewport}
+                      className="mt-0.5"
+                      onCheckedChange={onAdaptiveViewportChange}
+                    />
+                  </div>
 
-              <div className="mt-3.5 space-y-2 border-t border-border/40 pt-3.5">
-                <Label className="text-[13px]">Transition on tab switch</Label>
-                <Select
-                  onOpenChange={setSelectOpen}
-                  onValueChange={(v) => onSwitchEffectChange(v as SwitchEffect)}
-                  value={switchEffect}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">None</SelectItem>
-                    <SelectItem value="blur">Blur</SelectItem>
-                    <SelectItem value="grayscale">Grayscale</SelectItem>
-                    <SelectItem value="blur-grayscale">Blur + Grayscale</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </Card>
-
-            {/* Notifications */}
-            <Card title="Notifications">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label className="text-[13px]">Desktop notifications</Label>
-                  <p className="text-[11px] leading-snug text-muted-foreground">
-                    Show a system notification for Teams messages when its tab isn't in view.
-                  </p>
-                </div>
-                <Switch
-                  checked={notificationsEnabled}
-                  className="mt-0.5"
-                  onCheckedChange={onNotificationsEnabledChange}
-                />
-              </div>
-            </Card>
-
-            <Card title="Connection">
-              <div className="space-y-2">
-                <Label className="text-[13px]">Remote CDP address</Label>
-                <div className="flex gap-2">
-                  <Input
-                    className="flex-1"
-                    onChange={(e) => {
-                      setHost(e.target.value)
-                      setTest({ status: "idle" })
-                    }}
-                    placeholder="Host"
-                    value={host}
-                  />
-                  <Input
-                    className="w-20"
-                    onChange={(e) => {
-                      setPort(e.target.value)
-                      setTest({ status: "idle" })
-                    }}
-                    placeholder="Port"
-                    type="number"
-                    value={port}
-                  />
-                </div>
-                <div className="flex gap-2 pt-0.5">
-                  <Button
-                    className="flex-1"
-                    disabled={test.status === "testing"}
-                    onClick={handleTest}
-                    size="sm"
-                    variant="outline"
+                  <div
+                    className={
+                      "mt-3 border-l border-border/60 pl-3 transition-opacity " +
+                      (adaptiveViewport ? "" : "pointer-events-none opacity-40")
+                    }
                   >
-                    {test.status === "testing" ? "Testing…" : "Test"}
-                  </Button>
-                  <Button
-                    className="flex-1"
-                    disabled={saving || !dirty}
-                    onClick={handleSave}
-                    size="sm"
-                  >
-                    {saving ? "Saving…" : "Save"}
-                  </Button>
-                </div>
-                {test.status === "ok" ? (
-                  <p className="text-[11px] text-emerald-500">Connected — {test.browser}</p>
-                ) : test.status === "error" ? (
-                  <p className="text-[11px] text-red-500">
-                    {humanizeConnError(test.message, host, port)}
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-muted-foreground">
-                    Saving reconnects the active tab.
-                  </p>
-                )}
-              </div>
-            </Card>
+                    <label
+                      className="flex cursor-pointer items-start gap-2.5"
+                      htmlFor="force-on-client"
+                    >
+                      <Checkbox
+                        checked={forceOnClient}
+                        className="mt-0.5"
+                        disabled={!adaptiveViewport}
+                        id="force-on-client"
+                        onCheckedChange={(v) => onForceOnClientChange(v === true)}
+                      />
+                      <span className="space-y-0.5">
+                        <span className="block text-[12.5px] leading-snug text-foreground">
+                          Auto-recover after the host takes over
+                        </span>
+                        <span className="block text-[11px] leading-snug text-muted-foreground">
+                          Re-applies the client size when you return, instead of switching off.
+                        </span>
+                      </span>
+                    </label>
+                    <p className="mt-2.5 text-[11px] tabular-nums text-muted-foreground/70">
+                      {emulatedSize
+                        ? `Emulating ${emulatedSize.w} × ${emulatedSize.h}`
+                        : "Active once connected."}
+                    </p>
+                  </div>
+
+                  <div className="mt-3.5 space-y-2 border-t border-border/40 pt-3.5">
+                    <Label className="text-[13px]">Transition on tab switch</Label>
+                    <Select
+                      onOpenChange={setSelectOpen}
+                      onValueChange={(v) => onSwitchEffectChange(v as SwitchEffect)}
+                      value={switchEffect}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="blur">Blur</SelectItem>
+                        <SelectItem value="grayscale">Grayscale</SelectItem>
+                        <SelectItem value="blur-grayscale">Blur + Grayscale</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </Card>
+
+                {/* Notifications */}
+                <Card title="Notifications">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <Label className="text-[13px]">Desktop notifications</Label>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        Show a system notification for Teams messages when its tab isn't in view.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={notificationsEnabled}
+                      className="mt-0.5"
+                      onCheckedChange={onNotificationsEnabledChange}
+                    />
+                  </div>
+                </Card>
+
+                <Card title="Connection">
+                  <div className="space-y-2">
+                    <Label className="text-[13px]">Remote CDP address</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        className="flex-1"
+                        onChange={(e) => {
+                          setHost(e.target.value)
+                          setTest({ status: "idle" })
+                        }}
+                        placeholder="Host"
+                        value={host}
+                      />
+                      <Input
+                        className="w-20"
+                        onChange={(e) => {
+                          setPort(e.target.value)
+                          setTest({ status: "idle" })
+                        }}
+                        placeholder="Port"
+                        type="number"
+                        value={port}
+                      />
+                    </div>
+                    <div className="flex gap-2 pt-0.5">
+                      <Button
+                        className="flex-1"
+                        disabled={test.status === "testing"}
+                        onClick={handleTest}
+                        size="sm"
+                        variant="outline"
+                      >
+                        {test.status === "testing" ? "Testing…" : "Test"}
+                      </Button>
+                      <Button
+                        className="flex-1"
+                        disabled={saving || !dirty}
+                        onClick={handleSave}
+                        size="sm"
+                      >
+                        {saving ? "Saving…" : "Save"}
+                      </Button>
+                    </div>
+                    {test.status === "ok" ? (
+                      <p className="text-[11px] text-emerald-500">Connected — {test.browser}</p>
+                    ) : test.status === "error" ? (
+                      <p className="text-[11px] text-red-500">
+                        {humanizeConnError(test.message, host, port)}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">
+                        Saving reconnects the active tab.
+                      </p>
+                    )}
+                  </div>
+                </Card>
+              </>
+            )}
+
+            {tab === "local" && (
+              <>
+                <Card title="Local tabs">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <Label className="text-[13px]">Auto-grant media permissions</Label>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        Grant mic, camera, screen-share and notifications without a prompt (local
+                        session only).
+                      </p>
+                    </div>
+                    <Switch
+                      checked={autoGrantLocalMedia}
+                      className="mt-0.5"
+                      onCheckedChange={onAutoGrantLocalMediaChange}
+                    />
+                  </div>
+                </Card>
+
+                <Card title="Local extensions">
+                  <div className="space-y-2.5">
+                    {localExtensions.length === 0 && (
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        Load an unpacked MV3 extension into the local-tab session.
+                      </p>
+                    )}
+                    {localExtensions.map((ext) => (
+                      <div
+                        className="rounded-xl border border-border/60 bg-background/40 p-3"
+                        key={ext.path}
+                      >
+                        <div className="flex items-start gap-2.5">
+                          {ext.icon ? (
+                            <img alt="" className="size-9 shrink-0 rounded" src={ext.icon} />
+                          ) : (
+                            <div className="size-9 shrink-0 rounded bg-foreground/10" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-[13px] font-medium">{ext.name}</span>
+                              {ext.version && (
+                                <span className="shrink-0 text-[11px] text-muted-foreground">
+                                  {ext.version}
+                                </span>
+                              )}
+                            </div>
+                            {ext.description && (
+                              <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+                                {ext.description}
+                              </p>
+                            )}
+                            {ext.id && (
+                              <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/70">
+                                ID: {ext.id}
+                              </p>
+                            )}
+                            {!ext.loaded && (
+                              <p className="mt-0.5 text-[11px] text-destructive">Not loaded</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                          {ext.popupUrl && (
+                            <Button
+                              onClick={() => onOpenExtensionUrl(ext.popupUrl as string)}
+                              size="sm"
+                              variant="outline"
+                            >
+                              Popup
+                            </Button>
+                          )}
+                          {ext.optionsUrl && (
+                            <Button
+                              onClick={() => onOpenExtensionUrl(ext.optionsUrl as string)}
+                              size="sm"
+                              variant="outline"
+                            >
+                              Options
+                            </Button>
+                          )}
+                          <Button
+                            onClick={() => onReloadLocalExtension(ext.path)}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            Reload
+                          </Button>
+                          <Button
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setPendingRemoveExt(ext)}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                    <Button
+                      className="w-full"
+                      onClick={onAddLocalExtension}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Add unpacked extension…
+                    </Button>
+                  </div>
+                </Card>
+              </>
+            )}
           </div>
         </SheetContent>
       </Sheet>
+
+      <AlertDialog
+        onOpenChange={(open) => !open && setPendingRemoveExt(null)}
+        open={pendingRemoveExt != null}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove “{pendingRemoveExt?.name}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The extension is unloaded from local tabs and removed from the list. You can add it
+              again later from its folder.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingRemoveExt) onRemoveLocalExtension(pendingRemoveExt.path)
+                setPendingRemoveExt(null)
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

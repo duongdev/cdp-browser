@@ -40,17 +40,3 @@ export function prevTab(tabs: Tab[], activeId: string | null): string {
   const i = tabs.findIndex((t) => t.id === activeId)
   return tabs[(i - 1 + tabs.length) % tabs.length].id
 }
-
-export interface ClosedTabStack {
-  push(url: string): void
-  popLast(): string | undefined
-}
-
-/** Tracks closed tab urls so the most recently closed can be reopened (Cmd+Shift+T). */
-export function createClosedTabStack(): ClosedTabStack {
-  const urls: string[] = []
-  return {
-    push: (url) => void urls.push(url),
-    popLast: () => urls.pop(),
-  }
-}

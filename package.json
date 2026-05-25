@@ -32,6 +32,14 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Local tabs use the microphone for calls and meetings.",
+        "NSCameraUsageDescription": "Local tabs use the camera for calls and meetings.",
+        "NSAudioCaptureUsageDescription": "Local tabs capture audio when you share your screen."
+      },
       "target": [
         "dmg",
         "zip"
@@ -61,6 +69,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "motion": "^12.40.0",
     "radix-ui": "^1.4.3",
+    "sonner": "^2.0.7",
     "ws": "*"
   },
   "devDependencies": {

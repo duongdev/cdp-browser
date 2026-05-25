@@ -1,125 +1,235 @@
-import { Globe02Icon } from "@hugeicons/core-free-icons"
+import { CloudIcon, Globe02Icon, LaptopIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { VisuallyHidden } from "radix-ui"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 
+export type NewTabKind = "cdp" | "local"
+
+const MODE = {
+  cdp: {
+    label: "CDP tab",
+    icon: CloudIcon,
+    tint: "text-sky-600 dark:text-sky-400",
+    chip: "bg-sky-500/20 text-sky-700 ring-sky-500/40 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-400/30",
+    ring: "ring-sky-500/55 focus-within:ring-sky-500/75 dark:ring-sky-400/40 dark:focus-within:ring-sky-400/60",
+    pinsLabel: "Pinned",
+  },
+  local: {
+    label: "Local tab",
+    icon: LaptopIcon,
+    tint: "text-emerald-600 dark:text-emerald-400",
+    chip: "bg-emerald-500/20 text-emerald-700 ring-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30",
+    ring: "ring-emerald-500/55 focus-within:ring-emerald-500/75 dark:ring-emerald-400/40 dark:focus-within:ring-emerald-400/60",
+    pinsLabel: "Local tabs",
+  },
+} as const
+
 interface NewTabDialogProps {
   open: boolean
+  /** Seeds the mode each time the dialog opens (the active tab's kind, else cdp). */
+  initialKind: NewTabKind
   onOpenChange: (open: boolean) => void
-  pins: Pin[]
-  onNewTab: (url: string) => void
-  onActivatePin: (pin: Pin) => void
+  cdpPins: Pin[]
+  localPins: Pin[]
+  onOpenUrl: (kind: NewTabKind, url: string) => void
+  onActivatePin: (kind: NewTabKind, pin: Pin) => void
 }
 
 export function NewTabDialog({
   open,
+  initialKind,
   onOpenChange,
-  pins,
-  onNewTab,
+  cdpPins,
+  localPins,
+  onOpenUrl,
   onActivatePin,
 }: NewTabDialogProps) {
+  const [kind, setKind] = useState<NewTabKind>(initialKind)
   const [query, setQuery] = useState("")
+  const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Seed mode + reset on each open.
   useEffect(() => {
     if (open) {
+      setKind(initialKind)
       setQuery("")
-      // Focus input after dialog animation
+      setSelected(0)
       const t = setTimeout(() => inputRef.current?.focus(), 50)
       return () => clearTimeout(t)
     }
-  }, [open])
+  }, [open, initialKind])
 
-  const handleSubmit = () => {
-    const trimmed = query.trim()
-    if (!trimmed) return
-    let url = trimmed
-    if (!url.match(/^https?:\/\//)) url = `https://${url}`
-    onNewTab(url)
+  const mode = MODE[kind]
+  const pins = kind === "cdp" ? cdpPins : localPins
+  const trimmed = query.trim()
+
+  const filteredPins = useMemo(() => {
+    if (!trimmed) return pins
+    const q = trimmed.toLowerCase()
+    return pins.filter((p) => p.title.toLowerCase().includes(q) || p.url.toLowerCase().includes(q))
+  }, [pins, trimmed])
+
+  // Row model: an optional "open URL" row first (when typing), then matching pins.
+  type Item = { kind: "url"; url: string } | { kind: "pin"; pin: Pin }
+  const items = useMemo<Item[]>(() => {
+    const list: Item[] = []
+    if (trimmed) list.push({ kind: "url", url: trimmed })
+    for (const p of filteredPins) list.push({ kind: "pin", pin: p })
+    return list
+  }, [trimmed, filteredPins])
+
+  // Keep the selection in range as items change.
+  useEffect(() => {
+    setSelected((s) => Math.min(s, Math.max(0, items.length - 1)))
+  }, [items.length])
+
+  const run = (item: Item | undefined) => {
+    if (!item) {
+      if (trimmed) onOpenUrl(kind, normalizeUrl(trimmed))
+      onOpenChange(false)
+      return
+    }
+    if (item.kind === "url") onOpenUrl(kind, normalizeUrl(item.url))
+    else onActivatePin(kind, item.pin)
     onOpenChange(false)
   }
 
-  const handlePinClick = (pin: Pin) => {
-    onActivatePin(pin)
-    onOpenChange(false)
+  // All keys handled on the input so it never loses focus (arrows + Tab + Enter).
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Tab") {
+      e.preventDefault()
+      setKind((k) => (k === "cdp" ? "local" : "cdp"))
+      setSelected(0)
+      return
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault()
+      setSelected((s) => (items.length ? (s + 1) % items.length : 0))
+      return
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault()
+      setSelected((s) => (items.length ? (s - 1 + items.length) % items.length : 0))
+      return
+    }
+    if (e.key === "Enter") {
+      e.preventDefault()
+      run(items[selected])
+    }
   }
-
-  const filtered = query.trim()
-    ? pins.filter(
-        (p) =>
-          p.title.toLowerCase().includes(query.toLowerCase()) ||
-          p.url.toLowerCase().includes(query.toLowerCase()),
-      )
-    : pins
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="sm:max-w-[420px] p-0 gap-0 overflow-hidden">
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[460px]" showCloseButton={false}>
         <VisuallyHidden.Root>
-          <DialogTitle>New Tab</DialogTitle>
+          <DialogTitle>New {mode.label}</DialogTitle>
         </VisuallyHidden.Root>
 
-        {/* URL input */}
-        <div className="flex items-center border-b border-border px-4">
-          <HugeiconsIcon className="size-4 text-muted-foreground shrink-0" icon={Globe02Icon} />
+        {/* input — mode shown by the leading icon + accent ring + chip (no segment bar) */}
+        <div
+          className={cn(
+            "m-3 mb-2 flex items-center gap-2.5 rounded-xl bg-foreground/[0.04] px-3 ring-2 transition-all",
+            mode.ring,
+          )}
+        >
+          <HugeiconsIcon className={cn("size-4 shrink-0", mode.tint)} icon={mode.icon} />
           <input
-            className="flex-1 h-12 px-3 text-sm bg-transparent text-foreground placeholder:text-muted-foreground outline-none"
+            className="h-11 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSubmit()
-            }}
-            placeholder="Enter URL or search pins..."
+            onKeyDown={onKeyDown}
+            placeholder={`Open a new ${mode.label} — URL or search…`}
             ref={inputRef}
             type="text"
             value={query}
           />
+          <span
+            className={cn(
+              "shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium ring-1",
+              mode.chip,
+            )}
+          >
+            {mode.label}
+          </span>
         </div>
 
-        {/* Pinned quick-launch */}
-        {filtered.length > 0 && (
-          <div className="p-3 max-h-[300px] overflow-y-auto">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-1 pb-2 select-none">
-              {query.trim() ? "Matches" : "Pinned"}
+        <div className="max-h-[300px] overflow-y-auto px-3 pb-2">
+          {!(trimmed && filteredPins.length === 0) && (
+            <p className="select-none px-1 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/55">
+              {trimmed ? "Suggestions" : mode.pinsLabel}
             </p>
-            <div className="space-y-0.5">
-              {filtered.map((p) => (
+          )}
+          <div className="space-y-0.5">
+            {items.map((item, i) => {
+              const isSel = i === selected
+              return (
                 <button
                   className={cn(
-                    "w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left",
-                    "text-foreground hover:bg-accent transition-colors",
+                    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+                    isSel ? "bg-foreground/[0.07]" : "hover:bg-foreground/[0.04]",
                   )}
-                  key={p.id}
-                  onClick={() => handlePinClick(p)}
+                  key={item.kind === "url" ? "__url" : item.pin.id}
+                  onClick={() => run(item)}
+                  onMouseMove={() => setSelected(i)}
                   type="button"
                 >
-                  <PinFavicon favicon={p.favicon} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium truncate">{p.title}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">{p.url}</p>
-                  </div>
+                  {item.kind === "url" ? (
+                    <>
+                      <HugeiconsIcon
+                        className="size-4 shrink-0 text-muted-foreground"
+                        icon={Globe02Icon}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13px]">
+                        Open <span className="text-foreground">{item.url}</span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <PinFavicon favicon={item.pin.favicon} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px]">{item.pin.title}</span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {item.pin.url}
+                        </span>
+                      </span>
+                    </>
+                  )}
+                  {isSel && (
+                    <kbd className="shrink-0 rounded border border-border/70 bg-foreground/[0.06] px-1 font-mono text-[10px] text-muted-foreground">
+                      ↵
+                    </kbd>
+                  )}
                 </button>
-              ))}
-            </div>
+              )
+            })}
           </div>
-        )}
+          {items.length === 0 && (
+            <p className="px-1 py-3 text-center text-xs text-muted-foreground">
+              Type a URL and press Enter.
+            </p>
+          )}
+        </div>
 
-        {/* Empty state when filtering yields nothing */}
-        {query.trim() && filtered.length === 0 && pins.length > 0 && (
-          <div className="p-4 text-center text-xs text-muted-foreground">
-            No matching pins. Press Enter to open URL.
-          </div>
-        )}
-
-        {/* Hint when no pins */}
-        {pins.length === 0 && (
-          <div className="p-4 text-center text-xs text-muted-foreground">
-            Type a URL and press Enter to open a new tab.
-          </div>
-        )}
+        <div className="flex items-center gap-3 border-t border-border/60 px-3.5 py-2 text-[11px] text-muted-foreground/60">
+          <Hint k="Tab">switch mode</Hint>
+          <Hint k="↑↓">navigate</Hint>
+          <Hint k="↵">open</Hint>
+        </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function Hint({ k, children }: { k: string; children: React.ReactNode }) {
+  return (
+    <span className="flex items-center gap-1">
+      <kbd className="rounded border border-border/70 bg-foreground/[0.06] px-1 font-mono text-[10px]">
+        {k}
+      </kbd>
+      {children}
+    </span>
   )
 }
 
@@ -129,7 +239,7 @@ function PinFavicon({ favicon }: { favicon?: string }) {
       <img
         alt=""
         aria-hidden="true"
-        className="size-5 rounded shrink-0"
+        className="size-5 shrink-0 rounded"
         onError={(e) => {
           ;(e.target as HTMLImageElement).style.display = "none"
         }}
@@ -138,4 +248,8 @@ function PinFavicon({ favicon }: { favicon?: string }) {
     )
   }
   return <HugeiconsIcon className="size-5 shrink-0 text-muted-foreground" icon={Globe02Icon} />
+}
+
+function normalizeUrl(input: string) {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : `https://${input}`
 }

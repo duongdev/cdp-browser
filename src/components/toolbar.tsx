@@ -47,6 +47,16 @@ interface ToolbarProps {
   onNotificationsEnabledChange: (enabled: boolean) => void
   syncTheme: boolean
   onSyncThemeChange: (enabled: boolean) => void
+  autoGrantLocalMedia: boolean
+  onAutoGrantLocalMediaChange: (enabled: boolean) => void
+  /** Extensions apply to local tabs only — their toolbar icons hide for CDP tabs. */
+  isLocalActive: boolean
+  localExtensions: LocalExtensionInfo[]
+  onAddLocalExtension: () => void
+  onReloadLocalExtension: (path: string) => void
+  onRemoveLocalExtension: (path: string) => void
+  onOpenExtensionUrl: (url: string) => void
+  onOpenActionPopup: (id: string, anchor: { right: number; bottom: number }) => void
 }
 
 export interface ToolbarHandle {
@@ -94,6 +104,15 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onNotificationsEnabledChange,
     syncTheme,
     onSyncThemeChange,
+    autoGrantLocalMedia,
+    onAutoGrantLocalMediaChange,
+    isLocalActive,
+    localExtensions,
+    onAddLocalExtension,
+    onReloadLocalExtension,
+    onRemoveLocalExtension,
+    onOpenExtensionUrl,
+    onOpenActionPopup,
   },
   ref,
 ) {
@@ -255,6 +274,30 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           <TooltipContent>{isPinned ? "Unpin this tab" : "Pin this tab"}</TooltipContent>
         </Tooltip>
 
+        {/* Loaded extension action icons — local tabs only (Electron has no
+            native browser-action bar). */}
+        {isLocalActive &&
+          localExtensions
+            .filter((ext) => ext.loaded && ext.popupUrl && ext.icon)
+            .map((ext) => (
+              <Tooltip key={ext.path}>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect()
+                      onOpenActionPopup(ext.id as string, { right: r.right, bottom: r.bottom })
+                    }}
+                    size="icon-xs"
+                    variant="ghost"
+                  >
+                    <img alt="" className="size-4 rounded-sm" src={ext.icon as string} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{ext.name}</TooltipContent>
+              </Tooltip>
+            ))}
+
         {/* Notifications */}
         <NotificationBell
           notifications={notifications}
@@ -269,16 +312,23 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         {/* Settings */}
         <SettingsDialog
           adaptiveViewport={adaptiveViewport}
+          autoGrantLocalMedia={autoGrantLocalMedia}
           committed={settingsCommitted}
           emulatedSize={emulatedSize}
           forceOnClient={forceOnClient}
+          localExtensions={localExtensions}
           notificationsEnabled={notificationsEnabled}
           onAdaptiveViewportChange={onAdaptiveViewportChange}
+          onAddLocalExtension={onAddLocalExtension}
+          onAutoGrantLocalMediaChange={onAutoGrantLocalMediaChange}
           onCommit={onSettingsCommit}
           onConfigSaved={onConfigSaved}
           onForceOnClientChange={onForceOnClientChange}
           onNotificationsEnabledChange={onNotificationsEnabledChange}
           onOpenChange={onSettingsOpenChange}
+          onOpenExtensionUrl={onOpenExtensionUrl}
+          onReloadLocalExtension={onReloadLocalExtension}
+          onRemoveLocalExtension={onRemoveLocalExtension}
           onRequestOpenMouse={onSettingsRequestOpenMouse}
           onSwitchEffectChange={onSwitchEffectChange}
           onSyncThemeChange={onSyncThemeChange}

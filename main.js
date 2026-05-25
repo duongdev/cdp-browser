@@ -1,11 +1,34 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, clipboard, Notification, Menu } =
-  require("electron")
+const {
+  app,
+  BaseWindow,
+  WebContentsView,
+  ipcMain,
+  nativeTheme,
+  clipboard,
+  Notification,
+  Menu,
+  session,
+  desktopCapturer,
+  systemPreferences,
+  dialog,
+} = require("electron")
 const path = require("path")
 const fs = require("fs")
 const WebSocket = require("ws")
 const { emulatedMediaParams } = require("./theme-emulation")
 
+// The window is a BaseWindow composed of a chrome view (the React UI, full
+// window) layered over zero-or-more local-tab page views. `chromeView` hosts
+// everything the renderer draws — including the CDP screencast canvas — so all
+// `webContents.send`/`isFocused` that used to target the BrowserWindow now go
+// through the chrome view. See docs/adr/0005.
 let mainWindow
+let chromeView
+const chromeWc = () => chromeView && chromeView.webContents
+function chromeSend(channel, ...args) {
+  const wc = chromeWc()
+  if (wc && !wc.isDestroyed()) wc.send(channel, ...args)
+}
 let activeWs = null
 let activeTabId = null
 let connectId = 0
@@ -99,40 +122,56 @@ app.whenReady().then(() => {
   buildAppMenu()
   nativeTheme.themeSource = settings.themeSource || "system"
 
-  mainWindow = new BrowserWindow({
+  mainWindow = new BaseWindow({
     width: 1400,
     height: 900,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 12, y: 12 },
     vibrancy: "sidebar",
+  })
+
+  chromeView = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
   })
+  // Transparent so the window's sidebar vibrancy can show through wherever the
+  // renderer leaves a translucent surface.
+  chromeView.setBackgroundColor("#00000000")
+  mainWindow.contentView.addChildView(chromeView)
+  fitChromeView()
+  mainWindow.on("resize", fitChromeView)
 
   if (isDev) {
-    mainWindow.loadURL("http://localhost:5173")
+    chromeView.webContents.loadURL("http://localhost:5173")
   } else {
-    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"))
+    chromeView.webContents.loadFile(path.join(__dirname, "dist", "index.html"))
   }
+
+  setupLocalSession()
 
   // Notify renderer when native theme changes
   nativeTheme.on("updated", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("cdp:native-theme-changed", nativeTheme.shouldUseDarkColors)
-    }
+    chromeSend("cdp:native-theme-changed", nativeTheme.shouldUseDarkColors)
     applyThemeEmulation(activeWs)
   })
 
   // Trackpad swipe gestures (macOS)
   mainWindow.on("swipe", (_, direction) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("cdp:swipe", direction)
-    }
+    chromeSend("cdp:swipe", direction)
   })
 })
+
+// The chrome view always fills the whole window (it draws the sidebar/toolbar
+// and the CDP canvas). Local page views are positioned over the viewport hole.
+function fitChromeView() {
+  if (!mainWindow || !chromeView) return
+  const { width, height } = mainWindow.getContentBounds()
+  chromeView.setBounds({ x: 0, y: 0, width, height })
+}
 
 ipcMain.handle("cdp:copy-to-clipboard", (_, text) => {
   clipboard.writeText(text)
@@ -266,17 +305,13 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
         if (activeWs !== ws) return
         try {
           const msg = JSON.parse(data.toString())
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send("cdp:event", msg)
-          }
+          chromeSend("cdp:event", msg)
         } catch (e) {}
       })
 
       ws.on("close", () => {
         if (activeWs === ws) activeWs = null
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("cdp:disconnected")
-        }
+        chromeSend("cdp:disconnected")
       })
 
       ws.on("error", (err) => {
@@ -361,6 +396,9 @@ ipcMain.handle("cdp:get-ui-state", () => ({
   switchEffect: settings.switchEffect ?? "blur",
   notificationsEnabled: settings.notificationsEnabled ?? true,
   syncTheme: settings.syncTheme ?? true,
+  autoGrantLocalMedia: settings.autoGrantLocalMedia ?? true,
+  restoreLocalPins: settings.restoreLocalPins ?? true,
+  localExtensionPaths: settings.localExtensionPaths ?? [],
 }))
 
 ipcMain.handle("cdp:set-ui-state", (_, partial) => {
@@ -375,6 +413,8 @@ ipcMain.handle("cdp:set-ui-state", (_, partial) => {
     settings.syncTheme = partial.syncTheme
     applyThemeEmulation(activeWs)
   }
+  if ("autoGrantLocalMedia" in partial) settings.autoGrantLocalMedia = partial.autoGrantLocalMedia
+  if ("restoreLocalPins" in partial) settings.restoreLocalPins = partial.restoreLocalPins
   saveSettings(settings)
 })
 
@@ -514,9 +554,7 @@ function ingestNotification(raw, targetId, targetUrl) {
   saveNotifications()
   updateBadge()
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("cdp:notification", entry)
-  }
+  chromeSend("cdp:notification", entry)
 
   const windowFocused = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
   if (
@@ -532,7 +570,7 @@ function ingestNotification(raw, targetId, targetUrl) {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.show()
         mainWindow.focus()
-        mainWindow.webContents.send("cdp:notification-activate", entry)
+        chromeSend("cdp:notification-activate", entry)
       }
     })
     osN.show()
@@ -633,6 +671,294 @@ ipcMain.handle("cdp:clear-notifications", () => {
   saveNotifications()
   updateBadge()
   return notifications
+})
+
+// ---------------------------------------------------------------------------
+// Local tabs: native WebContentsViews on a shared persistent session, layered
+// over the chrome view's viewport hole. The renderer owns the tab list +
+// activeKind; the main process owns the views, the session, permissions, and
+// extension loading. See docs/adr/0005.
+// ---------------------------------------------------------------------------
+
+const LOCAL_PARTITION = "persist:local"
+const localSession = () => session.fromPartition(LOCAL_PARTITION)
+
+function setupLocalSession() {
+  const ses = localSession()
+  const allowMedia = () => settings.autoGrantLocalMedia ?? true
+  // Web-layer permissions (mic/camera/notifications/etc.) for local tabs.
+  // A media request also triggers the macOS TCC prompt up front.
+  ses.setPermissionRequestHandler((_wc, permission, cb) => {
+    if (permission === "media") ensureMediaAccess()
+    cb(allowMedia())
+  })
+  ses.setPermissionCheckHandler(() => allowMedia())
+  // Screen-share: prefer the macOS system picker; fall back to the first screen.
+  ses.setDisplayMediaRequestHandler(
+    (_request, cb) => {
+      desktopCapturer
+        .getSources({ types: ["screen", "window"] })
+        .then((sources) => cb(sources[0] ? { video: sources[0] } : {}))
+        .catch(() => cb({}))
+    },
+    { useSystemPicker: true },
+  )
+  loadLocalExtensions()
+}
+
+// Electron implements chrome.storage.local but NOT .sync (it throws "sync is not
+// available" in content scripts — electron/electron, electron-browser-shell#34).
+// We can't inject into a loaded extension's content-script world, so we load a
+// patched COPY whose content scripts get this shim prepended: it aliases
+// storage.sync → local and reports local onChanged as "sync" so listeners keyed
+// on "sync" still fire. The popup gets the same aliasing via its preload.
+const SYNC_SHIM_SRC = `;(() => {
+  try {
+    const s = chrome.storage
+    if (!s || !s.local) return
+    try { Object.defineProperty(s, "sync", { value: s.local, configurable: true, writable: true }) } catch (_) {}
+    const add = s.onChanged.addListener.bind(s.onChanged)
+    s.onChanged.addListener = (cb) => add((changes, area) => cb(changes, area === "local" ? "sync" : area))
+  } catch (_) {}
+})();`
+
+// srcPath -> loaded Electron.Extension (loaded from a patched copy).
+const loadedExt = new Map()
+
+// Copy the extension to userData and prepend the sync shim to its (isolated-world)
+// content scripts. Returns the patched copy's path to load.
+function prepareExtension(src) {
+  const dest = path.join(app.getPath("userData"), "loaded-extensions", path.basename(src))
+  try {
+    fs.rmSync(dest, { recursive: true, force: true })
+  } catch (e) {}
+  fs.cpSync(src, dest, { recursive: true })
+  try {
+    const mpath = path.join(dest, "manifest.json")
+    const m = JSON.parse(fs.readFileSync(mpath, "utf8"))
+    const shim = "__cdp_sync_shim.js"
+    fs.writeFileSync(path.join(dest, shim), SYNC_SHIM_SRC)
+    if (Array.isArray(m.content_scripts)) {
+      for (const cs of m.content_scripts) {
+        // MAIN-world scripts have no chrome.* to patch — only the isolated ones.
+        if (cs.world && String(cs.world).toUpperCase() === "MAIN") continue
+        cs.js = [shim, ...(cs.js || [])]
+      }
+      fs.writeFileSync(mpath, JSON.stringify(m, null, 2))
+    }
+  } catch (e) {
+    console.error("ext shim failed:", e.message)
+  }
+  return dest
+}
+
+async function loadOneExtension(src) {
+  try {
+    const ext = await localSession().extensions.loadExtension(prepareExtension(src), {
+      allowFileAccess: true,
+    })
+    loadedExt.set(src, ext)
+    return ext
+  } catch (e) {
+    console.error("local extension load failed:", src, e.message)
+    return null
+  }
+}
+
+async function loadLocalExtensions() {
+  for (const p of settings.localExtensionPaths || []) await loadOneExtension(p)
+}
+
+// macOS gates mic/camera behind TCC regardless of the web grant. Trigger the
+// system prompt up front so the first meeting works without a silent failure.
+async function ensureMediaAccess() {
+  if (!(settings.autoGrantLocalMedia ?? true)) return
+  if (typeof systemPreferences.askForMediaAccess !== "function") return
+  for (const kind of ["microphone", "camera"]) {
+    try {
+      if (systemPreferences.getMediaAccessStatus(kind) !== "granted") {
+        await systemPreferences.askForMediaAccess(kind)
+      }
+    } catch (e) {}
+  }
+}
+
+ipcMain.handle("local:get-pins", () => settings.localPins || [])
+ipcMain.handle("local:save-pins", (_e, pins) => {
+  settings.localPins = pins
+  saveSettings(settings)
+})
+
+// Validate an unpacked-extension folder before loading. Returns the parsed
+// manifest, or an { error } message suitable for a toast.
+function readManifest(dir) {
+  let manifest
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"))
+  } catch {
+    return { error: "No readable manifest.json in that folder." }
+  }
+  if (manifest.manifest_version !== 3) {
+    return { error: "Only Manifest V3 extensions are supported." }
+  }
+  if (!manifest.name) return { error: "manifest.json is missing a name." }
+  return { manifest }
+}
+
+const ICON_MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", svg: "image/svg+xml" }
+function iconDataUrl(dir, manifest) {
+  const icons = manifest.icons || {}
+  const rel = icons["128"] || icons["48"] || icons["32"] || Object.values(icons)[0]
+  if (!rel) return null
+  try {
+    const buf = fs.readFileSync(path.join(dir, rel))
+    const ext = path.extname(rel).slice(1).toLowerCase()
+    return `data:${ICON_MIME[ext] || "image/png"};base64,${buf.toString("base64")}`
+  } catch {
+    return null
+  }
+}
+
+// Rich, Chrome-like info for each configured extension (loaded or not).
+function extensionInfo() {
+  return (settings.localExtensionPaths || []).map((p) => {
+    const ext = loadedExt.get(p)
+    const m = ext ? ext.manifest : (readManifest(p).manifest ?? {})
+    const base = ext ? ext.url : ""
+    const popup = m.action?.default_popup
+    const optionsPage = m.options_page || m.options_ui?.page
+    return {
+      path: p,
+      loaded: !!ext,
+      id: ext?.id ?? null,
+      name: ext?.name ?? m.name ?? p,
+      version: ext?.version ?? m.version ?? "",
+      description: m.description ?? "",
+      icon: iconDataUrl(p, m),
+      popupUrl: popup && base ? base + popup : null,
+      optionsUrl: optionsPage && base ? base + optionsPage : null,
+    }
+  })
+}
+
+ipcMain.handle("local:get-extensions", () => extensionInfo())
+
+ipcMain.handle("local:pick-extension", async () => {
+  const res = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] })
+  if (res.canceled || !res.filePaths[0]) return { extensions: extensionInfo() }
+  const p = res.filePaths[0]
+  const parsed = readManifest(p)
+  if (parsed.error) return { error: parsed.error }
+  if (!(await loadOneExtension(p))) {
+    return { error: "Failed to load extension." }
+  }
+  if (!settings.localExtensionPaths) settings.localExtensionPaths = []
+  if (!settings.localExtensionPaths.includes(p)) {
+    settings.localExtensionPaths.push(p)
+    saveSettings(settings)
+  }
+  return { extensions: extensionInfo() }
+})
+
+ipcMain.handle("local:reload-extension", async (_e, p) => {
+  try {
+    const ex = loadedExt.get(p)
+    if (ex) localSession().extensions.removeExtension(ex.id)
+    loadedExt.delete(p)
+  } catch (e) {}
+  if (!(await loadOneExtension(p))) return { error: "Failed to reload extension." }
+  return { extensions: extensionInfo() }
+})
+
+// Extension action popup, shown as a Chrome-style popover anchored under the
+// toolbar icon. A dedicated WebContentsView loads the popup page. Two injected
+// fixes run at document-start: (1) alias chrome.storage.sync → local (Electron
+// has no `sync`, so the extension's sync.get silently fails → blank toggles);
+// (2) close the popover on blur / Escape.
+let actionPopupView = null
+let actionPopupOpening = false
+let actionPopupId = null
+let lastClosedId = null
+let lastClosedAt = 0
+
+function closeActionPopup() {
+  if (!actionPopupView) return
+  const v = actionPopupView
+  lastClosedId = actionPopupId
+  lastClosedAt = Date.now()
+  actionPopupView = null
+  actionPopupId = null
+  try {
+    mainWindow.contentView.removeChildView(v)
+    v.webContents.close()
+  } catch (e) {}
+}
+
+ipcMain.handle("local:close-action-popup", () => closeActionPopup())
+
+ipcMain.handle("local:open-action-popup", async (_e, { id, anchor }) => {
+  closeActionPopup()
+  // Toggle off: re-clicking the same icon. The popup's `blur` from this click
+  // already closed it just now, so treat a same-id open within the grace window
+  // as a toggle-off and stay closed.
+  if (actionPopupOpening) return
+  if (id === lastClosedId && Date.now() - lastClosedAt < 350) return
+  actionPopupOpening = true
+
+  const ext = extensionInfo().find((e) => e.id === id)
+  if (!ext || !ext.popupUrl) {
+    actionPopupOpening = false
+    return
+  }
+
+  const view = new WebContentsView({
+    webPreferences: {
+      partition: LOCAL_PARTITION,
+      // Main-world preload that aliases chrome.storage.sync → local before the
+      // popup's scripts run (Electron has no sync; see storage-sync-shim.js).
+      preload: path.join(__dirname, "inject", "storage-sync-shim.js"),
+      contextIsolation: false,
+    },
+  })
+  view.setBackgroundColor("#00000000")
+  actionPopupView = view
+  actionPopupId = id
+  const wc = view.webContents
+  // Dismiss when focus leaves the popup (clicking the page or chrome).
+  wc.on("blur", () => closeActionPopup())
+
+  mainWindow.contentView.addChildView(view)
+  await wc.loadURL(ext.popupUrl)
+
+  // Size to content, then anchor under the icon (right-aligned), clamped to the window.
+  let size = { w: 360, h: 480 }
+  try {
+    size = await wc.executeJavaScript(
+      "({w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight})",
+    )
+  } catch (e) {}
+  actionPopupOpening = false
+  // Closed during the async setup — don't resurrect it.
+  if (actionPopupView !== view) return
+  const { width: winW, height: winH } = mainWindow.getContentBounds()
+  const w = Math.min(Math.max(size.w || 360, 280), 440)
+  const top = Math.round((anchor?.bottom ?? 44) + 4)
+  const h = Math.min(Math.max(size.h || 480, 120), winH - top - 8)
+  let x = Math.round((anchor?.right ?? winW) - w)
+  x = Math.max(8, Math.min(x, winW - w - 8))
+  view.setBounds({ x, y: top, width: w, height: h })
+  wc.focus()
+})
+
+ipcMain.handle("local:remove-extension", (_e, p) => {
+  settings.localExtensionPaths = (settings.localExtensionPaths || []).filter((x) => x !== p)
+  saveSettings(settings)
+  try {
+    const ex = loadedExt.get(p)
+    if (ex) localSession().extensions.removeExtension(ex.id)
+    loadedExt.delete(p)
+  } catch (e) {}
+  return { extensions: extensionInfo() }
 })
 
 app.on("window-all-closed", () => {

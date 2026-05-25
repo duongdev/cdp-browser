@@ -10,7 +10,7 @@ read them before writing any renderer code, and re-read when scope expands.
 
 ## Required reading (in this order)
 
-1. **[src/lib/CLAUDE.md](../../../src/lib/CLAUDE.md)** — domain modules: Remote Page, Tabs, Viewport Transform, Adaptive Viewport, Notifications View.
+1. **[src/lib/CLAUDE.md](../../../src/lib/CLAUDE.md)** — domain modules: Remote Page, Tabs, Viewport Transform, Adaptive Viewport, Notifications View, Pins, Local Tabs, Closed Tabs, Active Order, Key Routing.
 2. **[CONTEXT.md](../../../CONTEXT.md)** — domain vocabulary; use these terms in code, tests, and docs.
 3. **[docs/conventions/frontend.md](../../../docs/conventions/frontend.md)** — renderer stack, shadcn-first, state split, patterns.
 4. **[docs/conventions/ux.md](../../../docs/conventions/ux.md)** — keyboard-first parity, focus management, accessibility.

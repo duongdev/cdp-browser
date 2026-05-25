@@ -1,16 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { toast } from "sonner"
 import { EditPinDialog } from "@/components/edit-pin-dialog"
-import { NewTabDialog } from "@/components/new-tab-dialog"
+import { type LocalApi, LocalWebviews } from "@/components/local-webviews"
+import { NewTabDialog, type NewTabKind } from "@/components/new-tab-dialog"
 import type { NotifEntry } from "@/components/notification-bell"
 import type { SwitchEffect } from "@/components/settings-dialog"
 import { Sidebar } from "@/components/sidebar"
 import { StatusBar } from "@/components/status-bar"
 import { Toolbar, type ToolbarHandle } from "@/components/toolbar"
+import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Viewport } from "@/components/viewport"
 import { useRemotePage } from "@/hooks/use-remote-page"
+import { type ActiveRef, dropActive, mostRecent, touchActive } from "@/lib/active-order"
+import { createClosedStack } from "@/lib/closed-tabs"
+import {
+  fromPersisted,
+  type LocalTab,
+  type PersistedLocalTab,
+  sortPinnedFirst,
+  toPersisted,
+} from "@/lib/local-tabs"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
-import { createClosedTabStack, reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
+import { reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
+import { cn } from "@/lib/utils"
+
+type ActiveKind = "cdp" | "local"
 
 export interface TabInfo {
   id: string
@@ -23,7 +38,10 @@ export interface TabInfo {
 type ThemeSource = "system" | "light" | "dark"
 
 // A keyboard-navigable row in the sidebar — a pin or a visible tab.
-type NavRow = { kind: "pin"; pin: Pin } | { kind: "tab"; id: string }
+type NavRow =
+  | { kind: "pin"; pin: Pin }
+  | { kind: "tab"; id: string }
+  | { kind: "local"; id: string }
 
 function applyThemeClass(theme: ThemeSource, systemDark: boolean) {
   const isDark = theme === "dark" || (theme === "system" && systemDark)
@@ -74,7 +92,11 @@ export default function App() {
   const [syncTheme, setSyncTheme] = useState(true)
   const [bellOpen, setBellOpen] = useState(false)
   const [newTabOpen, setNewTabOpen] = useState(false)
+  const [newTabKind, setNewTabKind] = useState<NewTabKind>("cdp")
+  // Slack-style: holding Cmd for 1s shows the jump number on each favicon.
+  const [cmdHeld, setCmdHeld] = useState(false)
   const [editingPin, setEditingPin] = useState<Pin | null>(null)
+  const [editingLocalId, setEditingLocalId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // True when the drawer was opened via keyboard (Cmd+,) or promoted by a keypress —
   // a committed drawer ignores the mouse-leave auto-close timer.
@@ -85,11 +107,36 @@ export default function App() {
   const tabOrderRef = useRef<string[]>([])
   const systemDarkRef = useRef(true)
   const toolbarRef = useRef<ToolbarHandle>(null)
-  const closedTabsRef = useRef(createClosedTabStack())
+  const closedTabsRef = useRef(createClosedStack())
+  // Most-recently-used activation order across both kinds — on close, fall back
+  // to the previous active tab rather than the next in the list.
+  const activeOrderRef = useRef<ActiveRef[]>([])
   const tabsRef = useRef<TabInfo[]>([])
   const activeTabIdRef = useRef<string | null>(null)
   const pinsRef = useRef<Pin[]>([])
   const page = useRemotePage()
+
+  // Local tabs: native WebContentsViews owned by main; we hold the metadata.
+  const [localTabs, setLocalTabs] = useState<LocalTab[]>([])
+  const [localActiveId, setLocalActiveId] = useState<string | null>(null)
+  const [activeKind, setActiveKind] = useState<ActiveKind>("cdp")
+  const [autoGrantLocalMedia, setAutoGrantLocalMedia] = useState(true)
+  const [localExtensions, setLocalExtensions] = useState<LocalExtensionInfo[]>([])
+  const localTabsRef = useRef<LocalTab[]>([])
+  const localActiveIdRef = useRef<string | null>(null)
+  const activeKindRef = useRef<ActiveKind>("cdp")
+  const restoreLocalPinsRef = useRef(true)
+  const localRestoredRef = useRef(false)
+  // Late-bound so the one-time onOpenUrl listener always calls the latest impl.
+  const createLocalTabRef = useRef<((url?: string) => Promise<string>) | null>(null)
+  // Imperative nav controls for the active local <webview>, set by LocalWebviews.
+  const localApiRef = useRef<LocalApi | null>(null)
+  // switchLocalTab is defined below closeTab/closeTabs, which need it for MRU fallback.
+  const switchLocalTabRef = useRef<((id: string) => void) | null>(null)
+  const activeLocalTab = useMemo(
+    () => localTabs.find((t) => t.id === localActiveId) ?? null,
+    [localTabs, localActiveId],
+  )
 
   // Theme initialization
   useEffect(() => {
@@ -121,8 +168,21 @@ export default function App() {
       setSwitchEffect(s.switchEffect ?? "blur")
       setNotificationsEnabled(s.notificationsEnabled ?? true)
       setSyncTheme(s.syncTheme ?? true)
+      setAutoGrantLocalMedia(s.autoGrantLocalMedia ?? true)
+      restoreLocalPinsRef.current = s.restoreLocalPins ?? true
       uiStateLoadedRef.current = true
+      // Restore saved local tabs once on launch — the <webview>s mount + load
+      // from their persisted urls.
+      if (!localRestoredRef.current && (s.restoreLocalPins ?? true)) {
+        localRestoredRef.current = true
+        window.local.getPins().then((saved: PersistedLocalTab[]) => {
+          const restored = sortPinnedFirst(fromPersisted(saved))
+          localTabsRef.current = restored
+          setLocalTabs(restored)
+        })
+      }
     })
+    window.local.getExtensions().then(setLocalExtensions)
     window.cdp.getNotifications().then(setNotifications)
     window.cdp.onNotification((entry) => {
       setNotifications((prev) => (prev.some((n) => n.id === entry.id) ? prev : [entry, ...prev]))
@@ -261,6 +321,8 @@ export default function App() {
 
   const switchTab = useCallback(
     async (tabId: string) => {
+      setActiveKind("cdp")
+      activeOrderRef.current = touchActive(activeOrderRef.current, { kind: "cdp", id: tabId })
       // Re-clicking the already-active tab is a no-op — no reconnect, no repaint.
       if (tabId === activeTabIdRef.current) return
       setActiveTabId(tabId)
@@ -376,6 +438,52 @@ export default function App() {
     window.cdp.setUiState({ syncTheme: enabled })
   }, [])
 
+  const handleAutoGrantLocalMediaChange = useCallback((enabled: boolean) => {
+    setAutoGrantLocalMedia(enabled)
+    window.cdp.setUiState({ autoGrantLocalMedia: enabled })
+  }, [])
+
+  const handleAddLocalExtension = useCallback(async () => {
+    // Keep the (non-modal) settings drawer open across the native folder picker.
+    setSettingsCommitted(true)
+    const res = await window.local.pickExtension()
+    if ("error" in res) {
+      toast.error("Invalid extension", { description: res.error })
+      return
+    }
+    setLocalExtensions(res.extensions)
+    toast.success("Extension loaded")
+  }, [])
+
+  const handleReloadLocalExtension = useCallback(async (p: string) => {
+    const res = await window.local.reloadExtension(p)
+    if ("error" in res) {
+      toast.error("Reload failed", { description: res.error })
+      return
+    }
+    setLocalExtensions(res.extensions)
+    toast.success("Extension reloaded")
+  }, [])
+
+  const handleRemoveLocalExtension = useCallback(async (p: string) => {
+    const res = await window.local.removeExtension(p)
+    if (!("error" in res)) setLocalExtensions(res.extensions)
+  }, [])
+
+  // Open an extension surface (action popup / options page) as a local tab —
+  // Electron has no browser-chrome toolbar to host the action button.
+  const handleOpenExtensionUrl = useCallback((extUrl: string) => {
+    setSettingsOpen(false)
+    createLocalTabRef.current?.(extUrl)
+  }, [])
+
+  const handleOpenActionPopup = useCallback(
+    (id: string, anchor: { right: number; bottom: number }) => {
+      window.local.openActionPopup(id, anchor)
+    },
+    [],
+  )
+
   // OS-toast click arrives from main; route it through the same activation path.
   // Use a ref so we only register one ipcRenderer listener (no cleanup API on the
   // bridge), and always call the latest handleNotificationClick without re-registering.
@@ -458,7 +566,7 @@ export default function App() {
       // Save URL for reopen
       const tab = tabsRef.current.find((t) => t.id === tabId)
       if (tab?.url) {
-        closedTabsRef.current.push(tab.url)
+        closedTabsRef.current.push({ kind: "cdp", url: tab.url })
       }
 
       const wasActive = tabId === activeTabIdRef.current
@@ -478,10 +586,21 @@ export default function App() {
       await new Promise((r) => setTimeout(r, 300))
 
       const ordered = await refreshTabs()
-      if (wasActive && ordered && ordered.length > 0) {
-        // Prefer a visible tab; fall back to any target (e.g. a pinned one).
-        const next = ordered.find((t) => !pinForTarget(pinsRef.current, t.id)) ?? ordered[0]
-        await switchTab(next.id)
+      if (wasActive) {
+        // Fall back to the most-recently-active tab that's still open (either
+        // kind); only if none, pick the first visible CDP tab.
+        activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "cdp", id: tabId })
+        const prev = mostRecent(activeOrderRef.current, (e) =>
+          e.kind === "cdp"
+            ? !!ordered?.some((t) => t.id === e.id)
+            : localTabsRef.current.some((t) => t.id === e.id),
+        )
+        if (prev?.kind === "cdp") await switchTab(prev.id)
+        else if (prev?.kind === "local") switchLocalTabRef.current?.(prev.id)
+        else if (ordered && ordered.length > 0) {
+          const next = ordered.find((t) => !pinForTarget(pinsRef.current, t.id)) ?? ordered[0]
+          await switchTab(next.id)
+        }
       }
     },
     [refreshTabs, switchTab],
@@ -500,19 +619,161 @@ export default function App() {
     }
   }, [refreshTabs, switchTab])
 
-  const reopenClosedTab = useCallback(async () => {
-    const lastUrl = closedTabsRef.current.popLast()
-    if (lastUrl) {
-      await newTab(lastUrl)
+  // --- Local tabs ---
+
+  // All open local tabs are saved on every list change (restored on launch).
+  const persistLocalPins = useCallback((next: LocalTab[]) => {
+    window.local.savePins(toPersisted(next) as PersistedLocalTab[])
+  }, [])
+
+  const setLocalTabsAnd = useCallback(
+    (updater: (prev: LocalTab[]) => LocalTab[]) => {
+      setLocalTabs((prev) => {
+        const next = sortPinnedFirst(updater(prev))
+        localTabsRef.current = next
+        persistLocalPins(next)
+        return next
+      })
+    },
+    [persistLocalPins],
+  )
+
+  const switchLocalTab = useCallback((id: string) => {
+    setActiveKind("local")
+    activeOrderRef.current = touchActive(activeOrderRef.current, { kind: "local", id })
+    setLocalActiveId(id)
+  }, [])
+  useEffect(() => {
+    switchLocalTabRef.current = switchLocalTab
+  }, [switchLocalTab])
+
+  const createLocalTab = useCallback(
+    async (rawUrl?: string, opts?: { pinned?: boolean }) => {
+      let u = rawUrl || "https://www.google.com"
+      // Only assume https for a bare domain — keep real schemes (chrome-extension://, etc.).
+      if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = `https://${u}`
+      const id = crypto.randomUUID()
+      const tab: LocalTab = {
+        id,
+        url: u,
+        title: u,
+        pinned: opts?.pinned ?? false,
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        audible: false,
+        muted: false,
+      }
+      setLocalTabsAnd((prev) => [...prev, tab])
+      switchLocalTab(id)
+      return id
+    },
+    [setLocalTabsAnd, switchLocalTab],
+  )
+
+  const closeLocalTab = useCallback(
+    (id: string) => {
+      const tab = localTabsRef.current.find((t) => t.id === id)
+      if (tab?.url) closedTabsRef.current.push({ kind: "local", url: tab.url })
+      const remaining = localTabsRef.current.filter((t) => t.id !== id)
+      setLocalTabsAnd(() => remaining)
+      if (localActiveIdRef.current === id) {
+        // Fall back to the most-recently-active tab still open (either kind).
+        activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "local", id })
+        const prev = mostRecent(activeOrderRef.current, (e) =>
+          e.kind === "local"
+            ? remaining.some((t) => t.id === e.id)
+            : tabsRef.current.some((t) => t.id === e.id),
+        )
+        if (prev?.kind === "local") switchLocalTab(prev.id)
+        else if (prev?.kind === "cdp") switchTab(prev.id)
+        else if (remaining[0]) switchLocalTab(remaining[0].id)
+        else {
+          setLocalActiveId(null)
+          setActiveKind("cdp")
+        }
+      }
+    },
+    [setLocalTabsAnd, switchLocalTab, switchTab],
+  )
+
+  // Apply a live update from a webview event (title/favicon/loading/nav/audio).
+  const patchLocalTab = useCallback((id: string, patch: Partial<LocalTab>) => {
+    setLocalTabs((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, ...patch } : t))
+      localTabsRef.current = next
+      return next
+    })
+  }, [])
+
+  const toggleLocalPin = useCallback(
+    (id: string) => {
+      setLocalTabsAnd((prev) => prev.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))
+    },
+    [setLocalTabsAnd],
+  )
+
+  // Open the unified new-tab dialog seeded to a kind (active tab's kind for Cmd+T).
+  const openNewTab = useCallback((kind: NewTabKind) => {
+    setNewTabKind(kind)
+    setNewTabOpen(true)
+  }, [])
+
+  // Reveal the Cmd+number hints after the modifier is held ~1s.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const reset = () => {
+      clearTimeout(timer)
+      setCmdHeld(false)
     }
-  }, [newTab])
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "Meta" && !e.repeat) timer = setTimeout(() => setCmdHeld(true), 1000)
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.key === "Meta") reset()
+    }
+    window.addEventListener("keydown", down)
+    window.addEventListener("keyup", up)
+    window.addEventListener("blur", reset)
+    return () => {
+      window.removeEventListener("keydown", down)
+      window.removeEventListener("keyup", up)
+      window.removeEventListener("blur", reset)
+      clearTimeout(timer)
+    }
+  }, [])
+
+  const reorderLocalTabs = useCallback(
+    (reordered: LocalTab[]) => setLocalTabsAnd(() => reordered),
+    [setLocalTabsAnd],
+  )
+
+  const handleEditLocalSave = useCallback(
+    (id: string, title: string, nextUrl: string) => {
+      const current = localTabsRef.current.find((t) => t.id === id)
+      setLocalTabsAnd((prev) => prev.map((t) => (t.id === id ? { ...t, title, url: nextUrl } : t)))
+      if (current && current.url !== nextUrl) localApiRef.current?.navigate(id, nextUrl)
+    },
+    [setLocalTabsAnd],
+  )
+
+  const reopenClosedTab = useCallback(async () => {
+    const entry = closedTabsRef.current.pop()
+    if (!entry) return
+    if (entry.kind === "local") await createLocalTab(entry.url)
+    else await newTab(entry.url)
+  }, [newTab, createLocalTab])
 
   const navigate = useCallback(
     (navUrl: string) => {
       let u = navUrl
       if (!u.match(/^https?:\/\//)) u = `https://${u}`
       setUrl(u)
-      page.navigate(u)
+      if (activeKindRef.current === "local" && localActiveIdRef.current) {
+        localApiRef.current?.navigate(localActiveIdRef.current, u)
+      } else {
+        page.navigate(u)
+      }
     },
     [page],
   )
@@ -536,7 +797,7 @@ export default function App() {
       const closingActive = ids.includes(activeTabIdRef.current ?? "")
       for (const id of ids) {
         const tab = tabsRef.current.find((t) => t.id === id)
-        if (tab?.url) closedTabsRef.current.push(tab.url)
+        if (tab?.url) closedTabsRef.current.push({ kind: "cdp", url: tab.url })
       }
       tabOrderRef.current = tabOrderRef.current.filter((id) => !ids.includes(id))
       if (closingActive) {
@@ -544,69 +805,96 @@ export default function App() {
         setLoading(true)
         setLoadingText("No tab selected")
       }
+      for (const id of ids) {
+        activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "cdp", id })
+      }
       await Promise.all(ids.map((id) => window.cdp.closeTab(id)))
       await new Promise((r) => setTimeout(r, 300))
       const ordered = await refreshTabs()
-      if (closingActive && ordered && ordered.length > 0) {
-        const next = ordered.find((t) => !pinForTarget(pinsRef.current, t.id)) ?? ordered[0]
-        await switchTab(next.id)
+      if (closingActive) {
+        const prev = mostRecent(activeOrderRef.current, (e) =>
+          e.kind === "cdp"
+            ? !!ordered?.some((t) => t.id === e.id)
+            : localTabsRef.current.some((t) => t.id === e.id),
+        )
+        if (prev?.kind === "cdp") await switchTab(prev.id)
+        else if (prev?.kind === "local") switchLocalTabRef.current?.(prev.id)
+        else if (ordered && ordered.length > 0) {
+          const next = ordered.find((t) => !pinForTarget(pinsRef.current, t.id)) ?? ordered[0]
+          await switchTab(next.id)
+        }
       }
     },
     [refreshTabs, switchTab],
   )
 
-  const goBack = useCallback(() => page.back(), [page])
-  const goForward = useCallback(() => page.forward(), [page])
-  const reload = useCallback(() => page.reload(), [page])
+  const goBack = useCallback(() => {
+    const id = localActiveIdRef.current
+    if (activeKindRef.current === "local" && id) localApiRef.current?.back(id)
+    else page.back()
+  }, [page])
+  const goForward = useCallback(() => {
+    const id = localActiveIdRef.current
+    if (activeKindRef.current === "local" && id) localApiRef.current?.forward(id)
+    else page.forward()
+  }, [page])
+  const reload = useCallback(() => {
+    const id = localActiveIdRef.current
+    if (activeKindRef.current === "local" && id) localApiRef.current?.reload(id)
+    else page.reload()
+  }, [page])
 
   const activateRow = useCallback(
     (row: NavRow) => {
       if (row.kind === "pin") activatePin(row.pin)
+      else if (row.kind === "local") switchLocalTab(row.id)
       else switchTab(row.id)
     },
-    [activatePin, switchTab],
+    [activatePin, switchTab, switchLocalTab],
   )
 
-  // Cmd+1..9 indexes every pin (top→bottom) then the visible tabs — a number can
-  // open a dormant pin.
+  // Cmd+1..9 indexes, top→bottom as shown: pins, then CDP tabs, then local tabs.
   const indexRows = useMemo<NavRow[]>(
     () => [
       ...pins.map((p) => ({ kind: "pin" as const, pin: p })),
       ...visibleTabs.map((t) => ({ kind: "tab" as const, id: t.id })),
+      ...localTabs.map((t) => ({ kind: "local" as const, id: t.id })),
     ],
-    [pins, visibleTabs],
+    [pins, visibleTabs, localTabs],
   )
 
-  // Ctrl+Tab cycles only existing views — pins that hold a tab, then visible tabs
-  // — so cycling never opens a dormant pin.
+  // Ctrl+Tab cycles existing views — pins holding a tab, CDP tabs, local tabs.
   const cycleRows = useMemo<NavRow[]>(
     () => [
       ...pins.filter((p) => p.targetId).map((p) => ({ kind: "pin" as const, pin: p })),
       ...visibleTabs.map((t) => ({ kind: "tab" as const, id: t.id })),
+      ...localTabs.map((t) => ({ kind: "local" as const, id: t.id })),
     ],
-    [pins, visibleTabs],
+    [pins, visibleTabs, localTabs],
   )
 
   const cycleBy = useCallback(
     (delta: number) => {
       if (cycleRows.length === 0) return
-      const cur = cycleRows.findIndex(
-        (r) => (r.kind === "pin" ? r.pin.targetId : r.id) === activeTabId,
-      )
+      const matchesCurrent = (r: NavRow) =>
+        r.kind === "local"
+          ? activeKind === "local" && r.id === localActiveId
+          : activeKind === "cdp" && (r.kind === "pin" ? r.pin.targetId : r.id) === activeTabId
+      const cur = cycleRows.findIndex(matchesCurrent)
       const base = cur === -1 ? (delta > 0 ? -1 : 0) : cur
       const next = (base + delta + cycleRows.length) % cycleRows.length
       activateRow(cycleRows[next])
     },
-    [cycleRows, activeTabId, activateRow],
+    [cycleRows, activeTabId, localActiveId, activeKind, activateRow],
   )
 
   const switchToNextTab = useCallback(() => cycleBy(1), [cycleBy])
   const switchToPrevTab = useCallback(() => cycleBy(-1), [cycleBy])
 
-  // Cmd+1..8 jump to that row; Cmd+9 jumps to the last (browser convention).
+  // Cmd+1..9 → the Nth indexed row (literal, since the numbers are shown on hold).
   const switchToTabIndex = useCallback(
     (index: number) => {
-      const row = index === -1 ? indexRows[indexRows.length - 1] : indexRows[index]
+      const row = indexRows[index]
       if (row) activateRow(row)
     },
     [indexRows, activateRow],
@@ -622,6 +910,15 @@ export default function App() {
   useEffect(() => {
     activeTabIdRef.current = activeTabId
   }, [activeTabId])
+  useEffect(() => {
+    localActiveIdRef.current = localActiveId
+  }, [localActiveId])
+  useEffect(() => {
+    createLocalTabRef.current = createLocalTab
+  }, [createLocalTab])
+  useEffect(() => {
+    activeKindRef.current = activeKind
+  }, [activeKind])
 
   // Update URL when active tab changes
   useEffect(() => {
@@ -691,13 +988,13 @@ export default function App() {
 
       if (!e.metaKey) return
 
-      // Cmd+1..9: jump to tab by position (9 = last).
+      // Cmd+1..9: jump to the Nth indexed item (pins → CDP → local).
       if (!e.altKey && e.code.startsWith("Digit")) {
         const n = Number(e.code.slice(5))
         if (n >= 1 && n <= 9) {
           e.preventDefault()
           e.stopPropagation()
-          switchToTabIndex(n === 9 ? -1 : n - 1)
+          switchToTabIndex(n - 1)
           return
         }
       }
@@ -727,12 +1024,20 @@ export default function App() {
         case "t":
           e.preventDefault()
           e.stopPropagation()
-          setNewTabOpen(true)
+          openNewTab(activeKindRef.current)
           break
         case "w":
           e.preventDefault()
           e.stopPropagation()
-          if (activeTabId) closeTab(activeTabId)
+          if (activeKindRef.current === "local") {
+            const id = localActiveIdRef.current
+            // A pinned local tab is a persistent pin — Cmd+W must not destroy it
+            // (mirrors CDP pins, where Cmd+W closes the tab but keeps the holder).
+            const pinned = localTabsRef.current.find((t) => t.id === id)?.pinned
+            if (id && !pinned) closeLocalTab(id)
+          } else if (activeTabId) {
+            closeTab(activeTabId)
+          }
           break
         case "d":
           e.preventDefault()
@@ -806,6 +1111,8 @@ export default function App() {
   }, [
     activeTabId,
     closeTab,
+    closeLocalTab,
+    openNewTab,
     togglePin,
     reopenClosedTab,
     reload,
@@ -847,32 +1154,63 @@ export default function App() {
     }
   }, [refreshTabs, switchTab])
 
+  // Toolbar/URL bar reflect whichever surface is active.
+  const isLocal = activeKind === "local"
+  const effectiveUrl = isLocal ? (activeLocalTab?.url ?? "") : url
+  const effectiveCanGoBack = isLocal ? !!activeLocalTab?.canGoBack : canGoBack
+  const effectiveCanGoForward = isLocal ? !!activeLocalTab?.canGoForward : canGoForward
+  const effectiveIsPinned = isLocal ? !!activeLocalTab?.pinned : activePin != null
+  const handleTogglePin = useCallback(() => {
+    if (activeKindRef.current === "local") {
+      if (localActiveIdRef.current) toggleLocalPin(localActiveIdRef.current)
+    } else togglePin()
+  }, [togglePin, toggleLocalPin])
+  const handlePageLoading = isLocal ? !!activeLocalTab?.loading : pageLoading
+
+  // Local pinned tabs surfaced as quick-launch entries in the local New-tab dialog.
+  const localQuickLaunch = useMemo<Pin[]>(
+    () =>
+      localTabs
+        .filter((t) => t.pinned)
+        .map((t) => ({ id: t.id, title: t.title, url: t.url, favicon: t.favicon })),
+    [localTabs],
+  )
+
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex h-screen">
         <Sidebar
-          activeTabId={activeTabId}
+          activeTabId={activeKind === "cdp" ? activeTabId : null}
           collapsed={sidebarCollapsed}
           linkedTabByPin={linkedTabByPin}
+          localActiveId={activeKind === "local" ? localActiveId : null}
+          localTabs={localTabs}
           onActivatePin={activatePin}
           onBackToPinnedUrl={backToPinnedUrl}
+          onCloseLocalTab={closeLocalTab}
           onClosePin={(p) => p.targetId && closeTab(p.targetId)}
           onCloseTab={closeTab}
           onCloseTabs={closeTabs}
+          onEditLocalTab={setEditingLocalId}
           onEditPin={setEditingPin}
-          onNewTab={() => setNewTabOpen(true)}
+          onNewLocalTab={() => openNewTab("local")}
+          onNewTab={() => openNewTab("cdp")}
           onOpenPinInNewTab={openPinInNewTab}
           onPinnedToggle={() => setPinnedOpen((prev) => !prev)}
           onPinTab={pinTab}
+          onReorderLocalTabs={reorderLocalTabs}
           onReorderPins={persistPins}
           onReorderTabs={reorderTabs}
           onResize={setSidebarWidth}
           onResizeEnd={(w) => window.cdp.setSidebarWidth(w)}
+          onSwitchLocalTab={switchLocalTab}
           onSwitchTab={switchTab}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onToggleLocalPin={toggleLocalPin}
           onUnpinPin={unpinPin}
           pinnedOpen={pinnedOpen}
           pins={pins}
+          showNumbers={cmdHeld}
           tabs={visibleTabs}
           unreadByPin={unreadByPin}
           unreadByTab={unreadByTab}
@@ -881,16 +1219,21 @@ export default function App() {
         <div className="flex flex-1 flex-col min-w-0">
           <Toolbar
             adaptiveViewport={adaptiveViewport}
+            autoGrantLocalMedia={autoGrantLocalMedia}
             bellOpen={bellOpen}
-            canGoBack={canGoBack}
-            canGoForward={canGoForward}
+            canGoBack={effectiveCanGoBack}
+            canGoForward={effectiveCanGoForward}
             emulatedSize={emulatedSize}
             forceOnClient={forceOnClient}
             fps={fps}
-            isPinned={activePin != null}
+            isLocalActive={isLocal}
+            isPinned={effectiveIsPinned}
+            localExtensions={localExtensions}
             notifications={notifications}
             notificationsEnabled={notificationsEnabled}
             onAdaptiveViewportChange={handleAdaptiveViewportChange}
+            onAddLocalExtension={handleAddLocalExtension}
+            onAutoGrantLocalMediaChange={handleAutoGrantLocalMediaChange}
             onBack={goBack}
             onBellOpenChange={setBellOpen}
             onClearNotifications={handleClearNotifications}
@@ -902,15 +1245,19 @@ export default function App() {
             onNotificationClick={handleNotificationClick}
             onNotificationsEnabledChange={handleNotificationsEnabledChange}
             onNotificationToggleRead={handleToggleRead}
+            onOpenActionPopup={handleOpenActionPopup}
+            onOpenExtensionUrl={handleOpenExtensionUrl}
             onReload={reload}
+            onReloadLocalExtension={handleReloadLocalExtension}
+            onRemoveLocalExtension={handleRemoveLocalExtension}
             onSettingsCommit={handleSettingsCommit}
             onSettingsOpenChange={handleSettingsOpenChange}
             onSettingsRequestOpenMouse={handleSettingsRequestOpenMouse}
             onSwitchEffectChange={handleSwitchEffectChange}
             onSyncThemeChange={handleSyncThemeChange}
             onThemeChange={handleThemeChange}
-            onTogglePin={togglePin}
-            pageLoading={pageLoading}
+            onTogglePin={handleTogglePin}
+            pageLoading={handlePageLoading}
             ref={toolbarRef}
             settingsCommitted={settingsCommitted}
             settingsOpen={settingsOpen}
@@ -919,20 +1266,35 @@ export default function App() {
             switchEffect={switchEffect}
             syncTheme={syncTheme}
             theme={theme}
-            url={url}
+            url={effectiveUrl}
           />
-          <Viewport
-            adaptiveEnabled={adaptiveViewport}
-            connectEpoch={connectEpoch}
-            forceOnClient={forceOnClient}
-            onAdaptivePaused={handleAdaptivePaused}
-            onEmulatedSizeChange={setEmulatedSize}
-            onFpsUpdate={setFps}
-            onResolutionUpdate={setResolution}
-            page={page}
-            switchEffect={switchEffect}
-            switchSignal={switchSignal}
-          />
+          <div className="relative flex flex-1 min-h-0">
+            {/* CDP screencast canvas (hidden when a local tab is active). */}
+            <div className={cn("relative z-0 flex flex-1 min-w-0", isLocal && "hidden")}>
+              <Viewport
+                adaptiveEnabled={adaptiveViewport}
+                connectEpoch={connectEpoch}
+                forceOnClient={forceOnClient}
+                onAdaptivePaused={handleAdaptivePaused}
+                onEmulatedSizeChange={setEmulatedSize}
+                onFpsUpdate={setFps}
+                onResolutionUpdate={setResolution}
+                page={page}
+                switchEffect={switchEffect}
+                switchSignal={switchSignal}
+              />
+            </div>
+            {/* Local tabs as live <webview>s — React overlays stack above via
+                z-index, so no freeze/snapshot is needed. */}
+            <LocalWebviews
+              activeId={localActiveId}
+              apiRef={localApiRef}
+              onOpenUrl={(u) => createLocalTab(u)}
+              onPatch={patchLocalTab}
+              tabs={localTabs}
+              visible={isLocal}
+            />
+          </div>
           <StatusBar
             loading={loading}
             loadingText={loadingText}
@@ -940,11 +1302,13 @@ export default function App() {
           />
         </div>
         <NewTabDialog
-          onActivatePin={activatePin}
-          onNewTab={newTab}
+          cdpPins={pins}
+          initialKind={newTabKind}
+          localPins={localQuickLaunch}
+          onActivatePin={(kind, p) => (kind === "cdp" ? activatePin(p) : switchLocalTab(p.id))}
           onOpenChange={setNewTabOpen}
+          onOpenUrl={(kind, u) => (kind === "cdp" ? newTab(u) : createLocalTab(u))}
           open={newTabOpen}
-          pins={pins}
         />
         <EditPinDialog
           liveUrl={
@@ -955,6 +1319,16 @@ export default function App() {
           open={editingPin != null}
           pin={editingPin}
         />
+        <EditPinDialog
+          onOpenChange={(open) => !open && setEditingLocalId(null)}
+          onSave={handleEditLocalSave}
+          open={editingLocalId != null}
+          pin={(() => {
+            const t = localTabs.find((x) => x.id === editingLocalId)
+            return t ? { id: t.id, title: t.title, url: t.url, favicon: t.favicon } : null
+          })()}
+        />
+        <Toaster position="bottom-right" richColors />
       </div>
     </TooltipProvider>
   )

@@ -9,26 +9,29 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core"
-import { restrictToVerticalAxis } from "@dnd-kit/modifiers"
 import {
   arrayMove,
+  rectSortingStrategy,
   SortableContext,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
 import {
-  ArrowDown01Icon,
+  ArrowRight01Icon,
   Cancel01Icon,
+  CloudIcon,
   Edit02Icon,
   Globe02Icon,
   Home01Icon,
+  LaptopIcon,
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
   SidebarLeft01Icon,
   SidebarLeftIcon,
 } from "@hugeicons/core-free-icons"
+import type { IconSvgElement } from "@hugeicons/react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { AnimatePresence, motion } from "motion/react"
 import { type PointerEvent as ReactPointerEvent, useState } from "react"
@@ -52,6 +55,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import type { LocalTab } from "@/lib/local-tabs"
 import { cn } from "@/lib/utils"
 
 interface SidebarProps {
@@ -81,16 +85,27 @@ interface SidebarProps {
   onPinTab: (tab: TabInfo) => void
   onReorderPins: (pins: Pin[]) => void
   onReorderTabs: (tabs: TabInfo[]) => void
+  localTabs: LocalTab[]
+  localActiveId: string | null
+  onNewLocalTab: () => void
+  onSwitchLocalTab: (id: string) => void
+  onCloseLocalTab: (id: string) => void
+  onToggleLocalPin: (id: string) => void
+  onEditLocalTab: (id: string) => void
+  onReorderLocalTabs: (tabs: LocalTab[]) => void
+  showNumbers: boolean
 }
 
 const MIN_WIDTH = 180
 const MAX_WIDTH = 480
+// Wide enough to clear the macOS traffic lights in the collapsed rail.
+const RAIL_WIDTH = 64
 const PINNED_ZONE_ID = "pinned-zone"
 const ROW_PRESENCE = {
   initial: { opacity: 0, height: 0 },
   animate: { opacity: 1, height: "auto" as const },
   exit: { opacity: 0, height: 0 },
-  transition: { duration: 0.18, ease: "easeOut" as const },
+  transition: { duration: 0.16, ease: "easeOut" as const },
 }
 
 export function Sidebar({
@@ -108,8 +123,6 @@ export function Sidebar({
   width,
   onResize,
   onResizeEnd,
-  pinnedOpen,
-  onPinnedToggle,
   pins,
   onActivatePin,
   onOpenPinInNewTab,
@@ -120,12 +133,38 @@ export function Sidebar({
   onPinTab,
   onReorderPins,
   onReorderTabs,
+  localTabs,
+  localActiveId,
+  onNewLocalTab,
+  onSwitchLocalTab,
+  onCloseLocalTab,
+  onToggleLocalPin,
+  onEditLocalTab,
+  onReorderLocalTabs,
+  showNumbers,
 }: SidebarProps) {
+  // Cmd+number jump order (pins → CDP → local); first 9 get a hint badge.
+  const numberOf = (key: string): number | undefined => {
+    if (!showNumbers) return undefined
+    const order = [
+      ...pins.map((p) => `pin:${p.id}`),
+      ...tabs.map((t) => `tab:${t.id}`),
+      ...localTabs.map((t) => `local:${t.id}`),
+    ]
+    const i = order.indexOf(key)
+    return i >= 0 && i < 9 ? i + 1 : undefined
+  }
   const [resizing, setResizing] = useState(false)
-  // The id of the row being dragged (pin id or tab id), rendered in the overlay.
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
-  // Pin awaiting un-pin confirmation.
+  const [localDragId, setLocalDragId] = useState<string | null>(null)
   const [pendingUnpin, setPendingUnpin] = useState<Pin | null>(null)
+
+  // Accordion folder open-state + the tab "kept" visible when a folder collapses
+  // (captured at collapse time; not updated when the active tab later changes).
+  const [openCdp, setOpenCdp] = useState(true)
+  const [openLocal, setOpenLocal] = useState(true)
+  const [keptCdpId, setKeptCdpId] = useState<string | null>(null)
+  const [keptLocalId, setKeptLocalId] = useState<string | null>(null)
 
   const draggingTabId =
     activeDragId && tabs.some((t) => t.id === activeDragId) ? activeDragId : null
@@ -152,12 +191,9 @@ export function Sidebar({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }))
 
-  const handleDragStart = (event: DragStartEvent) => {
-    setActiveDragId(event.active.id as string)
-  }
+  const handleDragStart = (event: DragStartEvent) => setActiveDragId(event.active.id as string)
 
-  // One DndContext spans both sections so a tab can be dragged up into Pinned.
-  // The drag's source decides the action: pin reorder, tab reorder, or pin-a-tab.
+  // One DndContext spans pinned + CDP tabs so a tab can be dragged up to pin it.
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveDragId(null)
     const { active, over } = event
@@ -168,17 +204,14 @@ export function Sidebar({
     const draggedTab = tabs.find((t) => t.id === activeId)
     if (draggedTab) {
       const droppedInPinned = overId === PINNED_ZONE_ID || pins.some((p) => p.id === overId)
-      if (droppedInPinned) {
-        onPinTab(draggedTab)
-      } else if (activeId !== overId) {
+      if (droppedInPinned) onPinTab(draggedTab)
+      else if (activeId !== overId) {
         const oldIndex = tabs.findIndex((t) => t.id === activeId)
         const newIndex = tabs.findIndex((t) => t.id === overId)
         if (newIndex !== -1) onReorderTabs(arrayMove(tabs, oldIndex, newIndex))
       }
       return
     }
-
-    // Dragging a pin — reorder within Pinned only (ignore drops onto the Tabs list).
     if (pins.some((p) => p.id === activeId) && activeId !== overId) {
       const oldIndex = pins.findIndex((p) => p.id === activeId)
       const newIndex = pins.findIndex((p) => p.id === overId)
@@ -186,10 +219,35 @@ export function Sidebar({
     }
   }
 
-  // Collapsing the Pinned section keeps pins that hold a live tab visible — only
-  // dormant pins are hidden.
-  const visiblePins = pinnedOpen || collapsed ? pins : pins.filter((p) => p.targetId != null)
-  const showPinnedSection = pins.length > 0 || draggingTabId !== null
+  const handleLocalDragEnd = (event: DragEndEvent) => {
+    setLocalDragId(null)
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIndex = localTabs.findIndex((t) => t.id === active.id)
+    const newIndex = localTabs.findIndex((t) => t.id === over.id)
+    if (oldIndex !== -1 && newIndex !== -1)
+      onReorderLocalTabs(arrayMove(localTabs, oldIndex, newIndex))
+  }
+  const overlayLocal = localDragId ? localTabs.find((t) => t.id === localDragId) : undefined
+
+  const requestUnpin = (p: Pin) => {
+    if (p.targetId != null) onUnpinPin(p.id)
+    else setPendingUnpin(p)
+  }
+
+  // Capture the active tab of a folder's kind at the moment it collapses.
+  const toggleCdp = () => {
+    setOpenCdp((open) => {
+      if (open) setKeptCdpId(activeTabId)
+      return !open
+    })
+  }
+  const toggleLocal = () => {
+    setOpenLocal((open) => {
+      if (open) setKeptLocalId(localActiveId)
+      return !open
+    })
+  }
 
   const overlayPin = activeDragId ? pins.find((p) => p.id === activeDragId) : undefined
   const overlayTab = activeDragId ? tabs.find((t) => t.id === activeDragId) : undefined
@@ -197,16 +255,11 @@ export function Sidebar({
   return (
     <div
       className={cn(
-        // min-w-0 so a long tab title can't force the sidebar wider than its set
-        // width (otherwise flexbox min-width:auto grows it to the longest label).
-        "relative flex flex-col bg-sidebar shrink-0 min-w-0",
-        !resizing && "transition-all duration-200",
+        "relative flex flex-col shrink-0 min-w-0 bg-sidebar",
+        !resizing && "transition-[width] duration-200",
       )}
-      style={collapsed ? { width: 52 } : { width }}
+      style={{ width: collapsed ? RAIL_WIDTH : width }}
     >
-      {/* Right divider. Lower part is always shown; the top (traffic-light)
-          segment fades out when collapsing so it stops cutting the traffic
-          lights, in sync with the width animation. */}
       <div className="pointer-events-none absolute right-0 top-11 bottom-0 w-px bg-sidebar-border" />
       <div
         className={cn(
@@ -215,7 +268,6 @@ export function Sidebar({
         )}
       />
 
-      {/* Resize handle (expanded only) */}
       {!collapsed && (
         <div
           className="absolute -right-1 top-0 bottom-0 z-20 w-2 cursor-col-resize hover:bg-primary/30"
@@ -224,15 +276,16 @@ export function Sidebar({
         />
       )}
 
-      {/* Drag region (traffic lights area) */}
+      {/* Traffic-light drag region. Collapse control is top-right (clear of the
+          left traffic lights); the expand control lives inside the rail when
+          collapsed, so nothing overlaps the lights. */}
       <div
-        className="h-11 shrink-0 relative"
+        className="h-11 shrink-0 relative border-b border-border bg-card"
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
       >
-        {/* Collapse button beside the traffic lights (absolute — no layout cost). */}
         {!collapsed && (
           <div
-            className="absolute top-2.5 right-2 z-10 animate-in fade-in-0 duration-200"
+            className="absolute top-2.5 right-2 z-10"
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           >
             <Tooltip>
@@ -252,187 +305,164 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Expand button below the traffic lights when collapsed. The row height
-          animates with the sidebar (grid 0fr↔1fr) so the tab list glides instead
-          of jumping — space is reserved by the transition itself, no JS. */}
-      <div
-        className={cn(
-          "grid shrink-0 transition-[grid-template-rows,opacity] duration-200",
-          collapsed
-            ? "grid-rows-[1fr] opacity-100"
-            : "grid-rows-[0fr] opacity-0 pointer-events-none",
-        )}
-      >
-        <div className="overflow-hidden">
-          <div className="flex justify-center pt-0.5 pb-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  className="text-muted-foreground hover:text-foreground"
-                  onClick={onToggleCollapse}
-                  size="icon-xs"
-                  variant="ghost"
-                >
-                  <HugeiconsIcon className="size-3.5" icon={SidebarLeftIcon} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">Expand sidebar</TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
-      </div>
-
-      <DndContext
-        collisionDetection={closestCenter}
-        modifiers={[restrictToVerticalAxis]}
-        onDragCancel={() => setActiveDragId(null)}
-        onDragEnd={handleDragEnd}
-        onDragStart={handleDragStart}
-        sensors={sensors}
-      >
-        {/* Pinned section */}
-        {showPinnedSection && (
-          <div className="shrink-0">
-            {!collapsed && (
-              <button
-                className="flex items-center justify-between px-3 pb-1 w-full"
-                onClick={onPinnedToggle}
-                type="button"
-              >
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground select-none">
-                  Pinned
-                </span>
-                <HugeiconsIcon
-                  className={cn(
-                    "size-3 text-muted-foreground transition-transform duration-200",
-                    !pinnedOpen && "-rotate-90",
-                  )}
-                  icon={ArrowDown01Icon}
-                />
-              </button>
-            )}
+      {collapsed ? (
+        <CollapsedRail
+          activeTabId={activeTabId}
+          localActiveId={localActiveId}
+          localTabs={localTabs}
+          onActivatePin={onActivatePin}
+          onExpand={onToggleCollapse}
+          onNewTab={onNewTab}
+          onSwitchLocalTab={onSwitchLocalTab}
+          onSwitchTab={onSwitchTab}
+          pins={pins}
+          showNumbers={showNumbers}
+          tabs={tabs}
+          unreadByPin={unreadByPin}
+          unreadByTab={unreadByTab}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-2">
+          <DndContext
+            collisionDetection={closestCenter}
+            onDragCancel={() => setActiveDragId(null)}
+            onDragEnd={handleDragEnd}
+            onDragStart={handleDragStart}
+            sensors={sensors}
+          >
+            {/* Pinned tile grid — fixed-size tiles, centered, wraps with width */}
             <PinnedZone draggingTab={draggingTabId !== null} empty={pins.length === 0}>
-              <SortableContext items={pins.map((p) => p.id)} strategy={verticalListSortingStrategy}>
-                <div className="space-y-0.5">
-                  <AnimatePresence initial={false}>
-                    {visiblePins.map((p) => (
-                      <SortablePinItem
-                        active={p.targetId != null && p.targetId === activeTabId}
-                        collapsed={collapsed}
-                        key={p.id}
-                        linkedTab={linkedTabByPin[p.id]}
-                        onActivate={() => onActivatePin(p)}
-                        onBackToPinned={() => onBackToPinnedUrl(p)}
-                        onClose={() => onClosePin(p)}
-                        onEdit={() => onEditPin(p)}
-                        onOpenInNewTab={() => onOpenPinInNewTab(p)}
-                        onUnpin={() => setPendingUnpin(p)}
-                        pin={p}
-                        unread={unreadByPin[p.id] || 0}
-                      />
-                    ))}
-                  </AnimatePresence>
+              <SortableContext items={pins.map((p) => p.id)} strategy={rectSortingStrategy}>
+                <div className="flex flex-wrap justify-center gap-1.5">
+                  {pins.map((p) => (
+                    <SortablePinTile
+                      active={p.targetId != null && p.targetId === activeTabId}
+                      key={p.id}
+                      linkedTab={linkedTabByPin[p.id]}
+                      number={numberOf(`pin:${p.id}`)}
+                      onActivate={() => onActivatePin(p)}
+                      onBackToPinned={() => onBackToPinnedUrl(p)}
+                      onClose={() => onClosePin(p)}
+                      onEdit={() => onEditPin(p)}
+                      onOpenInNewTab={() => onOpenPinInNewTab(p)}
+                      onUnpin={() => requestUnpin(p)}
+                      pin={p}
+                      unread={unreadByPin[p.id] || 0}
+                    />
+                  ))}
                 </div>
               </SortableContext>
             </PinnedZone>
-          </div>
-        )}
+            {pins.length > 0 && <div className="mx-1 mb-0.5 border-b border-sidebar-border/70" />}
 
-        {/* Tabs section label */}
-        {!collapsed && (
-          <div className="px-3 pt-1 pb-1 shrink-0">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground select-none">
-              Tabs
-            </span>
-          </div>
-        )}
-        {collapsed && showPinnedSection && (
-          <div className="px-3 pt-1 pb-1 shrink-0">
-            <div className="border-t border-sidebar-border" />
-          </div>
-        )}
-
-        {/* Tab list */}
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-          <SortableContext items={tabs.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-            <div className="space-y-0.5 px-2 py-1">
-              <AnimatePresence initial={false}>
-                {tabs.map((tab, index) => (
-                  <SortableTabItem
-                    active={tab.id === activeTabId}
-                    canCloseAbove={index > 0}
-                    canCloseBelow={index < tabs.length - 1}
-                    canCloseOthers={tabs.length > 1}
-                    collapsed={collapsed}
-                    key={tab.id}
-                    onClose={() => onCloseTab(tab.id)}
-                    onCloseAbove={() => onCloseTabs(tabs.slice(0, index).map((t) => t.id))}
-                    onCloseBelow={() => onCloseTabs(tabs.slice(index + 1).map((t) => t.id))}
-                    onCloseOthers={() =>
-                      onCloseTabs(tabs.filter((t) => t.id !== tab.id).map((t) => t.id))
-                    }
-                    onPin={() => onPinTab(tab)}
-                    onSwitch={() => onSwitchTab(tab.id)}
-                    tab={tab}
-                    unread={unreadByTab[tab.id] || 0}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          </SortableContext>
-        </div>
-
-        <DragOverlay dropAnimation={null}>
-          {overlayPin ? (
-            <RowShell>
-              <RowFavicon favicon={overlayPin.favicon} />
-              <RowLabel>{overlayPin.title}</RowLabel>
-            </RowShell>
-          ) : overlayTab ? (
-            <RowShell>
-              <RowFavicon favicon={overlayTab.faviconUrl} />
-              <RowLabel>{overlayTab.title || "New Tab"}</RowLabel>
-            </RowShell>
-          ) : null}
-        </DragOverlay>
-      </DndContext>
-
-      {/* New tab button */}
-      <div className="p-2 border-t border-sidebar-border shrink-0">
-        <Tooltip delayDuration={collapsed ? 0 : 600}>
-          <TooltipTrigger asChild>
-            <button
-              className={cn(
-                "group/new flex w-full items-center overflow-hidden rounded-lg py-1.5 text-muted-foreground transition-[background-color,box-shadow,color] duration-200 hover:text-foreground",
-                // Collapsed: outlined via ring (non-layout, so the box never changes and
-                // the icon stays dead-centre). Expanded: borderless ghost row with a hover
-                // fill. The icon lives in a fixed left slot in both states, so it never moves.
-                collapsed
-                  ? "bg-background ring-1 ring-inset ring-border dark:bg-input/30"
-                  : "hover:bg-foreground/[0.06]",
-              )}
-              onClick={onNewTab}
-              type="button"
+            {/* CDP Tabs folder */}
+            <Folder
+              count={tabs.length}
+              icon={CloudIcon}
+              label="CDP Tabs"
+              onNew={onNewTab}
+              onToggle={toggleCdp}
+              open={openCdp}
             >
-              {/* Fixed-width leading slot = the collapsed rail's inner width, so the icon
-                  stays at the rail centre in both states. Collapsing only shrinks the
-                  label — the icon never moves, so there's no jump. */}
-              <span className="grid w-9 shrink-0 place-items-center">
-                <HugeiconsIcon className="size-4" icon={PlusSignIcon} />
-              </span>
-              <span
-                className={cn(
-                  "text-xs truncate transition-all duration-200",
-                  collapsed ? "max-w-0 opacity-0" : "max-w-[600px] opacity-100",
-                )}
+              {/* SortableContext always receives the full id list so dnd-kit hooks
+                  never remount. AnimatePresence filters to kept-only when collapsed:
+                  the kept row keeps the same key so it stays mounted (no exit/enter),
+                  while all other rows animate their height to 0. */}
+              <SortableContext items={tabs.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                <AnimatePresence initial={false}>
+                  {tabs
+                    .filter((tab) => openCdp || tab.id === keptCdpId)
+                    .map((tab) => {
+                      const index = tabs.indexOf(tab)
+                      return (
+                        <SortableTabItem
+                          active={tab.id === activeTabId}
+                          canCloseAbove={index > 0}
+                          canCloseBelow={index < tabs.length - 1}
+                          canCloseOthers={tabs.length > 1}
+                          key={tab.id}
+                          number={numberOf(`tab:${tab.id}`)}
+                          onClose={() => onCloseTab(tab.id)}
+                          onCloseAbove={() => onCloseTabs(tabs.slice(0, index).map((t) => t.id))}
+                          onCloseBelow={() => onCloseTabs(tabs.slice(index + 1).map((t) => t.id))}
+                          onCloseOthers={() =>
+                            onCloseTabs(tabs.filter((t) => t.id !== tab.id).map((t) => t.id))
+                          }
+                          onPin={() => onPinTab(tab)}
+                          onSwitch={() => onSwitchTab(tab.id)}
+                          tab={tab}
+                          unread={unreadByTab[tab.id] || 0}
+                        />
+                      )
+                    })}
+                </AnimatePresence>
+              </SortableContext>
+            </Folder>
+
+            <DragOverlay dropAnimation={null}>
+              {overlayPin ? (
+                <RowShell>
+                  <RowFavicon favicon={overlayPin.favicon} />
+                  <RowLabel>{overlayPin.title}</RowLabel>
+                </RowShell>
+              ) : overlayTab ? (
+                <RowShell>
+                  <RowFavicon favicon={overlayTab.faviconUrl} />
+                  <RowLabel>{overlayTab.title || "New Tab"}</RowLabel>
+                </RowShell>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+
+          {/* Local Tabs folder */}
+          <DndContext
+            collisionDetection={closestCenter}
+            onDragCancel={() => setLocalDragId(null)}
+            onDragEnd={handleLocalDragEnd}
+            onDragStart={(e) => setLocalDragId(e.active.id as string)}
+            sensors={sensors}
+          >
+            <Folder
+              count={localTabs.length}
+              icon={LaptopIcon}
+              label="Local Tabs"
+              onNew={onNewLocalTab}
+              onToggle={toggleLocal}
+              open={openLocal}
+            >
+              <SortableContext
+                items={localTabs.map((t) => t.id)}
+                strategy={verticalListSortingStrategy}
               >
-                New Tab
-              </span>
-            </button>
-          </TooltipTrigger>
-          {collapsed && <TooltipContent side="right">New Tab</TooltipContent>}
-        </Tooltip>
-      </div>
+                <AnimatePresence initial={false}>
+                  {localTabs
+                    .filter((tab) => openLocal || tab.id === keptLocalId)
+                    .map((tab) => (
+                      <SortableLocalItem
+                        active={tab.id === localActiveId}
+                        key={tab.id}
+                        number={numberOf(`local:${tab.id}`)}
+                        onClose={() => onCloseLocalTab(tab.id)}
+                        onEdit={() => onEditLocalTab(tab.id)}
+                        onSwitch={() => onSwitchLocalTab(tab.id)}
+                        onTogglePin={() => onToggleLocalPin(tab.id)}
+                        tab={tab}
+                      />
+                    ))}
+                </AnimatePresence>
+              </SortableContext>
+            </Folder>
+            <DragOverlay dropAnimation={null}>
+              {overlayLocal ? (
+                <RowShell>
+                  <RowFavicon favicon={overlayLocal.favicon} />
+                  <RowLabel>{overlayLocal.title || "New Tab"}</RowLabel>
+                </RowShell>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        </div>
+      )}
 
       <AlertDialog
         onOpenChange={(open) => !open && setPendingUnpin(null)}
@@ -463,10 +493,238 @@ export function Sidebar({
   )
 }
 
+// --- Accordion folder (CDP / Local) ---
+
+function Folder({
+  icon,
+  label,
+  count,
+  open,
+  onToggle,
+  onNew,
+  children,
+}: {
+  icon: IconSvgElement
+  label: string
+  count: number
+  open: boolean
+  onToggle: () => void
+  onNew: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex shrink-0 flex-col">
+      {/* Header — same px-2.5/gap-2/size-4 slot as rows, so the leading icon
+          aligns with row favicons and the label with row titles. */}
+      <div className="group/folder flex items-center rounded-lg pr-1">
+        <button
+          className="flex flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left outline-none"
+          onClick={onToggle}
+          type="button"
+        >
+          <span className="relative grid size-4 shrink-0 place-items-center">
+            <HugeiconsIcon
+              className="size-3.5 text-muted-foreground/70 transition-opacity duration-150 group-hover/folder:opacity-0"
+              icon={icon}
+            />
+            <HugeiconsIcon
+              className={cn(
+                "absolute size-3 text-muted-foreground opacity-0 transition-all duration-150 group-hover/folder:opacity-100",
+                open && "rotate-90",
+              )}
+              icon={ArrowRight01Icon}
+            />
+          </span>
+          <span className="flex-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground select-none">
+            {label}
+          </span>
+          <span className="text-[10px] font-medium tabular-nums text-muted-foreground/45">
+            {count}
+          </span>
+        </button>
+        <Button
+          aria-label="New tab"
+          className="shrink-0 text-muted-foreground/70 hover:text-foreground"
+          onClick={onNew}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <HugeiconsIcon className="size-3.5" icon={PlusSignIcon} />
+        </Button>
+      </div>
+      <div className="space-y-0.5 pb-1">{children}</div>
+    </div>
+  )
+}
+
+// --- Collapsed icon rail (markers) ---
+
+function CollapsedRail({
+  pins,
+  tabs,
+  localTabs,
+  activeTabId,
+  localActiveId,
+  unreadByPin,
+  unreadByTab,
+  onActivatePin,
+  onSwitchTab,
+  onSwitchLocalTab,
+  onNewTab,
+  onExpand,
+  showNumbers,
+}: {
+  pins: Pin[]
+  tabs: TabInfo[]
+  localTabs: LocalTab[]
+  activeTabId: string | null
+  localActiveId: string | null
+  unreadByPin: Record<string, number>
+  unreadByTab: Record<string, number>
+  onActivatePin: (pin: Pin) => void
+  onSwitchTab: (id: string) => void
+  onSwitchLocalTab: (id: string) => void
+  onNewTab: () => void
+  onExpand: () => void
+  showNumbers: boolean
+}) {
+  // Same Cmd+number order as the expanded sidebar: pins → CDP → local.
+  const order = [
+    ...pins.map((p) => `pin:${p.id}`),
+    ...tabs.map((t) => `tab:${t.id}`),
+    ...localTabs.map((t) => `local:${t.id}`),
+  ]
+  const numberOf = (key: string): number | undefined => {
+    if (!showNumbers) return undefined
+    const i = order.indexOf(key)
+    return i >= 0 && i < 9 ? i + 1 : undefined
+  }
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden pt-2 pb-2">
+      {/* Expand control — below the traffic-light region so it never overlaps. */}
+      <Tooltip delayDuration={0}>
+        <TooltipTrigger asChild>
+          <button
+            className="mb-0.5 grid size-7 place-items-center rounded-md text-muted-foreground/70 hover:bg-foreground/[0.06] hover:text-foreground"
+            onClick={onExpand}
+            type="button"
+          >
+            <HugeiconsIcon className="size-3.5" icon={SidebarLeftIcon} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Expand sidebar</TooltipContent>
+      </Tooltip>
+      {pins.map((p) => (
+        <RailTile
+          active={p.targetId != null && p.targetId === activeTabId}
+          favicon={linkedFavicon(p)}
+          key={p.id}
+          number={numberOf(`pin:${p.id}`)}
+          onClick={() => onActivatePin(p)}
+          title={p.title}
+          unread={unreadByPin[p.id] || 0}
+        />
+      ))}
+      {tabs.length > 0 && <RailMarker icon={CloudIcon} />}
+      {tabs.map((t) => (
+        <RailTile
+          active={t.id === activeTabId}
+          favicon={t.faviconUrl}
+          key={t.id}
+          number={numberOf(`tab:${t.id}`)}
+          onClick={() => onSwitchTab(t.id)}
+          title={t.title || "New Tab"}
+          unread={unreadByTab[t.id] || 0}
+        />
+      ))}
+      {localTabs.length > 0 && <RailMarker icon={LaptopIcon} />}
+      {localTabs.map((t) => (
+        <RailTile
+          active={t.id === localActiveId}
+          favicon={t.favicon}
+          key={t.id}
+          number={numberOf(`local:${t.id}`)}
+          onClick={() => onSwitchLocalTab(t.id)}
+          pinned={t.pinned}
+          title={t.title || "New Tab"}
+        />
+      ))}
+      <div className="mt-auto pt-1">
+        <Tooltip delayDuration={0}>
+          <TooltipTrigger asChild>
+            <button
+              className="grid size-9 place-items-center rounded-[10px] text-muted-foreground/70 ring-1 ring-inset ring-border/60 hover:bg-foreground/[0.06] hover:text-foreground"
+              onClick={onNewTab}
+              type="button"
+            >
+              <HugeiconsIcon className="size-4" icon={PlusSignIcon} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">New tab</TooltipContent>
+        </Tooltip>
+      </div>
+    </div>
+  )
+}
+
+function RailMarker({ icon }: { icon: IconSvgElement }) {
+  return <HugeiconsIcon className="my-0.5 size-3.5 shrink-0 text-muted-foreground/45" icon={icon} />
+}
+
+function RailTile({
+  favicon,
+  title,
+  active,
+  unread = 0,
+  pinned,
+  number,
+  onClick,
+}: {
+  favicon?: string
+  title: string
+  active?: boolean
+  unread?: number
+  pinned?: boolean
+  number?: number
+  onClick: () => void
+}) {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild>
+        <button
+          className={cn(
+            "group relative grid size-9 shrink-0 place-items-center rounded-[10px] transition-all duration-150",
+            active
+              ? "bg-foreground/10 shadow-sm ring-1 ring-inset ring-border/70"
+              : "hover:bg-foreground/[0.06]",
+          )}
+          onClick={onClick}
+          type="button"
+        >
+          {active && (
+            <span className="absolute -left-2 top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-full bg-primary" />
+          )}
+          <span className="relative">
+            <RowFavicon favicon={favicon} />
+            <UnreadBadge count={unread} />
+            <NumberHint n={number} />
+          </span>
+          {pinned && (
+            <span className="absolute bottom-0.5 right-0.5 size-1.5 rounded-full bg-foreground/40 ring-1 ring-sidebar" />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{title}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function linkedFavicon(pin: Pin) {
+  return pin.favicon
+}
+
 // --- Pinned drop zone ---
 
-// Wraps the pinned list as a droppable so a tab dragged anywhere over the section
-// becomes a pin. When empty (no pins yet) it shows a dashed prompt during a drag.
 function PinnedZone({
   draggingTab,
   empty,
@@ -477,22 +735,23 @@ function PinnedZone({
   children: React.ReactNode
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: PINNED_ZONE_ID })
-
   return (
-    <div className="px-2 pb-1" ref={setNodeRef}>
+    <div className="shrink-0 pb-0.5 pt-1" ref={setNodeRef}>
       {empty ? (
-        <div
-          className={cn(
-            "rounded-lg border border-dashed px-2.5 py-2 text-center text-[11px] text-muted-foreground transition-colors duration-200",
-            isOver ? "border-primary/60 bg-primary/5 text-foreground" : "border-border",
-          )}
-        >
-          Drop to pin
-        </div>
+        draggingTab ? (
+          <div
+            className={cn(
+              "rounded-lg border border-dashed px-2.5 py-3 text-center text-[11px] text-muted-foreground transition-colors duration-200",
+              isOver ? "border-primary/60 bg-primary/5 text-foreground" : "border-border",
+            )}
+          >
+            Drop to pin
+          </div>
+        ) : null
       ) : (
         <div
           className={cn(
-            "rounded-lg transition-colors duration-200",
+            "rounded-xl transition-colors duration-200",
             draggingTab && isOver && "bg-primary/5 ring-1 ring-primary/40",
           )}
         >
@@ -503,7 +762,7 @@ function PinnedZone({
   )
 }
 
-// --- shared row visuals (also used by the drag overlay) ---
+// --- shared row visuals ---
 
 function RowShell({ children }: { children: React.ReactNode }) {
   return (
@@ -543,26 +802,31 @@ function UnreadBadge({ count }: { count: number }) {
   )
 }
 
-// dnd-kit applies the live drag/reorder transform; motion only handles enter/exit
-// on the outer wrapper, so the two never fight over the same transform.
+// Slack-style jump number, overlaid on the favicon while Cmd is held.
+function NumberHint({ n }: { n?: number }) {
+  if (n == null) return null
+  return (
+    <span className="absolute inset-0 z-10 grid place-items-center rounded-[5px] bg-foreground/80 text-[10px] font-bold leading-none text-background">
+      {n}
+    </span>
+  )
+}
+
 function sortableStyle(
   transform: ReturnType<typeof useSortable>["transform"],
   transition?: string,
 ) {
-  return {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  }
+  return { transform: CSS.Transform.toString(transform), transition }
 }
 
-// --- Sortable Pin Item ---
+// --- Sortable Pin Tile (favicon-only grid cell) ---
 
-function SortablePinItem({
+function SortablePinTile({
   pin,
   linkedTab,
   active,
-  collapsed,
   unread,
+  number,
   onActivate,
   onOpenInNewTab,
   onBackToPinned,
@@ -573,8 +837,8 @@ function SortablePinItem({
   pin: Pin
   linkedTab?: TabInfo
   active: boolean
-  collapsed: boolean
   unread: number
+  number?: number
   onActivate: () => void
   onOpenInNewTab: () => void
   onBackToPinned: () => void
@@ -586,156 +850,106 @@ function SortablePinItem({
     id: pin.id,
   })
   const [menuOpen, setMenuOpen] = useState(false)
-
-  // While linked, mirror the tab's live title/favicon; when dormant, show saved.
   const title = linkedTab?.title || pin.title
   const favicon = linkedTab?.faviconUrl ?? pin.favicon
-  // Drift affordance is only shown for the active pin (the one you're viewing).
   const showDrift = active && linkedTab != null && linkedTab.url !== pin.url
 
   return (
-    <motion.div
-      animate={ROW_PRESENCE.animate}
-      exit={ROW_PRESENCE.exit}
-      initial={ROW_PRESENCE.initial}
-      transition={ROW_PRESENCE.transition}
-    >
-      <Tooltip delayDuration={collapsed ? 0 : 600} open={menuOpen ? false : undefined}>
-        <ContextMenu onOpenChange={setMenuOpen}>
-          <ContextMenuTrigger asChild>
-            <TooltipTrigger asChild>
-              <div
-                className={cn(
-                  "group relative flex items-center rounded-lg cursor-default",
-                  collapsed ? "px-2.5 py-1.5 gap-0" : "px-2.5 py-1.5 gap-2",
-                  isDragging
-                    ? "opacity-50"
-                    : active
-                      ? "bg-foreground/10 text-foreground shadow-sm"
-                      : "text-sidebar-foreground hover:bg-foreground/[0.06] hover:text-foreground",
-                )}
-                onAuxClick={(e) => {
-                  if (e.button === 1) {
-                    e.preventDefault()
-                    onOpenInNewTab()
-                  }
-                }}
-                onClick={(e) => {
-                  // Cmd-click opens an independent throwaway tab, leaving the pin alone.
-                  if (e.metaKey) onOpenInNewTab()
-                  else onActivate()
-                }}
-                ref={setNodeRef}
-                style={sortableStyle(transform, transition)}
-                {...attributes}
-                {...listeners}
-              >
-                {/* Favicon — turns into a "Back to Pinned URL" button on hover when
-                    the active pin's tab has drifted from the saved URL. */}
-                <span className="relative shrink-0 size-4 group/fav">
-                  <span className={cn(showDrift && "group-hover/fav:opacity-0")}>
-                    <RowFavicon favicon={favicon} />
+    <Tooltip delayDuration={500} open={menuOpen ? false : undefined}>
+      <ContextMenu onOpenChange={setMenuOpen}>
+        <ContextMenuTrigger asChild>
+          <TooltipTrigger asChild>
+            <button
+              className={cn(
+                "group relative grid size-9 place-items-center rounded-[11px] transition-all duration-150 cursor-default",
+                isDragging
+                  ? "opacity-50"
+                  : active
+                    ? "bg-foreground/[0.10] shadow-sm ring-1 ring-inset ring-border/70"
+                    : "hover:bg-foreground/[0.06]",
+              )}
+              onAuxClick={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault()
+                  onOpenInNewTab()
+                }
+              }}
+              onClick={(e) => (e.metaKey ? onOpenInNewTab() : onActivate())}
+              ref={setNodeRef}
+              style={sortableStyle(transform, transition)}
+              type="button"
+              {...attributes}
+              {...listeners}
+            >
+              <span className="relative size-5 group/fav">
+                <span className={cn("block", showDrift && "group-hover/fav:opacity-0")}>
+                  <img
+                    alt=""
+                    aria-hidden
+                    className="size-5 rounded-[5px]"
+                    onError={(e) => {
+                      ;(e.target as HTMLImageElement).style.visibility = "hidden"
+                    }}
+                    src={favicon}
+                  />
+                </span>
+                {showDrift && (
+                  <span
+                    aria-label="Back to pinned URL"
+                    className="absolute inset-0 hidden place-items-center rounded-[5px] bg-foreground/15 text-foreground group-hover/fav:grid"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onBackToPinned()
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && onBackToPinned()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    role="button"
+                    tabIndex={-1}
+                  >
+                    <HugeiconsIcon className="size-3" icon={Home01Icon} />
                   </span>
-                  {showDrift && (
-                    <button
-                      aria-label="Back to pinned URL"
-                      className="absolute inset-0 hidden place-items-center rounded-sm bg-foreground/10 text-foreground group-hover/fav:grid"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onBackToPinned()
-                      }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      type="button"
-                    >
-                      <HugeiconsIcon className="size-3" icon={Home01Icon} />
-                    </button>
-                  )}
-                  <UnreadBadge count={unread} />
-                </span>
-                {/* Drift separator (Arc-style) between favicon and title. */}
-                {showDrift && !collapsed && (
-                  <span className="text-muted-foreground/70 text-xs select-none -mx-0.5">/</span>
                 )}
-                <span
-                  className={cn(
-                    "text-xs truncate transition-all duration-200",
-                    collapsed ? "max-w-0 opacity-0 flex-none" : "flex-1 max-w-[600px] opacity-100",
-                  )}
-                >
-                  {title}
-                </span>
-                {/* Hover affordance: close the live tab, or un-pin a dormant pin. */}
-                {!collapsed &&
-                  (pin.targetId != null ? (
-                    <button
-                      aria-label="Close tab"
-                      className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onClose()
-                      }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      type="button"
-                    >
-                      <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-                    </button>
-                  ) : (
-                    <button
-                      aria-label="Unpin"
-                      className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onUnpin()
-                      }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      type="button"
-                    >
-                      <HugeiconsIcon className="size-3" icon={PinOffIcon} />
-                    </button>
-                  ))}
-              </div>
-            </TooltipTrigger>
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <ContextMenuItem onSelect={onEdit}>
-              <HugeiconsIcon icon={Edit02Icon} />
-              Edit
+                <UnreadBadge count={unread} />
+                <NumberHint n={number} />
+              </span>
+            </button>
+          </TooltipTrigger>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={onEdit}>
+            <HugeiconsIcon icon={Edit02Icon} />
+            Edit
+          </ContextMenuItem>
+          {pin.targetId != null && (
+            <ContextMenuItem onSelect={onClose}>
+              <HugeiconsIcon icon={Cancel01Icon} />
+              Close tab
             </ContextMenuItem>
-            {pin.targetId != null && (
-              <ContextMenuItem onSelect={onClose}>
-                <HugeiconsIcon icon={Cancel01Icon} />
-                Close tab
-              </ContextMenuItem>
-            )}
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={onUnpin} variant="destructive">
-              <HugeiconsIcon icon={PinOffIcon} />
-              Unpin
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-        <TooltipContent className="max-w-[260px]" side="right">
-          <div className="flex flex-col gap-0.5">
-            <p className="text-xs font-medium line-clamp-2">{title}</p>
-            {!collapsed && (
-              <p className="text-[10px] text-background/60 break-all line-clamp-2">
-                {linkedTab?.url || pin.url}
-              </p>
-            )}
-          </div>
-        </TooltipContent>
-      </Tooltip>
-    </motion.div>
+          )}
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={onUnpin} variant="destructive">
+            <HugeiconsIcon icon={PinOffIcon} />
+            Unpin
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <TooltipContent className="max-w-[260px]" side="right">
+        <p className="text-xs font-medium line-clamp-2">{title}</p>
+        <p className="text-[10px] text-background/60 break-all line-clamp-2">
+          {linkedTab?.url || pin.url}
+        </p>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
-// --- Sortable Tab Item ---
+// --- Sortable Tab Item (CDP) ---
 
 function SortableTabItem({
   tab,
   active,
-  collapsed,
   unread,
+  number,
   canCloseOthers,
   canCloseAbove,
   canCloseBelow,
@@ -748,8 +962,8 @@ function SortableTabItem({
 }: {
   tab: TabInfo
   active: boolean
-  collapsed: boolean
   unread: number
+  number?: number
   canCloseOthers: boolean
   canCloseAbove: boolean
   canCloseBelow: boolean
@@ -764,7 +978,6 @@ function SortableTabItem({
     id: tab.id,
   })
   const [menuOpen, setMenuOpen] = useState(false)
-
   const displayTitle = tab.title || "New Tab"
 
   return (
@@ -780,8 +993,7 @@ function SortableTabItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-center rounded-lg cursor-default",
-                  collapsed ? "px-2.5 py-1.5 gap-0" : "px-2.5 py-1.5 gap-2",
+                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -803,38 +1015,27 @@ function SortableTabItem({
                 <span className="relative shrink-0">
                   <RowFavicon favicon={tab.faviconUrl} />
                   <UnreadBadge count={unread} />
+                  <NumberHint n={number} />
                 </span>
-                <span
+                <span className="flex-1 truncate text-xs">{displayTitle}</span>
+                <div
                   className={cn(
-                    "text-xs truncate transition-all duration-200",
-                    collapsed ? "max-w-0 opacity-0 flex-none" : "flex-1 max-w-[600px] opacity-100",
+                    "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100",
+                    active ? "from-sidebar-accent" : "from-accent",
                   )}
+                />
+                <button
+                  aria-label="Close tab"
+                  className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onClose()
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  type="button"
                 >
-                  {displayTitle}
-                </span>
-                {!collapsed && (
-                  <>
-                    {/* Fade so the close button stays legible over a long title */}
-                    <div
-                      className={cn(
-                        "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100",
-                        active ? "from-sidebar-accent" : "from-accent",
-                      )}
-                    />
-                    <button
-                      aria-label="Close tab"
-                      className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onClose()
-                      }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      type="button"
-                    >
-                      <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-                    </button>
-                  </>
-                )}
+                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+                </button>
               </div>
             </TooltipTrigger>
           </ContextMenuTrigger>
@@ -859,7 +1060,115 @@ function SortableTabItem({
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
-        <TooltipContent className="max-w-[300px]" side={collapsed ? "right" : "bottom"}>
+        <TooltipContent className="max-w-[300px]" side="bottom">
+          <p className="text-xs line-clamp-2">{displayTitle}</p>
+        </TooltipContent>
+      </Tooltip>
+    </motion.div>
+  )
+}
+
+// --- Sortable Local Item ---
+
+function SortableLocalItem({
+  tab,
+  active,
+  number,
+  onSwitch,
+  onClose,
+  onTogglePin,
+  onEdit,
+}: {
+  tab: LocalTab
+  active: boolean
+  number?: number
+  onSwitch: () => void
+  onClose: () => void
+  onTogglePin: () => void
+  onEdit: () => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: tab.id,
+  })
+  const [menuOpen, setMenuOpen] = useState(false)
+  const displayTitle = tab.title || "New Tab"
+
+  return (
+    <motion.div
+      animate={ROW_PRESENCE.animate}
+      exit={ROW_PRESENCE.exit}
+      initial={ROW_PRESENCE.initial}
+      transition={ROW_PRESENCE.transition}
+    >
+      <Tooltip delayDuration={600} open={menuOpen ? false : undefined}>
+        <ContextMenu onOpenChange={setMenuOpen}>
+          <ContextMenuTrigger asChild>
+            <TooltipTrigger asChild>
+              <div
+                className={cn(
+                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default",
+                  isDragging
+                    ? "opacity-50"
+                    : active
+                      ? "bg-foreground/10 text-foreground shadow-sm"
+                      : "text-sidebar-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+                )}
+                onAuxClick={(e) => {
+                  if (e.button === 1) {
+                    e.preventDefault()
+                    onClose()
+                  }
+                }}
+                onClick={onSwitch}
+                ref={setNodeRef}
+                style={sortableStyle(transform, transition)}
+                {...attributes}
+                {...listeners}
+              >
+                <span className="relative shrink-0">
+                  <RowFavicon favicon={tab.favicon} />
+                  <NumberHint n={number} />
+                </span>
+                <span className="flex-1 truncate text-xs">{displayTitle}</span>
+                {/* pin indicator on the right so favicons + titles stay aligned */}
+                {tab.pinned && (
+                  <HugeiconsIcon
+                    className="size-3 shrink-0 text-muted-foreground/50 group-hover:hidden"
+                    icon={PinIcon}
+                  />
+                )}
+                <button
+                  aria-label="Close tab"
+                  className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onClose()
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  type="button"
+                >
+                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+                </button>
+              </div>
+            </TooltipTrigger>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={onEdit}>
+              <HugeiconsIcon icon={Edit02Icon} />
+              Edit
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={onTogglePin}>
+              <HugeiconsIcon icon={tab.pinned ? PinOffIcon : PinIcon} />
+              {tab.pinned ? "Unpin" : "Pin"}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onClose} variant="destructive">
+              <HugeiconsIcon icon={Cancel01Icon} />
+              Close
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+        <TooltipContent className="max-w-[300px]" side="bottom">
           <p className="text-xs line-clamp-2">{displayTitle}</p>
         </TooltipContent>
       </Tooltip>

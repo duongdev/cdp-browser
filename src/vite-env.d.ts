@@ -47,6 +47,9 @@ interface CdpBridge {
     switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale"
     notificationsEnabled: boolean
     syncTheme: boolean
+    autoGrantLocalMedia: boolean
+    restoreLocalPins: boolean
+    localExtensionPaths: string[]
   }>
   setUiState: (
     partial: Partial<{
@@ -57,6 +60,8 @@ interface CdpBridge {
       switchEffect: "none" | "blur" | "grayscale" | "blur-grayscale"
       notificationsEnabled: boolean
       syncTheme: boolean
+      autoGrantLocalMedia: boolean
+      restoreLocalPins: boolean
     }>,
   ) => Promise<void>
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>
@@ -80,6 +85,58 @@ interface CdpBridge {
   onNotificationActivate: (cb: (entry: CdpNotification) => void) => void
 }
 
+interface PersistedLocalTabBridge {
+  id: string
+  url: string
+  title: string
+  favicon?: string
+  pinned: boolean
+}
+
+// Local tabs render as <webview> in the renderer DOM; main only owns the
+// session, permissions, extensions, and the action-popup popover.
+interface LocalBridge {
+  getPins: () => Promise<PersistedLocalTabBridge[]>
+  savePins: (pins: PersistedLocalTabBridge[]) => Promise<void>
+  getExtensions: () => Promise<LocalExtensionInfo[]>
+  pickExtension: () => Promise<ExtResult>
+  reloadExtension: (path: string) => Promise<ExtResult>
+  removeExtension: (path: string) => Promise<ExtResult>
+  openActionPopup: (id: string, anchor: { right: number; bottom: number }) => Promise<void>
+  closeActionPopup: () => Promise<void>
+}
+
+interface LocalExtensionInfo {
+  path: string
+  loaded: boolean
+  id: string | null
+  name: string
+  version: string
+  description: string
+  icon: string | null
+  popupUrl: string | null
+  optionsUrl: string | null
+}
+
+type ExtResult = { extensions: LocalExtensionInfo[] } | { error: string }
+
 interface Window {
   cdp: CdpBridge
+  local: LocalBridge
+}
+
+// Electron <webview> tag (webviewTag enabled on the chrome view).
+declare namespace JSX {
+  interface IntrinsicElements {
+    webview: React.DetailedHTMLProps<
+      React.HTMLAttributes<HTMLElement> & {
+        src?: string
+        partition?: string
+        allowpopups?: boolean
+        preload?: string
+        useragent?: string
+      },
+      HTMLElement
+    >
+  }
 }

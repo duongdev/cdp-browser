@@ -59,7 +59,8 @@ src/components/
 ├── notification-bell.tsx        exports NotificationBell
 ├── settings-dialog.tsx          exports SettingsDialog
 ├── new-tab-dialog.tsx           exports NewTabDialog
-└── edit-pin-dialog.tsx          exports EditPinDialog
+├── edit-pin-dialog.tsx          exports EditPinDialog
+└── local-webviews.tsx           exports LocalWebviews (in-DOM <webview> container for local tabs)
 ```
 
 Co-locate tests (`*.test.tsx`) for components with non-trivial logic; visual review is sufficient for layout-only components.
@@ -231,4 +232,4 @@ See [tdd.md](tdd.md) for the three-layer model; frontend specifics:
 
 ---
 
-_Last revisited: 2026-05-23_
+_Last revisited: 2026-05-25_

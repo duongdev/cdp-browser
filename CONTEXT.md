@@ -56,6 +56,10 @@ _Avoid_: plugin, connector, integration.
 The act of a `MutationObserver` inside an injected script observing the site's own in-app toast node, extracting text and `targetEntity` from the DOM/React fiber, and shipping the result through the `__cdpNotify` binding. Pure capture — never navigates.
 _Avoid_: scraping, hooking, interception.
 
+**Local Tab**:
+A locally-rendered web page displayed as an in-DOM Electron `<webview>` element inside the chrome view. Unlike a **Tab** (which renders a remote page as a JPEG screencast), a Local Tab has full device access: real OS notifications, audio, mic, camera, screen-share, and loadable MV3 extensions. The renderer holds `LocalTab` metadata (`{ id, url, title, favicon?, pinned, loading, canGoBack, canGoForward, audible, muted }`); the main process owns the `persist:local` session and extension loading. Local Tabs occupy the LOCAL TABS sidebar section; a `pinned` flag (distinct from CDP Pins) keeps them atop that section and restores them on relaunch. See `docs/adr/0005-local-tabs-base-window.md`.
+_Avoid_: native tab, page view, webview tab.
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
@@ -64,6 +68,7 @@ _Avoid_: scraping, hooking, interception.
 - **Viewport Transform** maps canvas coordinates to **Remote Page** coordinates for both drawing **Screencast Frames** and hit-testing **Input Forwarding**.
 - **Adaptive Viewport** (when enabled) resizes the **Remote Page** to the canvas so **Screencast Frames** fill it without letterbox bars.
 - A **Notification Side-Channel** attaches to a background **Tab**'s target and uses a **Notification Adapter** to run **Notification Capture** — independent of the **Active Tab**'s screencast socket.
+- A **Local Tab** renders a real local web page (in-DOM `<webview>`) alongside CDP Tabs — it does not use **Screencast Frames** or **Input Forwarding**; it gets direct device access instead.
 
 ## Example dialogue
 
@@ -72,5 +77,5 @@ _Avoid_: scraping, hooking, interception.
 
 ## Flagged ambiguities
 
-- "session" was used loosely for both the WebSocket connection and the tab set — resolved: the live connection is the **Remote Page** (`src/lib/remote-page.ts`); the ordered tab set is owned by `src/lib/tabs.ts` (`reconcile`, `nextTab`, `prevTab`, `createClosedTabStack`).
+- "session" was used loosely for both the WebSocket connection and the tab set — resolved: the live connection is the **Remote Page** (`src/lib/remote-page.ts`); the ordered tab set is owned by `src/lib/tabs.ts` (`reconcile`, `nextTab`, `prevTab`). The unified close-ordered reopen stack lives in `src/lib/closed-tabs.ts` (`createClosedStack`).
 - "one debugger per tab" — the old CDP constraint no longer holds on Edge 148 (Chromium 148). The **Remote Page** rule governs the rendering/screencast socket only; auxiliary **Notification Side-Channel** sockets are permitted as separate concurrent clients to the same target. See `docs/adr/0003-notifications-side-channel.md`.

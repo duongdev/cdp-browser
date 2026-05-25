@@ -46,18 +46,22 @@ No exceptions for pure logic. If a test feels impossible to write, the design is
 - Arrange → Act → Assert clearly separated. Blank lines between sections.
 - No setup that exceeds the test it serves. Long setup = test is too coarse.
 
-**Current coverage (as of 2026-05-24):**
+**Current coverage (as of 2026-05-25):**
 
 | Module | Test file | What's covered |
 |---|---|---|
 | `remote-page.ts` | `remote-page.test.ts` | navigation, navigateSpa (pushState+popstate + full-nav fallback), Input Forwarding variants, event demux, frame auto-ack |
-| `tabs.ts` | `tabs.test.ts` | reconcile order, nextTab/prevTab wrapping, closed-tab stack, stripTitleBadge |
+| `tabs.ts` | `tabs.test.ts` | reconcile order, nextTab/prevTab wrapping, stripTitleBadge |
 | `viewport-transform.ts` | `viewport-transform.test.ts` | letterbox math, toRemoteCoords coordinate mapping, edge cases |
 | `adaptive-viewport.ts` | `adaptive-viewport.test.ts` | reduce state machine, all transitions, effect generation |
 | `notifications-view.ts` | `notifications-view.test.ts` | groupByConversation, dedup, fallback grouping |
 | `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating, markUnread, unreadCount, unreadByTarget |
 | `theme-emulation.js` | `theme-emulation.test.ts` | emulatedMediaParams — sync on/off, dark/light mapping, reset to empty params |
 | `key-routing.ts` | `key-routing.test.ts` | isOsReservedKey — reserved combos, Option-rewrite safety, non-Cmd pass-through |
+| `pins.ts` | `pins.test.ts` | resolvePinLink, pinForTarget, dropDeadLinks |
+| `local-tabs.ts` | `local-tabs.test.ts` | sortPinnedFirst ordering, toPersisted/fromPersisted split |
+| `closed-tabs.ts` | `closed-tabs.test.ts` | push/pop preserves close order across CDP and local kinds |
+| `active-order.ts` | `active-order.test.ts` | touchActive MRU promotion, dropActive removal, mostRecent with open-set filter |
 
 Every new module under `src/lib/` or pure-logic file at root gets a colocated test file from its first commit.
 
@@ -171,4 +175,4 @@ Naming:
 
 _Test discipline is the difference between a project that survives and one that dies. Don't negotiate with yourself on this._
 
-_Last revisited: 2026-05-24_
+_Last revisited: 2026-05-25_

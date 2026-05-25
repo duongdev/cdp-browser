@@ -38,3 +38,16 @@ contextBridge.exposeInMainWorld("cdp", {
   onNotificationActivate: (cb) =>
     ipcRenderer.on("cdp:notification-activate", (_, entry) => cb(entry)),
 })
+
+// Local tabs render as <webview> in the renderer; main owns only the session,
+// permissions, extensions, pins persistence, and the action-popup popover.
+contextBridge.exposeInMainWorld("local", {
+  getPins: () => ipcRenderer.invoke("local:get-pins"),
+  savePins: (pins) => ipcRenderer.invoke("local:save-pins", pins),
+  getExtensions: () => ipcRenderer.invoke("local:get-extensions"),
+  pickExtension: () => ipcRenderer.invoke("local:pick-extension"),
+  reloadExtension: (p) => ipcRenderer.invoke("local:reload-extension", p),
+  removeExtension: (p) => ipcRenderer.invoke("local:remove-extension", p),
+  openActionPopup: (id, anchor) => ipcRenderer.invoke("local:open-action-popup", { id, anchor }),
+  closeActionPopup: () => ipcRenderer.invoke("local:close-action-popup"),
+})

@@ -32,9 +32,10 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 [CDP Browser App] --WebSocket--> [CDP Host :9222] ---> [Remote Browser]
 ```
 
-- **Main process** (`main.js`): Manages CDP HTTP API calls and WebSocket connections. All WS connections run in Node.js (not renderer) to avoid browser sandbox restrictions.
-- **Preload** (`preload.js`): IPC bridge between main and renderer via `contextBridge`.
-- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on seven domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), Notifications View (presentation grouping), Key Routing (macOS OS-reserved combo predicate), and Pins (live-tab link resolution). See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
+- **Window** (`main.js`): A `BaseWindow` with a single full-window **chrome view** (the React renderer). The chrome view draws everything — sidebar, toolbar, the CDP screencast canvas, the local-tab `<webview>`s, and all overlays — so all renderer IPC goes through `chromeView.webContents` (`chromeSend`). See `docs/adr/0005-local-tabs-base-window.md`.
+- **Main process** (`main.js`): Manages CDP HTTP API calls and WebSocket connections, plus the `persist:local` session, permissions, extension loading, and the extension action-popup popover. Local tabs render in the renderer DOM (not native views). All WS connections run in Node.js (not renderer) to avoid browser sandbox restrictions.
+- **Preload** (`preload.js`): IPC bridge between main and renderer via `contextBridge` — exposes `window.cdp` and `window.local`.
+- **Renderer** (`src/`): React + Tailwind + shadcn/ui app. Layered on ten domain modules in `src/lib/` — Remote Page (single live connection, event demux), Tabs (stable ordering), Viewport Transform (letterbox math), Adaptive Viewport (device-metrics state machine), Notifications View (presentation grouping), Key Routing (macOS OS-reserved combo predicate), Pins (live-tab link resolution), Local Tabs (pinned-first ordering + persistence split), Closed Tabs (unified close-ordered reopen stack across CDP + local), and Active Order (MRU activation history across kinds). Local tabs render as in-DOM `<webview>`s (`src/components/local-webviews.tsx`), so overlays stack above the live page via z-index. See `docs/adr/0001-single-remote-page.md` for the single-session constraint.
 
 ## Key Design Decisions
 
@@ -48,6 +49,7 @@ A lightweight Electron app that connects to a remote Chromium-based browser via 
 - **Settings persistence**: Host, port, theme, pins, sidebar width, sidebar-collapsed state, pinned-open state, `adaptiveViewport`, `forceOnClient`, `switchEffect`, `notificationsEnabled`, and `syncTheme` are stored in `userData/settings.json`. Saving a new CDP address immediately reconnects to the first available tab. Legacy `switchBlur` boolean is migrated to `switchEffect`, and legacy `bookmarks` to `pins`, on first load.
 - **Pins (live-tab holders)**: A pin holds a remote tab (`targetId`), hidden from the Tabs list while linked. Click activates the linked tab or opens+links a fresh one; cmd/middle-click opens an unlinked throwaway tab. Created from a live tab only (toolbar star, right-click tab → Pin, or drag a tab into the Pinned section). A linked pin mirrors its tab's live title/favicon (restoring the saved title when the tab closes); the active pin shows an Arc-style URL-drift cue (a `/` separator and a favicon "Back to Pinned URL" button) when its tab navigates off the saved URL. Closing a pin's tab reverts it to unlinked; un-pinning (confirm dialog) returns the tab to the Tabs list. Cmd+1..9 indexes all pins then visible tabs; Ctrl+Tab cycles open pins + tabs. Link resolution is pure (`src/lib/pins.ts`); persistence/effects live in main + `app.tsx`. See `docs/adr/0004-pin-live-tab-model.md`.
 - **Unread badges by origin**: Sidebar unread counts are grouped by URL origin (`unreadByOrigin` in `app.tsx`), so every tab/pin of an app (all Teams, all Outlook) shares one count whether or not it captured the notification, and a dormant pin still badges by its saved URL's origin.
+- **Local tabs**: Real local web pages rendered as in-DOM Electron `<webview>`s on a shared `persist:local` session (`src/components/local-webviews.tsx`) — full device access (OS notifications, speaker/mic, camera, screen-share) that CDP screencast tabs can't have. Because a `<webview>` is an in-page OOPIF, React overlays (dialogs, menus, tooltips, the settings sheet) stack **above the live page via CSS z-index** — no native z-order, no freeze. `activeKind: 'cdp' | 'local'` chooses the surface and routes the toolbar/nav hotkeys (`RemotePage` vs the active webview's methods). The renderer holds `LocalTab` metadata and maps webview DOM events to it; only the active webview is shown (others `display:none`, kept alive in the background). All open local tabs persist + restore on launch; pinned ones (a `pinned` flag, distinct from CDP PINNED pins) sort atop the LOCAL TABS section. Unpacked MV3 extensions load into the local session only (`localExtensionPaths`) and their content scripts inject into webview guests; the toolbar shows a Chrome-like action icon per extension (opens its popup in a popover), and popup/options also open as a local tab via the `chrome-extension://` URL. Permissions auto-granted behind the `autoGrantLocalMedia` setting (a `media` request triggers `askForMediaAccess`); packaging ships mic/cam/audio-capture Info.plist keys + entitlements (`build/entitlements.mac.plist`, hardened runtime). See `docs/adr/0005-local-tabs-base-window.md`.
 - **Notifications side-channel**: A per-target read-only CDP socket (no screencast, no input) stays attached to background tabs that match a notification adapter (Teams + Outlook). A `MutationObserver` capture script is injected at document-start and ships toasts through a `__cdpNotify` binding. Pure logic (`notifications.js`) handles dedup, cap, and OS-toast gating; effects (WS, Electron `Notification`, IPC, persistence to `notifications.json`) live in main process. Each adapter scrapes its app's own in-app notification, which both apps render even when their tab is backgrounded. Outlook additionally ships a per-message deep-link (`targetEntity.deepLink`); clicking a notification activates the tab then calls `RemotePage.navigateSpa` (client-side `pushState`+`popstate`, full-navigation fallback) to open the exact message without a reload. See `docs/adr/0003-notifications-side-channel.md`.
 
 ## File Structure
@@ -84,12 +86,15 @@ cdp-browser/
     │   └── use-remote-page.ts   # Stable Remote Page ref across renders
     ├── lib/              # Domain modules — see src/lib/CLAUDE.md
     │   ├── remote-page.ts     # Remote Page: navigate/input/events
-    │   ├── tabs.ts            # Tab reconcile, next/prev, closed-tab stack, stripTitleBadge
+    │   ├── tabs.ts            # Tab reconcile, next/prev, stripTitleBadge
     │   ├── viewport-transform.ts # Letterbox math + coordinate mapping
     │   ├── adaptive-viewport.ts  # Adaptive Viewport: deviceMetrics + reduce state machine
     │   ├── notifications-view.ts # Presentation grouping (groupByConversation) for notification popover
     │   ├── key-routing.ts     # isOsReservedKey — gates Input Forwarding for macOS-reserved combos
     │   ├── pins.ts            # Pin link resolution: resolvePinLink, pinForTarget, dropDeadLinks
+    │   ├── local-tabs.ts      # Local tabs: LocalTab shape, sortPinnedFirst, to/fromPersisted
+    │   ├── closed-tabs.ts     # Unified close-ordered reopen stack ({kind,url}) across CDP + local
+    │   ├── active-order.ts    # MRU activation history across CDP + local: touchActive, dropActive, mostRecent
     │   └── utils.ts           # cn() utility
     └── components/        # kebab-case files, PascalCase exports
         ├── sidebar.tsx        # Pinned (live-tab holders) + Tabs list, single DnD context (cross-section pin-on-drag), context menus, active highlight, drag-resizable width; unread tab badges
@@ -98,9 +103,10 @@ cdp-browser/
         ├── status-bar.tsx     # Bottom status bar for loading/error states (replaces mid-viewport overlay)
         ├── settings-dialog.tsx  # Non-modal right Sheet drawer (showOverlay=false); grouped cards; hybrid mouse-leave + keyboard-commit close; Cmd+, toggles
         ├── notification-bell.tsx # Bell icon + badge + popover; grouped by conversation
-        ├── new-tab-dialog.tsx  # URL input + pin quick-launch
+        ├── new-tab-dialog.tsx  # URL input + pin quick-launch (reused for CDP and local)
         ├── edit-pin-dialog.tsx # Edit pin title/URL, with "Use current tab URL" when the linked tab has drifted
-        └── ui/                # shadcn (radix-nova style, HugeIcons); regenerate via CLI, owned locally
+        ├── local-webviews.tsx  # Local tabs as in-DOM <webview>s; imperative nav API + DOM-event → LocalTab mapping
+        └── ui/                # shadcn (radix-nova style, HugeIcons); regenerate via CLI, owned locally (incl. sonner toasts)
 ```
 
 Styling: shadcn **radix-nova** preset (`bH58`) + **HugeIcons** (`@hugeicons/react`, not lucide) + **Manrope**/**DM Mono** fonts. Animation: **motion** (`motion/react`, formerly framer-motion) for sidebar row enter/exit — dnd-kit owns the drag transform, motion only wraps a presence-only outer node so the two never fight. Toolchain: **pnpm** (Node 24, `node-linker=hoisted`), **Biome** (lint+format), **husky**+**commitlint**+**lint-staged**.
