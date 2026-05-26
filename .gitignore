@@ -2,5 +2,9 @@ node_modules
 dist
 release
 
+# Web build runtime state (default paths write to repo root; override via env)
+web-settings.json
+web-notifications.json
+
 # Agent worktrees (transient, never commit)
 .claude/worktrees/

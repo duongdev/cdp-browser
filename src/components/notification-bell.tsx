@@ -111,10 +111,10 @@ export function NotificationBell({
             {unreadOnly ? "No unread notifications" : "No notifications"}
           </div>
         ) : (
-          <ScrollArea className="max-h-80 [&>[data-slot=scroll-area-viewport]>div]:!block">
+          <ScrollArea className="[&>[data-slot=scroll-area-viewport]]:max-h-80 [&>[data-slot=scroll-area-viewport]>div]:!block">
             {groups.map((g) => (
               <div key={g.key}>
-                <div className="sticky top-0 flex items-center gap-1.5 bg-popover px-3 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">
+                <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-popover px-3 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">
                   {g.icon && (
                     <img
                       alt=""

@@ -55,6 +55,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { getCaps } from "@/lib/cdp-web-transport"
 import type { LocalTab } from "@/lib/local-tabs"
 import { cn } from "@/lib/utils"
 
@@ -143,6 +144,7 @@ export function Sidebar({
   onReorderLocalTabs,
   showNumbers,
 }: SidebarProps) {
+  const caps = getCaps()
   // Cmd+number jump order (pins → CDP → local); first 9 get a hint badge.
   const numberOf = (key: string): number | undefined => {
     if (!showNumbers) return undefined
@@ -414,53 +416,55 @@ export function Sidebar({
             </DragOverlay>
           </DndContext>
 
-          {/* Local Tabs folder */}
-          <DndContext
-            collisionDetection={closestCenter}
-            onDragCancel={() => setLocalDragId(null)}
-            onDragEnd={handleLocalDragEnd}
-            onDragStart={(e) => setLocalDragId(e.active.id as string)}
-            sensors={sensors}
-          >
-            <Folder
-              count={localTabs.length}
-              icon={LaptopIcon}
-              label="Local Tabs"
-              onNew={onNewLocalTab}
-              onToggle={toggleLocal}
-              open={openLocal}
+          {/* Local Tabs folder — Electron only (web build hides it via capabilities) */}
+          {caps.localTabs && (
+            <DndContext
+              collisionDetection={closestCenter}
+              onDragCancel={() => setLocalDragId(null)}
+              onDragEnd={handleLocalDragEnd}
+              onDragStart={(e) => setLocalDragId(e.active.id as string)}
+              sensors={sensors}
             >
-              <SortableContext
-                items={localTabs.map((t) => t.id)}
-                strategy={verticalListSortingStrategy}
+              <Folder
+                count={localTabs.length}
+                icon={LaptopIcon}
+                label="Local Tabs"
+                onNew={onNewLocalTab}
+                onToggle={toggleLocal}
+                open={openLocal}
               >
-                <AnimatePresence initial={false}>
-                  {localTabs
-                    .filter((tab) => openLocal || tab.id === keptLocalId)
-                    .map((tab) => (
-                      <SortableLocalItem
-                        active={tab.id === localActiveId}
-                        key={tab.id}
-                        number={numberOf(`local:${tab.id}`)}
-                        onClose={() => onCloseLocalTab(tab.id)}
-                        onEdit={() => onEditLocalTab(tab.id)}
-                        onSwitch={() => onSwitchLocalTab(tab.id)}
-                        onTogglePin={() => onToggleLocalPin(tab.id)}
-                        tab={tab}
-                      />
-                    ))}
-                </AnimatePresence>
-              </SortableContext>
-            </Folder>
-            <DragOverlay dropAnimation={null}>
-              {overlayLocal ? (
-                <RowShell>
-                  <RowFavicon favicon={overlayLocal.favicon} />
-                  <RowLabel>{overlayLocal.title || "New Tab"}</RowLabel>
-                </RowShell>
-              ) : null}
-            </DragOverlay>
-          </DndContext>
+                <SortableContext
+                  items={localTabs.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <AnimatePresence initial={false}>
+                    {localTabs
+                      .filter((tab) => openLocal || tab.id === keptLocalId)
+                      .map((tab) => (
+                        <SortableLocalItem
+                          active={tab.id === localActiveId}
+                          key={tab.id}
+                          number={numberOf(`local:${tab.id}`)}
+                          onClose={() => onCloseLocalTab(tab.id)}
+                          onEdit={() => onEditLocalTab(tab.id)}
+                          onSwitch={() => onSwitchLocalTab(tab.id)}
+                          onTogglePin={() => onToggleLocalPin(tab.id)}
+                          tab={tab}
+                        />
+                      ))}
+                  </AnimatePresence>
+                </SortableContext>
+              </Folder>
+              <DragOverlay dropAnimation={null}>
+                {overlayLocal ? (
+                  <RowShell>
+                    <RowFavicon favicon={overlayLocal.favicon} />
+                    <RowLabel>{overlayLocal.title || "New Tab"}</RowLabel>
+                  </RowShell>
+                ) : null}
+              </DragOverlay>
+            </DndContext>
+          )}
         </div>
       )}
 

@@ -132,6 +132,52 @@ and respawns on exit — e.g. a macOS LaunchAgent (`~/Library/LaunchAgents`, no 
 needed) or a systemd **user** service with `Restart=always`. The same supervisor
 can launch the browser with `--remote-debugging-port=9222`.
 
+#### macOS recipe — launchd (no autossh needed)
+
+On macOS, launchd *is* the redialer: `KeepAlive` respawns `ssh` whenever it exits,
+and the keepalive options make `ssh` exit promptly on a dead link — so plain `ssh`
+(built in, nothing to install on a locked-down Mac) is enough. First set up key
+auth A → B, then drop this at `~/Library/LaunchAgents/dev.cdp.tunnel.plist`
+(replace `B_USER`/`B_LAN_IP`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.cdp.tunnel</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-o</string><string>ServerAliveInterval=15</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>StrictHostKeyChecking=accept-new</string>
+    <string>-R</string><string>9222:localhost:9222</string>
+    <string>B_USER@B_LAN_IP</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardErrorPath</key><string>/tmp/cdp-tunnel.log</string>
+  <key>StandardOutPath</key><string>/tmp/cdp-tunnel.log</string>
+</dict></plist>
+```
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/dev.cdp.tunnel.plist   # start + enable at login
+launchctl list | grep cdp.tunnel                                # 2nd column = last exit code
+tail -f /tmp/cdp-tunnel.log                                      # watch reconnects
+```
+
+Why each flag earns its place:
+
+- `RunAtLoad` → starts at login (≈ boot for a desktop you log into).
+- `KeepAlive` → respawns `ssh` on **any** exit — network blip, B reboot, Mac wake-from-sleep.
+- `ServerAliveInterval=15 × CountMax=3` → `ssh` notices a dead link and exits in ~45s (lower for faster recovery), handing control back to launchd.
+- `ExitOnForwardFailure=yes` → if B's port is still held by a not-yet-reaped old tunnel, `ssh` exits immediately instead of sitting there portless; launchd retries every `ThrottleInterval` (10s) until B frees it.
+- `BatchMode=yes` → never blocks on a password prompt (needs key auth).
+
 > **One browser instance owns the profile.** If you want CDP against your *normal*
 > profile, the supervised launch must be the only instance — opening the browser
 > separately first means the second (CDP-flagged) launch just hands off to the
@@ -168,6 +214,30 @@ appliances:
    be skipped if an earlier long-running service blocks the runner. Always confirm
    by rebooting and re-checking, not just by running the script by hand.
 
+### B must reap dead tunnels, or **reconnect is blocked**
+
+The most confusing failure: A's tunnel dies *uncleanly* (Mac sleeps, wifi drops),
+but B's SSH server doesn't notice and keeps the reverse forward bound to
+`127.0.0.1:9222`. Now A's supervisor redials and the new tunnel can't bind the
+port — `Warning: remote port forwarding failed for listen port 9222` — and you're
+stuck until the stale listener finally times out (can be many minutes). Symptom on
+B: a `127.0.0.1:9222` LISTEN owned by the *old* SSH session that A no longer has.
+
+Fix: make B's SSH server send keepalives so it drops dead clients (and frees the
+port) within seconds — matching A's redial.
+
+- **Dropbear** (typical on appliances): add `-K 30` (keepalive every 30s; it
+  disconnects a client that misses replies). Set it where the appliance launches
+  Dropbear — often `DROPBEAR_EXTRA_ARGS="-K 30"` in `/etc/default/dropbear`, or the
+  vendor's init script. Restart Dropbear and reboot-test.
+- **OpenSSH server** (if B runs it): `ClientAliveInterval 30` + `ClientAliveCountMax 3`
+  in `sshd_config`.
+
+If you genuinely can't change B's SSH server, the port still self-clears on TCP
+timeout and A's `ExitOnForwardFailure` + supervisor will keep retrying until it
+does — just slower (minutes, not seconds). The client-side `ServerAliveInterval`
+on A only makes *A* give up fast; only B-side keepalive frees *B's* port fast.
+
 ---
 
 ## Troubleshooting
@@ -178,6 +248,8 @@ appliances:
 | `socat` up but `curl localhost:9222` on B fails | A's reverse tunnel is down | On B: look for a `127.0.0.1:9222` LISTEN; on A check the tunnel/supervisor |
 | `403 Host header ...` | Connecting via hostname, or strict origin check | Use the tailnet **IP**; add `--remote-allow-origins=*` on A |
 | Works, then dies after a reboot | Boot hook didn't run, or loop was reaped | Reboot and re-check; ensure `setsid` detach and a supported hook |
+| `remote port forwarding failed for listen port 9222` on redial | B still holds the old (dead) reverse forward | Give B-side SSH keepalive (`-K 30` on Dropbear / `ClientAliveInterval` on OpenSSH); to unblock now, on B kill the stale `127.0.0.1:9222` LISTEN owner |
+| Connects but `/json` hangs with 0 bytes | Half-dead tunnel: B's listener is up but A's link is gone | Same as above — B-side keepalive frees it; confirm A's supervisor is redialing |
 | Slow (~30–60s) recovery after a blip | SSH keepalive window | Lower `ServerAliveInterval` / `ServerAliveCountMax` on A |
 
 ## Security notes

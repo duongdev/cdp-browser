@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+release
+.claude
+spike
+docs
+build
+*.log
+web-settings.json
+web-notifications.json
+.DS_Store

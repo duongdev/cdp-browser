@@ -123,6 +123,8 @@ type ExtResult = { extensions: LocalExtensionInfo[] } | { error: string }
 interface Window {
   cdp: CdpBridge
   local: LocalBridge
+  /** Present only in the web build; absent under Electron. See cdp-web-transport.ts. */
+  webCaps?: { web: boolean; localTabs: boolean; extensions: boolean }
 }
 
 // Electron <webview> tag (webviewTag enabled on the chrome view).

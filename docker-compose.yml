@@ -1,0 +1,29 @@
+services:
+  cdp-web:
+    build: .
+    image: cdp-browser-web:latest
+    container_name: cdp-browser-web
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-7800}:7800"
+    environment:
+      # Remote CDP host the proxy connects to (LAN or Tailscale IP/hostname).
+      # Must be an IP/localhost (CDP rejects DNS Host headers).
+      CDP_HOST: ${CDP_HOST:-host.docker.internal}
+      CDP_PORT: ${CDP_PORT:-9222}
+      PORT: "7800"
+      APP_TITLE: ${APP_TITLE:-CDP Portal}
+      SETTINGS_PATH: /data/settings.json
+      NOTIFS_PATH: /data/notifications.json
+    volumes:
+      - cdp-web-data:/data
+    # Bridge networking NATs out to the host's LAN, so a LAN CDP_HOST (e.g.
+    # 192.168.x.x) works as-is. `host.docker.internal` resolves to the host via
+    # the mapping below. For a Tailscale (100.x) CDP host, either ensure the
+    # host's tailnet routes into the container or switch to `network_mode: host`
+    # (Linux only) and drop the ports/extra_hosts blocks.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  cdp-web-data:

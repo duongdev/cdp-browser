@@ -1,0 +1,134 @@
+<!doctype html>
+<!-- t006 spike — throwaway. Bare canvas + EventSource, no build step, no framework. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>t006 SSE screencast spike</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; color: #ccc; font: 12px ui-monospace, monospace; }
+      #wrap { display: flex; flex-direction: column; height: 100%; }
+      #hud { padding: 4px 8px; display: flex; gap: 16px; }
+      #hud b { color: #6cf; }
+      #stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+      canvas { max-width: 100%; max-height: 100%; outline: none; cursor: crosshair; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <div id="hud">
+        <span>fps <b id="fps">0</b></span>
+        <span>e2e-ish ms <b id="lat">0</b></span>
+        <span>frame KB <b id="kb">0</b></span>
+        <span>posts/s <b id="pps">0</b></span>
+        <span id="conn">connecting…</span>
+      </div>
+      <div id="stage"><canvas id="c" tabindex="0"></canvas></div>
+    </div>
+    <script>
+      const cv = document.getElementById("c")
+      const ctx = cv.getContext("2d")
+      const img = new Image()
+      // Remote frame natural size from CDP metadata; input maps client→remote against it.
+      let dev = { w: 0, h: 0 }
+
+      // --- frame intake (SSE) ---
+      let frames = 0, lastFps = performance.now(), postCount = 0, lastPaint = 0
+      const es = new EventSource("/events")
+      es.addEventListener("frame", (ev) => {
+        const t0 = performance.now()
+        const { data, metadata } = JSON.parse(ev.data)
+        dev = { w: metadata.deviceWidth, h: metadata.deviceHeight }
+        img.onload = () => {
+          if (cv.width !== img.width || cv.height !== img.height) {
+            cv.width = img.width
+            cv.height = img.height
+          }
+          ctx.drawImage(img, 0, 0)
+          document.getElementById("lat").textContent = Math.round(performance.now() - t0)
+          document.getElementById("kb").textContent = Math.round(data.length / 1024)
+        }
+        img.src = "data:image/jpeg;base64," + data
+        frames++
+      })
+      es.addEventListener("disconnected", () => (document.getElementById("conn").textContent = "remote disconnected"))
+      es.onopen = () => (document.getElementById("conn").textContent = "connected")
+      es.onerror = () => (document.getElementById("conn").textContent = "sse error / reconnecting")
+
+      setInterval(() => {
+        const now = performance.now()
+        document.getElementById("fps").textContent = (frames / ((now - lastFps) / 1000)).toFixed(1)
+        document.getElementById("pps").textContent = postCount
+        frames = 0; postCount = 0; lastFps = now
+      }, 1000)
+
+      // --- input (coalesced moves/wheel via rAF, discrete events immediate) ---
+      let seq = 0
+      let queued = [] // coalesced moves/wheel
+      let flushScheduled = false
+
+      function post(intents) {
+        postCount++
+        fetch("/input", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seq: seq++, intents }),
+          keepalive: true,
+        })
+      }
+      function scheduleFlush() {
+        if (flushScheduled) return
+        flushScheduled = true
+        requestAnimationFrame(() => {
+          flushScheduled = false
+          if (queued.length) { post(queued); queued = [] }
+        })
+      }
+      // Map a client point on the displayed canvas to remote device pixels.
+      function remoteXY(e) {
+        const r = cv.getBoundingClientRect()
+        return {
+          x: ((e.clientX - r.left) / r.width) * (dev.w || cv.width),
+          y: ((e.clientY - r.top) / r.height) * (dev.h || cv.height),
+        }
+      }
+
+      cv.addEventListener("mousemove", (e) => {
+        const { x, y } = remoteXY(e)
+        // Keep only the latest move (coalesce): drop a prior queued move.
+        queued = queued.filter((i) => !(i.kind === "mouse" && i.phase === "moved"))
+        queued.push({ kind: "mouse", phase: "moved", event: { x, y, button: 0, buttons: e.buttons, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey } })
+        scheduleFlush()
+      })
+      cv.addEventListener("wheel", (e) => {
+        e.preventDefault()
+        const { x, y } = remoteXY(e)
+        queued.push({ kind: "wheel", event: { x, y, deltaX: e.deltaX, deltaY: e.deltaY, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey } })
+        scheduleFlush()
+      }, { passive: false })
+
+      // Discrete events: flush any queued moves first so order holds, then send now.
+      function discrete(intent) {
+        if (queued.length) { post(queued); queued = [] }
+        post([intent])
+      }
+      cv.addEventListener("mousedown", (e) => {
+        cv.focus()
+        const { x, y } = remoteXY(e)
+        discrete({ kind: "mouse", phase: "pressed", clickCount: 1, event: { x, y, button: e.button, buttons: e.buttons, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey } })
+      })
+      cv.addEventListener("mouseup", (e) => {
+        const { x, y } = remoteXY(e)
+        discrete({ kind: "mouse", phase: "released", clickCount: 1, event: { x, y, button: e.button, buttons: e.buttons, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey } })
+      })
+      cv.addEventListener("keydown", (e) => {
+        e.preventDefault()
+        discrete({ kind: "key", phase: "down", event: { key: e.key, code: e.code, keyCode: e.keyCode, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey } })
+      })
+      cv.addEventListener("keyup", (e) => {
+        e.preventDefault()
+        discrete({ kind: "key", phase: "up", event: { key: e.key, code: e.code, keyCode: e.keyCode, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey } })
+      })
+    </script>
+  </body>
+</html>

@@ -25,6 +25,7 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { getCaps } from "@/lib/cdp-web-transport"
 
 export type SwitchEffect = "none" | "blur" | "grayscale" | "blur-grayscale"
 
@@ -127,6 +128,7 @@ export function SettingsDialog({
   onOpenExtensionUrl,
 }: SettingsDialogProps) {
   const [tab, setTab] = useState<"remote" | "local">("remote")
+  const caps = getCaps()
   const [pendingRemoveExt, setPendingRemoveExt] = useState<LocalExtensionInfo | null>(null)
   const [host, setHost] = useState("")
   const [port, setPort] = useState("")
@@ -235,24 +237,26 @@ export function SettingsDialog({
           </SheetHeader>
 
           <div className="flex flex-col gap-3 overflow-y-auto px-5 pt-2 pb-6">
-            {/* Remote (CDP) vs Local tabs */}
-            <div className="flex gap-1 rounded-lg bg-foreground/[0.06] p-0.5 text-xs">
-              {(["remote", "local"] as const).map((t) => (
-                <button
-                  className={
-                    "flex-1 rounded-md px-2 py-1 font-medium transition-colors " +
-                    (tab === t
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground")
-                  }
-                  key={t}
-                  onClick={() => setTab(t)}
-                  type="button"
-                >
-                  {t === "remote" ? "Remote (CDP)" : "Local tabs"}
-                </button>
-              ))}
-            </div>
+            {/* Remote (CDP) vs Local tabs — the Local toggle is Electron-only */}
+            {caps.localTabs && (
+              <div className="flex gap-1 rounded-lg bg-foreground/[0.06] p-0.5 text-xs">
+                {(["remote", "local"] as const).map((t) => (
+                  <button
+                    className={
+                      "flex-1 rounded-md px-2 py-1 font-medium transition-colors " +
+                      (tab === t
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground")
+                    }
+                    key={t}
+                    onClick={() => setTab(t)}
+                    type="button"
+                  >
+                    {t === "remote" ? "Remote (CDP)" : "Local tabs"}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {tab === "remote" && (
               <>
@@ -435,7 +439,7 @@ export function SettingsDialog({
               </>
             )}
 
-            {tab === "local" && (
+            {tab === "local" && caps.localTabs && (
               <>
                 <Card title="Local tabs">
                   <div className="flex items-start justify-between gap-4">
