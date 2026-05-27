@@ -134,6 +134,13 @@ export interface RemotePage {
    * document reload. Falls back to a full navigation if `pushState` throws.
    */
   navigateSpa(url: string): void
+  /**
+   * Opens a Teams v2 conversation by thread id. Teams encodes the conversation nowhere
+   * in the URL/history (verified — see ADR-0003), so deep-open replays the click on the
+   * chat row whose DOM id carries the thread id (`title-chat-list-item_<threadId>`),
+   * retry-polling briefly since a freshly-notified chat takes a beat to render.
+   */
+  openTeamsThread(threadId: string): void
   reload(): void
   back(): void
   forward(): void
@@ -295,6 +302,12 @@ export function createRemotePage(
       const u = JSON.stringify(normalizeUrl(url))
       transport.send("Runtime.evaluate", {
         expression: `(()=>{try{history.pushState({},'',${u});dispatchEvent(new PopStateEvent('popstate',{state:history.state}))}catch(e){location.href=${u}}})()`,
+      })
+    },
+    openTeamsThread(threadId) {
+      const id = JSON.stringify(threadId)
+      transport.send("Runtime.evaluate", {
+        expression: `(()=>{const id=${id};const open=()=>{let t=document.getElementById('title-chat-list-item_'+id)||[...document.querySelectorAll('[id^="title-chat-list-item_"]')].find(e=>e.id.endsWith(id));const row=t&&(t.closest('[role="treeitem"]')||t.closest('li'));if(!row)return false;row.click();return true};if(open())return;let n=0;const iv=setInterval(()=>{if(open()||++n>20)clearInterval(iv)},100)})()`,
       })
     },
     reload() {

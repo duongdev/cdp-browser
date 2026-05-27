@@ -349,16 +349,20 @@ export default function App() {
   )
 
   // Clicking a notification (toolbar popover or OS toast) activates the tab that
-  // captured it, then deep-opens the message if the adapter supplied a deep-link
-  // (Outlook does; Teams keeps a single SPA URL — see docs/adr/0003).
+  // captured it, then deep-opens the conversation. Outlook supplies a per-message URL
+  // (navigateSpa); Teams has no conversation URL, so a "chats" notification's thread id
+  // drives a chat-row click instead (see docs/adr/0003). Other Teams toasts (meeting
+  // "calls") have no thread to open and stop at activating the tab.
   const handleNotificationClick = useCallback(
     async (entry: NotifEntry) => {
       setBellOpen(false)
       setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)))
       window.cdp.markNotificationRead(entry.id)
       await switchTab(entry.targetId)
-      const deepLink = (entry.targetEntity as { deepLink?: string } | null)?.deepLink
-      if (deepLink) page.navigateSpa(deepLink)
+      const te = entry.targetEntity as { deepLink?: string; type?: string; id?: string } | null
+      if (te?.deepLink) page.navigateSpa(te.deepLink)
+      else if (te?.type === "chats" && typeof te.id === "string" && te.id.startsWith("19:"))
+        page.openTeamsThread(te.id)
     },
     [switchTab, page],
   )

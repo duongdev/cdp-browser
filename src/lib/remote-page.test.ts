@@ -454,4 +454,20 @@ describe("RemotePage navigation", () => {
     expect(expr).toContain("catch")
     expect(expr).toContain("location.href")
   })
+
+  it("openTeamsThread clicks the chat row carrying the thread id", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.openTeamsThread("19:958eb1c9571343a08e9fb7e30639b1a4@thread.v2")
+
+    expect(t.sends).toHaveLength(1)
+    expect(t.sends[0].method).toBe("Runtime.evaluate")
+    const expr = t.sends[0].params.expression
+    expect(expr).toContain("title-chat-list-item_")
+    expect(expr).toContain(JSON.stringify("19:958eb1c9571343a08e9fb7e30639b1a4@thread.v2"))
+    expect(expr).toContain(".click()")
+    // retry loop must be bounded (clearInterval + counter cap) so it never leaks
+    expect(expr).toContain("clearInterval")
+  })
 })
