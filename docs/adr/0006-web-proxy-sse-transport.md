@@ -76,6 +76,40 @@ front and the app trusts the upstream.
   still inline in `main.js`. main.js was left untouched to avoid regressing the
   shipping Electron app; a follow-up task de-dups it onto the shared core.
 
+## Addendum (t011): streaming input, PWA, push toggle
+
+- **Streaming input channel.** Per-flush POSTs each re-paid TLS/auth/RTT through the
+  proxy chain. Replaced with one long-lived `POST /api/input-stream` whose body is a
+  `fetch` `ReadableStream` (`duplex: 'half'`, HTTP/2 only) carrying NDJSON frames —
+  a persistent client→server channel, still no WebSocket, pairing with SSE. A `probe`
+  frame must be echoed back as a `stream-ack` over SSE before real input rides the
+  stream; if it isn't (no HTTP/2, or a proxy buffers the request body) the client
+  falls back to `/api/cdp-batch` and gives up after 2 attempts. Needs
+  `proxy_request_buffering off` upstream to activate. WebTransport/HTTP-3 was the
+  lower-latency ideal but deferred (HTTP/3-through-Authentik uncertainty).
+- **PWA** install via `public/manifest.webmanifest` (name injected from `APP_TITLE`)
+  + `public/sw.js` (navigations network-first for Authentik redirects, assets
+  cache-first, `/api/*` never intercepted).
+- **Push toggle** (`webPush` ui-state, web only): opt-in, requests Notification
+  permission on enable, gates the Notification-API toast.
+
+## Addendum (t012): optional E2E payload encryption
+
+For a managed, no-admin, **Zscaler**-inspected device (no tunnel egress possible),
+HTTPS to the portal is readable by IT — Zscaler forges certs with a trusted root CA
+and decrypts TLS. The only defence on the sole inspected channel is app-layer E2E:
+when `E2E_PASSPHRASE` is set on the server, every `/api` body + SSE frame is sealed
+in **AES-256-GCM** (`base64(iv‖ct‖tag)`) under a **PBKDF2-SHA256** key derived from a
+passphrase entered in the browser (held in `sessionStorage`, key non-extractable) and
+matched by the server env. Salt + iterations are public, served via `GET /api/crypto-params`
+along with a `verifier` (sealed marker) the client decrypts to confirm the passphrase
+before connecting. The seal/open seam wraps the transport helpers + SSE dispatch
+(serialized to preserve order); with E2E off, payloads are plaintext (no change).
+Honest bound: this defeats network **content inspection/DLP logging**, not endpoint
+screen/keystroke capture, and doesn't hide metadata. JPEG frames + verifier are
+offline-crack oracles → a **strong passphrase is mandatory**. With E2E on, input uses
+the sealed-POST path (the streaming channel's probe/async-seal interplay isn't worth it).
+
 ## Alternatives considered
 
 - **Direct browser → CDP WS:** blocked by the Origin handshake rejection and the

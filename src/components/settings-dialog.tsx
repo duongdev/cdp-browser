@@ -135,6 +135,24 @@ export function SettingsDialog({
   const [saved, setSaved] = useState({ host: "", port: "" })
   const [saving, setSaving] = useState(false)
   const [test, setTest] = useState<TestState>({ status: "idle" })
+  // Web-only "Push notifications" toggle — self-contained (reads/writes ui-state directly,
+  // like the Connection card), since it's a leaf web concern not worth prop-drilling.
+  const [webPush, setWebPush] = useState(false)
+  const [pushPermBlocked, setPushPermBlocked] = useState(false)
+
+  const toggleWebPush = useCallback(async (on: boolean) => {
+    if (on && typeof Notification !== "undefined") {
+      const perm = await Notification.requestPermission()
+      if (perm !== "granted") {
+        setPushPermBlocked(perm === "denied")
+        setWebPush(false)
+        return
+      }
+    }
+    setPushPermBlocked(false)
+    setWebPush(on)
+    window.cdp.setUiState({ webPush: on })
+  }, [])
 
   // Suppress the leave-timer while a Select popover (portaled outside the panel)
   // is open — the cursor naturally travels off-panel to reach its options.
@@ -150,8 +168,18 @@ export function SettingsDialog({
         setPort(p)
         setSaved({ host: config.host, port: p })
       })
+      if (caps.web) {
+        window.cdp.getUiState().then((s) => {
+          const granted =
+            typeof Notification !== "undefined" && Notification.permission === "granted"
+          setWebPush(!!s.webPush && granted)
+          setPushPermBlocked(
+            typeof Notification !== "undefined" && Notification.permission === "denied",
+          )
+        })
+      }
     }
-  }, [open])
+  }, [open, caps.web])
 
   const clearLeaveTimer = useCallback(() => {
     if (leaveTimer.current) {
@@ -365,19 +393,39 @@ export function SettingsDialog({
 
                 {/* Notifications */}
                 <Card title="Notifications">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-0.5">
-                      <Label className="text-[13px]">Desktop notifications</Label>
-                      <p className="text-[11px] leading-snug text-muted-foreground">
-                        Show a system notification for Teams messages when its tab isn't in view.
-                      </p>
+                  {caps.web ? (
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <Label className="text-[13px]">Push notifications</Label>
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          Show a browser notification for Teams/Outlook messages when this tab isn't
+                          in view.
+                          {pushPermBlocked && (
+                            <span className="text-destructive"> Blocked in browser settings.</span>
+                          )}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={webPush}
+                        className="mt-0.5"
+                        onCheckedChange={toggleWebPush}
+                      />
                     </div>
-                    <Switch
-                      checked={notificationsEnabled}
-                      className="mt-0.5"
-                      onCheckedChange={onNotificationsEnabledChange}
-                    />
-                  </div>
+                  ) : (
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <Label className="text-[13px]">Desktop notifications</Label>
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          Show a system notification for Teams messages when its tab isn't in view.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={notificationsEnabled}
+                        className="mt-0.5"
+                        onCheckedChange={onNotificationsEnabledChange}
+                      />
+                    </div>
+                  )}
                 </Card>
 
                 <Card title="Connection">

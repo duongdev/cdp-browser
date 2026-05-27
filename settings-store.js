@@ -17,6 +17,9 @@ const UI_DEFAULTS = {
   autoGrantLocalMedia: true,
   restoreLocalPins: true,
   localExtensionPaths: [],
+  // Web build only: opt-in browser push (Notification API) toasts. Off by default —
+  // it requires an explicit permission grant. See t011.
+  webPush: false,
 }
 // Keys settable via setUiState (localExtensionPaths is owned by extension flows).
 const UI_SETTABLE = Object.keys(UI_DEFAULTS).filter((k) => k !== "localExtensionPaths")

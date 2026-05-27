@@ -77,7 +77,7 @@ describe("input-coalesce batcher", () => {
   })
 
   it("does nothing on flush when the queue is empty", () => {
-    const { batcher, sent, tick } = harness()
+    const { sent, tick } = harness()
     tick()
     expect(sent).toHaveLength(0)
   })

@@ -6,12 +6,15 @@
 //
 // Run:  CDP_HOST=<remote-ip> CDP_PORT=9222 PORT=7800 node web/server.mjs
 
+import nodeCrypto from "node:crypto"
 import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs"
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import WebSocket from "ws"
 import endpoints from "../cdp-endpoints.js"
+import { deriveKey, open, seal } from "../crypto-envelope.js"
+import { createLineSplitter } from "../line-splitter.js"
 import { ingest, markAllRead, markRead, markUnread, matchAdapter } from "../notifications.js"
 import { createSettingsStore } from "../settings-store.js"
 import { emulatedMediaParams } from "../theme-emulation.js"
@@ -24,6 +27,16 @@ const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notificatio
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
 const APP_TITLE = process.env.APP_TITLE || "CDP Portal"
+
+// Optional E2E: with E2E_PASSPHRASE set, every /api body + SSE frame is sealed with a
+// PBKDF2/AES-GCM key a TLS-intercepting proxy never has. The salt is public (served via
+// /api/crypto-params); set E2E_SALT for a stable key across restarts (else per-boot, and
+// clients re-derive on reload). See t012 / ADR-0006.
+const E2E_PASSPHRASE = process.env.E2E_PASSPHRASE || ""
+const E2E_ITERS = Number(process.env.E2E_ITERS || 600000)
+const E2E_SALT = process.env.E2E_SALT || nodeCrypto.randomBytes(16).toString("base64")
+const e2eKey = E2E_PASSPHRASE ? deriveKey(E2E_PASSPHRASE, E2E_SALT, E2E_ITERS) : null
+if (e2eKey) console.log("[web] E2E encryption ON")
 
 // ---- settings -------------------------------------------------------------
 const loadJson = (p, fallback) => {
@@ -50,7 +63,9 @@ const port = () => settings.getConfig().port
 // ---- SSE fan-out ----------------------------------------------------------
 const sseClients = new Set()
 function broadcast(event, payload) {
-  const line = `event: ${event}\ndata: ${JSON.stringify(payload ?? {})}\n\n`
+  // Event names stay plaintext (client routing); only the data payload is sealed.
+  const data = e2eKey ? seal(payload ?? {}, e2eKey) : JSON.stringify(payload ?? {})
+  const line = `event: ${event}\ndata: ${data}\n\n`
   for (const res of sseClients) {
     try {
       res.write(line)
@@ -62,7 +77,6 @@ function broadcast(event, payload) {
 
 // ---- active screencast socket (1 upstream -> N SSE subscribers) ----------
 let activeWs = null
-let activeTabId = null
 let connectId = 0
 let cmdId = 100
 let cachedMetrics = null
@@ -100,7 +114,6 @@ async function connect(tabId) {
     } catch {}
   }
   const myId = ++connectId
-  activeTabId = tabId
   try {
     await fetch(endpoints.activate(host(), port(), tabId).url)
     // Give the remote browser time to promote the tab before we list its WS URL.
@@ -332,14 +345,17 @@ const body = (req) =>
     })
     req.on("end", () => {
       try {
-        resolve(b ? JSON.parse(b) : {})
+        if (!b) return resolve({})
+        resolve(e2eKey ? open(b.trim(), e2eKey) : JSON.parse(b))
       } catch {
         resolve({})
       }
     })
   })
 const json = (res, data, code = 200) =>
-  res.writeHead(code, { "Content-Type": "application/json" }).end(JSON.stringify(data ?? null))
+  res
+    .writeHead(code, { "Content-Type": e2eKey ? "text/plain" : "application/json" })
+    .end(e2eKey ? seal(data ?? null, e2eKey) : JSON.stringify(data ?? null))
 
 const MIME = {
   ".html": "text/html",
@@ -365,6 +381,10 @@ function serveStatic(req, res, pathname) {
     )
     return res.writeHead(200, { "Content-Type": "text/html" }).end(html)
   }
+  if (file.endsWith("manifest.webmanifest")) {
+    const m = readFileSync(file, "utf8").replaceAll("__APP_TITLE__", APP_TITLE)
+    return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(m)
+  }
   res.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream" })
   createReadStream(file).pipe(res)
 }
@@ -384,6 +404,42 @@ const server = http.createServer(async (req, res) => {
     res.write("retry: 2000\n\n")
     sseClients.add(res)
     req.on("close", () => sseClients.delete(res))
+    return
+  }
+
+  // E2E bootstrap — always plaintext (the client needs it before it has a key). The
+  // verifier is a sealed known marker the client decrypts to confirm the passphrase.
+  if (p === "/api/crypto-params") {
+    return res.writeHead(200, { "Content-Type": "application/json" }).end(
+      JSON.stringify({
+        e2e: !!e2eKey,
+        salt: E2E_SALT,
+        iterations: E2E_ITERS,
+        verifier: e2eKey ? seal({ m: "cdp-e2e-ok" }, e2eKey) : null,
+      }),
+    )
+  }
+
+  // Streaming input channel: one long-lived POST whose request body is a stream of
+  // NDJSON frames (a coalesced batch or a single {method,params} per line). Avoids a
+  // separate HTTP request per input flush — the low-latency path. The renderer falls
+  // back to /api/cdp-batch if this can't be established (e.g. a buffering proxy). See t011.
+  if (p === "/api/input-stream" && POST) {
+    res.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-cache" })
+    const split = createLineSplitter()
+    req.on("data", (chunk) => {
+      for (const line of split.push(chunk.toString())) {
+        try {
+          const frame = e2eKey ? open(line, e2eKey) : JSON.parse(line)
+          // A probe confirms the body actually streams through (not buffered by a proxy);
+          // echo it over SSE so the client switches real input onto the stream.
+          if (frame.probe) broadcast("stream-ack", {})
+          else applyBatch(frame.items || [frame])
+        } catch {}
+      }
+    })
+    req.on("end", () => res.end("ok"))
+    req.on("error", () => {})
     return
   }
 
@@ -491,6 +547,10 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/api/")) return res.writeHead(404).end("unknown api route")
   return serveStatic(req, res, p)
 })
+
+// The streaming input channel is a request body that never completes; Node's default
+// 5-min requestTimeout would kill it. Disable it (this server sits behind auth).
+server.requestTimeout = 0
 
 server.listen(PORT, "0.0.0.0", () =>
   console.log(`[web] http://0.0.0.0:${PORT}  ->  cdp ${host()}:${port()}`),

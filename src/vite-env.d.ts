@@ -50,6 +50,7 @@ interface CdpBridge {
     autoGrantLocalMedia: boolean
     restoreLocalPins: boolean
     localExtensionPaths: string[]
+    webPush: boolean
   }>
   setUiState: (
     partial: Partial<{
@@ -62,6 +63,7 @@ interface CdpBridge {
       syncTheme: boolean
       autoGrantLocalMedia: boolean
       restoreLocalPins: boolean
+      webPush: boolean
     }>,
   ) => Promise<void>
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>
