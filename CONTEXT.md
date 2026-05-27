@@ -33,7 +33,7 @@ Translating local keyboard, mouse, wheel, and clipboard events into CDP input on
 _Avoid_: input dispatch, event forwarding.
 
 **Viewport Transform**:
-The letterbox mapping between canvas pixels and Remote Page pixels, since a Screencast Frame may not fill the canvas (black bars from aspect-ratio mismatch). The same transform must drive both drawing and Input Forwarding hit-testing.
+The mapping from canvas pixels to Remote Page DIP coordinates (CSS px), accounting for letterbox offset (black bars when the Screencast Frame's aspect ratio doesn't match the canvas) and frame downscaling (when the remote window is larger than the local canvas, the frame is smaller than the remote layout viewport — CDP input wants DIP, not frame-buffer px). The same transform must drive both drawing and Input Forwarding hit-testing.
 _Avoid_: scaling, getPos, coordinate math.
 
 **Adaptive Viewport**:

@@ -47,22 +47,33 @@ export interface Rect {
 }
 
 /**
- * Maps a client (canvas-relative viewport) point to Remote Page pixels, undoing the
- * device pixel ratio and the letterbox offset. Uses the same `letterbox` as the draw
- * path, so a click always lands where the user sees it.
+ * Maps a client (canvas-relative viewport) point to Remote Page coordinates, undoing the
+ * device pixel ratio and the letterbox offset. Uses the same `letterbox` as the draw path,
+ * so a click always lands where the user sees it.
+ *
+ * The Screencast Frame is often *downscaled* from the remote layout viewport (the proxy
+ * caps `Page.startScreencast` at the local canvas size, so a larger remote window arrives
+ * smaller). CDP input wants DIP (CSS px) in the remote viewport's space, not frame-image
+ * px — so when the frame's device size is known (`device`, from the frame metadata's
+ * `deviceWidth`/`deviceHeight`) we scale image px → DIP. Without it we assume 1:1 (the
+ * previous behavior, correct whenever the frame isn't downscaled). `offsetTop` is the
+ * metadata's vertical DIP offset of the captured area (0 on desktop).
  */
 export function toRemoteCoords(
   client: { x: number; y: number },
   rect: Rect,
   dpr: number,
   frame: Size,
+  device?: Size,
+  offsetTop = 0,
 ): { x: number; y: number } {
   const canvas = { w: rect.width * dpr, h: rect.height * dpr }
   const { scale, dx, dy } = letterbox(frame, canvas)
-  const px = (client.x - rect.left) * dpr
-  const py = (client.y - rect.top) * dpr
+  const ix = ((client.x - rect.left) * dpr - dx) / scale
+  const iy = ((client.y - rect.top) * dpr - dy) / scale
+  const k = device ? device.w / frame.w : 1
   return {
-    x: Math.round((px - dx) / scale),
-    y: Math.round((py - dy) / scale),
+    x: Math.round(ix * k),
+    y: Math.round(iy * k - offsetTop),
   }
 }

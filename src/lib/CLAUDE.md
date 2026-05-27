@@ -8,7 +8,7 @@ Ten modules that form the renderer's domain layer, plus a React hook that wires 
 
 **`tabs.ts`** — Tab ordering and lifecycle. `reconcile(order, remoteTabs)` merges the Remote Browser's tab list against the locally-owned order: existing tabs keep position, gone tabs drop out, new tabs append. `nextTab`/`prevTab` wrap around. `stripTitleBadge(title)` strips a leading `(N)` unread count that some apps (e.g. Teams) prepend to the document title — the app surfaces unread counts via its own tab badge, so the title shouldn't duplicate it.
 
-**`viewport-transform.ts`** — Viewport Transform. `letterbox(frame, canvas)` computes the scale and offset when a Screencast Frame doesn't fill the canvas (aspect-ratio mismatch). `toRemoteCoords(client, rect, dpr, frame)` maps a canvas-relative point to Remote Page pixels. Both the draw path in `viewport.tsx` and Input Forwarding hit-testing call these — keeping coordinate math in one place prevents drift.
+**`viewport-transform.ts`** — Viewport Transform. `letterbox(frame, canvas)` computes the scale and offset when a Screencast Frame doesn't fill the canvas (aspect-ratio mismatch). `toRemoteCoords(client, rect, dpr, frame, device?, offsetTop?)` maps a canvas-relative point to Remote Page coordinates (DIP). When the frame is downscaled from the remote layout viewport, pass `device` (the metadata's `deviceWidth`/`deviceHeight`) and it scales frame-px → DIP; omit it and the map is 1:1 (the prior behavior, correct when not downscaled). `dpr` cancels out algebraically, so it never offsets the result. Both the draw path in `viewport.tsx` and Input Forwarding hit-testing call these — keeping coordinate math in one place prevents drift.
 
 **`adaptive-viewport.ts`** — Adaptive Viewport. Pure state machine: `deviceMetrics(canvas)` produces the `Emulation.setDeviceMetricsOverride` payload (CSS-pixel dimensions, `deviceScaleFactor` pinned to 1). `reduce(state, event)` drives the controller — `enable`/`disable`, `resize` (canvas changed), `rebaseline` (reconnect without re-applying), `rearm` (user interaction after a graceful back-off — exits dormant and re-imposes client size when `forceOnClient` is on), and `poll` (host-resize detection via drift check). Returns `{ state, effects }` where effects are `applyOverride` or `clearOverride`. No side effects; effects are executed by callers (`app.tsx` / main process).
 
@@ -23,6 +23,19 @@ Ten modules that form the renderer's domain layer, plus a React hook that wires 
 **`active-order.ts`** — MRU (most-recently-used) activation order across both CDP and local tabs. `touchActive(order, entry)` moves an `ActiveRef` (`{ kind, id }`) to the tail (most-recent); `dropActive(order, entry)` removes it; `mostRecent(order, isOpen)` returns the newest entry still open — drives "which tab to activate when the current one closes" across kinds. Pure; no side effects.
 
 **`key-routing.ts`** — Pure predicate for macOS OS-reserved key combos. `isOsReservedKey(e: KeyLike)` returns `true` for combos that must fall through to native macOS handlers (Hide, Minimize, Quit, Fullscreen, Cycle Windows). Matches on `e.code` (physical key), not `e.key`, so Option-rewritten characters (e.g. Cmd+Opt+H → "˙") don't break matching. Called by `viewport.tsx` to gate Input Forwarding — reserved combos are neither forwarded nor `preventDefault`ed. Requires `metaKey`; non-Cmd combos always return `false`.
+
+## Web transport (web build only)
+
+Three files in `src/lib/` are not domain modules — they implement the browser-side half of the SSE + POST transport when no Electron preload is present. They live here (not in `src/components/`) because they contain no React and must be unit-testable in isolation.
+
+**`cdp-web-transport.ts`** — installs `window.cdp` (the `CdpBridge` contract) over `EventSource` + `fetch` POST when no preload is detected. Manages the SSE stream, the streaming input channel (`POST /api/input-stream`), the POST fallback, E2E seal/open, theme sync, and tab/pin/settings REST calls. Routes mouse input: drag (button held) → `batcher.coalesce`; hover (no button) → `hover.move`; press/release → `hover.cancel` + `batcher.immediate`; wheel → `batcher.append`. `collapseMoves(items)` — the CDP-specific merge function for `createSingleFlight`: drops all but the last consecutive `mouseMoved` in a run, preserving clicks/wheel/keys in order.
+
+**`input-coalesce.ts`** — generic batching + backpressure primitives (no CDP-specific logic):
+- `createBatcher<T>` — coalesces high-frequency commands onto a scheduler (one POST per rAF instead of one per event).
+- `createHoverGate<T>` — holds a buttons-up move and emits it only once the cursor stops (injected `delay`); `cancel()` drops the held move. Keeps hover from flooding the POST fallback.
+- `createSingleFlight<T>` — at most one `post` in flight; items pushed while waiting accumulate and `merge` into one next post on settle. Bounds the POST rate to link RTT. A failed post does not wedge the queue.
+
+**`crypto-envelope.ts`** — browser-side AES-256-GCM seal/open for the optional E2E mode. `deriveKey(passphrase, salt)` runs PBKDF2-SHA256; `seal(key, plaintext)` / `open(key, ct)` wrap SubtleCrypto. Mirrors `crypto-envelope.js` (server side, CJS). No state; pure crypto.
 
 ## Transport seam
 

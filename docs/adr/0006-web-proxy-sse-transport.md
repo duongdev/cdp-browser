@@ -110,6 +110,32 @@ screen/keystroke capture, and doesn't hide metadata. JPEG frames + verifier are
 offline-crack oracles → a **strong passphrase is mandatory**. With E2E on, input uses
 the sealed-POST path (the streaming channel's probe/async-seal interplay isn't worth it).
 
+## Addendum (t013): event-driven input + backpressure on the POST fallback
+
+When the streaming channel can't activate (the default behind nginx/Authentik without
+`proxy_request_buffering off`), input rides the `/api/cdp-batch` fallback. Streaming a
+*continuous hover* — one `mouseMoved` per animation frame, ~60/sec — saturated the
+browser's ~6-connection-per-host limit through the proxy: POSTs serialized, backed up,
+and (being fire-and-forget) could arrive out of order, so the cursor lagged and **clicks
+landed seconds late or appeared ignored** because they queued behind a permanent move
+backlog. Two changes fix it, on the principle that the remote only needs *meaningful*
+mouse events, not the whole path:
+
+- **Hover gate** (`createHoverGate`, `input-coalesce.ts`): a buttons-up move is held and
+  emitted only once the cursor goes still (80 ms), so a continuous hover produces one
+  command per rest instead of ~60/sec. A press/release/drag cancels the held move (its
+  own coordinates supersede it). **Drag** moves (a button is held) bypass the gate and
+  track live, so drag-select and drag-n-drop still work. Clicks carry their own
+  coordinates, so a click with no preceding resting move still lands correctly.
+- **Single-flight fallback** (`createSingleFlight`): at most one `/api/cdp-batch` POST in
+  flight; batches pushed meanwhile accumulate and merge on settle — runs of consecutive
+  `mouseMoved` collapse to the latest (`collapseMoves`) while clicks/wheel/keys break a
+  run and stay ordered. The request rate auto-adapts to link RTT; a rejected POST resolves
+  the flight so the queue never wedges. Bounds the drag burst that the gate doesn't touch.
+
+The streaming path is unchanged (a persistent low-latency channel); both changes are on
+the transport's command classification + the fallback only.
+
 ## Alternatives considered
 
 - **Direct browser → CDP WS:** blocked by the Origin handshake rejection and the

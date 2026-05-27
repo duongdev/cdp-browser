@@ -34,6 +34,42 @@ describe("toRemoteCoords", () => {
     const p = toRemoteCoords({ x: 600, y: 550 }, offset, 2, { w: 2000, h: 2000 })
     expect(p).toEqual({ x: 1000, y: 1000 })
   })
+
+  it("scales image px to remote DIP when the frame is downscaled", () => {
+    // frame 1000x1000 fills the canvas, but the remote layout viewport is 2000x2000 DIP
+    // (the screencast was capped below the remote size) -> a center click maps to 1000,1000
+    const p = toRemoteCoords(
+      { x: 500, y: 500 },
+      rect,
+      1,
+      { w: 1000, h: 1000 },
+      { w: 2000, h: 2000 },
+    )
+    expect(p).toEqual({ x: 1000, y: 1000 })
+  })
+
+  it("is identity when the device size equals the frame size (no downscale)", () => {
+    const p = toRemoteCoords(
+      { x: 300, y: 700 },
+      rect,
+      1,
+      { w: 1000, h: 1000 },
+      { w: 1000, h: 1000 },
+    )
+    expect(p).toEqual({ x: 300, y: 700 })
+  })
+
+  it("subtracts the metadata offsetTop on the y axis", () => {
+    const p = toRemoteCoords(
+      { x: 0, y: 500 },
+      rect,
+      1,
+      { w: 1000, h: 1000 },
+      { w: 1000, h: 1000 },
+      40,
+    )
+    expect(p).toEqual({ x: 0, y: 460 })
+  })
 })
 
 describe("modifiers", () => {

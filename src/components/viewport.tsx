@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from "react"
 import type { SwitchEffect } from "@/components/settings-dialog"
 import { type Event as AdaptiveEvent, type Bounds, initial, reduce } from "@/lib/adaptive-viewport"
 import { isOsReservedKey } from "@/lib/key-routing"
-import type { RemotePage } from "@/lib/remote-page"
+import type { RemotePage, ScreencastMetadata } from "@/lib/remote-page"
 import { letterbox, toRemoteCoords } from "@/lib/viewport-transform"
 
 /** During a tab-switch settle, how long screencast frames must go quiet before we treat
@@ -65,6 +65,9 @@ export function Viewport({
   const containerRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef(new Image())
   const imgSizeRef = useRef({ width: 0, height: 0 })
+  // Latest frame metadata: the remote viewport's DIP geometry, used to map input back
+  // into the remote page when the screencast frame is downscaled from it.
+  const metaRef = useRef<ScreencastMetadata | null>(null)
   const frameCountRef = useRef(0)
   const lastFpsTimeRef = useRef(Date.now())
 
@@ -99,12 +102,13 @@ export function Viewport({
     const vp = containerRef.current
     const img = imgRef.current
     if (!canvas || !vp || !img.width) return
+    // biome-ignore lint/style/noNonNullAssertion: 2d context is always available on an HTMLCanvasElement
     const ctx = canvas.getContext("2d")!
 
     canvas.width = vp.clientWidth * window.devicePixelRatio
     canvas.height = vp.clientHeight * window.devicePixelRatio
-    canvas.style.width = vp.clientWidth + "px"
-    canvas.style.height = vp.clientHeight + "px"
+    canvas.style.width = `${vp.clientWidth}px`
+    canvas.style.height = `${vp.clientHeight}px`
 
     const { scale, dx, dy } = letterbox(
       { w: img.width, h: img.height },
@@ -265,8 +269,9 @@ export function Viewport({
       }
     }
 
-    return page.onFrame(({ data }) => {
-      img.src = "data:image/jpeg;base64," + data
+    return page.onFrame((frame) => {
+      metaRef.current = frame.metadata ?? null
+      img.src = `data:image/jpeg;base64,${frame.data}`
     })
   }, [page, paint, onFpsUpdate, onResolutionUpdate, revealSettled])
 
@@ -283,11 +288,14 @@ export function Viewport({
       const canvas = canvasRef.current
       if (!canvas) return { x: 0, y: 0 }
       const { width: w, height: h } = imgSizeRef.current
+      const m = metaRef.current
       return toRemoteCoords(
         { x: clientX, y: clientY },
         canvas.getBoundingClientRect(),
         window.devicePixelRatio,
         { w, h },
+        m ? { w: m.deviceWidth, h: m.deviceHeight } : undefined,
+        m?.offsetTop ?? 0,
       )
     })
   }, [page])
@@ -352,6 +360,7 @@ export function Viewport({
     switchEffectRef.current = switchEffect
   }, [switchEffect])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: connectEpoch is a trigger signal — bumped on reconnect to re-run this effect; it's not read in the body
   useEffect(() => {
     // The new connection has landed: frames from here on are the new tab.
     if (settlingRef.current) connectedSinceSwitchRef.current = true

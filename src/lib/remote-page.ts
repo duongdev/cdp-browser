@@ -12,7 +12,9 @@ import { type ModifierKeys, modifiers } from "./viewport-transform"
  *  can pass a fake and assert which CDP calls an intention produces. */
 export interface Transport {
   send(method: string, params?: unknown): void
+  // biome-ignore lint/suspicious/noExplicitAny: CDP responses are dynamic; unknown would force callers to cast every field
   invoke(method: string, params?: unknown): Promise<any>
+  // biome-ignore lint/suspicious/noExplicitAny: CDP event params are dynamic
   onEvent(cb: (msg: { method: string; params?: any }) => void): void
   onDisconnected(cb: () => void): void
 }
@@ -30,10 +32,22 @@ export type RemotePageEvent =
   | { type: "windowOpened" }
   | { type: "disconnected" }
 
+/** CDP `Page.screencastFrame` metadata — the captured area's DIP geometry, used to map
+ *  input back into the remote viewport when the frame is downscaled. */
+export interface ScreencastMetadata {
+  deviceWidth: number
+  deviceHeight: number
+  offsetTop: number
+  pageScaleFactor: number
+  scrollOffsetX: number
+  scrollOffsetY: number
+}
+
 export interface ScreencastFrame {
   /** base64 JPEG, no data: prefix */
   data: string
   sessionId: number
+  metadata?: ScreencastMetadata
 }
 
 export type Unsubscribe = () => void
@@ -88,13 +102,13 @@ function editingCommands(e: KeyEventLike): string[] {
   if (e.metaKey) {
     switch (e.key) {
       case "ArrowLeft":
-        return ["moveToBeginningOfLine" + sel]
+        return [`moveToBeginningOfLine${sel}`]
       case "ArrowRight":
-        return ["moveToEndOfLine" + sel]
+        return [`moveToEndOfLine${sel}`]
       case "ArrowUp":
-        return ["moveToBeginningOfDocument" + sel]
+        return [`moveToBeginningOfDocument${sel}`]
       case "ArrowDown":
-        return ["moveToEndOfDocument" + sel]
+        return [`moveToEndOfDocument${sel}`]
       case "Backspace":
         return ["deleteToBeginningOfLine"]
     }
@@ -102,9 +116,9 @@ function editingCommands(e: KeyEventLike): string[] {
   if (e.altKey) {
     switch (e.key) {
       case "ArrowLeft":
-        return ["moveWordLeft" + sel]
+        return [`moveWordLeft${sel}`]
       case "ArrowRight":
-        return ["moveWordRight" + sel]
+        return [`moveWordRight${sel}`]
       case "Backspace":
         return ["deleteWordBackward"]
     }
@@ -136,7 +150,7 @@ export interface RemotePage {
 }
 
 function normalizeUrl(url: string): string {
-  return /^https?:\/\//.test(url) ? url : "https://" + url
+  return /^https?:\/\//.test(url) ? url : `https://${url}`
 }
 
 export function createRemotePage(
@@ -146,7 +160,10 @@ export function createRemotePage(
   let resolveCoords = options.resolveCoords ?? ((x, y) => ({ x, y }))
   const listeners = new Set<(event: RemotePageEvent) => void>()
   const frameListeners = new Set<(frame: ScreencastFrame) => void>()
-  const fan = (event: RemotePageEvent) => listeners.forEach((cb) => cb(event))
+  const fan = (event: RemotePageEvent) =>
+    listeners.forEach((cb) => {
+      cb(event)
+    })
 
   // The top frame's id. Loading events for subframes (Teams keeps long-lived
   // telemetry/presence iframes loading) must not drive the loading bar, else the
@@ -163,6 +180,7 @@ export function createRemotePage(
         const frame: ScreencastFrame = {
           data: msg.params.data,
           sessionId: msg.params.sessionId,
+          metadata: msg.params.metadata,
         }
         frameListeners.forEach((cb) => {
           // A thrown draw must neither stall the ack nor break the event pump.

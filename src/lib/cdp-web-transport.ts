@@ -11,7 +11,7 @@
  * remote-page.ts. See docs/tasks/008.
  */
 
-import { type Batch, createBatcher } from "./input-coalesce"
+import { type Batch, createBatcher, createHoverGate, createSingleFlight } from "./input-coalesce"
 
 export interface WebCaps {
   /** True in the browser build. */
@@ -35,6 +35,23 @@ export function getCaps(): WebCaps {
 }
 
 type Cmd = { method: string; params?: unknown }
+
+const isMouseMove = (c: Cmd) =>
+  c.method === "Input.dispatchMouseEvent" &&
+  (c.params as { type?: string } | undefined)?.type === "mouseMoved"
+
+// Merge for the POST fallback: collapse runs of consecutive mouseMoved to the latest
+// (only the current cursor position matters once we're behind), while clicks, wheel,
+// and keys break a run and are preserved in order.
+export function collapseMoves(items: Cmd[]): Cmd[] {
+  const out: Cmd[] = []
+  for (const c of items) {
+    const prev = out[out.length - 1]
+    if (isMouseMove(c) && prev && isMouseMove(prev)) out[out.length - 1] = c
+    else out.push(c)
+  }
+  return out
+}
 
 // When E2E is on (set during bootstrap), every /api body + SSE frame is sealed under
 // this key; otherwise null and everything is plaintext (as before). See t012.
@@ -73,11 +90,11 @@ const SUPPORTS_REQUEST_STREAMING = (() => {
     const hasContentType = new Request("http://x", {
       body: new ReadableStream(),
       method: "POST",
-      // biome-ignore lint/suspicious/noExplicitAny: duplex not yet in lib.dom RequestInit
       get duplex() {
         duplexAccessed = true
         return "half"
       },
+      // biome-ignore lint/suspicious/noExplicitAny: duplex not yet in lib.dom RequestInit
     } as any).headers.has("Content-Type")
     return duplexAccessed && !hasContentType
   } catch {
@@ -96,7 +113,7 @@ const SUPPORTS_REQUEST_STREAMING = (() => {
  * a `stream-ack` over SSE. Until confirmed (and forever, if the probe is never acked) we
  * use a per-flush POST. `notifyAck()` is called by the SSE `stream-ack` handler.
  */
-function createInputChannel(postFallback: (line: string) => void) {
+function createInputChannel(postFallback: (batch: Batch<Cmd>) => void) {
   const enc = new TextEncoder()
   // Give up after this many establish attempts that never get acked (no HTTP/2, or a
   // buffering proxy) and stay on the POST fallback for good — don't loop forever.
@@ -141,8 +158,8 @@ function createInputChannel(postFallback: (line: string) => void) {
       method: "POST",
       body,
       signal: abort.signal,
-      // biome-ignore lint/suspicious/noExplicitAny: duplex not yet in lib.dom RequestInit
       duplex: "half",
+      // biome-ignore lint/suspicious/noExplicitAny: duplex not yet in lib.dom RequestInit
     } as any)
       .catch(() => {})
       .finally(onSettle)
@@ -155,16 +172,16 @@ function createInputChannel(postFallback: (line: string) => void) {
   open()
 
   return {
-    send(line: string) {
+    send(batch: Batch<Cmd>) {
       if (state === "streaming" && controller) {
         try {
-          controller.enqueue(enc.encode(`${line}\n`))
+          controller.enqueue(enc.encode(`${JSON.stringify(batch)}\n`))
           return
         } catch {
           state = "idle"
         }
       }
-      postFallback(line)
+      postFallback(batch)
     },
     notifyAck() {
       if (state === "probing") {
@@ -257,13 +274,32 @@ function createWebCdp(): CdpBridge {
       },
     })
   } else {
-    const inputChannel = createInputChannel((line) => void postRaw("/api/cdp-batch", line))
+    // Fallback (no streaming channel): single-flight POSTs with move-collapsing so a
+    // high-RTT proxy chain can't back up — at most one /api/cdp-batch in flight, latest
+    // cursor position wins. The streaming path bypasses this (it's already low-latency).
+    const fallback = createSingleFlight<Cmd>({
+      merge: collapseMoves,
+      post: (items) => postRaw("/api/cdp-batch", JSON.stringify({ items })),
+    })
+    const inputChannel = createInputChannel((batch) => fallback.push(batch.items))
     es.addEventListener("stream-ack", () => inputChannel.notifyAck())
     batcher = createBatcher<Cmd>({
       schedule: (flush) => requestAnimationFrame(flush),
-      send: (batch: Batch<Cmd>) => inputChannel.send(JSON.stringify(batch)),
+      send: (batch: Batch<Cmd>) => inputChannel.send(batch),
     })
   }
+
+  // Hover (buttons-up) moves stream nothing until the cursor stops, then send one resting
+  // position — a continuous hover otherwise floods the transport and starves clicks. Drag
+  // moves bypass the gate (they carry held buttons) so selection / drag-n-drop track live.
+  const HOVER_STOP_MS = 80
+  const hover = createHoverGate<Cmd>({
+    delay: (cb) => {
+      const t = setTimeout(cb, HOVER_STOP_MS)
+      return () => clearTimeout(t)
+    },
+    emit: (cmd) => batcher.coalesce(cmd),
+  })
 
   // Theme: the "native" scheme is the OS preference via matchMedia, overridden by an
   // explicit theme source. We push the *resolved* dark flag to the server so it can
@@ -288,9 +324,18 @@ function createWebCdp(): CdpBridge {
       if (method === "Page.screencastFrameAck") return // server acks frames itself
       const cmd: Cmd = { method, params }
       if (method === "Input.dispatchMouseEvent") {
-        const type = (params as { type?: string })?.type
-        if (type === "mouseMoved") return batcher.coalesce(cmd)
-        if (type === "mouseWheel") return batcher.append(cmd)
+        const p = params as { type?: string; buttons?: number } | undefined
+        if (p?.type === "mouseMoved") {
+          // Drag (a button is held): track live. Hover (no button): emit only on stop.
+          if (p.buttons) {
+            hover.cancel()
+            return batcher.coalesce(cmd)
+          }
+          return hover.move(cmd)
+        }
+        if (p?.type === "mouseWheel") return batcher.append(cmd)
+        // Press / release: send now, and drop any held hover (this position supersedes it).
+        hover.cancel()
         return batcher.immediate(cmd)
       }
       if (method === "Input.dispatchKeyEvent") return batcher.immediate(cmd)
