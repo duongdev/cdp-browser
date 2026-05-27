@@ -23,9 +23,11 @@ COPY .npmrc package.json pnpm-lock.yaml ./
 RUN pnpm install --prod --frozen-lockfile --ignore-scripts && pnpm store prune
 
 # Built renderer + the server + the pure CJS modules and inject scripts it reads.
+# Keep this module list in sync with web/server.mjs's `../*.js` imports — a missing one
+# fails at boot with ERR_MODULE_NOT_FOUND.
 COPY --from=builder /app/dist ./dist
 COPY web ./web
-COPY cdp-endpoints.js settings-store.js notifications.js theme-emulation.js ./
+COPY cdp-endpoints.js settings-store.js notifications.js theme-emulation.js crypto-envelope.js line-splitter.js ./
 COPY inject ./inject
 
 ENV PORT=7800 \
