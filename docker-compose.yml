@@ -15,6 +15,10 @@ services:
       APP_TITLE: ${APP_TITLE:-CDP Portal}
       SETTINGS_PATH: /data/settings.json
       NOTIFS_PATH: /data/notifications.json
+      # Optional E2E payload encryption. Set E2E_PASSPHRASE to turn it on (else plaintext).
+      # E2E_SALT (base64) keeps the key stable across restarts; omit for a per-boot salt.
+      E2E_PASSPHRASE: ${E2E_PASSPHRASE:-}
+      E2E_SALT: ${E2E_SALT:-}
     volumes:
       - cdp-web-data:/data
     # Bridge networking NATs out to the host's LAN, so a LAN CDP_HOST (e.g.
