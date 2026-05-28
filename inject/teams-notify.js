@@ -6,8 +6,8 @@
 // Findings this relies on (verified against Edge 148 / Teams v2, 2026-05-23):
 //   - toast node carries data-testid="notification-wrapper"
 //   - innerText is "<source>\n<title>\n<body>"
-//   - aria-labelledby starts "cn-normal-notification-main-text-<notificationId> …"
-//   - fiber memoizedProps.targetEntity = {action, type, id, dataOptions:{userContextId}}
+//   - aria-labelledby suffix is the *thread* id (cn-normal-notification-main-text-<threadId>)
+//   - fiber memoizedProps.targetEntity = {action, type, id, dataOptions:{userContextId, messageId}}
 ;(() => {
   if (window.__cdpNotifyArmed) return
   window.__cdpNotifyArmed = true
@@ -17,7 +17,7 @@
 
   const text = (el) => (el ? (el.innerText || el.textContent || "").trim() : "")
 
-  // The notification id lives in the aria-labelledby suffix, not the DOM text.
+  // The thread id lives in the aria-labelledby suffix — used as namespace and fallback id.
   const notifId = (w) => {
     const m = (w.getAttribute("aria-labelledby") || "").match(
       /cn-normal-notification-main-text-(\S+)/,
@@ -64,13 +64,19 @@
       /* fiber shape changed — text capture still useful */
     }
     const raw = notifId(w)
-    // Real notifications have unique ids (dedup collapses cross-tab mirrors). The
-    // "Test notification" button reuses a fixed id, so uniquify it — each click is a
-    // distinct event and should come through without clearing the list first.
+    // The aria-labelledby suffix (`raw`) is the *conversation* thread id — shared by every
+    // message in a chat — so it can't be the dedup key, or ingest's id-dedup keeps only the
+    // first message per conversation and drops the rest. The durable per-message id is the
+    // entity's messageId; key on it (namespaced by thread) so each message comes through once
+    // while cross-tab mirrors of the same message still collapse. The "Test notification"
+    // button reuses a fixed id, so uniquify it — each click is a distinct event.
+    const messageId = entity && entity.dataOptions && entity.dataOptions.messageId
     const id =
       raw === "testNotification"
         ? `testNotification:${Date.now()}`
-        : raw || `${entity && entity.id ? entity.id : ""}:${lines.join("|")}`
+        : messageId
+          ? `${entity?.id ? entity.id : raw || ""}:${messageId}`
+          : raw || `${entity?.id ? entity.id : ""}:${lines.join("|")}`
     const payload = {
       id,
       source: lines[0] || "",
