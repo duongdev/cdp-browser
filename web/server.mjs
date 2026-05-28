@@ -636,6 +636,28 @@ const server = http.createServer(async (req, res) => {
 // 5-min requestTimeout would kill it. Disable it (this server sits behind auth).
 server.requestTimeout = 0
 
+// Throwaway WS upgrade probe — verifies the proxy chain (nginx + Authentik) actually
+// forwards the WebSocket handshake before we commit to building the real /api/ws
+// transport. Echoes any frame back, sends a ping every 5s. Remove once verified.
+const probeWss = new WebSocket.Server({ noServer: true })
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url, "http://localhost")
+  if (url.pathname !== "/api/ws-probe") {
+    socket.destroy()
+    return
+  }
+  probeWss.handleUpgrade(req, socket, head, (ws) => {
+    console.log("[ws-probe] open from", req.socket.remoteAddress)
+    ws.send(JSON.stringify({ t: "hello", ts: Date.now() }))
+    const hb = setInterval(() => ws.readyState === WebSocket.OPEN && ws.ping(), 5000)
+    ws.on("message", (m) => ws.send(m))
+    ws.on("close", () => {
+      clearInterval(hb)
+      console.log("[ws-probe] close")
+    })
+  })
+})
+
 server.listen(PORT, "0.0.0.0", () =>
   console.log(`[web] http://0.0.0.0:${PORT}  ->  cdp ${host()}:${port()}`),
 )
