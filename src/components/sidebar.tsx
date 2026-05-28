@@ -36,6 +36,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { AnimatePresence, motion } from "motion/react"
 import { type PointerEvent as ReactPointerEvent, useState } from "react"
 import type { TabInfo } from "@/app"
+import { InstallBanner } from "@/components/install-banner"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -325,6 +326,7 @@ export function Sidebar({
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-2">
+          <InstallBanner />
           <DndContext
             collisionDetection={closestCenter}
             onDragCancel={() => setActiveDragId(null)}

@@ -37,8 +37,11 @@ Plus a visual check via Chrome MCP against `vite dev` (or the running app):
 - Light theme and dark theme
 - No layout shift, no console errors
 
-CDP Browser is a desktop Electron app — no mobile breakpoints. Verify at a
-realistic desktop window size (~1280×800 or larger).
+CDP Browser runs as an Electron desktop app and as a web/iPad PWA. For desktop
+renderer changes, verify at ~1280×800+. For web-build or layout changes, also
+check at iPad widths (≤1100px viewport) where the sidebar defaults to 180px and
+safe-area insets apply. The web build adds breakpoint-aware defaults but no
+separate mobile-only codebase — one renderer, capability-split via `webCaps`.
 
 If the change is not browser-observable (config, types, tests only), say so
 explicitly — don't claim visual verification you didn't do.

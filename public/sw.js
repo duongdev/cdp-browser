@@ -28,3 +28,49 @@ self.addEventListener("fetch", (e) => {
     }),
   )
 })
+
+// Web Push handler — fires whenever the push service delivers a notification to this
+// device, including when the PWA is backgrounded or the screen is locked. iOS 16.4+
+// PWAs only; the payload mirrors what the server's `sendPushToAll` sends.
+self.addEventListener("push", (e) => {
+  if (!e.data) return
+  let data
+  try {
+    data = e.data.json()
+  } catch {
+    return
+  }
+  const title = data.title || "CDP Browser"
+  const options = {
+    body: data.body || "",
+    icon: data.icon || "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: data.id || undefined, // collapses repeat notifications with same id
+    timestamp: data.ts || Date.now(),
+    data: {
+      id: data.id,
+      targetId: data.targetId,
+      targetUrl: data.targetUrl,
+      targetEntity: data.targetEntity,
+    },
+  }
+  e.waitUntil(self.registration.showNotification(title, options))
+})
+
+// Click handler — focus an existing window or open the app; pass the notification id
+// to the page so it can replay the side-channel deep-link (activate tab + navigate).
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close()
+  const notifData = e.notification.data || {}
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientsArr) => {
+      for (const client of clientsArr) {
+        if ("focus" in client) {
+          client.postMessage({ type: "notification-click", data: notifData })
+          return client.focus()
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow("/")
+    }),
+  )
+})

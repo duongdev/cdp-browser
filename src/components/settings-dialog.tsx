@@ -26,6 +26,19 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { getCaps } from "@/lib/cdp-web-transport"
+import { cn } from "@/lib/utils"
+
+// VAPID public key is delivered as URL-safe base64 by the server; pushManager.subscribe
+// expects a raw ArrayBuffer. Standard helper from the Web Push spec.
+function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/")
+  const rawData = atob(base64)
+  const buf = new ArrayBuffer(rawData.length)
+  const view = new Uint8Array(buf)
+  for (let i = 0; i < rawData.length; i++) view[i] = rawData.charCodeAt(i)
+  return buf
+}
 
 export type SwitchEffect = "none" | "blur" | "grayscale" | "blur-grayscale"
 
@@ -139,6 +152,7 @@ export function SettingsDialog({
   // like the Connection card), since it's a leaf web concern not worth prop-drilling.
   const [webPush, setWebPush] = useState(false)
   const [pushPermBlocked, setPushPermBlocked] = useState(false)
+  const [isStandalone, setIsStandalone] = useState(false)
 
   const toggleWebPush = useCallback(async (on: boolean) => {
     if (on && typeof Notification !== "undefined") {
@@ -152,6 +166,30 @@ export function SettingsDialog({
     setPushPermBlocked(false)
     setWebPush(on)
     window.cdp.setUiState({ webPush: on })
+    // Real Web Push subscribe/unsubscribe — fires after permission + ui-state are set.
+    // Wrapped in try/catch since service workers / pushManager may not exist on every
+    // browser; failures here don't undo the ui-state toggle (the user can retry).
+    try {
+      const reg = await navigator.serviceWorker?.ready
+      if (!reg) return
+      if (on) {
+        const key = await window.cdp.getPushVapidKey?.()
+        if (!key) return
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToArrayBuffer(key),
+        })
+        await window.cdp.subscribePush?.(sub.toJSON() as PushSubscriptionJSON)
+      } else {
+        const sub = await reg.pushManager.getSubscription()
+        if (sub) {
+          await window.cdp.unsubscribePush?.(sub.endpoint)
+          await sub.unsubscribe()
+        }
+      }
+    } catch (e) {
+      console.error("[push] subscribe/unsubscribe failed:", e)
+    }
   }, [])
 
   // Suppress the leave-timer while a Select popover (portaled outside the panel)
@@ -169,6 +207,7 @@ export function SettingsDialog({
         setSaved({ host: config.host, port: p })
       })
       if (caps.web) {
+        setIsStandalone((navigator as unknown as { standalone?: boolean }).standalone === true)
         window.cdp.getUiState().then((s) => {
           const granted =
             typeof Notification !== "undefined" && Notification.permission === "granted"
@@ -396,18 +435,26 @@ export function SettingsDialog({
                   {caps.web ? (
                     <div className="flex items-start justify-between gap-4">
                       <div className="space-y-0.5">
-                        <Label className="text-[13px]">Push notifications</Label>
+                        <Label className={cn("text-[13px]", !isStandalone && "opacity-60")}>
+                          Push notifications
+                        </Label>
                         <p className="text-[11px] leading-snug text-muted-foreground">
                           Show a browser notification for Teams/Outlook messages when this tab isn't
                           in view.
                           {pushPermBlocked && (
                             <span className="text-destructive"> Blocked in browser settings.</span>
                           )}
+                          {!isStandalone && (
+                            <span className="block text-amber-600 dark:text-amber-500">
+                              Requires installed PWA (Add to Home Screen).
+                            </span>
+                          )}
                         </p>
                       </div>
                       <Switch
                         checked={webPush}
                         className="mt-0.5"
+                        disabled={!isStandalone || pushPermBlocked}
                         onCheckedChange={toggleWebPush}
                       />
                     </div>

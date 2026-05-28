@@ -136,6 +136,47 @@ mouse events, not the whole path:
 The streaming path is unchanged (a persistent low-latency channel); both changes are on
 the transport's command classification + the fallback only.
 
+## Addendum (t014): correct coordinate mapping for downscaled frames
+
+`toRemoteCoords` was mapping canvas pixels directly to CDP input coordinates, which is
+only correct when the Screencast Frame is 1:1 with the remote layout viewport. The web
+proxy caps `Page.startScreencast` at the local canvas size, so when the remote window is
+larger, the frame is **downscaled** and clicks compressed toward the top-left. Fix: pass
+the frame metadata's `deviceWidth`/`deviceHeight` as the `device` argument to
+`toRemoteCoords` — it scales frame-px → remote DIP so input lands at the right place
+regardless of downscale. `devicePixelRatio` cancels out algebraically and is never the
+cause of an offset (see `CLAUDE.md` troubleshooting). Surfaced once t013 made input
+responsive enough to aim precisely.
+
+## Addendum (t015–t017): iPad PWA port with real Web Push
+
+The web build is the primary client for iPad (iPad Pro, Magic Keyboard, landscape
+workstation use). Three tasks completed the port:
+
+- **t015 — Manifest + safe-area**: `public/manifest.webmanifest` gains `"orientation":
+  "landscape"` (landscape-locked for iPad workstation use) and `viewport-fit=cover`
+  (required for safe-area env vars). CSS safe-area insets applied to `:root` and `body`
+  in `src/index.css`; `#root { height: 100% }` ensures full-height layout on iOS where
+  `h-screen` maps to the visual viewport and collapses under the keyboard.
+
+- **t016 — iPad-aware layout**: Sidebar defaults to 180px on viewports ≤1100px (wider on
+  desktop). `install-banner.tsx` prompts Safari-tab users to Add to Home Screen (1-week
+  dismiss via localStorage). Web Push toggle in `settings-dialog.tsx` is disabled in
+  Safari mode with a "Requires installed PWA" hint — Web Push only works in standalone
+  display mode (iOS 16.4+).
+
+- **t017 — Real Web Push (VAPID)**: `web/server.mjs` uses the `web-push` library with a
+  VAPID key pair (defaults ship in code; override via `VAPID_PUBLIC_KEY` /
+  `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` env vars). Subscriptions persist to
+  `web-push-subs.json` next to `settings.json`. Every Teams/Outlook notification that
+  arrives via the side-channel also pushes via `sendPushToAll` — so lock-screen
+  notifications arrive on iPad even when the PWA is backgrounded. `public/sw.js`
+  handles the `push` event (`showNotification`) and `notificationclick` (focus existing
+  client + `postMessage`, falls back to `openWindow`). `cdp-web-transport.ts` exposes
+  `getPushVapidKey`, `subscribePush`, `unsubscribePush` on the `CdpBridge` contract
+  (optional; absent under Electron). Subscription persistence is in-memory + file; lost
+  on server restart, users must re-enable the toggle.
+
 ## Alternatives considered
 
 - **Direct browser → CDP WS:** blocked by the Origin handshake rejection and the

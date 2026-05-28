@@ -85,6 +85,12 @@ interface CdpBridge {
   clearNotifications: () => Promise<CdpNotification[]>
   onNotification: (cb: (entry: CdpNotification) => void) => void
   onNotificationActivate: (cb: (entry: CdpNotification) => void) => void
+  // Web Push (web build only — Electron has its own Notification API).
+  // `getPushVapidKey` returns the server's VAPID public key for pushManager.subscribe.
+  // `subscribePush`/`unsubscribePush` POST the browser-issued subscription to the server.
+  getPushVapidKey?: () => Promise<string>
+  subscribePush?: (subscription: PushSubscriptionJSON) => Promise<void>
+  unsubscribePush?: (endpoint: string) => Promise<void>
 }
 
 interface PersistedLocalTabBridge {

@@ -83,7 +83,9 @@ export default function App() {
   // Bumped the instant a tab switch starts (before the connect round-trip) so the
   // Viewport can begin its freeze/blur immediately rather than after the connection.
   const [switchSignal, setSwitchSignal] = useState(0)
-  const [sidebarWidth, setSidebarWidth] = useState(220)
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth <= 1100 ? 180 : 220,
+  )
   const uiStateLoadedRef = useRef(false)
   const [theme, setTheme] = useState<ThemeSource>("system")
   const [pins, setPins] = useState<Pin[]>([])
@@ -1182,7 +1184,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-screen">
+      <div className="flex h-full">
         <Sidebar
           activeTabId={activeKind === "cdp" ? activeTabId : null}
           collapsed={sidebarCollapsed}

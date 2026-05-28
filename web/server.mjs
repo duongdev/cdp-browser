@@ -11,6 +11,7 @@ import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
+import webpush from "web-push"
 import WebSocket from "ws"
 import endpoints from "../cdp-endpoints.js"
 import { deriveKey, open, seal } from "../crypto-envelope.js"
@@ -38,6 +39,24 @@ const E2E_SALT = process.env.E2E_SALT || nodeCrypto.randomBytes(16).toString("ba
 const e2eKey = E2E_PASSPHRASE ? deriveKey(E2E_PASSPHRASE, E2E_SALT, E2E_ITERS) : null
 if (e2eKey) console.log("[web] E2E encryption ON")
 
+// VAPID config for Web Push (iOS 16.4+ PWA installed mode). Keys can be supplied via
+// env (recommended for stable subscriptions across restarts) or generated per-boot
+// (clients then re-subscribe). The subject is just a contact URL/mailto for push
+// services to reach out about delivery issues.
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:admin@example.com"
+const VAPID_PUBLIC_KEY =
+  process.env.VAPID_PUBLIC_KEY ||
+  "BDIDtkQnVIAwcjjpgXgUSKLj6DGvZx_E9UMe4vzn1S-ih2rTIlZMGU_unzeBfIW6VSG_6bF8gUqMvMJUuHeZyzo"
+const VAPID_PRIVATE_KEY =
+  process.env.VAPID_PRIVATE_KEY || "RR3uJMq4at7Eim0GvvRFxhZZHEeRK8sYmR5XcodvMDQ"
+webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
+
+// Push subscriptions are persisted next to web-settings.json — in-memory would lose
+// them on every server restart, forcing users to re-subscribe. Each subscription has
+// the endpoint URL + auth/p256dh keys the browser registered with its push service.
+const SUBS_PATH = process.env.SUBS_PATH || join(HERE, "..", "web-push-subs.json")
+let pushSubs = []
+
 // ---- settings -------------------------------------------------------------
 const loadJson = (p, fallback) => {
   try {
@@ -56,6 +75,38 @@ const settings = createSettingsStore({
 // Env wins on first boot so a fresh deploy points at the right host immediately.
 if (process.env.CDP_HOST)
   settings.setConfig({ host: process.env.CDP_HOST, port: Number(process.env.CDP_PORT || 9222) })
+
+// Load persisted push subscriptions; treat invalid/missing as empty.
+pushSubs = loadJson(SUBS_PATH, [])
+const savePushSubs = () => {
+  try {
+    writeFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
+  } catch (e) {
+    console.error("[web] savePushSubs failed:", e.message)
+  }
+}
+
+// Send a push payload to every registered subscription. Subscriptions that come
+// back 404/410 (gone) are pruned so we don't keep retrying dead endpoints.
+async function sendPushToAll(payload) {
+  if (pushSubs.length === 0) return
+  const data = JSON.stringify(payload)
+  const dead = []
+  await Promise.all(
+    pushSubs.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub, data)
+      } catch (e) {
+        if (e.statusCode === 404 || e.statusCode === 410) dead.push(sub.endpoint)
+        else console.error("[web] push failed:", e.statusCode, e.body || e.message)
+      }
+    }),
+  )
+  if (dead.length > 0) {
+    pushSubs = pushSubs.filter((s) => !dead.includes(s.endpoint))
+    savePushSubs()
+  }
+}
 
 const host = () => settings.getConfig().host
 const port = () => settings.getConfig().port
@@ -276,6 +327,18 @@ function ingestNotification(raw, targetId, targetUrl) {
   notifications = list
   saveNotifs()
   broadcast("notification", entry)
+  // Fire-and-forget push to all subscribers; backgrounded PWAs only get the event
+  // when delivered via Web Push (the SSE broadcast is foreground-only on iOS).
+  sendPushToAll({
+    id: entry.id,
+    title: entry.title,
+    body: entry.body,
+    targetId: entry.targetId,
+    targetUrl: entry.targetUrl,
+    targetEntity: entry.targetEntity,
+    icon: entry.icon,
+    ts: entry.ts,
+  })
 }
 
 function attachSideChannel(target) {
@@ -539,6 +602,27 @@ const server = http.createServer(async (req, res) => {
       notifications = []
       saveNotifs()
       return json(res, notifications)
+    }
+    // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
+    // the client uses it as `applicationServerKey` for pushManager.subscribe.
+    if (p === "/api/notifications/vapid-public-key" && !POST) {
+      return json(res, { key: VAPID_PUBLIC_KEY })
+    }
+    if (p === "/api/notifications/subscribe" && POST) {
+      const sub = await body(req)
+      if (!sub || !sub.endpoint) return json(res, { error: "missing endpoint" }, 400)
+      // Dedupe by endpoint URL so re-subscribing on the same device replaces in place.
+      pushSubs = pushSubs.filter((s) => s.endpoint !== sub.endpoint)
+      pushSubs.push(sub)
+      savePushSubs()
+      return json(res, { ok: true })
+    }
+    if (p === "/api/notifications/unsubscribe" && POST) {
+      const { endpoint } = await body(req)
+      if (!endpoint) return json(res, { error: "missing endpoint" }, 400)
+      pushSubs = pushSubs.filter((s) => s.endpoint !== endpoint)
+      savePushSubs()
+      return json(res, { ok: true })
     }
   } catch (e) {
     return json(res, { error: e.message }, 500)

@@ -238,6 +238,28 @@ function createWebCdp(): CdpBridge {
     }),
   )
 
+  // Web Push: the service worker fires `notificationclick` and posts a message into the
+  // page. The data carries enough to deep-link the conversation without re-fetching, so
+  // the same notificationActivate listeners that handle in-app clicks fire here too.
+  if (typeof navigator !== "undefined" && navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      const msg = event.data
+      if (!msg || msg.type !== "notification-click" || !msg.data) return
+      const entry: CdpNotification = {
+        id: msg.data.id,
+        source: "",
+        title: "",
+        body: "",
+        targetId: msg.data.targetId,
+        targetUrl: msg.data.targetUrl,
+        targetEntity: msg.data.targetEntity,
+        ts: Date.now(),
+        read: false,
+      }
+      for (const cb of listeners.notificationActivate) cb(entry)
+    })
+  }
+
   // OS toast via the web Notification API — the browser-side stand-in for the Electron
   // Notification main fired. Opt-in: gated by the `webPush` setting (the "Push
   // notifications" toggle handles the permission grant), only when the tab isn't
@@ -389,6 +411,12 @@ function createWebCdp(): CdpBridge {
     clearNotifications: () => postJson("/api/notifications/clear"),
     onNotification: (cb) => listeners.notification.push(cb),
     onNotificationActivate: (cb) => listeners.notificationActivate.push(cb),
+    getPushVapidKey: async () => {
+      const r = await getJson("/api/notifications/vapid-public-key")
+      return r.key as string
+    },
+    subscribePush: (sub) => postJson("/api/notifications/subscribe", sub),
+    unsubscribePush: (endpoint) => postJson("/api/notifications/unsubscribe", { endpoint }),
   }
 }
 
