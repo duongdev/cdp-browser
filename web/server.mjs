@@ -12,7 +12,7 @@ import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import webpush from "web-push"
-import WebSocket from "ws"
+import WebSocket, { WebSocketServer } from "ws"
 import endpoints from "../cdp-endpoints.js"
 import { deriveKey, open, seal } from "../crypto-envelope.js"
 import { createLineSplitter } from "../line-splitter.js"
@@ -639,7 +639,7 @@ server.requestTimeout = 0
 // Throwaway WS upgrade probe — verifies the proxy chain (nginx + Authentik) actually
 // forwards the WebSocket handshake before we commit to building the real /api/ws
 // transport. Echoes any frame back, sends a ping every 5s. Remove once verified.
-const probeWss = new WebSocket.Server({ noServer: true })
+const probeWss = new WebSocketServer({ noServer: true })
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://localhost")
   if (url.pathname !== "/api/ws-probe") {
