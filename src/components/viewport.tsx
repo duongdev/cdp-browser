@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react"
 import type { SwitchEffect } from "@/components/settings-dialog"
 import { type Event as AdaptiveEvent, type Bounds, initial, reduce } from "@/lib/adaptive-viewport"
 import { isOsReservedKey } from "@/lib/key-routing"
+import { perfFrame, perfMark } from "@/lib/perf-mark"
 import type { RemotePage, ScreencastMetadata } from "@/lib/remote-page"
 import { letterbox, toRemoteCoords } from "@/lib/viewport-transform"
 
@@ -125,11 +126,18 @@ export function Viewport({
   const reissueScreencast = useCallback(() => {
     const vp = containerRef.current
     if (!vp) return
+    // Cap the screencast at 1920×1080 CSS-equivalent regardless of DPR. A 12.9" iPad Pro
+    // (1366×1024 @ DPR 2) would otherwise request 2732×2048 JPEGs and saturate any link
+    // before the renderer even saw a frame — t019 perf work showed quality, not raw size,
+    // is what drives perceived sharpness. 1920×1080 q80 still looks crisp downscaled.
+    const dpr = Math.min(window.devicePixelRatio, 2)
+    const w = Math.min(Math.floor(vp.clientWidth * dpr), 1920)
+    const h = Math.min(Math.floor(vp.clientHeight * dpr), 1080)
     window.cdp.send("Page.startScreencast", {
       format: "jpeg",
       quality: 80,
-      maxWidth: Math.floor(vp.clientWidth * window.devicePixelRatio),
-      maxHeight: Math.floor(vp.clientHeight * window.devicePixelRatio),
+      maxWidth: w,
+      maxHeight: h,
     })
   }, [])
 
@@ -241,7 +249,10 @@ export function Viewport({
   useEffect(() => {
     const img = imgRef.current
 
+    let tFrameRecv = 0 // [DEBUG-perf] when onFrame fired
     img.onload = () => {
+      // [DEBUG-perf] img.src→onload spans base64-string parse + JPEG decode (data-URL path).
+      if (tFrameRecv) perfMark("frameToDecode", performance.now() - tFrameRecv)
       imgSizeRef.current = { width: img.width, height: img.height }
 
       if (settlingRef.current) {
@@ -257,7 +268,10 @@ export function Viewport({
         return
       }
 
+      const tPaint = performance.now() // [DEBUG-perf]
       paint()
+      perfMark("paint", performance.now() - tPaint)
+      perfFrame()
 
       onResolutionUpdate(`${img.width}x${img.height}`)
       frameCountRef.current++
@@ -269,8 +283,47 @@ export function Viewport({
       }
     }
 
-    return page.onFrame((frame) => {
+    return page.onFrame(async (frame) => {
+      tFrameRecv = performance.now() // [DEBUG-perf]
       metaRef.current = frame.metadata ?? null
+      // Fast path: web build's binary WS delivers a Blob — decode via createImageBitmap,
+      // off-main-thread + no data-URL allocation. Falls through to the data-URL path for
+      // Electron (IPC carries the base64 string) and for SSE web mode.
+      if (frame.dataBlob) {
+        try {
+          const bitmap = await createImageBitmap(frame.dataBlob)
+          imgSizeRef.current = { width: bitmap.width, height: bitmap.height }
+          // Replace the painted source with the bitmap; the existing paint() reads
+          // `imgRef.current.width/height` so we copy bitmap dims and draw via a
+          // side-channel ref instead. Simpler: directly draw here.
+          const canvas = canvasRef.current
+          const vp = containerRef.current
+          if (canvas && vp) {
+            // biome-ignore lint/style/noNonNullAssertion: 2d ctx always exists
+            const ctx = canvas.getContext("2d")!
+            canvas.width = vp.clientWidth * window.devicePixelRatio
+            canvas.height = vp.clientHeight * window.devicePixelRatio
+            canvas.style.width = `${vp.clientWidth}px`
+            canvas.style.height = `${vp.clientHeight}px`
+            const { scale, dx, dy } = letterbox(
+              { w: bitmap.width, h: bitmap.height },
+              { w: canvas.width, h: canvas.height },
+            )
+            ctx.fillStyle = "#000"
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+            const tPaint = performance.now() // [DEBUG-perf]
+            ctx.drawImage(bitmap, dx, dy, bitmap.width * scale, bitmap.height * scale)
+            perfMark("paint", performance.now() - tPaint)
+            perfMark("frameToDecode", performance.now() - tFrameRecv)
+            perfFrame()
+            onResolutionUpdate(`${bitmap.width}x${bitmap.height}`)
+          }
+          bitmap.close()
+          return
+        } catch {
+          // Decode failed — fall through to legacy data-URL path with whatever `data` is.
+        }
+      }
       img.src = `data:image/jpeg;base64,${frame.data}`
     })
   }, [page, paint, onFpsUpdate, onResolutionUpdate, revealSettled])

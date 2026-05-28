@@ -12,6 +12,8 @@
  */
 
 import { type Batch, createBatcher, createHoverGate, createSingleFlight } from "./input-coalesce"
+import { perfMark } from "./perf-mark"
+import { createTransportSelector, type InputTransportMode } from "./transport-selector"
 
 export interface WebCaps {
   /** True in the browser build. */
@@ -196,6 +198,146 @@ function createInputChannel(postFallback: (batch: Batch<Cmd>) => void) {
   }
 }
 
+/**
+ * Optional WebSocket channel (t019). When connected and ready, all CDP traffic — events
+ * in, invokes/sends/batches out — rides one full-duplex socket instead of SSE+POST.
+ * The picker in settings selects between Auto/Fastest(WS)/Streaming/Basic; this channel
+ * is the "Fastest" path and the head of the Auto fallback chain. Returns a thin handle
+ * the rest of createWebCdp consults via `ws.ready()` before falling back.
+ */
+function createWsChannel(opts: {
+  onEvent: (event: string, data: string) => void
+  /** Fast path for screencast: a text "cdp-frame" envelope pairs with a binary WS frame
+   *  carrying raw JPEG bytes. Skips base64 + the JSON.parse of a 250KB envelope on the
+   *  renderer main thread. The caller forges a CDP event with `dataBlob` populated and
+   *  dispatches through the normal CDP event listeners. */
+  onFrameBinary?: (cdpMsg: {
+    method: string
+    params: Record<string, unknown> & { dataBlob: Blob }
+  }) => void
+  onReady: () => void
+  onClose: () => void
+}) {
+  let socket: WebSocket | null = null
+  let ready = false
+  // Pending awaited invokes keyed by id; the server echoes the id in invoke-result.
+  let nextId = 1
+  const pending = new Map<number, (result: unknown) => void>()
+  // True when the outer asked us to close — suppresses the onClose callback so a stale
+  // socket's late `close` event doesn't clobber a newly-opened channel's outer state.
+  let suppressClose = false
+
+  function open() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:"
+    const url = `${proto}//${location.host}/api/ws`
+    try {
+      socket = new WebSocket(url)
+    } catch {
+      opts.onClose()
+      return
+    }
+    // The binary frame fast path: server sends a text "cdp-frame" envelope first
+    // (containing metadata + sessionId) then the raw JPEG bytes as the next WS message.
+    // Delivering as Blob is faster than ArrayBuffer for createImageBitmap — no extra copy.
+    socket.binaryType = "blob"
+    let pendingFrame: { method: string; params: Record<string, unknown> } | null = null
+    socket.onmessage = async (ev) => {
+      // Binary message → pair with the preceding "cdp-frame" envelope.
+      if (ev.data instanceof Blob) {
+        if (!pendingFrame) return // out-of-order binary, drop
+        const frame = pendingFrame
+        pendingFrame = null
+        opts.onFrameBinary?.({
+          method: frame.method,
+          params: { ...frame.params, dataBlob: ev.data },
+        })
+        return
+      }
+      // Envelope is always plaintext JSON (the `t` field is routing metadata, like SSE
+      // event names). For event messages, `data` is the sealed CDP payload that onSse()
+      // unwraps. For invoke-result, the server passes the CDP invoke output through plain
+      // — these are server-generated, not user content.
+      const tEntry = performance.now() // [DEBUG-perf]
+      const text = ev.data as string
+      const tParse = performance.now() // [DEBUG-perf]
+      let msg: { t: string; event?: string; data?: unknown; id?: number; result?: unknown }
+      try {
+        msg = JSON.parse(text)
+      } catch {
+        return
+      }
+      // [DEBUG-perf] Only mark big-payload events (the cdp screencast frames) so we measure
+      // the actual bottleneck and not all the tiny notification envelopes.
+      if (msg.t === "event" && msg.event === "cdp" && text.length > 5000) {
+        perfMark("wsRecv", tParse - tEntry)
+        perfMark("jsonParse", performance.now() - tParse)
+      }
+      if (msg.t === "ready") {
+        ready = true
+        opts.onReady()
+      } else if (msg.t === "event" && msg.event === "cdp-frame") {
+        // Stash metadata; the next binary message is the JPEG bytes for this frame.
+        pendingFrame = msg.data as { method: string; params: Record<string, unknown> }
+      } else if (msg.t === "event" && msg.event && msg.data !== undefined) {
+        opts.onEvent(msg.event, msg.data as string)
+      } else if (msg.t === "invoke-result" && typeof msg.id === "number") {
+        const cb = pending.get(msg.id)
+        pending.delete(msg.id)
+        // Result is sealed under E2E (the routing envelope around it stays plaintext).
+        const result = e2eKey ? await envOpen(msg.result as string, e2eKey) : msg.result
+        cb?.(result)
+      }
+    }
+    socket.onclose = () => {
+      ready = false
+      socket = null
+      pending.forEach((cb) => cb({ error: "ws closed" }))
+      pending.clear()
+      if (suppressClose) return // caller already handled the outer state on explicit close
+      opts.onClose()
+    }
+    socket.onerror = () => {
+      try {
+        socket?.close()
+      } catch {}
+    }
+  }
+
+  async function rawSend(payload: unknown) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false
+    const text = e2eKey ? await envSeal(payload, e2eKey) : JSON.stringify(payload)
+    try {
+      socket.send(text)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  open()
+
+  return {
+    isReady: () => ready,
+    close: () => {
+      suppressClose = true
+      socket?.close()
+    },
+    send: (method: string, params?: unknown) => rawSend({ t: "send", method, params }),
+    batch: (items: Cmd[]) => rawSend({ t: "batch", items }),
+    invoke: (method: string, params?: unknown) =>
+      new Promise<unknown>((resolve) => {
+        const id = nextId++
+        pending.set(id, resolve)
+        void rawSend({ t: "invoke", id, method, params }).then((ok) => {
+          if (!ok) {
+            pending.delete(id)
+            resolve({ error: "ws send failed" })
+          }
+        })
+      }),
+  }
+}
+
 function createWebCdp(): CdpBridge {
   // SSE: one stream carries every server push; fan out to registered listeners.
   const listeners = {
@@ -205,7 +347,58 @@ function createWebCdp(): CdpBridge {
     notificationActivate: [] as ((e: CdpNotification) => void)[],
     nativeTheme: [] as ((isDark: boolean) => void)[],
   }
-  const es = new EventSource("/api/events")
+
+  // Mode selection (t019). User pref from localStorage controls what's attempted; the
+  // actual active mode is derived from runtime state (wsReady? streamReady? else batch).
+  // The picker writes the pref and triggers reconfigureMode() to apply mid-session.
+  const VALID_MODES: InputTransportMode[] = ["auto", "ws", "stream", "batch"]
+  function readMode(): InputTransportMode {
+    if (typeof localStorage === "undefined") return "auto"
+    const raw = localStorage.getItem("inputTransport")
+    // Validate against the union — a stale or hand-edited value falls back to auto rather
+    // than silently shaping subsequent branches (e.g. wsAllowed) with garbage.
+    return raw && (VALID_MODES as string[]).includes(raw) ? (raw as InputTransportMode) : "auto"
+  }
+  let wantMode: InputTransportMode = readMode()
+  const selector = createTransportSelector({
+    cache:
+      typeof localStorage !== "undefined"
+        ? localStorage
+        : { getItem: () => null, setItem: () => {} },
+  })
+  let wsReady = false
+  let ws: ReturnType<typeof createWsChannel> | null = null
+  // Active-mode tracking: what the runtime actually settled on (vs. what the user picked).
+  // Emits to UI listeners so the settings badge can show "Active: …" when Auto downgrades.
+  let activeMode: InputTransportMode = "batch"
+  const activeModeListeners: ((m: InputTransportMode) => void)[] = []
+  function setActiveMode(m: InputTransportMode) {
+    if (m === activeMode) return
+    activeMode = m
+    for (const cb of activeModeListeners) cb(m)
+  }
+  function deriveActiveMode() {
+    if (wsReady) return "ws" as const
+    // streamingActive is set by the inputChannel's notifyAck path, below.
+    if (streamingActive) return "stream" as const
+    return "batch" as const
+  }
+  let streamingActive = false
+
+  // SSE is the events fallback when WS is unavailable. The lifecycle is mutable so we can
+  // close it once WS is confirmed ready (avoiding the server double-broadcasting frames to
+  // both channels — the SSE bytes were arriving and being discarded, costing real bandwidth
+  // on iPad PWA where the screencast already saturates the decode loop).
+  let es: EventSource = new EventSource("/api/events")
+  function teardownSse() {
+    try {
+      es.close()
+    } catch {}
+  }
+  function reopenSse() {
+    es = new EventSource("/api/events")
+    attachSseListeners(es)
+  }
   // Decode an SSE data payload (plaintext JSON, or a sealed envelope under E2E). When
   // sealed, decode is async — serialize through one chain so frame/event order holds.
   let sseChain: Promise<unknown> = Promise.resolve()
@@ -218,25 +411,42 @@ function createWebCdp(): CdpBridge {
     const key = e2eKey
     sseChain = sseChain.then(async () => fire(await envOpen(data, key)))
   }
-  es.addEventListener("cdp", (e) =>
-    onSse((e as MessageEvent).data, (msg) => {
-      for (const cb of listeners.event) cb(msg)
-    }),
-  )
-  es.addEventListener("disconnected", () => {
-    for (const cb of listeners.disconnected) cb()
-  })
-  es.addEventListener("notification", (e) =>
-    onSse((e as MessageEvent).data, (entry) => {
-      for (const cb of listeners.notification) cb(entry)
-      maybeToast(entry)
-    }),
-  )
-  es.addEventListener("notification-activate", (e) =>
-    onSse((e as MessageEvent).data, (entry) => {
-      for (const cb of listeners.notificationActivate) cb(entry)
-    }),
-  )
+  function attachSseListeners(src: EventSource) {
+    src.addEventListener("cdp", (e) => {
+      if (wsReady) return // WS carries CDP events; SSE is fallback only (we also close it).
+      onSse((e as MessageEvent).data, (msg) => {
+        if (isFilteredCdpEvent(msg)) return // tunnel delivers screencast frames
+        for (const cb of listeners.event) cb(msg)
+      })
+    })
+    src.addEventListener("disconnected", () => {
+      for (const cb of listeners.disconnected) cb()
+    })
+    src.addEventListener("notification", (e) =>
+      onSse((e as MessageEvent).data, (entry) => {
+        for (const cb of listeners.notification) cb(entry)
+        maybeToast(entry)
+      }),
+    )
+    src.addEventListener("notification-activate", (e) =>
+      onSse((e as MessageEvent).data, (entry) => {
+        for (const cb of listeners.notificationActivate) cb(entry)
+      }),
+    )
+    src.addEventListener("stream-ack", () => {
+      // streaming input ack lives in the non-E2E batcher branch below; the variable is
+      // hoisted to module-local closure so this listener can find the same instance after
+      // the SSE is torn down + reopened on WS drop.
+      if (inputChannelRef) {
+        inputChannelRef.notifyAck()
+        streamingActive = true
+        setActiveMode(deriveActiveMode())
+      }
+    })
+  }
+  // Forward-declared so attachSseListeners can reach the input channel after it's built.
+  let inputChannelRef: { notifyAck(): void } | null = null
+  attachSseListeners(es)
 
   // Web Push: the service worker fires `notificationclick` and posts a message into the
   // page. The data carries enough to deep-link the conversation without re-fetching, so
@@ -281,10 +491,88 @@ function createWebCdp(): CdpBridge {
     }
   }
 
+  // WS open is re-callable so the picker can apply mid-session (close, switch mode, retry).
+  // If WS opens, frames + events arrive via WS and the batcher uses WS; if it fails or the
+  // user picked a slower mode, the existing SSE+POST/stream paths handle everything.
+  function openWs() {
+    if (typeof WebSocket === "undefined") return
+    if (ws) return // already attempting / open
+    ws = createWsChannel({
+      onFrameBinary: (cdpMsg) => {
+        if (isFilteredCdpEvent(cdpMsg)) return // tunnel delivers screencast frames
+        // Forge a synthetic Page.screencastFrame event with the Blob attached, then
+        // dispatch through the same CDP event listeners the JSON path uses. The viewport
+        // looks for `dataBlob` first (fast createImageBitmap decode), else falls back to
+        // the legacy `data` base64 string.
+        for (const cb of listeners.event) cb(cdpMsg)
+      },
+      onEvent: (event, data) => {
+        if (event === "cdp")
+          onSse(data, (msg) => {
+            if (isFilteredCdpEvent(msg)) return
+            listeners.event.forEach((cb) => cb(msg))
+          })
+        else if (event === "disconnected") listeners.disconnected.forEach((cb) => cb())
+        else if (event === "notification")
+          onSse(data, (entry) => {
+            listeners.notification.forEach((cb) => cb(entry as CdpNotification))
+            maybeToast(entry as CdpNotification)
+          })
+        else if (event === "notification-activate")
+          onSse(data, (entry) =>
+            listeners.notificationActivate.forEach((cb) => cb(entry as CdpNotification)),
+          )
+      },
+      onReady: () => {
+        wsReady = true
+        selector.recordRetry("ws", true)
+        // Coming back from a degraded state — clear it so onFocus doesn't re-trigger.
+        if (selector.isDegraded()) selector.clearDegraded()
+        // Server now broadcasts every event to WS too — close SSE to stop the duplicate
+        // frame stream that was costing real bandwidth (esp. iPad PWA where the screencast
+        // decode loop is the bottleneck).
+        teardownSse()
+        setActiveMode(deriveActiveMode())
+      },
+      onClose: () => {
+        const wasReady = wsReady
+        wsReady = false
+        ws = null
+        if (!wasReady) {
+          // Probe failed. In auto, downgrade; in manual ws, flag the user-visible error.
+          selector.recordRetry("ws", false)
+          if (wantMode === "ws") selector.recordFailure("ws")
+          else if (wantMode === "auto" && selector.shouldDowngrade("ws"))
+            selector.recordDowngrade("ws", "stream")
+        }
+        // SSE was closed when WS came up; reopen it so events keep flowing while we're
+        // off WS (whether dropped or user-toggled to Streaming/Basic).
+        if (wasReady) reopenSse()
+        setActiveMode(deriveActiveMode())
+      },
+    })
+  }
+  function closeWs() {
+    if (ws) {
+      const wasReady = wsReady
+      ws.close() // suppresses the createWsChannel onClose callback
+      ws = null
+      wsReady = false
+      // If WS had been ready, SSE was torn down on its onReady — bring it back so events
+      // flow while we're off WS. (If WS hadn't reached ready, SSE was never closed.)
+      if (wasReady) reopenSse()
+    }
+  }
+  function shouldOpenWs(m: InputTransportMode): boolean {
+    return m === "auto" || m === "ws"
+  }
+  if (shouldOpenWs(wantMode)) openWs()
+
   // Batch input + acks: coalesce moves, accumulate wheel, flush discrete immediately.
   // Non-E2E: write each batch as an NDJSON frame to the streaming channel (low latency),
   // falling back to a per-batch POST. E2E: skip streaming (the probe/async-seal/order
   // interplay isn't worth it) and post each sealed batch in order to /api/cdp-batch.
+  // When WS is ready, all batches ride the WS instead — same envelope { t: "batch" }.
   let batcher: ReturnType<typeof createBatcher<Cmd>>
   if (e2eKey) {
     const key = e2eKey
@@ -292,6 +580,11 @@ function createWebCdp(): CdpBridge {
     batcher = createBatcher<Cmd>({
       schedule: (flush) => requestAnimationFrame(flush),
       send: (batch: Batch<Cmd>) => {
+        // Prefer WS when ready (one socket, no per-batch TLS/auth); else seal-and-POST.
+        if (wsReady && ws) {
+          void ws.batch(batch.items)
+          return
+        }
         chain = chain.then(async () => postRaw("/api/cdp-batch", await envSeal(batch, key)))
       },
     })
@@ -304,10 +597,25 @@ function createWebCdp(): CdpBridge {
       post: (items) => postRaw("/api/cdp-batch", JSON.stringify({ items })),
     })
     const inputChannel = createInputChannel((batch) => fallback.push(batch.items))
-    es.addEventListener("stream-ack", () => inputChannel.notifyAck())
+    // Hand the inputChannel to the SSE listener registered in attachSseListeners — that's
+    // the only place stream-ack is wired, so it survives SSE close+reopen on WS bounce.
+    inputChannelRef = inputChannel
     batcher = createBatcher<Cmd>({
       schedule: (flush) => requestAnimationFrame(flush),
-      send: (batch: Batch<Cmd>) => inputChannel.send(batch),
+      send: (batch: Batch<Cmd>) => {
+        if (wsReady && ws) {
+          void ws.batch(batch.items)
+          return
+        }
+        // In "batch" mode the user has explicitly opted out of streaming; force the POST
+        // fallback even if the stream channel later acks (the inputChannel itself keeps
+        // probing — cheap — but we don't route batches through it).
+        if (wantMode === "batch") {
+          fallback.push(batch.items)
+          return
+        }
+        inputChannel.send(batch)
+      },
     })
   }
 
@@ -322,6 +630,128 @@ function createWebCdp(): CdpBridge {
     },
     emit: (cmd) => batcher.coalesce(cmd),
   })
+
+  // Direct-frame tunnel (t019). A second WebSocket to `/api/cdp-ws/{tabId}` that the
+  // server tunnels through to the raw CDP target without JSON parsing/stringify. Lets
+  // screencast frames flow at the network's native rate (~30+ fps) instead of being
+  // capped at ~5-10 fps by the main server's per-frame broadcast loop. Fires
+  // Page.screencastFrame events into the same listeners.event the main WS uses so the
+  // renderer is unaware. Frames coming from the main server WS are filtered out while
+  // this tunnel is active (avoids double-render).
+  let frameTunnel: WebSocket | null = null
+  let frameTunnelTabId: string | null = null
+  let frameTunnelActive = false
+  let frameAckId = 1
+  function openFrameTunnel(tabId: string) {
+    if (frameTunnelTabId === tabId && frameTunnel && frameTunnel.readyState === WebSocket.OPEN)
+      return
+    closeFrameTunnel()
+    frameTunnelTabId = tabId
+    const proto = location.protocol === "https:" ? "wss:" : "ws:"
+    const sock = new WebSocket(`${proto}//${location.host}/api/cdp-ws/${tabId}`)
+    sock.binaryType = "arraybuffer"
+    frameTunnel = sock
+    sock.onopen = () => {
+      // Start screencast at the canvas-sized resolution; viewport.tsx also reissues on
+      // resize via the main transport, but this one is the actual frame producer.
+      const dpr = window.devicePixelRatio || 1
+      const w = Math.floor((document.documentElement.clientWidth || 1280) * dpr)
+      const h = Math.floor((document.documentElement.clientHeight || 720) * dpr)
+      try {
+        sock.send(
+          JSON.stringify({
+            id: frameAckId++,
+            method: "Page.startScreencast",
+            params: { format: "jpeg", quality: 80, maxWidth: w, maxHeight: h },
+          }),
+        )
+      } catch {}
+      frameTunnelActive = true
+    }
+    sock.onmessage = (ev) => {
+      // Raw CDP JSON-RPC. Parse to spot Page.screencastFrame; everything else (command
+      // replies, other events) is ignored — this tunnel is screencast-only.
+      const text = typeof ev.data === "string" ? ev.data : ""
+      if (!text || !text.includes('"Page.screencastFrame"')) return
+      let msg: { method?: string; params?: { sessionId?: number } }
+      try {
+        msg = JSON.parse(text)
+      } catch {
+        return
+      }
+      if (msg.method !== "Page.screencastFrame") return
+      // Ack immediately on the tunnel so CDP keeps emitting.
+      if (msg.params?.sessionId !== undefined) {
+        try {
+          sock.send(
+            JSON.stringify({
+              id: frameAckId++,
+              method: "Page.screencastFrameAck",
+              params: { sessionId: msg.params.sessionId },
+            }),
+          )
+        } catch {}
+      }
+      // Dispatch into the same listeners path the main transport uses.
+      for (const cb of listeners.event) cb(msg)
+    }
+    sock.onclose = () => {
+      frameTunnelActive = false
+      if (frameTunnel === sock) frameTunnel = null
+    }
+    sock.onerror = () => {
+      try {
+        sock.close()
+      } catch {}
+    }
+  }
+  function closeFrameTunnel() {
+    frameTunnelActive = false
+    frameTunnelTabId = null
+    if (frameTunnel) {
+      try {
+        frameTunnel.close()
+      } catch {}
+      frameTunnel = null
+    }
+  }
+  // Inspect a CDP envelope from the main WS path; return true if it's a screencast frame
+  // we should drop because the tunnel is delivering frames already.
+  function isFilteredCdpEvent(msg: unknown): boolean {
+    if (!frameTunnelActive) return false
+    return (
+      typeof msg === "object" &&
+      msg !== null &&
+      (msg as { method?: string }).method === "Page.screencastFrame"
+    )
+  }
+
+  // Mode reconfiguration: called by the picker on change. Re-reads the pref, opens or
+  // closes WS to match, and pokes the active-mode signal. The streaming channel stays
+  // alive across switches — cheap, and lets a flip back to auto/stream resume instantly.
+  function reconfigureMode() {
+    wantMode = readMode()
+    if (wantMode === "auto" || wantMode === "ws") {
+      selector.fallbackToAuto() // clears any manual error state from a prior pick
+      if (wantMode === "ws") selector.setManualMode("ws")
+      if (!ws) openWs()
+    } else {
+      // stream or batch: tear down WS so input flows through the legacy paths.
+      selector.setManualMode(wantMode)
+      closeWs()
+    }
+    setActiveMode(deriveActiveMode())
+  }
+
+  // Re-probe on visibility return: a network change (VPN flip, WiFi roam) is most likely
+  // when the user comes back. If we'd been degraded (Auto fell below WS), try WS again.
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return
+      const probe = selector.onFocus()
+      if (probe === "ws" && !wsReady && !ws && shouldOpenWs(wantMode)) openWs()
+    })
+  }
 
   // Theme: the "native" scheme is the OS preference via matchMedia, overridden by an
   // explicit theme source. We push the *resolved* dark flag to the server so it can
@@ -341,15 +771,35 @@ function createWebCdp(): CdpBridge {
     listTabs: () => getJson("/api/tabs"),
     newTab: (url) => postJson("/api/tabs/new", { url }),
     closeTab: (id) => postJson("/api/tabs/close", { id }),
-    connect: (id) => postJson("/api/connect", { id }),
+    connect: async (id) => {
+      const result = await postJson("/api/connect", { id })
+      // Direct-frame tunnel (t019, fastest): open a pass-through WS to the active tab's
+      // CDP socket and pull screencast frames at native rate, bypassing the server's
+      // per-frame JSON.parse/stringify cost. Default ON; disable via
+      // `localStorage.directFrames='0'`. Skipped when no WebSocket support, or when the
+      // main WS isn't ready (we follow the same gating as input WS for consistency).
+      // Default OFF: the binary WS broadcast path is faster than the tunnel because
+      // opening a 2nd CDP session competes with the server's main one for frame
+      // production, AND the tunnel forwards raw CDP JSON (no binary Blob, so the
+      // renderer falls back to data-URL decode — slow on WebKit). Enable explicitly
+      // with `localStorage.directFrames='1'` if testing.
+      const wantDirect = !!(window.WebSocket && localStorage?.getItem("directFrames") === "1")
+      if (wantDirect) openFrameTunnel(id)
+      else closeFrameTunnel()
+      return result
+    },
     send: (method, params) => {
       if (method === "Page.screencastFrameAck") return // server acks frames itself
       const cmd: Cmd = { method, params }
       if (method === "Input.dispatchMouseEvent") {
         const p = params as { type?: string; buttons?: number } | undefined
         if (p?.type === "mouseMoved") {
-          // Drag (a button is held): track live. Hover (no button): emit only on stop.
-          if (p.buttons) {
+          // Drag (a button is held): always track live.
+          // Hover (no button): held by the 80ms gate only on the POST/cdp-batch fallback,
+          // where each batch costs a TLS+auth RTT and a continuous hover starves clicks.
+          // WS and streaming have no per-message setup cost — let hover flow live.
+          const liveMove = !!p.buttons || wsReady || streamingActive
+          if (liveMove) {
             hover.cancel()
             return batcher.coalesce(cmd)
           }
@@ -361,9 +811,16 @@ function createWebCdp(): CdpBridge {
         return batcher.immediate(cmd)
       }
       if (method === "Input.dispatchKeyEvent") return batcher.immediate(cmd)
+      if (wsReady && ws) {
+        void ws.send(method, params)
+        return
+      }
       void postJson("/api/send", cmd)
     },
-    invoke: (method, params) => postJson("/api/invoke", { method, params }),
+    invoke: (method, params) => {
+      if (wsReady && ws) return ws.invoke(method, params) as Promise<unknown>
+      return postJson("/api/invoke", { method, params })
+    },
     onEvent: (cb) => listeners.event.push(cb),
     onDisconnected: (cb) => listeners.disconnected.push(cb),
     getConfig: () => getJson("/api/config"),
@@ -417,6 +874,15 @@ function createWebCdp(): CdpBridge {
     },
     subscribePush: (sub) => postJson("/api/notifications/subscribe", sub),
     unsubscribePush: (endpoint) => postJson("/api/notifications/unsubscribe", { endpoint }),
+    // Transport-picker hooks (t019). The settings UI calls reconfigureInputTransport()
+    // when the user toggles a mode; the badge reads getActiveTransport() and subscribes
+    // via onActiveTransportChange(). Optional on the bridge — Electron's preload doesn't
+    // implement them, so the UI must guard with `?.`.
+    reconfigureInputTransport: () => reconfigureMode(),
+    getActiveTransport: () => activeMode,
+    onActiveTransportChange: (cb: (m: InputTransportMode) => void) => {
+      activeModeListeners.push(cb)
+    },
   }
 }
 

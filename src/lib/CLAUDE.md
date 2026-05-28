@@ -26,9 +26,9 @@ Ten modules that form the renderer's domain layer, plus a React hook that wires 
 
 ## Web transport (web build only)
 
-Three files in `src/lib/` are not domain modules — they implement the browser-side half of the SSE + POST transport when no Electron preload is present. They live here (not in `src/components/`) because they contain no React and must be unit-testable in isolation.
+Four files in `src/lib/` are not domain modules — they implement the browser-side half of the web transport (WS, SSE + POST) when no Electron preload is present. They live here (not in `src/components/`) because they contain no React and must be unit-testable in isolation.
 
-**`cdp-web-transport.ts`** — installs `window.cdp` (the `CdpBridge` contract) over `EventSource` + `fetch` POST when no preload is detected. Manages the SSE stream, the streaming input channel (`POST /api/input-stream`), the POST fallback, E2E seal/open, theme sync, tab/pin/settings REST calls, and Web Push subscription (`getPushVapidKey`, `subscribePush`, `unsubscribePush` — optional methods absent under Electron; used by `settings-dialog.tsx` when `webPush` is toggled in standalone PWA mode). Routes mouse input: drag (button held) → `batcher.coalesce`; hover (no button) → `hover.move`; press/release → `hover.cancel` + `batcher.immediate`; wheel → `batcher.append`. `collapseMoves(items)` — the CDP-specific merge function for `createSingleFlight`: drops all but the last consecutive `mouseMoved` in a run, preserving clicks/wheel/keys in order.
+**`cdp-web-transport.ts`** — installs `window.cdp` (the `CdpBridge` contract) over WebSocket (`createWsChannel`) + `EventSource` + `fetch` POST when no preload is detected. Manages the WS channel (full-duplex; frames + events + input ride one socket when active), the SSE stream, the streaming input channel (`POST /api/input-stream`), the POST fallback, E2E seal/open, theme sync, tab/pin/settings REST calls, and Web Push subscription (`getPushVapidKey`, `subscribePush`, `unsubscribePush` — optional methods absent under Electron; used by `settings-dialog.tsx` when `webPush` is toggled in standalone PWA mode). Routes mouse input: drag (button held) → `batcher.coalesce`; hover (no button) → `hover.move` (bypassed on WS/stream); press/release → `hover.cancel` + `batcher.immediate`; wheel → `batcher.append`. `collapseMoves(items)` — the CDP-specific merge function for `createSingleFlight`: drops all but the last consecutive `mouseMoved` in a run, preserving clicks/wheel/keys in order.
 
 **`input-coalesce.ts`** — generic batching + backpressure primitives (no CDP-specific logic):
 - `createBatcher<T>` — coalesces high-frequency commands onto a scheduler (one POST per rAF instead of one per event).
@@ -36,6 +36,8 @@ Three files in `src/lib/` are not domain modules — they implement the browser-
 - `createSingleFlight<T>` — at most one `post` in flight; items pushed while waiting accumulate and `merge` into one next post on settle. Bounds the POST rate to link RTT. A failed post does not wedge the queue.
 
 **`crypto-envelope.ts`** — browser-side AES-256-GCM seal/open for the optional E2E mode. `deriveKey(passphrase, salt)` runs PBKDF2-SHA256; `seal(key, plaintext)` / `open(key, ct)` wrap SubtleCrypto. Mirrors `crypto-envelope.js` (server side, CJS). No state; pure crypto.
+
+**`transport-selector.ts`** — pure state machine for the connection-mode picker (t019). Models the Auto chain (WS → Stream → Batch), per-mode retry bounds (3 attempts), last-good cache via injected `localStorage`-shaped store, manual-pick error tracking, and the degraded → re-probe-on-focus transition. No I/O — the actual WS open/close lives in `cdp-web-transport.ts` (`createWsChannel`); the selector just tells callers what to do next. See ADR-0007.
 
 ## Transport seam
 

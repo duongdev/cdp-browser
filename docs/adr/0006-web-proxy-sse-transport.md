@@ -1,6 +1,6 @@
 # ADR-0006: Web build — SSE + POST proxy, no WebSocket on the browser hop
 
-- **Status:** Accepted
+- **Status:** Accepted (the "no WS on browser hop" constraint is superseded by ADR-0007; the SSE + POST paths remain as fallbacks)
 - **Date:** 2026-05-26
 
 ## Context

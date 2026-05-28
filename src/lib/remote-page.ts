@@ -44,8 +44,12 @@ export interface ScreencastMetadata {
 }
 
 export interface ScreencastFrame {
-  /** base64 JPEG, no data: prefix */
+  /** base64 JPEG, no data: prefix. Always present from CDP/Electron; on the web build's
+   *  binary-WS fast path it's empty and `dataBlob` carries the JPEG bytes instead. */
   data: string
+  /** Web build fast path: raw JPEG Blob delivered via a binary WS message, bypassing the
+   *  base64 + JSON.parse cost. Viewport prefers this when present. See ADR-0007. */
+  dataBlob?: Blob
   sessionId: number
   metadata?: ScreencastMetadata
 }
@@ -185,7 +189,9 @@ export function createRemotePage(
     switch (msg.method) {
       case "Page.screencastFrame": {
         const frame: ScreencastFrame = {
-          data: msg.params.data,
+          // Web build's binary fast path sets `dataBlob` and leaves `data` empty.
+          data: msg.params.data ?? "",
+          dataBlob: msg.params.dataBlob,
           sessionId: msg.params.sessionId,
           metadata: msg.params.metadata,
         }

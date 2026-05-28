@@ -91,6 +91,13 @@ interface CdpBridge {
   getPushVapidKey?: () => Promise<string>
   subscribePush?: (subscription: PushSubscriptionJSON) => Promise<void>
   unsubscribePush?: (endpoint: string) => Promise<void>
+  // Input transport picker (web build only — Electron uses IPC, no transport choice).
+  // The settings UI calls reconfigureInputTransport() after writing the pref to
+  // localStorage; the active-mode badge reads getActiveTransport() and subscribes via
+  // onActiveTransportChange(). See ADR-0007.
+  reconfigureInputTransport?: () => void
+  getActiveTransport?: () => "auto" | "ws" | "stream" | "batch"
+  onActiveTransportChange?: (cb: (mode: "auto" | "ws" | "stream" | "batch") => void) => void
 }
 
 interface PersistedLocalTabBridge {

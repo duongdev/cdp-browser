@@ -888,7 +888,12 @@ function SortablePinTile({
               {...listeners}
             >
               <span className="relative size-5 group/fav">
-                <span className={cn("block", showDrift && "group-hover/fav:opacity-0")}>
+                <span
+                  className={cn(
+                    "block",
+                    showDrift && "group-hover/fav:opacity-0 [@media(hover:none)]:opacity-0",
+                  )}
+                >
                   <img
                     alt=""
                     aria-hidden
@@ -902,7 +907,7 @@ function SortablePinTile({
                 {showDrift && (
                   <span
                     aria-label="Back to pinned URL"
-                    className="absolute inset-0 hidden place-items-center rounded-[5px] bg-foreground/15 text-foreground group-hover/fav:grid"
+                    className="absolute inset-0 hidden place-items-center rounded-[5px] bg-foreground/15 text-foreground group-hover/fav:grid [@media(hover:none)]:grid"
                     onClick={(e) => {
                       e.stopPropagation()
                       onBackToPinned()
@@ -1032,7 +1037,7 @@ function SortableTabItem({
                 />
                 <button
                   aria-label="Close tab"
-                  className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
+                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClose()
@@ -1139,13 +1144,13 @@ function SortableLocalItem({
                 {/* pin indicator on the right so favicons + titles stay aligned */}
                 {tab.pinned && (
                   <HugeiconsIcon
-                    className="size-3 shrink-0 text-muted-foreground/50 group-hover:hidden"
+                    className="size-3 shrink-0 text-muted-foreground/50 group-hover:hidden [@media(hover:none)]:hidden"
                     icon={PinIcon}
                   />
                 )}
                 <button
                   aria-label="Close tab"
-                  className="hidden group-hover:flex absolute right-2 text-muted-foreground hover:text-foreground"
+                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClose()

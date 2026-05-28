@@ -113,13 +113,113 @@ const port = () => settings.getConfig().port
 
 // ---- SSE fan-out ----------------------------------------------------------
 const sseClients = new Set()
-function broadcast(event, payload) {
-  // Event names stay plaintext (client routing); only the data payload is sealed.
+const wsClients = new Set() // WebSocket subscribers — receive same events SSE clients do (t019)
+// Binary WS path for screencast frames (t019, fast path). Sends a small JSON envelope
+// describing the frame metadata, then the raw JPEG bytes as a binary WS message
+// immediately after — clients pair them by order. Skips base64 encoding (33% bandwidth)
+// and the renderer's JSON.parse of a 250KB envelope (main-thread cost). E2E mode keeps
+// the legacy sealed JSON path because the binary payload would need its own seal.
+function broadcastFrameBinary(params) {
+  const { data, ...meta } = params
+  const bytes = Buffer.from(data, "base64")
+  broadcastFrameBinaryRaw(bytes, meta)
+}
+function broadcastFrameBinaryRaw(bytes, meta) {
+  const envelope = JSON.stringify({
+    t: "event",
+    event: "cdp-frame",
+    data: { method: "Page.screencastFrame", params: meta },
+  })
+  for (const ws of wsClients) {
+    try {
+      ws.send(envelope)
+      ws.send(bytes)
+    } catch {
+      wsClients.delete(ws)
+    }
+  }
+}
+
+// Fast-extract from a raw CDP Buffer — avoids `JSON.parse(data.toString())` on a 200KB+
+// message every frame, the biggest server-side per-frame cost at CSS-pixel resolutions ≥
+// 1280×720. CDP orders params alphabetically (data, metadata, sessionId), so each tag is
+// searched from the start of the buffer independently. Returns null if anything looks
+// wrong — caller falls back to the safe JSON.parse path. See t019.
+const FAST_PROBE_LEN = 64
+const METHOD_TAG = Buffer.from('"method":"Page.screencastFrame"', "utf8")
+const SID_TAG = Buffer.from('"sessionId":', "utf8")
+const DATA_TAG = Buffer.from('"data":"', "utf8")
+const META_TAG = Buffer.from('"metadata":', "utf8")
+function extractScreencastFast(buf) {
+  const methodPos = buf.indexOf(METHOD_TAG, 0)
+  if (methodPos === -1 || methodPos >= FAST_PROBE_LEN) return null
+  const dataTagPos = buf.indexOf(DATA_TAG, 0)
+  if (dataTagPos === -1) return null
+  const dataStart = dataTagPos + DATA_TAG.length
+  const dataEnd = buf.indexOf(0x22, dataStart) // base64 has no quotes/escapes
+  if (dataEnd === -1) return null
+  const bytes = Buffer.from(buf.subarray(dataStart, dataEnd).toString("ascii"), "base64")
+  const sidTagPos = buf.indexOf(SID_TAG, 0)
+  if (sidTagPos === -1) return null
+  const sidStart = sidTagPos + SID_TAG.length
+  let sidEnd = sidStart
+  while (sidEnd < buf.length && buf[sidEnd] >= 0x30 && buf[sidEnd] <= 0x39) sidEnd++
+  if (sidEnd === sidStart) return null
+  const sessionId = Number(buf.subarray(sidStart, sidEnd).toString("ascii"))
+  const metaTagPos = buf.indexOf(META_TAG, 0)
+  let metadata
+  if (metaTagPos !== -1) {
+    let i = metaTagPos + META_TAG.length
+    while (i < buf.length && (buf[i] === 0x20 || buf[i] === 0x09)) i++
+    if (buf[i] === 0x7b) {
+      const objStart = i
+      let depth = 0
+      do {
+        if (buf[i] === 0x7b) depth++
+        else if (buf[i] === 0x7d) depth--
+        i++
+      } while (i < buf.length && depth > 0)
+      try {
+        metadata = JSON.parse(buf.subarray(objStart, i).toString("utf8"))
+      } catch {
+        return null
+      }
+    }
+  }
+  return { sessionId, bytes, metadata }
+}
+function broadcastSseOnly(event, payload) {
+  // Hot-path optimization: SSE typically has 0 clients once WS is established (clients
+  // close SSE on WS-ready). Skip the expensive JSON.stringify(200KB-base64) when nobody's
+  // listening — that stringify was eating ~5ms per screencast frame at 25 fps for no gain.
+  if (sseClients.size === 0) return
   const data = e2eKey ? seal(payload ?? {}, e2eKey) : JSON.stringify(payload ?? {})
   const line = `event: ${event}\ndata: ${data}\n\n`
   for (const res of sseClients) {
     try {
       res.write(line)
+    } catch {
+      sseClients.delete(res)
+    }
+  }
+}
+function broadcast(event, payload) {
+  // Event names stay plaintext (client routing); only the data payload is sealed.
+  const data = e2eKey ? seal(payload ?? {}, e2eKey) : JSON.stringify(payload ?? {})
+  // SSE: event-stream format. WS: { t, event, data } envelope so the client demuxes the
+  // same event names without a separate channel per type.
+  const sseLine = `event: ${event}\ndata: ${data}\n\n`
+  const wsLine = JSON.stringify({ t: "event", event, data })
+  for (const ws of wsClients) {
+    try {
+      ws.send(wsLine)
+    } catch {
+      wsClients.delete(ws)
+    }
+  }
+  for (const res of sseClients) {
+    try {
+      res.write(sseLine)
     } catch {
       sseClients.delete(res)
     }
@@ -211,12 +311,38 @@ async function connect(tabId) {
       })
       ws.on("message", (data) => {
         if (activeWs !== ws) return
+        // Fastest path: skip `data.toString()` + JSON.parse on the 200KB envelope when the
+        // message is a Page.screencastFrame, we have only WS subscribers (no SSE need for
+        // the full JSON), and E2E is off. We extract sessionId + JPEG bytes + metadata
+        // straight from the raw Buffer — saves the bulk of per-frame server CPU.
+        if (wsClients.size > 0 && !e2eKey && sseClients.size === 0) {
+          const fast = extractScreencastFast(data)
+          if (fast) {
+            rawSend(ws, "Page.screencastFrameAck", { sessionId: fast.sessionId })
+            broadcastFrameBinaryRaw(fast.bytes, {
+              sessionId: fast.sessionId,
+              metadata: fast.metadata,
+            })
+            return
+          }
+        }
         try {
           const msg = JSON.parse(data.toString())
           // Ack frames here (not from the browser) — a per-frame HTTP POST round-trip
           // would throttle the stream and add latency. See docs/tasks/006.
-          if (msg.method === "Page.screencastFrame")
+          if (msg.method === "Page.screencastFrame") {
             rawSend(ws, "Page.screencastFrameAck", { sessionId: msg.params.sessionId })
+            // Fast path for WS subscribers: send the JPEG bytes as a **binary** WS frame
+            // (no base64, no JSON.parse of a 250KB string on the renderer thread). SSE
+            // subscribers keep the legacy JSON-with-base64 path. See t019 + ADR-0007.
+            // E2E gates the binary path: under E2E the data needs sealing; defer that and
+            // keep the sealed JSON path so the security model stays intact.
+            if (wsClients.size > 0 && !e2eKey) {
+              broadcastFrameBinary(msg.params)
+              broadcastSseOnly("cdp", msg)
+              return
+            }
+          }
           broadcast("cdp", msg)
         } catch {}
       })
@@ -636,25 +762,141 @@ const server = http.createServer(async (req, res) => {
 // 5-min requestTimeout would kill it. Disable it (this server sits behind auth).
 server.requestTimeout = 0
 
-// Throwaway WS upgrade probe — verifies the proxy chain (nginx + Authentik) actually
-// forwards the WebSocket handshake before we commit to building the real /api/ws
-// transport. Echoes any frame back, sends a ping every 5s. Remove once verified.
-const probeWss = new WebSocketServer({ noServer: true })
+// Full-duplex WS transport — same CdpBridge contract as SSE+POST but in one socket
+// (t019). Messages: { t: "send"|"invoke"|"invoke-result"|"event", id?, method?, params? }.
+// CDP events fan in via broadcast() (added to wsClients above); requests fan out via
+// the existing invoke()/send() helpers, so the WS path is a thin envelope layer.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
+// Pass-through WS tunnel to a CDP target (t019, fastest path). Bypasses the server's
+// JSON.parse/JSON.stringify per frame and the 1→N broadcast loop — bytes flow CDP↔client
+// raw. Bandwidth is the network's ceiling, not the proxy's. The browser can't hit the
+// CDP host directly because (a) HTTPS PWAs can't open ws:// (mixed content) and (b)
+// Chrome/Edge reject /json WS handshakes carrying Origin without --remote-allow-origins.
+// This tunnel keeps TLS on the browser hop while removing the proxy's per-frame cost.
+const tunnelWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://localhost")
-  if (url.pathname !== "/api/ws-probe") {
+  if (url.pathname.startsWith("/api/cdp-ws/")) {
+    const tabId = url.pathname.slice("/api/cdp-ws/".length)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      socket.destroy()
+      return
+    }
+    const cdpUrl = `ws://${host()}:${port()}/devtools/page/${tabId}`
+    let upstream
+    try {
+      upstream = new WebSocket(cdpUrl, { maxPayload: 16 * 1024 * 1024 })
+    } catch {
+      socket.destroy()
+      return
+    }
+    // Buffer upstream→client messages until handleUpgrade resolves. Critical: if upstream
+    // opens before handleUpgrade fires (race on LAN with fast CDP host), we'd miss the
+    // open event. Wire listeners on upstream synchronously here so nothing is lost.
+    let client = null
+    const upstreamToClientBuffer = []
+    let upstreamOpen = false
+    upstream.on("open", () => {
+      upstreamOpen = true
+    })
+    upstream.on("message", (data, isBinary) => {
+      if (client && client.readyState === 1) {
+        try {
+          client.send(data, { binary: isBinary })
+        } catch {}
+      } else {
+        upstreamToClientBuffer.push({ data, isBinary })
+      }
+    })
+    upstream.on("close", () => {
+      try {
+        client?.close()
+      } catch {}
+    })
+    upstream.on("error", () => {
+      try {
+        client?.close()
+      } catch {}
+    })
+    tunnelWss.handleUpgrade(req, socket, head, (c) => {
+      client = c
+      // Replay any messages that arrived before the client was ready.
+      for (const { data, isBinary } of upstreamToClientBuffer) {
+        try {
+          c.send(data, { binary: isBinary })
+        } catch {}
+      }
+      upstreamToClientBuffer.length = 0
+      const clientToUpstreamQueue = []
+      c.on("message", (data, isBinary) => {
+        if (!upstreamOpen) {
+          clientToUpstreamQueue.push({ data, isBinary })
+          return
+        }
+        try {
+          upstream.send(data, { binary: isBinary })
+        } catch {}
+      })
+      // Flush queued client→upstream messages once upstream opens.
+      if (!upstreamOpen) {
+        upstream.once("open", () => {
+          for (const { data, isBinary } of clientToUpstreamQueue) {
+            try {
+              upstream.send(data, { binary: isBinary })
+            } catch {}
+          }
+          clientToUpstreamQueue.length = 0
+        })
+      }
+      c.on("close", () => {
+        try {
+          upstream.close()
+        } catch {}
+      })
+      c.on("error", () => {
+        try {
+          upstream.close()
+        } catch {}
+      })
+    })
+    return
+  }
+  if (url.pathname !== "/api/ws") {
     socket.destroy()
     return
   }
-  probeWss.handleUpgrade(req, socket, head, (ws) => {
-    console.log("[ws-probe] open from", req.socket.remoteAddress)
-    ws.send(JSON.stringify({ t: "hello", ts: Date.now() }))
-    const hb = setInterval(() => ws.readyState === WebSocket.OPEN && ws.ping(), 5000)
-    ws.on("message", (m) => ws.send(m))
-    ws.on("close", () => {
-      clearInterval(hb)
-      console.log("[ws-probe] close")
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wsClients.add(ws)
+    ws.send(JSON.stringify({ t: "ready" }))
+    ws.on("message", async (raw) => {
+      let parsed
+      try {
+        const text = raw.toString()
+        const body = e2eKey ? await open(text, e2eKey) : JSON.parse(text)
+        parsed = body
+      } catch (err) {
+        console.error("[ws] bad message:", err.message)
+        return
+      }
+      const { t, id, method, params } = parsed || {}
+      if (t === "invoke") {
+        const result = await invoke(method, params)
+        // Envelope plaintext (routing); result sealed under E2E to keep CDP RPC payloads
+        // opaque to a TLS-intercepting proxy, matching the SSE+POST guarantee.
+        const sealedResult = e2eKey ? await seal(result, e2eKey) : result
+        try {
+          ws.send(JSON.stringify({ t: "invoke-result", id, result: sealedResult }))
+        } catch {}
+      } else if (t === "send") {
+        // Page.screencastFrameAck is server-acked already; ignore client retries here.
+        if (method !== "Page.screencastFrameAck") send(method, params)
+      } else if (t === "batch") {
+        // Same shape as /api/cdp-batch: { items: [{ method, params }, …] }
+        applyBatch(parsed.items)
+      }
     })
+    ws.on("close", () => wsClients.delete(ws))
+    ws.on("error", () => wsClients.delete(ws))
   })
 })
 

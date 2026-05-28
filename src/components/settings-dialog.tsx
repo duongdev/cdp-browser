@@ -26,6 +26,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { getCaps } from "@/lib/cdp-web-transport"
+import type { InputTransportMode } from "@/lib/transport-selector"
 import { cn } from "@/lib/utils"
 
 // VAPID public key is delivered as URL-safe base64 by the server; pushManager.subscribe
@@ -41,6 +42,15 @@ function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
 }
 
 export type SwitchEffect = "none" | "blur" | "grayscale" | "blur-grayscale"
+
+// Map the internal transport mode key to the same friendly label the picker uses,
+// so the active-mode badge reads consistently with the toggle ("Active: Fastest").
+function transportLabel(m: InputTransportMode): string {
+  if (m === "auto") return "Auto"
+  if (m === "ws") return "Fastest"
+  if (m === "stream") return "Streaming"
+  return "Basic"
+}
 
 interface SettingsDialogProps {
   open: boolean
@@ -153,6 +163,24 @@ export function SettingsDialog({
   const [webPush, setWebPush] = useState(false)
   const [pushPermBlocked, setPushPermBlocked] = useState(false)
   const [isStandalone, setIsStandalone] = useState(false)
+  // Web-only connection mode picker (t019). The pref persists to localStorage; calling
+  // window.cdp.reconfigureInputTransport() re-opens/closes the WS to apply mid-session
+  // (no reload needed). The "active" badge mirrors what actually connected — under Auto
+  // this may differ from the picked mode if WS was unreachable and we fell to Stream.
+  const [inputTransport, setInputTransport] = useState<InputTransportMode>(() =>
+    typeof localStorage !== "undefined"
+      ? ((localStorage.getItem("inputTransport") as InputTransportMode | null) ?? "auto")
+      : "auto",
+  )
+  const [activeTransport, setActiveTransport] = useState<InputTransportMode>(
+    () => window.cdp?.getActiveTransport?.() ?? "batch",
+  )
+  useEffect(() => {
+    const onChange = (m: InputTransportMode) => setActiveTransport(m)
+    window.cdp?.onActiveTransportChange?.(onChange)
+    // No unsubscribe surface on the bridge; the listener is harmless on remount and the
+    // settings dialog is a long-lived singleton in practice.
+  }, [])
 
   const toggleWebPush = useCallback(async (on: boolean) => {
     if (on && typeof Notification !== "undefined") {
@@ -530,6 +558,71 @@ export function SettingsDialog({
                       </p>
                     )}
                   </div>
+                  {caps.web && (
+                    <div className="mt-4 space-y-2 border-border/60 border-t pt-3">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <Label className="text-[13px]">Connection mode</Label>
+                        <span className="text-[10px] text-muted-foreground">
+                          Active:{" "}
+                          <span className="font-medium">{transportLabel(activeTransport)}</span>
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        How this browser talks to the server. Applied immediately.
+                      </p>
+                      <div className="grid grid-cols-2 gap-1">
+                        {(
+                          [
+                            {
+                              v: "auto",
+                              label: "Auto",
+                              tip: "Try Fastest, fall back to Streaming, then Basic.",
+                            },
+                            {
+                              v: "ws",
+                              label: "Fastest",
+                              tip: "WebSocket — full duplex, lowest latency. May be blocked by some proxies.",
+                            },
+                            {
+                              v: "stream",
+                              label: "Streaming",
+                              tip: "Long-lived POST + SSE. Works on HTTP/2 with unbuffered proxies.",
+                            },
+                            {
+                              v: "batch",
+                              label: "Basic",
+                              tip: "POST per batch + SSE. Slowest, works everywhere.",
+                            },
+                          ] as const
+                        ).map(({ v, label, tip }) => (
+                          <Tooltip key={v}>
+                            <TooltipTrigger asChild>
+                              <button
+                                aria-pressed={inputTransport === v}
+                                className={cn(
+                                  "rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors",
+                                  inputTransport === v
+                                    ? "bg-foreground text-background"
+                                    : "bg-foreground/[0.06] text-muted-foreground hover:text-foreground",
+                                )}
+                                onClick={() => {
+                                  setInputTransport(v)
+                                  localStorage.setItem("inputTransport", v)
+                                  // Apply immediately — the bridge tears down WS or
+                                  // re-opens it to match the new pref, no reload needed.
+                                  window.cdp?.reconfigureInputTransport?.()
+                                }}
+                                type="button"
+                              >
+                                {label}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">{tip}</TooltipContent>
+                          </Tooltip>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </Card>
               </>
             )}
