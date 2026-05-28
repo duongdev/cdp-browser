@@ -155,9 +155,13 @@ workstation use). Three tasks completed the port:
 
 - **t015 — Manifest + safe-area**: `public/manifest.webmanifest` gains `"orientation":
   "landscape"` (landscape-locked for iPad workstation use) and `viewport-fit=cover`
-  (required for safe-area env vars). CSS safe-area insets applied to `:root` and `body`
-  in `src/index.css`; `#root { height: 100% }` ensures full-height layout on iOS where
-  `h-screen` maps to the visual viewport and collapses under the keyboard.
+  (required for safe-area env vars). `body` uses `100dvh` to fill the full viewport
+  height including the Safari URL bar (avoids the keyboard-collapse issue with `h-screen`).
+  Safe-area insets are applied per-component rather than globally on `body`: the sidebar
+  scroll container uses `pb-[max(0.5rem,env(safe-area-inset-bottom))]` (home indicator
+  clearance with minimum padding), and the status bar uses `pb-[env(safe-area-inset-bottom)]`
+  (sits flush with the bottom edge). This avoids a black bar at the home indicator that
+  global `body` padding introduced. `#root { height: 100% }` ensures full-height layout.
 
 - **t016 — iPad-aware layout**: Sidebar defaults to 180px on viewports ≤1100px (wider on
   desktop). `install-banner.tsx` prompts Safari-tab users to Add to Home Screen (1-week

@@ -38,7 +38,7 @@ export function StatusBar({ loading, loadingText, onOpenSettings }: StatusBarPro
   if (!visible) return null
 
   return (
-    <div className="flex items-center gap-1.5 h-6 px-3 text-[11px] bg-card border-t border-border text-muted-foreground select-none">
+    <div className="flex items-center gap-1.5 min-h-6 px-3 pb-[env(safe-area-inset-bottom)] text-[11px] bg-card border-t border-border text-muted-foreground select-none">
       {isError ? (
         <>
           <HugeiconsIcon className="size-3 text-red-500 shrink-0" icon={Alert02Icon} />

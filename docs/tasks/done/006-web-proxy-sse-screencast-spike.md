@@ -1,6 +1,6 @@
 # 006 — web proxy SSE screencast spike
 
-- **Status:** in-progress
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
 - **Depends on:** none

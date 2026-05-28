@@ -46,7 +46,7 @@ No exceptions for pure logic. If a test feels impossible to write, the design is
 - Arrange → Act → Assert clearly separated. Blank lines between sections.
 - No setup that exceeds the test it serves. Long setup = test is too coarse.
 
-**Current coverage (as of 2026-05-25):**
+**Current coverage (as of 2026-05-28):**
 
 | Module | Test file | What's covered |
 |---|---|---|
@@ -55,13 +55,19 @@ No exceptions for pure logic. If a test feels impossible to write, the design is
 | `viewport-transform.ts` | `viewport-transform.test.ts` | letterbox math, toRemoteCoords coordinate mapping, edge cases |
 | `adaptive-viewport.ts` | `adaptive-viewport.test.ts` | reduce state machine, all transitions, effect generation |
 | `notifications-view.ts` | `notifications-view.test.ts` | groupByConversation, dedup, fallback grouping |
-| `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating, markUnread, unreadCount, unreadByTarget |
-| `theme-emulation.js` | `theme-emulation.test.ts` | emulatedMediaParams — sync on/off, dark/light mapping, reset to empty params |
 | `key-routing.ts` | `key-routing.test.ts` | isOsReservedKey — reserved combos, Option-rewrite safety, non-Cmd pass-through |
 | `pins.ts` | `pins.test.ts` | resolvePinLink, pinForTarget, dropDeadLinks |
 | `local-tabs.ts` | `local-tabs.test.ts` | sortPinnedFirst ordering, toPersisted/fromPersisted split |
 | `closed-tabs.ts` | `closed-tabs.test.ts` | push/pop preserves close order across CDP and local kinds |
 | `active-order.ts` | `active-order.test.ts` | touchActive MRU promotion, dropActive removal, mostRecent with open-set filter |
+| `cdp-web-transport.ts` | `cdp-web-transport.test.ts` | `collapseMoves` — run collapsing, click/wheel/key ordering |
+| `crypto-envelope.ts` | `crypto-envelope.test.ts` | seal/open round-trip, wrong-key rejection |
+| `input-coalesce.ts` | `input-coalesce.test.ts` | createBatcher, createHoverGate, createSingleFlight backpressure |
+| `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating, markUnread, unreadCount, unreadByTarget |
+| `theme-emulation.js` | `theme-emulation.test.ts` | emulatedMediaParams — sync on/off, dark/light mapping, reset to empty params |
+| `cdp-endpoints.js` | `cdp-endpoints.test.ts` | /json URL builders |
+| `settings-store.js` | `settings-store.test.ts` | config/ui-state defaults, pin CRUD + dedup, legacy migration (switchBlur→switchEffect, bookmarks→pins) |
+| `line-splitter.js` | `line-splitter.test.ts` | NDJSON reassembly — complete lines, partial/split chunks, blank-line keepalives |
 
 Every new module under `src/lib/` or pure-logic file at root gets a colocated test file from its first commit.
 
@@ -175,4 +181,4 @@ Naming:
 
 _Test discipline is the difference between a project that survives and one that dies. Don't negotiate with yourself on this._
 
-_Last revisited: 2026-05-25_
+_Last revisited: 2026-05-28_

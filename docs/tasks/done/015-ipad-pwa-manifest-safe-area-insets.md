@@ -75,8 +75,10 @@ All must be true before status → done.
 **Completed 2026-05-28:**
 - Updated `public/manifest.webmanifest` with `"orientation": "landscape"` — landscape-locked for iPad workstation use
 - Added `viewport-fit=cover` to HTML viewport meta tag — required for safe-area env variables to take effect
-- Added CSS variables to `:root` for all four safe-area insets (`--safe-area-inset-top/right/bottom/left`)
-- Applied safe-area padding to `body` element — pushes all content away from notch and home indicator
+- `body` uses `100dvh` for full-height layout (handles Safari URL bar; `h-screen` collapses under keyboard)
+- Safe-area insets applied per-component to avoid a black bar at the home indicator that global `body` padding caused:
+  - Sidebar scroll container: `pb-[max(0.5rem,env(safe-area-inset-bottom))]`
+  - Status bar: `pb-[env(safe-area-inset-bottom)]`
 - Manifest icons (192px, 512px, maskable 512px) already present and configured
 
 All acceptance criteria met. Ready for t016 layout audit to build on this foundation.
