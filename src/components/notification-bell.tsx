@@ -142,23 +142,15 @@ export function NotificationBell({
                       key={n.id}
                     >
                       <button
-                        className="flex w-full flex-col gap-0.5 py-2 pl-3 pr-12 text-left"
+                        className="flex w-full flex-col gap-0.5 py-2 pl-3 pr-14 text-left"
                         onClick={() => onClickItem(n)}
                         type="button"
                       >
-                        <span className="line-clamp-2 text-xs font-medium">
-                          {n.title || n.source}
+                        <span className="line-clamp-2 text-xs">
+                          {n.body || n.source || n.title}
                         </span>
-                        {n.body && (
-                          <span className="line-clamp-2 text-[11px] text-muted-foreground">
-                            {n.body}
-                          </span>
-                        )}
                       </button>
-                      <div className="pointer-events-none absolute top-2 right-3 flex flex-col items-end gap-1.5">
-                        <span className="text-[10px] text-muted-foreground tabular-nums">
-                          {relativeTime(n.ts)}
-                        </span>
+                      <div className="pointer-events-none absolute top-2 right-3 flex items-center gap-1.5">
                         <button
                           aria-label={n.read ? "Mark as unread" : "Mark as read"}
                           className="pointer-events-auto -m-1 p-1"
@@ -177,10 +169,18 @@ export function NotificationBell({
                             )}
                           />
                         </button>
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          {relativeTime(n.ts)}
+                        </span>
                       </div>
                     </li>
                   ))}
                 </ul>
+                {g.total > g.items.length && (
+                  <div className="px-3 pb-1.5 text-[10px] text-muted-foreground">
+                    +{g.total - g.items.length} earlier
+                  </div>
+                )}
               </div>
             ))}
           </ScrollArea>

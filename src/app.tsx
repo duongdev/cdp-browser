@@ -26,6 +26,7 @@ import {
   deriveLegacyActivate,
   resolveActivation,
 } from "@/lib/notification-activation"
+import { threadKey } from "@/lib/notifications-view"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
 import { planClose, planSwitch } from "@/lib/tab-lifecycle"
 import { reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
@@ -115,6 +116,7 @@ export default function App() {
   // to the previous active tab rather than the next in the list.
   const activeOrderRef = useRef<ActiveRef[]>([])
   const tabsRef = useRef<TabInfo[]>([])
+  const notificationsRef = useRef<NotifEntry[]>([])
   const activeTabIdRef = useRef<string | null>(null)
   const pinsRef = useRef<Pin[]>([])
   const page = useRemotePage()
@@ -356,11 +358,18 @@ export default function App() {
   // (keyed by `activate.type`) — no per-adapter branching. The registry maps each
   // variant to a Remote Page deep-open (Outlook → navigateSpa, Teams chats →
   // openTeamsThread). An absent or unknown intent resolves to null → Tab-only.
+  // Opening one message marks the whole thread read — the messages collapse into one
+  // conversation in the popover, so reading any of them clears the rest.
   const handleNotificationClick = useCallback(
     async (entry: NotifEntry) => {
       setBellOpen(false)
-      setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)))
+      const key = threadKey(entry)
+      const siblings = notificationsRef.current.filter(
+        (n) => n.id !== entry.id && !n.read && threadKey(n) === key,
+      )
+      setNotifications((prev) => prev.map((n) => (threadKey(n) === key ? { ...n, read: true } : n)))
       window.cdp.markNotificationRead(entry.id)
+      for (const n of siblings) window.cdp.markNotificationRead(n.id)
       // A push clicked after the PWA slept can carry a stale targetId (the remote tab was
       // reordered or reopened). Fall back to a live tab sharing the notification's origin.
       const originOf = (u?: string) => {
@@ -905,6 +914,9 @@ export default function App() {
   useEffect(() => {
     tabsRef.current = tabs
   }, [tabs])
+  useEffect(() => {
+    notificationsRef.current = notifications
+  }, [notifications])
   useEffect(() => {
     pinsRef.current = pins
   }, [pins])

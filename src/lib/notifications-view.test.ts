@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { groupByConversation } from "./notifications-view"
+import { GROUP_ITEM_CAP, groupByConversation, threadKey } from "./notifications-view"
 
 const e = (over: Record<string, unknown>) => ({
   id: "x",
@@ -14,6 +14,26 @@ const e = (over: Record<string, unknown>) => ({
   ...over,
 })
 
+describe("threadKey", () => {
+  it("prefers the explicit deep-open thread id", () => {
+    expect(
+      threadKey(e({ activate: { type: "thread", id: "19:abc" }, targetEntity: { id: "z" } })),
+    ).toBe("t:19:abc")
+  })
+
+  it("falls back to the entity id, then the title", () => {
+    expect(threadKey(e({ targetEntity: { id: "c1" } }))).toBe("c1")
+    expect(threadKey(e({ targetEntity: null, title: "Subject" }))).toBe("Subject")
+  })
+
+  it("scopes the thread by groupKey so equal ids in two workspaces never merge", () => {
+    expect(threadKey(e({ groupKey: "slack:T1", targetEntity: { id: "c1" } }))).toBe("slack:T1::c1")
+    expect(threadKey(e({ groupKey: "slack:T2", targetEntity: { id: "c1" } }))).not.toBe(
+      threadKey(e({ groupKey: "slack:T1", targetEntity: { id: "c1" } })),
+    )
+  })
+})
+
 describe("groupByConversation", () => {
   it("groups by conversation id, newest-first within a group, groups by most recent message", () => {
     const list = [
@@ -24,6 +44,62 @@ describe("groupByConversation", () => {
     const groups = groupByConversation(list)
     expect(groups.map((g) => g.key)).toEqual(["c1", "c2"])
     expect(groups[0].items.map((i) => i.id)).toEqual(["m3", "m1"])
+  })
+
+  it("splits same-origin Teams threads into separate groups (the per-origin grouping bug)", () => {
+    // All Teams toasts share an origin groupKey but belong to different conversations —
+    // they must NOT collapse into one group.
+    const list = [
+      e({
+        id: "a",
+        title: "Core Team",
+        groupKey: "https://teams",
+        targetEntity: { id: "19:core" },
+      }),
+      e({ id: "b", title: "GenAI", groupKey: "https://teams", targetEntity: { id: "19:genai" } }),
+      e({
+        id: "c",
+        title: "Core Team",
+        groupKey: "https://teams",
+        targetEntity: { id: "19:core" },
+      }),
+    ]
+    const groups = groupByConversation(list)
+    expect(groups).toHaveLength(2)
+    expect(groups.map((g) => g.label)).toEqual(["Core Team", "GenAI"])
+    expect(groups[0].items.map((i) => i.id)).toEqual(["a", "c"])
+  })
+
+  it("groups a legacy entity-only Teams message with a fresh activate one of the same thread", () => {
+    // A backlog entry captured before the `activate` field (entity only) must key the same
+    // as a fresh one of the same conversation, so they don't split and mark-read agrees.
+    const list = [
+      e({
+        id: "fresh",
+        activate: { type: "thread", id: "19:abc" },
+        targetEntity: { type: "chats", id: "19:abc" },
+      }),
+      e({ id: "legacy", activate: null, targetEntity: { type: "chats", id: "19:abc" } }),
+    ]
+    expect(groupByConversation(list)).toHaveLength(1)
+  })
+
+  it("keys Outlook mail by its per-message deep-link so same-subject mail never merges", () => {
+    const list = [
+      e({
+        id: "a",
+        title: "Re: Lunch?",
+        activate: { type: "spa-link", url: "https://o/mail/id/AAQk1" },
+        targetEntity: { deepLink: "https://o/mail/id/AAQk1" },
+      }),
+      e({
+        id: "b",
+        title: "Re: Lunch?",
+        activate: { type: "spa-link", url: "https://o/mail/id/AAQk2" },
+        targetEntity: { deepLink: "https://o/mail/id/AAQk2" },
+      }),
+    ]
+    expect(groupByConversation(list)).toHaveLength(2)
   })
 
   it("falls back to the title when there is no conversation id", () => {
@@ -50,52 +126,25 @@ describe("groupByConversation", () => {
     expect(g.label).toBe("newest")
     expect(g.icon).toBe("teams.ico")
     expect(g.unread).toBe(1)
+    expect(g.total).toBe(2)
   })
 
-  it("keys on groupKey when present, ignoring conversation id and title", () => {
-    const list = [
-      e({ id: "a", title: "alpha", groupKey: "slack:T1", targetEntity: { id: "c1" } }),
-      e({ id: "b", title: "beta", groupKey: "slack:T1", targetEntity: { id: "c2" } }),
-      e({ id: "c", title: "gamma", groupKey: "slack:T2", targetEntity: { id: "c1" } }),
-    ]
-    const groups = groupByConversation(list)
-    expect(groups.map((g) => g.key)).toEqual(["slack:T1", "slack:T2"])
-    expect(groups[0].items.map((i) => i.id)).toEqual(["a", "b"])
+  it("caps shown items at GROUP_ITEM_CAP while total/unread count the whole thread", () => {
+    const list = Array.from({ length: 5 }, (_, i) =>
+      e({ id: `m${i}`, ts: 100 - i, read: i > 1, targetEntity: { id: "c1" } }),
+    )
+    const g = groupByConversation(list)[0]
+    expect(g.items).toHaveLength(GROUP_ITEM_CAP)
+    expect(g.items.map((i) => i.id)).toEqual(["m0", "m1", "m2"])
+    expect(g.total).toBe(5)
+    expect(g.unread).toBe(2)
   })
 
-  it("with groupKey === origin, groups and per-group unread match the pre-change keying", () => {
-    // Same input keyed by targetEntity.id (old) vs groupKey set to a stable value (new):
-    // two messages in conversation c1, one in c2, mirrored to per-origin groupKeys.
+  it("keys an explicit thread activate ahead of the entity id", () => {
     const list = [
-      e({
-        id: "m3",
-        title: "third",
-        ts: 300,
-        read: false,
-        groupKey: "https://o",
-        targetEntity: { id: "c1" },
-      }),
-      e({
-        id: "m2",
-        title: "second",
-        ts: 200,
-        read: true,
-        groupKey: "https://o",
-        targetEntity: { id: "c1" },
-      }),
-      e({
-        id: "m1",
-        title: "first",
-        ts: 100,
-        read: false,
-        groupKey: "https://o",
-        targetEntity: { id: "c1" },
-      }),
+      e({ id: "a", activate: { type: "thread", id: "19:x" }, targetEntity: { id: "ignored" } }),
+      e({ id: "b", activate: { type: "thread", id: "19:x" }, targetEntity: { id: "other" } }),
     ]
-    const groups = groupByConversation(list)
-    expect(groups).toHaveLength(1)
-    expect(groups[0].key).toBe("https://o")
-    expect(groups[0].unread).toBe(2)
-    expect(groups[0].items.map((i) => i.id)).toEqual(["m3", "m2", "m1"])
+    expect(groupByConversation(list)).toHaveLength(1)
   })
 })
