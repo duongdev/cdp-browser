@@ -95,6 +95,9 @@
       source,
       title,
       body,
+      // Normalized deep-open intent: open the message via SPA navigation (semantic url,
+      // no DOM selectors). targetEntity stays for back-compatible display only.
+      activate: deepLink ? { type: "spa-link", url: deepLink } : null,
       targetEntity: deepLink ? { deepLink } : null,
       ts: Date.now(),
     }

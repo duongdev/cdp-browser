@@ -49,7 +49,7 @@ A read-only CDP WebSocket attached to a background tab's target — no screencas
 _Avoid_: background session, helper socket, spy socket.
 
 **Notification Adapter**:
-Per-site configuration that declares which URL hostname to match and which capture script to inject. Teams and Outlook (OWA) are the current adapters; the structure generalises to other notification-capable sites.
+A drop-in seam that spans both capture and activation for one notification-capable site. Each entry in the `ADAPTERS` array of `notifications-sidechain.js` carries: `name` (stable identifier), hostname `match` regex, capture `script` (injected at document-start), `iconUrl`, `groupKey` override (optional; defaults to URL origin), and optional `activate` tagged union (`spa-link` | `thread`) that encodes a deep-open intent as semantic ids — never DOM selectors. The renderer's activation registry (`src/lib/notification-activation.ts`) maps the `activate` type to a Remote Page intention (`navigateSpa` or `openTeamsThread`), keyed by the same `name`. Adding an adapter = one config entry in `ADAPTERS` + one capture script + one activation handler in the renderer registry. Teams and Outlook (OWA) are the current adapters.
 _Avoid_: plugin, connector, integration.
 
 **Notification Capture**:
@@ -67,7 +67,7 @@ _Avoid_: native tab, page view, webview tab.
 - The **Remote Page** emits **Screencast Frames** and accepts **Input Forwarding**.
 - **Viewport Transform** maps canvas coordinates to **Remote Page** coordinates for both drawing **Screencast Frames** and hit-testing **Input Forwarding**.
 - **Adaptive Viewport** (when enabled) resizes the **Remote Page** to the canvas so **Screencast Frames** fill it without letterbox bars.
-- A **Notification Side-Channel** attaches to a background **Tab**'s target and uses a **Notification Adapter** to run **Notification Capture** — independent of the **Active Tab**'s screencast socket.
+- A **Notification Side-Channel** attaches to a background **Tab**'s target and uses a **Notification Adapter** to run **Notification Capture** — independent of the **Active Tab**'s screencast socket. Clicking the result activates the owning Tab and, if the entry carries an `activate` intent, the activation registry maps it to a **Remote Page** deep-open intention.
 - A **Local Tab** renders a real local web page (in-DOM `<webview>`) alongside CDP Tabs — it does not use **Screencast Frames** or **Input Forwarding**; it gets direct device access instead.
 
 ## Example dialogue

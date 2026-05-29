@@ -12,7 +12,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Viewport } from "@/components/viewport"
 import { useRemotePage } from "@/hooks/use-remote-page"
-import { type ActiveRef, dropActive, mostRecent, touchActive } from "@/lib/active-order"
+import { type ActiveRef, dropActive } from "@/lib/active-order"
 import { createClosedStack } from "@/lib/closed-tabs"
 import {
   fromPersisted,
@@ -21,11 +21,23 @@ import {
   sortPinnedFirst,
   toPersisted,
 } from "@/lib/local-tabs"
+import {
+  createActivationRegistry,
+  deriveLegacyActivate,
+  resolveActivation,
+} from "@/lib/notification-activation"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
+import { planClose, planSwitch } from "@/lib/tab-lifecycle"
 import { reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
+import { aggregateUnread } from "@/lib/unread-aggregator"
 import { cn } from "@/lib/utils"
 
 type ActiveKind = "cdp" | "local"
+
+// Notification activation: each adapter plugs a deep-open variant in here; the click
+// handler dispatches by `activate.type` with no per-adapter branching. Adding a third
+// adapter is one new registry entry, not an edit to the click path.
+const activationRegistry = createActivationRegistry()
 
 export interface TabInfo {
   id: string
@@ -46,17 +58,6 @@ type NavRow =
 function applyThemeClass(theme: ThemeSource, systemDark: boolean) {
   const isDark = theme === "dark" || (theme === "system" && systemDark)
   document.documentElement.classList.toggle("dark", isDark)
-}
-
-// Notifications are attributed to a tab/pin by origin, so every tab of an app
-// (e.g. all Teams tabs, pinned or not) shares one unread count.
-function originOf(url: string | undefined): string | null {
-  if (!url) return null
-  try {
-    return new URL(url).origin
-  } catch {
-    return null
-  }
 }
 
 export default function App() {
@@ -324,7 +325,7 @@ export default function App() {
   const switchTab = useCallback(
     async (tabId: string) => {
       setActiveKind("cdp")
-      activeOrderRef.current = touchActive(activeOrderRef.current, { kind: "cdp", id: tabId })
+      activeOrderRef.current = planSwitch(activeOrderRef.current, { kind: "cdp", id: tabId })
       // Re-clicking the already-active tab is a no-op — no reconnect, no repaint.
       if (tabId === activeTabIdRef.current) return
       setActiveTabId(tabId)
@@ -351,20 +352,35 @@ export default function App() {
   )
 
   // Clicking a notification (toolbar popover or OS toast) activates the tab that
-  // captured it, then deep-opens the conversation. Outlook supplies a per-message URL
-  // (navigateSpa); Teams has no conversation URL, so a "chats" notification's thread id
-  // drives a chat-row click instead (see docs/adr/0003). Other Teams toasts (meeting
-  // "calls") have no thread to open and stop at activating the tab.
+  // captured it, then dispatches its `activate` intent through the activation registry
+  // (keyed by `activate.type`) — no per-adapter branching. The registry maps each
+  // variant to a Remote Page deep-open (Outlook → navigateSpa, Teams chats →
+  // openTeamsThread). An absent or unknown intent resolves to null → Tab-only.
   const handleNotificationClick = useCallback(
     async (entry: NotifEntry) => {
       setBellOpen(false)
       setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)))
       window.cdp.markNotificationRead(entry.id)
-      await switchTab(entry.targetId)
-      const te = entry.targetEntity as { deepLink?: string; type?: string; id?: string } | null
-      if (te?.deepLink) page.navigateSpa(te.deepLink)
-      else if (te?.type === "chats" && typeof te.id === "string" && te.id.startsWith("19:"))
-        page.openTeamsThread(te.id)
+      // A push clicked after the PWA slept can carry a stale targetId (the remote tab was
+      // reordered or reopened). Fall back to a live tab sharing the notification's origin.
+      const originOf = (u?: string) => {
+        try {
+          return u ? new URL(u).origin : null
+        } catch {
+          return null
+        }
+      }
+      const tabsNow = tabsRef.current
+      const targetId = tabsNow.some((t) => t.id === entry.targetId)
+        ? entry.targetId
+        : (tabsNow.find((t) => originOf(t.url) === originOf(entry.targetUrl))?.id ?? entry.targetId)
+      await switchTab(targetId)
+      // Prefer the normalized `activate` intent; fall back to the legacy `targetEntity`
+      // shape so notifications captured before the activate field (still in the backlog)
+      // also deep-open.
+      const activate = entry.activate ?? deriveLegacyActivate(entry.targetEntity)
+      const intention = resolveActivation(activationRegistry, activate)
+      if (intention) page[intention.method](intention.arg)
     },
     [switchTab, page],
   )
@@ -389,18 +405,6 @@ export default function App() {
     else window.cdp.markNotificationUnread(entry.id)
   }, [])
 
-  // Unread counts grouped by origin. Every tab/pin of the same app shares the
-  // count, whether or not it's the tab that captured the notification.
-  const unreadByOrigin = useMemo(() => {
-    const m: Record<string, number> = {}
-    for (const n of notifications) {
-      if (n.read) continue
-      const o = originOf(n.targetUrl)
-      if (o) m[o] = (m[o] || 0) + 1
-    }
-    return m
-  }, [notifications])
-
   // Live tab info for each linked pin (title/favicon/url), so a pin reflects its
   // tab's current title and detects URL drift. Built from the full tab list since
   // linked targets are filtered out of `visibleTabs`.
@@ -414,25 +418,12 @@ export default function App() {
     return m
   }, [pins, tabs])
 
-  // Per-tab and per-pin unread, resolved through the pin's live tab URL when
-  // linked (else its saved URL).
-  const unreadByTab = useMemo(() => {
-    const m: Record<string, number> = {}
-    for (const t of tabs) {
-      const o = originOf(t.url)
-      m[t.id] = o ? unreadByOrigin[o] || 0 : 0
-    }
-    return m
-  }, [tabs, unreadByOrigin])
-
-  const unreadByPin = useMemo(() => {
-    const m: Record<string, number> = {}
-    for (const pin of pins) {
-      const o = originOf(linkedTabByPin[pin.id]?.url ?? pin.url)
-      m[pin.id] = o ? unreadByOrigin[o] || 0 : 0
-    }
-    return m
-  }, [pins, linkedTabByPin, unreadByOrigin])
+  // Per-tab and per-pin unread badge counts, grouped so every tab/pin of the same
+  // app shares one count and a dormant pin badges by its saved URL's origin.
+  const { byTab: unreadByTab, byPin: unreadByPin } = useMemo(
+    () => aggregateUnread(notifications, tabs, pins, linkedTabByPin),
+    [notifications, tabs, pins, linkedTabByPin],
+  )
 
   const handleNotificationsEnabledChange = useCallback((enabled: boolean) => {
     setNotificationsEnabled(enabled)
@@ -569,12 +560,7 @@ export default function App() {
 
   const closeTab = useCallback(
     async (tabId: string) => {
-      // Save URL for reopen
       const tab = tabsRef.current.find((t) => t.id === tabId)
-      if (tab?.url) {
-        closedTabsRef.current.push({ kind: "cdp", url: tab.url })
-      }
-
       const wasActive = tabId === activeTabIdRef.current
 
       await window.cdp.closeTab(tabId)
@@ -592,22 +578,23 @@ export default function App() {
       await new Promise((r) => setTimeout(r, 300))
 
       const ordered = await refreshTabs()
-      if (wasActive) {
-        // Fall back to the most-recently-active tab that's still open (either
-        // kind); only if none, pick the first visible CDP tab.
-        activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "cdp", id: tabId })
-        const prev = mostRecent(activeOrderRef.current, (e) =>
-          e.kind === "cdp"
-            ? !!ordered?.some((t) => t.id === e.id)
-            : localTabsRef.current.some((t) => t.id === e.id),
-        )
-        if (prev?.kind === "cdp") await switchTab(prev.id)
-        else if (prev?.kind === "local") switchLocalTabRef.current?.(prev.id)
-        else if (ordered && ordered.length > 0) {
-          const next = ordered.find((t) => !pinForTarget(pinsRef.current, t.id)) ?? ordered[0]
-          await switchTab(next.id)
-        }
-      }
+      // The pin-revert effect is already applied by refreshTabs' dropDeadLinks
+      // (the closed target vanished from the live set); the planner just confirms.
+      const directive = planClose({
+        kind: "cdp",
+        id: tabId,
+        url: tab?.url ?? "",
+        wasActive,
+        order: activeOrderRef.current,
+        tabs: (ordered ?? []).filter((t) => !pinForTarget(pinsRef.current, t.id)),
+        locals: localTabsRef.current,
+        pins: pinsRef.current,
+      })
+      if (tab?.url) closedTabsRef.current.push(directive.closedEntry)
+      activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "cdp", id: tabId })
+      if (directive.nextActive?.kind === "cdp") await switchTab(directive.nextActive.id)
+      else if (directive.nextActive?.kind === "local")
+        switchLocalTabRef.current?.(directive.nextActive.id)
     },
     [refreshTabs, switchTab],
   )
@@ -646,7 +633,7 @@ export default function App() {
 
   const switchLocalTab = useCallback((id: string) => {
     setActiveKind("local")
-    activeOrderRef.current = touchActive(activeOrderRef.current, { kind: "local", id })
+    activeOrderRef.current = planSwitch(activeOrderRef.current, { kind: "local", id })
     setLocalActiveId(id)
   }, [])
   useEffect(() => {
@@ -680,21 +667,25 @@ export default function App() {
   const closeLocalTab = useCallback(
     (id: string) => {
       const tab = localTabsRef.current.find((t) => t.id === id)
-      if (tab?.url) closedTabsRef.current.push({ kind: "local", url: tab.url })
+      const wasActive = localActiveIdRef.current === id
       const remaining = localTabsRef.current.filter((t) => t.id !== id)
       setLocalTabsAnd(() => remaining)
-      if (localActiveIdRef.current === id) {
-        // Fall back to the most-recently-active tab still open (either kind).
-        activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "local", id })
-        const prev = mostRecent(activeOrderRef.current, (e) =>
-          e.kind === "local"
-            ? remaining.some((t) => t.id === e.id)
-            : tabsRef.current.some((t) => t.id === e.id),
-        )
-        if (prev?.kind === "local") switchLocalTab(prev.id)
-        else if (prev?.kind === "cdp") switchTab(prev.id)
-        else if (remaining[0]) switchLocalTab(remaining[0].id)
-        else {
+      const directive = planClose({
+        kind: "local",
+        id,
+        url: tab?.url ?? "",
+        wasActive,
+        order: activeOrderRef.current,
+        tabs: tabsRef.current.filter((t) => !pinForTarget(pinsRef.current, t.id)),
+        locals: remaining,
+        pins: pinsRef.current,
+      })
+      if (tab?.url) closedTabsRef.current.push(directive.closedEntry)
+      activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "local", id })
+      if (wasActive) {
+        if (directive.nextActive?.kind === "local") switchLocalTab(directive.nextActive.id)
+        else if (directive.nextActive?.kind === "cdp") switchTab(directive.nextActive.id)
+        else if (directive.clearActive) {
           setLocalActiveId(null)
           setActiveKind("cdp")
         }
@@ -818,17 +809,21 @@ export default function App() {
       await new Promise((r) => setTimeout(r, 300))
       const ordered = await refreshTabs()
       if (closingActive) {
-        const prev = mostRecent(activeOrderRef.current, (e) =>
-          e.kind === "cdp"
-            ? !!ordered?.some((t) => t.id === e.id)
-            : localTabsRef.current.some((t) => t.id === e.id),
-        )
-        if (prev?.kind === "cdp") await switchTab(prev.id)
-        else if (prev?.kind === "local") switchLocalTabRef.current?.(prev.id)
-        else if (ordered && ordered.length > 0) {
-          const next = ordered.find((t) => !pinForTarget(pinsRef.current, t.id)) ?? ordered[0]
-          await switchTab(next.id)
-        }
+        // Closed refs are already dropped from the order above, so the planner's
+        // own drop is a no-op here; we reuse it only for the fallback selection.
+        const directive = planClose({
+          kind: "cdp",
+          id: activeTabIdRef.current ?? "",
+          url: "",
+          wasActive: true,
+          order: activeOrderRef.current,
+          tabs: (ordered ?? []).filter((t) => !pinForTarget(pinsRef.current, t.id)),
+          locals: localTabsRef.current,
+          pins: pinsRef.current,
+        })
+        if (directive.nextActive?.kind === "cdp") await switchTab(directive.nextActive.id)
+        else if (directive.nextActive?.kind === "local")
+          switchLocalTabRef.current?.(directive.nextActive.id)
       }
     },
     [refreshTabs, switchTab],

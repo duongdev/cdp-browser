@@ -11,9 +11,18 @@
  * remote-page.ts. See docs/tasks/008.
  */
 
+import { type CryptoContext, createCryptoContext } from "./crypto-context"
+import { deriveKey as envDeriveKey, open as envOpen } from "./crypto-envelope"
+import {
+  createDownlink,
+  createDownlinkDispatcher,
+  type DownlinkSource,
+  type DownlinkSourceHandlers,
+} from "./downlink-dispatcher"
 import { type Batch, createBatcher, createHoverGate, createSingleFlight } from "./input-coalesce"
 import { perfMark } from "./perf-mark"
 import { createTransportSelector, type InputTransportMode } from "./transport-selector"
+import { type AdvisedMode, createUplinkRouter, type Uplink } from "./uplink-router"
 
 export interface WebCaps {
   /** True in the browser build. */
@@ -38,6 +47,35 @@ export function getCaps(): WebCaps {
 
 type Cmd = { method: string; params?: unknown }
 
+/**
+ * Injectable dependency bag (test seam, t020). Production calls `createWebCdp()` with no
+ * argument, so `resolveDeps()` reaches for the real browser globals — the exact behavior
+ * before this seam existed. Tests pass fakes for `fetch`/`EventSource`/`WebSocket` (and
+ * optionally `matchMedia`/`localStorage`/`getE2eKey`) to drive the shim with no network.
+ * No production branch is added or removed by this bag.
+ */
+export interface WebTransportDeps {
+  fetch: typeof fetch
+  EventSource: typeof EventSource
+  WebSocket: typeof WebSocket
+  matchMedia?: (q: string) => MediaQueryList
+  localStorage?: Pick<Storage, "getItem" | "setItem">
+  /** The live E2E key (or null when off). A getter so production tracks the module var
+   *  that `bootstrapE2E` sets; tests supply a fixed key. */
+  getE2eKey?: () => CryptoKey | null
+}
+
+function resolveDeps(): WebTransportDeps {
+  return {
+    fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
+    EventSource: globalThis.EventSource,
+    WebSocket: globalThis.WebSocket,
+    matchMedia: typeof window !== "undefined" ? (q) => window.matchMedia(q) : undefined,
+    localStorage: typeof localStorage !== "undefined" ? localStorage : undefined,
+    getE2eKey: () => e2eKey,
+  }
+}
+
 const isMouseMove = (c: Cmd) =>
   c.method === "Input.dispatchMouseEvent" &&
   (c.params as { type?: string } | undefined)?.type === "mouseMoved"
@@ -55,32 +93,50 @@ export function collapseMoves(items: Cmd[]): Cmd[] {
   return out
 }
 
-// When E2E is on (set during bootstrap), every /api body + SSE frame is sealed under
-// this key; otherwise null and everything is plaintext (as before). See t012.
-import { deriveKey as envDeriveKey, open as envOpen, seal as envSeal } from "./crypto-envelope"
-
 let e2eKey: CryptoKey | null = null
 const E2E_PASS_STORE = "cdp-e2e-pass"
 
-async function getJson(path: string) {
-  const res = await fetch(path)
-  if (e2eKey) return envOpen(await res.text(), e2eKey)
-  return res.json()
-}
-async function postJson(path: string, body?: unknown) {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": e2eKey ? "text/plain" : "application/json" },
-    body: e2eKey ? await envSeal(body ?? {}, e2eKey) : JSON.stringify(body ?? {}),
-  })
-  if (res.status === 204) return undefined
-  if (e2eKey) return envOpen(await res.text(), e2eKey)
-  return res.json()
-}
-// Raw POST of an already-serialized line (sealed envelope or JSON) — the server's body()
-// opens/parses it. Used by the input fallback so a sealed batch posts verbatim.
-async function postRaw(path: string, line: string) {
-  await fetch(path, { method: "POST", headers: { "Content-Type": "text/plain" }, body: line })
+/**
+ * The REST bridge: tabs/config/ui-state/pins/notifications/theme reads and writes. The only
+ * E2E seal/open these do is the CryptoContext's `sealText`/`openText` — no inline key read,
+ * no `envSeal`/`envOpen` call. `getJson`/`postJson` decode their response through the context;
+ * `postRaw` posts an already context-serialized line verbatim (the input adapters seal their
+ * batch, then post it here). In off mode the body is built synchronously (plaintext JSON, no
+ * envelope) so the fetch fires on the same tick as before — the seal `await` is e2e-only.
+ */
+function createRestBridge(deps: WebTransportDeps, crypto: CryptoContext) {
+  // Fire the POST. Off mode serializes plaintext synchronously and reaches `fetch` on the
+  // same tick (no `await` before it) — preserving the pre-fold timing; e2e awaits the one
+  // seal site (`crypto.sealText`) first. Returns the Response promise either way.
+  const postBody = (path: string, body?: unknown): Promise<Response> => {
+    const headers = { "Content-Type": crypto.contentType }
+    if (crypto.mode === "off") {
+      return deps.fetch(path, { method: "POST", headers, body: JSON.stringify(body ?? {}) })
+    }
+    return crypto
+      .sealText(body ?? {})
+      .then((sealed) => deps.fetch(path, { method: "POST", headers, body: sealed }))
+  }
+  return {
+    // biome-ignore lint/suspicious/noExplicitAny: bridge bodies are dynamic JSON matching the Promise<any> CdpBridge contract these feed
+    async getJson(path: string): Promise<any> {
+      const res = await deps.fetch(path)
+      return crypto.openText(await res.text())
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: see getJson.
+    async postJson(path: string, body?: unknown): Promise<any> {
+      const res = await postBody(path, body)
+      if (res.status === 204) return undefined
+      return crypto.openText(await res.text())
+    },
+    async postRaw(path: string, line: string) {
+      await deps.fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: line,
+      })
+    },
+  }
 }
 
 // Chrome/Edge can stream a request body (ReadableStream + duplex:'half') over HTTP/2.
@@ -115,7 +171,7 @@ const SUPPORTS_REQUEST_STREAMING = (() => {
  * a `stream-ack` over SSE. Until confirmed (and forever, if the probe is never acked) we
  * use a per-flush POST. `notifyAck()` is called by the SSE `stream-ack` handler.
  */
-function createInputChannel(postFallback: (batch: Batch<Cmd>) => void) {
+function createInputChannel(deps: WebTransportDeps, postFallback: (batch: Batch<Cmd>) => void) {
   const enc = new TextEncoder()
   // Give up after this many establish attempts that never get acked (no HTTP/2, or a
   // buffering proxy) and stay on the POST fallback for good — don't loop forever.
@@ -156,13 +212,14 @@ function createInputChannel(postFallback: (batch: Batch<Cmd>) => void) {
     })
     // Resolves only when the body closes (half-duplex) — we never close it, so settling
     // means the channel dropped. Replies (incl. the probe ack) arrive over SSE.
-    fetch("/api/input-stream", {
-      method: "POST",
-      body,
-      signal: abort.signal,
-      duplex: "half",
-      // biome-ignore lint/suspicious/noExplicitAny: duplex not yet in lib.dom RequestInit
-    } as any)
+    deps
+      .fetch("/api/input-stream", {
+        method: "POST",
+        body,
+        signal: abort.signal,
+        duplex: "half",
+        // biome-ignore lint/suspicious/noExplicitAny: duplex not yet in lib.dom RequestInit
+      } as any)
       .catch(() => {})
       .finally(onSettle)
     // No ack in the window ⇒ a buffering proxy swallowed the body (fetch hangs) ⇒ abort
@@ -205,19 +262,23 @@ function createInputChannel(postFallback: (batch: Batch<Cmd>) => void) {
  * is the "Fastest" path and the head of the Auto fallback chain. Returns a thin handle
  * the rest of createWebCdp consults via `ws.ready()` before falling back.
  */
-function createWsChannel(opts: {
-  onEvent: (event: string, data: string) => void
-  /** Fast path for screencast: a text "cdp-frame" envelope pairs with a binary WS frame
-   *  carrying raw JPEG bytes. Skips base64 + the JSON.parse of a 250KB envelope on the
-   *  renderer main thread. The caller forges a CDP event with `dataBlob` populated and
-   *  dispatches through the normal CDP event listeners. */
-  onFrameBinary?: (cdpMsg: {
-    method: string
-    params: Record<string, unknown> & { dataBlob: Blob }
-  }) => void
-  onReady: () => void
-  onClose: () => void
-}) {
+function createWsChannel(
+  deps: WebTransportDeps,
+  crypto: CryptoContext,
+  opts: {
+    onEvent: (event: string, data: string) => void
+    /** Fast path for screencast: a text "cdp-frame" envelope pairs with a binary WS frame
+     *  carrying raw JPEG bytes. Skips base64 + the JSON.parse of a 250KB envelope on the
+     *  renderer main thread. The caller forges a CDP event with `dataBlob` populated and
+     *  dispatches through the normal CDP event listeners. */
+    onFrameBinary?: (cdpMsg: {
+      method: string
+      params: Record<string, unknown> & { dataBlob: Blob }
+    }) => void
+    onReady: () => void
+    onClose: () => void
+  },
+) {
   let socket: WebSocket | null = null
   let ready = false
   // Pending awaited invokes keyed by id; the server echoes the id in invoke-result.
@@ -231,7 +292,7 @@ function createWsChannel(opts: {
     const proto = location.protocol === "https:" ? "wss:" : "ws:"
     const url = `${proto}//${location.host}/api/ws`
     try {
-      socket = new WebSocket(url)
+      socket = new deps.WebSocket(url)
     } catch {
       opts.onClose()
       return
@@ -283,15 +344,17 @@ function createWsChannel(opts: {
       } else if (msg.t === "invoke-result" && typeof msg.id === "number") {
         const cb = pending.get(msg.id)
         pending.delete(msg.id)
-        // Result is sealed under E2E (the routing envelope around it stays plaintext).
-        const result = e2eKey ? await envOpen(msg.result as string, e2eKey) : msg.result
+        // Result is sealed under E2E (the routing envelope around it stays plaintext); the
+        // open is the CryptoContext's, the one downlink ingress for an invoke reply.
+        const result =
+          crypto.mode === "e2e" ? await crypto.openText(msg.result as string) : msg.result
         cb?.(result)
       }
     }
     socket.onclose = () => {
       ready = false
       socket = null
-      pending.forEach((cb) => cb({ error: "ws closed" }))
+      for (const cb of pending.values()) cb({ error: "ws closed" })
       pending.clear()
       if (suppressClose) return // caller already handled the outer state on explicit close
       opts.onClose()
@@ -304,8 +367,10 @@ function createWsChannel(opts: {
   }
 
   async function rawSend(payload: unknown) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false
-    const text = e2eKey ? await envSeal(payload, e2eKey) : JSON.stringify(payload)
+    if (!socket || socket.readyState !== deps.WebSocket.OPEN) return false
+    // One seal at the WS uplink egress — the whole `{ t, … }` envelope is sealed (the server
+    // opens it as one body), via the CryptoContext, not an inline key read.
+    const text = await crypto.sealText(payload)
     try {
       socket.send(text)
       return true
@@ -338,33 +403,66 @@ function createWsChannel(opts: {
   }
 }
 
-function createWebCdp(): CdpBridge {
-  // SSE: one stream carries every server push; fan out to registered listeners.
-  const listeners = {
-    event: [] as ((msg: unknown) => void)[],
-    disconnected: [] as (() => void)[],
-    notification: [] as ((e: CdpNotification) => void)[],
-    notificationActivate: [] as ((e: CdpNotification) => void)[],
-    nativeTheme: [] as ((isDark: boolean) => void)[],
+export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge {
+  // E2E lives at the seam boundary, not per call (t023). The CryptoContext is the single
+  // owner of the envelope: it is the only thing that calls `envSeal`/`envOpen`. Built once at
+  // assembly from the live key (set by `bootstrapE2E` before this runs, so the handshake is
+  // already confirmed). The uplink seam seals every client→server body through `crypto.sealText`
+  // before it leaves (the adapter that forms the wire object calls it — seal precedes the
+  // transport pick, never per-transport-after-routing); the downlink pump (`pumpSse`) opens
+  // every server→client payload through `crypto.openText` once before the dispatcher fans it
+  // out. The REST bridge serializes its bodies through the same context. No other site reads
+  // the key. The egress/ingress handshake gates consult `crypto.ready`.
+  const currentE2eKey = deps.getE2eKey?.() ?? null
+  const crypto: CryptoContext = currentE2eKey
+    ? createCryptoContext({ mode: "e2e", key: currentE2eKey })
+    : createCryptoContext({ mode: "off" })
+  const rest = createRestBridge(deps, crypto)
+
+  // The single dispatcher behind the Downlink seam (t021). Every decoded server push —
+  // from the WS source, the WS binary-frame source, or the SSE source — fans out here, and
+  // a Notification fires the toast exactly once. The four inline fan-out paths that used to
+  // re-implement this collapsed into the one dispatcher. `nativeTheme` is a local-only
+  // signal (no source push), so it stays a plain listener list.
+  const dispatcher = createDownlinkDispatcher<CdpNotification>({ toast: (e) => maybeToast(e) })
+  const nativeThemeListeners: ((isDark: boolean) => void)[] = []
+
+  // The Downlink seam: exactly one live source (WS-backed or SSE-backed, never both) feeds
+  // the dispatcher. The physical channel swaps mid-session (WS ready tears down SSE; WS drop
+  // reopens SSE), but there is always one logical Downlink whose `onEvent` is the only gate
+  // into the dispatcher. The decoded pumps below (`pumpSse`, the WS callbacks) push through
+  // `pumpDownlink` so the seam — not a scattered `dispatcher.dispatch` — owns the
+  // single-source guarantee. `downlink.close()` detaches the source (the seam is reusable by
+  // the uplink router in 022); the session-long shim never closes it on its own.
+  let pumpDownlink: DownlinkSourceHandlers["onEvent"] = () => {}
+  const downlinkSource: DownlinkSource = {
+    attach(handlers) {
+      pumpDownlink = handlers.onEvent
+    },
+    detach() {
+      pumpDownlink = () => {}
+    },
   }
+  // Construct the Downlink for its `attach` side effect (it wires `pumpDownlink` to the
+  // dispatcher, like `attachSseListeners(es)` below wires the SSE source). The session-long
+  // shim never tears it down; the seam's `close()`/`onClose` are the contract the uplink
+  // router (022) and the unit tests drive.
+  createDownlink(dispatcher, downlinkSource)
 
   // Mode selection (t019). User pref from localStorage controls what's attempted; the
   // actual active mode is derived from runtime state (wsReady? streamReady? else batch).
   // The picker writes the pref and triggers reconfigureMode() to apply mid-session.
   const VALID_MODES: InputTransportMode[] = ["auto", "ws", "stream", "batch"]
   function readMode(): InputTransportMode {
-    if (typeof localStorage === "undefined") return "auto"
-    const raw = localStorage.getItem("inputTransport")
+    if (!deps.localStorage) return "auto"
+    const raw = deps.localStorage.getItem("inputTransport")
     // Validate against the union — a stale or hand-edited value falls back to auto rather
     // than silently shaping subsequent branches (e.g. wsAllowed) with garbage.
     return raw && (VALID_MODES as string[]).includes(raw) ? (raw as InputTransportMode) : "auto"
   }
   let wantMode: InputTransportMode = readMode()
   const selector = createTransportSelector({
-    cache:
-      typeof localStorage !== "undefined"
-        ? localStorage
-        : { getItem: () => null, setItem: () => {} },
+    cache: deps.localStorage ?? { getItem: () => null, setItem: () => {} },
   })
   let wsReady = false
   let ws: ReturnType<typeof createWsChannel> | null = null
@@ -389,49 +487,40 @@ function createWebCdp(): CdpBridge {
   // close it once WS is confirmed ready (avoiding the server double-broadcasting frames to
   // both channels — the SSE bytes were arriving and being discarded, costing real bandwidth
   // on iPad PWA where the screencast already saturates the decode loop).
-  let es: EventSource = new EventSource("/api/events")
+  let es: EventSource = new deps.EventSource("/api/events")
   function teardownSse() {
     try {
       es.close()
     } catch {}
   }
   function reopenSse() {
-    es = new EventSource("/api/events")
+    es = new deps.EventSource("/api/events")
     attachSseListeners(es)
   }
-  // Decode an SSE data payload (plaintext JSON, or a sealed envelope under E2E). When
-  // sealed, decode is async — serialize through one chain so frame/event order holds.
+  // The single downlink ingress: open a server push (plaintext JSON, or a sealed envelope
+  // under E2E) through the CryptoContext, then route it to the dispatcher. This is the one
+  // place the open happens on the server→client path — the dispatcher (its sole consumer)
+  // never sees a sealed payload. Decode is async, so serialize through one chain to hold
+  // frame/event order; the dispatcher owns fan-out + toast-once. The handshake gate refuses
+  // to dispatch until `crypto.ready` (today always confirmed at build).
   let sseChain: Promise<unknown> = Promise.resolve()
-  // biome-ignore lint/suspicious/noExplicitAny: demuxed CDP/notification payloads are dynamic
-  function onSse(data: string, fire: (msg: any) => void) {
-    if (!e2eKey) {
-      fire(JSON.parse(data))
+  function pumpSse(kind: string, data: string) {
+    if (!crypto.ready) return
+    if (crypto.mode === "off") {
+      pumpDownlink(kind, JSON.parse(data))
       return
     }
-    const key = e2eKey
-    sseChain = sseChain.then(async () => fire(await envOpen(data, key)))
+    sseChain = sseChain.then(async () => pumpDownlink(kind, await crypto.openText(data)))
   }
   function attachSseListeners(src: EventSource) {
     src.addEventListener("cdp", (e) => {
       if (wsReady) return // WS carries CDP events; SSE is fallback only (we also close it).
-      onSse((e as MessageEvent).data, (msg) => {
-        if (isFilteredCdpEvent(msg)) return // tunnel delivers screencast frames
-        for (const cb of listeners.event) cb(msg)
-      })
+      pumpSse("cdp", (e as MessageEvent).data)
     })
-    src.addEventListener("disconnected", () => {
-      for (const cb of listeners.disconnected) cb()
-    })
-    src.addEventListener("notification", (e) =>
-      onSse((e as MessageEvent).data, (entry) => {
-        for (const cb of listeners.notification) cb(entry)
-        maybeToast(entry)
-      }),
-    )
+    src.addEventListener("disconnected", () => pumpDownlink("disconnected", undefined))
+    src.addEventListener("notification", (e) => pumpSse("notification", (e as MessageEvent).data))
     src.addEventListener("notification-activate", (e) =>
-      onSse((e as MessageEvent).data, (entry) => {
-        for (const cb of listeners.notificationActivate) cb(entry)
-      }),
+      pumpSse("notification-activate", (e as MessageEvent).data),
     )
     src.addEventListener("stream-ack", () => {
       // streaming input ack lives in the non-E2E batcher branch below; the variable is
@@ -457,16 +546,19 @@ function createWebCdp(): CdpBridge {
       if (!msg || msg.type !== "notification-click" || !msg.data) return
       const entry: CdpNotification = {
         id: msg.data.id,
-        source: "",
-        title: "",
-        body: "",
+        source: msg.data.source ?? "",
+        title: msg.data.title ?? "",
+        body: msg.data.body ?? "",
         targetId: msg.data.targetId,
         targetUrl: msg.data.targetUrl,
         targetEntity: msg.data.targetEntity,
-        ts: Date.now(),
+        adapter: msg.data.adapter,
+        groupKey: msg.data.groupKey,
+        activate: msg.data.activate,
+        ts: msg.data.ts ?? Date.now(),
         read: false,
       }
-      for (const cb of listeners.notificationActivate) cb(entry)
+      dispatcher.dispatch("notification-activate", entry)
     })
   }
 
@@ -486,7 +578,7 @@ function createWebCdp(): CdpBridge {
     })
     n.onclick = () => {
       window.focus()
-      for (const cb of listeners.notificationActivate) cb(entry)
+      dispatcher.dispatch("notification-activate", entry)
       n.close()
     }
   }
@@ -495,33 +587,24 @@ function createWebCdp(): CdpBridge {
   // If WS opens, frames + events arrive via WS and the batcher uses WS; if it fails or the
   // user picked a slower mode, the existing SSE+POST/stream paths handle everything.
   function openWs() {
-    if (typeof WebSocket === "undefined") return
+    if (!deps.WebSocket) return
     if (ws) return // already attempting / open
-    ws = createWsChannel({
+    ws = createWsChannel(deps, crypto, {
       onFrameBinary: (cdpMsg) => {
-        if (isFilteredCdpEvent(cdpMsg)) return // tunnel delivers screencast frames
-        // Forge a synthetic Page.screencastFrame event with the Blob attached, then
-        // dispatch through the same CDP event listeners the JSON path uses. The viewport
-        // looks for `dataBlob` first (fast createImageBitmap decode), else falls back to
-        // the legacy `data` base64 string.
-        for (const cb of listeners.event) cb(cdpMsg)
+        // The WS binary-frame path: a forged Page.screencastFrame carrying the JPEG Blob.
+        // Routes through the one Downlink like every other CDP event — the viewport reads
+        // `dataBlob` first (fast createImageBitmap decode), else the legacy `data` base64.
+        // Screencast Frame thus has a single delivery source (the dispatcher), WS-binary
+        // and SSE alike — no per-path copy, no frame-tunnel dedup branch.
+        pumpDownlink("cdp", cdpMsg)
       },
       onEvent: (event, data) => {
-        if (event === "cdp")
-          onSse(data, (msg) => {
-            if (isFilteredCdpEvent(msg)) return
-            listeners.event.forEach((cb) => cb(msg))
-          })
-        else if (event === "disconnected") listeners.disconnected.forEach((cb) => cb())
-        else if (event === "notification")
-          onSse(data, (entry) => {
-            listeners.notification.forEach((cb) => cb(entry as CdpNotification))
-            maybeToast(entry as CdpNotification)
-          })
-        else if (event === "notification-activate")
-          onSse(data, (entry) =>
-            listeners.notificationActivate.forEach((cb) => cb(entry as CdpNotification)),
-          )
+        // WS events arrive E2E-sealed (the routing envelope is plaintext); decode through
+        // the same chain SSE uses, then dispatch. One source feeds the dispatcher at a time
+        // (SSE is torn down on WS ready), so this is the live Downlink while WS is up.
+        // `disconnected` carries no meaningful payload — dispatch it without a decode hop.
+        if (event === "disconnected") pumpDownlink("disconnected", undefined)
+        else pumpSse(event, data as string)
       },
       onReady: () => {
         wsReady = true
@@ -568,56 +651,138 @@ function createWebCdp(): CdpBridge {
   }
   if (shouldOpenWs(wantMode)) openWs()
 
-  // Batch input + acks: coalesce moves, accumulate wheel, flush discrete immediately.
-  // Non-E2E: write each batch as an NDJSON frame to the streaming channel (low latency),
-  // falling back to a per-batch POST. E2E: skip streaming (the probe/async-seal/order
-  // interplay isn't worth it) and post each sealed batch in order to /api/cdp-batch.
-  // When WS is ready, all batches ride the WS instead — same envelope { t: "batch" }.
-  let batcher: ReturnType<typeof createBatcher<Cmd>>
-  if (e2eKey) {
-    const key = e2eKey
+  // The Uplink seam (t022): the client→server command path is three interchangeable
+  // adapters (WS / stream / POST) behind one `uplink-router` that owns the routing choice
+  // in exactly one place. `send`, `sendBatch`, and `invoke` stop knowing which transport
+  // exists — they call the router, which picks the advised-mode adapter (falling
+  // WS→stream→batch on not-ready). `transport-selector.ts` stays the pure advisor; the
+  // router instantiates/tears down. See docs/tasks/022 + ADR-0007.
+  //
+  // The WS adapter wraps the one socket (`ws`) that also backs the Downlink — one socket,
+  // two seams. The stream + POST adapters differ by E2E in transport availability: with E2E
+  // off, the stream channel (NDJSON over /api/input-stream) carries batches and falls to
+  // single-flight POSTs; with E2E on there is no stream channel (the probe/async-seal/order
+  // interplay isn't worth it). The E2E *seal* lives only in the CryptoContext (`crypto.sealText`,
+  // called by the e2e batch chain and by the REST bridge); the off branch serializes plaintext
+  // JSON synchronously (no envelope seal). So no adapter reads the key or calls `envSeal` —
+  // the only branch left is whether a stream channel exists, which is transport, not crypto.
+
+  // A bare single command (not high-frequency input — e.g. a control call) goes to /api/send
+  // off-WS, exactly as before. Batched input goes to the adapter-specific batch path
+  // (WS batch / stream NDJSON / single-flight /api/cdp-batch).
+  const wsUplink: Uplink = {
+    isReady: () => wsReady && !!ws,
+    send: (cmd) => {
+      if (wsReady && ws) void ws.send(cmd.method, cmd.params)
+    },
+    sendBatch: (cmds) => {
+      if (wsReady && ws) void ws.batch(cmds)
+    },
+    invoke: (method, params) =>
+      wsReady && ws ? (ws.invoke(method, params) as Promise<unknown>) : Promise.resolve(undefined),
+    close: () => {},
+  }
+
+  let streamUplink: Uplink
+  let batchUplink: Uplink
+
+  if (crypto.mode === "e2e") {
     let chain: Promise<unknown> = Promise.resolve()
-    batcher = createBatcher<Cmd>({
-      schedule: (flush) => requestAnimationFrame(flush),
-      send: (batch: Batch<Cmd>) => {
-        // Prefer WS when ready (one socket, no per-batch TLS/auth); else seal-and-POST.
-        if (wsReady && ws) {
-          void ws.batch(batch.items)
-          return
-        }
-        chain = chain.then(async () => postRaw("/api/cdp-batch", await envSeal(batch, key)))
+    let e2eSeq = 0
+    // No streaming channel under E2E — the stream adapter is never ready, so the router
+    // never picks it (advise() never returns "stream" in E2E, but keep this honest).
+    streamUplink = {
+      isReady: () => false,
+      send: () => {},
+      sendBatch: () => {},
+      invoke: () => Promise.resolve(undefined),
+      close: () => {},
+    }
+    batchUplink = {
+      isReady: () => true, // the floor: seal-and-POST is always available
+      send: (cmd) => void rest.postJson("/api/send", cmd),
+      // Serialize through one chain so the monotonic seq posts in order (the async seal would
+      // otherwise let batches race). The seal is `crypto.sealText` — one egress seal site.
+      sendBatch: (cmds) => {
+        chain = chain.then(async () =>
+          rest.postRaw("/api/cdp-batch", await crypto.sealText({ seq: e2eSeq++, items: cmds })),
+        )
       },
-    })
+      invoke: (method, params) => rest.postJson("/api/invoke", { method, params }),
+      close: () => {},
+    }
   } else {
     // Fallback (no streaming channel): single-flight POSTs with move-collapsing so a
     // high-RTT proxy chain can't back up — at most one /api/cdp-batch in flight, latest
     // cursor position wins. The streaming path bypasses this (it's already low-latency).
+    // This branch is statically E2E-off, so the body is plaintext JSON (no envelope seal —
+    // the seal lives only in the e2e branch's `crypto.sealText`, the one E2E seal site).
     const fallback = createSingleFlight<Cmd>({
       merge: collapseMoves,
-      post: (items) => postRaw("/api/cdp-batch", JSON.stringify({ items })),
+      post: (items) => rest.postRaw("/api/cdp-batch", JSON.stringify({ items })),
     })
-    const inputChannel = createInputChannel((batch) => fallback.push(batch.items))
+    const inputChannel = createInputChannel(deps, (batch) => fallback.push(batch.items))
     // Hand the inputChannel to the SSE listener registered in attachSseListeners — that's
     // the only place stream-ack is wired, so it survives SSE close+reopen on WS bounce.
     inputChannelRef = inputChannel
-    batcher = createBatcher<Cmd>({
-      schedule: (flush) => requestAnimationFrame(flush),
-      send: (batch: Batch<Cmd>) => {
-        if (wsReady && ws) {
-          void ws.batch(batch.items)
-          return
-        }
-        // In "batch" mode the user has explicitly opted out of streaming; force the POST
-        // fallback even if the stream channel later acks (the inputChannel itself keeps
-        // probing — cheap — but we don't route batches through it).
-        if (wantMode === "batch") {
-          fallback.push(batch.items)
-          return
-        }
-        inputChannel.send(batch)
-      },
-    })
+    let streamSeq = 0
+    streamUplink = {
+      isReady: () => streamingActive,
+      send: (cmd) => void rest.postJson("/api/send", cmd),
+      sendBatch: (cmds) => inputChannel.send({ seq: streamSeq++, items: cmds }),
+      invoke: (method, params) => rest.postJson("/api/invoke", { method, params }),
+      close: () => {},
+    }
+    batchUplink = {
+      isReady: () => true, // the floor: single-flight POST is always available
+      send: (cmd) => void rest.postJson("/api/send", cmd),
+      sendBatch: (cmds) => fallback.push(cmds),
+      invoke: (method, params) => rest.postJson("/api/invoke", { method, params }),
+      close: () => {},
+    }
   }
+
+  // The router's advice: which adapter to prefer right now. WS/Auto prefer WS (the router
+  // falls through to stream/batch when WS isn't ready); explicit Stream/Basic pin their
+  // adapter so a stream-ack can't pull a "batch"-pinned user onto the stream. Re-read on
+  // every pick, so reconfigureMode() re-points the router with no extra wiring.
+  function adviseMode(): AdvisedMode {
+    if (wantMode === "stream") return "stream"
+    if (wantMode === "batch") return "batch"
+    return "ws" // auto | ws
+  }
+  const router = createUplinkRouter({
+    adapters: { ws: wsUplink, stream: streamUplink, batch: batchUplink },
+    advise: adviseMode,
+  })
+
+  // The single uplink-egress gate: every client→server command crosses here, refused until
+  // the E2E handshake confirms (`crypto.ready`). Today the passphrase handshake runs in
+  // `bootstrapE2E` before this shim is built, so `ready` is already true and this is a no-op;
+  // it makes the seam honest for a future deferred handshake (the mirror of `pumpSse`'s
+  // downlink-ingress gate). The seal precedes the transport pick — it's applied by the
+  // adapter that forms the wire object, never per-transport-after-routing.
+  const uplink: Uplink = {
+    isReady: () => router.isReady(),
+    send: (cmd) => {
+      if (crypto.ready) router.send(cmd)
+    },
+    sendBatch: (cmds) => {
+      if (crypto.ready) router.sendBatch(cmds)
+    },
+    invoke: (method, params) =>
+      crypto.ready ? router.invoke(method, params) : Promise.resolve(undefined),
+    close: () => router.close(),
+  }
+
+  // Batch input + acks: coalesce moves, accumulate wheel, flush discrete immediately. The
+  // batcher no longer picks a transport — it hands every flushed batch to the router, which
+  // owns the WS→stream→batch choice. Input coalescing (hover gate / single-flight /
+  // move-collapse) is preserved upstream of the router.
+  const batcher = createBatcher<Cmd>({
+    schedule: (flush) => requestAnimationFrame(flush),
+    send: (batch: Batch<Cmd>) => uplink.sendBatch(batch.items),
+  })
 
   // Hover (buttons-up) moves stream nothing until the cursor stops, then send one resting
   // position — a continuous hover otherwise floods the transport and starves clicks. Drag
@@ -630,101 +795,6 @@ function createWebCdp(): CdpBridge {
     },
     emit: (cmd) => batcher.coalesce(cmd),
   })
-
-  // Direct-frame tunnel (t019). A second WebSocket to `/api/cdp-ws/{tabId}` that the
-  // server tunnels through to the raw CDP target without JSON parsing/stringify. Lets
-  // screencast frames flow at the network's native rate (~30+ fps) instead of being
-  // capped at ~5-10 fps by the main server's per-frame broadcast loop. Fires
-  // Page.screencastFrame events into the same listeners.event the main WS uses so the
-  // renderer is unaware. Frames coming from the main server WS are filtered out while
-  // this tunnel is active (avoids double-render).
-  let frameTunnel: WebSocket | null = null
-  let frameTunnelTabId: string | null = null
-  let frameTunnelActive = false
-  let frameAckId = 1
-  function openFrameTunnel(tabId: string) {
-    if (frameTunnelTabId === tabId && frameTunnel && frameTunnel.readyState === WebSocket.OPEN)
-      return
-    closeFrameTunnel()
-    frameTunnelTabId = tabId
-    const proto = location.protocol === "https:" ? "wss:" : "ws:"
-    const sock = new WebSocket(`${proto}//${location.host}/api/cdp-ws/${tabId}`)
-    sock.binaryType = "arraybuffer"
-    frameTunnel = sock
-    sock.onopen = () => {
-      // Start screencast at the canvas-sized resolution; viewport.tsx also reissues on
-      // resize via the main transport, but this one is the actual frame producer.
-      const dpr = window.devicePixelRatio || 1
-      const w = Math.floor((document.documentElement.clientWidth || 1280) * dpr)
-      const h = Math.floor((document.documentElement.clientHeight || 720) * dpr)
-      try {
-        sock.send(
-          JSON.stringify({
-            id: frameAckId++,
-            method: "Page.startScreencast",
-            params: { format: "jpeg", quality: 80, maxWidth: w, maxHeight: h },
-          }),
-        )
-      } catch {}
-      frameTunnelActive = true
-    }
-    sock.onmessage = (ev) => {
-      // Raw CDP JSON-RPC. Parse to spot Page.screencastFrame; everything else (command
-      // replies, other events) is ignored — this tunnel is screencast-only.
-      const text = typeof ev.data === "string" ? ev.data : ""
-      if (!text || !text.includes('"Page.screencastFrame"')) return
-      let msg: { method?: string; params?: { sessionId?: number } }
-      try {
-        msg = JSON.parse(text)
-      } catch {
-        return
-      }
-      if (msg.method !== "Page.screencastFrame") return
-      // Ack immediately on the tunnel so CDP keeps emitting.
-      if (msg.params?.sessionId !== undefined) {
-        try {
-          sock.send(
-            JSON.stringify({
-              id: frameAckId++,
-              method: "Page.screencastFrameAck",
-              params: { sessionId: msg.params.sessionId },
-            }),
-          )
-        } catch {}
-      }
-      // Dispatch into the same listeners path the main transport uses.
-      for (const cb of listeners.event) cb(msg)
-    }
-    sock.onclose = () => {
-      frameTunnelActive = false
-      if (frameTunnel === sock) frameTunnel = null
-    }
-    sock.onerror = () => {
-      try {
-        sock.close()
-      } catch {}
-    }
-  }
-  function closeFrameTunnel() {
-    frameTunnelActive = false
-    frameTunnelTabId = null
-    if (frameTunnel) {
-      try {
-        frameTunnel.close()
-      } catch {}
-      frameTunnel = null
-    }
-  }
-  // Inspect a CDP envelope from the main WS path; return true if it's a screencast frame
-  // we should drop because the tunnel is delivering frames already.
-  function isFilteredCdpEvent(msg: unknown): boolean {
-    if (!frameTunnelActive) return false
-    return (
-      typeof msg === "object" &&
-      msg !== null &&
-      (msg as { method?: string }).method === "Page.screencastFrame"
-    )
-  }
 
   // Mode reconfiguration: called by the picker on change. Re-reads the pref, opens or
   // closes WS to match, and pokes the active-mode signal. The streaming channel stays
@@ -757,37 +827,20 @@ function createWebCdp(): CdpBridge {
   // explicit theme source. We push the *resolved* dark flag to the server so it can
   // emulate prefers-color-scheme on the remote page, and notify the renderer.
   let themeSource: "system" | "light" | "dark" = "system"
-  const mql =
-    typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)") : null
+  const mql = deps.matchMedia?.("(prefers-color-scheme: dark)") ?? null
   const resolveDark = () => (themeSource === "system" ? !!mql?.matches : themeSource === "dark")
   function pushTheme() {
     const isDark = resolveDark()
-    void postJson("/api/theme", { isDark })
-    for (const cb of listeners.nativeTheme) cb(isDark)
+    void rest.postJson("/api/theme", { isDark })
+    for (const cb of nativeThemeListeners) cb(isDark)
   }
   mql?.addEventListener("change", pushTheme)
 
   return {
-    listTabs: () => getJson("/api/tabs"),
-    newTab: (url) => postJson("/api/tabs/new", { url }),
-    closeTab: (id) => postJson("/api/tabs/close", { id }),
-    connect: async (id) => {
-      const result = await postJson("/api/connect", { id })
-      // Direct-frame tunnel (t019, fastest): open a pass-through WS to the active tab's
-      // CDP socket and pull screencast frames at native rate, bypassing the server's
-      // per-frame JSON.parse/stringify cost. Default ON; disable via
-      // `localStorage.directFrames='0'`. Skipped when no WebSocket support, or when the
-      // main WS isn't ready (we follow the same gating as input WS for consistency).
-      // Default OFF: the binary WS broadcast path is faster than the tunnel because
-      // opening a 2nd CDP session competes with the server's main one for frame
-      // production, AND the tunnel forwards raw CDP JSON (no binary Blob, so the
-      // renderer falls back to data-URL decode — slow on WebKit). Enable explicitly
-      // with `localStorage.directFrames='1'` if testing.
-      const wantDirect = !!(window.WebSocket && localStorage?.getItem("directFrames") === "1")
-      if (wantDirect) openFrameTunnel(id)
-      else closeFrameTunnel()
-      return result
-    },
+    listTabs: () => rest.getJson("/api/tabs"),
+    newTab: (url) => rest.postJson("/api/tabs/new", { url }),
+    closeTab: (id) => rest.postJson("/api/tabs/close", { id }),
+    connect: (id) => rest.postJson("/api/connect", { id }),
     send: (method, params) => {
       if (method === "Page.screencastFrameAck") return // server acks frames itself
       const cmd: Cmd = { method, params }
@@ -811,43 +864,42 @@ function createWebCdp(): CdpBridge {
         return batcher.immediate(cmd)
       }
       if (method === "Input.dispatchKeyEvent") return batcher.immediate(cmd)
-      if (wsReady && ws) {
-        void ws.send(method, params)
-        return
-      }
-      void postJson("/api/send", cmd)
+      uplink.send(cmd)
     },
-    invoke: (method, params) => {
-      if (wsReady && ws) return ws.invoke(method, params) as Promise<unknown>
-      return postJson("/api/invoke", { method, params })
+    invoke: (method, params) => uplink.invoke(method, params),
+    onEvent: (cb) => {
+      dispatcher.onEvent(cb)
     },
-    onEvent: (cb) => listeners.event.push(cb),
-    onDisconnected: (cb) => listeners.disconnected.push(cb),
-    getConfig: () => getJson("/api/config"),
-    setConfig: (config) => postJson("/api/config", config),
-    testConfig: (config) => postJson("/api/config/test", config),
-    getSidebarWidth: () => getJson("/api/sidebar-width"),
-    setSidebarWidth: (width) => postJson("/api/sidebar-width", { width }),
+    onDisconnected: (cb) => {
+      dispatcher.onDisconnected(cb)
+    },
+    getConfig: () => rest.getJson("/api/config"),
+    setConfig: (config) => rest.postJson("/api/config", config),
+    testConfig: (config) => rest.postJson("/api/config/test", config),
+    getSidebarWidth: () => rest.getJson("/api/sidebar-width"),
+    setSidebarWidth: (width) => rest.postJson("/api/sidebar-width", { width }),
     getUiState: async () => {
-      const ui = await getJson("/api/ui-state")
+      const ui = await rest.getJson("/api/ui-state")
       webPush = !!ui.webPush
       return ui
     },
     setUiState: (partial) => {
       if ("webPush" in partial) webPush = !!partial.webPush
-      return postJson("/api/ui-state", partial)
+      return rest.postJson("/api/ui-state", partial)
     },
     setThemeSource: async (source) => {
       themeSource = source
-      await postJson("/api/theme-source", { source })
+      await rest.postJson("/api/theme-source", { source })
       pushTheme()
     },
     getThemeSource: async () => {
-      themeSource = await getJson("/api/theme-source")
+      themeSource = await rest.getJson("/api/theme-source")
       pushTheme()
       return themeSource
     },
-    onNativeThemeChanged: (cb) => listeners.nativeTheme.push(cb),
+    onNativeThemeChanged: (cb) => {
+      nativeThemeListeners.push(cb)
+    },
     copyToClipboard: async (text) => {
       try {
         await navigator.clipboard?.writeText(text)
@@ -856,24 +908,28 @@ function createWebCdp(): CdpBridge {
       }
     },
     onSwipe: () => {}, // no trackpad swipe over the web
-    getPins: () => getJson("/api/pins"),
-    addPin: (pin) => postJson("/api/pins/add", pin),
-    updatePin: (id, patch) => postJson("/api/pins/update", { id, patch }),
-    removePin: (id) => postJson("/api/pins/remove", { id }),
-    reorderPins: (pins) => postJson("/api/pins/reorder", { pins }),
-    getNotifications: () => getJson("/api/notifications"),
-    markNotificationRead: (id) => postJson("/api/notifications/mark-read", { id }),
-    markNotificationUnread: (id) => postJson("/api/notifications/mark-unread", { id }),
-    markNotificationsRead: () => postJson("/api/notifications/mark-all-read"),
-    clearNotifications: () => postJson("/api/notifications/clear"),
-    onNotification: (cb) => listeners.notification.push(cb),
-    onNotificationActivate: (cb) => listeners.notificationActivate.push(cb),
+    getPins: () => rest.getJson("/api/pins"),
+    addPin: (pin) => rest.postJson("/api/pins/add", pin),
+    updatePin: (id, patch) => rest.postJson("/api/pins/update", { id, patch }),
+    removePin: (id) => rest.postJson("/api/pins/remove", { id }),
+    reorderPins: (pins) => rest.postJson("/api/pins/reorder", { pins }),
+    getNotifications: () => rest.getJson("/api/notifications"),
+    markNotificationRead: (id) => rest.postJson("/api/notifications/mark-read", { id }),
+    markNotificationUnread: (id) => rest.postJson("/api/notifications/mark-unread", { id }),
+    markNotificationsRead: () => rest.postJson("/api/notifications/mark-all-read"),
+    clearNotifications: () => rest.postJson("/api/notifications/clear"),
+    onNotification: (cb) => {
+      dispatcher.onNotification(cb)
+    },
+    onNotificationActivate: (cb) => {
+      dispatcher.onNotificationActivate(cb)
+    },
     getPushVapidKey: async () => {
-      const r = await getJson("/api/notifications/vapid-public-key")
+      const r = await rest.getJson("/api/notifications/vapid-public-key")
       return r.key as string
     },
-    subscribePush: (sub) => postJson("/api/notifications/subscribe", sub),
-    unsubscribePush: (endpoint) => postJson("/api/notifications/unsubscribe", { endpoint }),
+    subscribePush: (sub) => rest.postJson("/api/notifications/subscribe", sub),
+    unsubscribePush: (endpoint) => rest.postJson("/api/notifications/unsubscribe", { endpoint }),
     // Transport-picker hooks (t019). The settings UI calls reconfigureInputTransport()
     // when the user toggles a mode; the badge reads getActiveTransport() and subscribes
     // via onActiveTransportChange(). Optional on the bridge — Electron's preload doesn't

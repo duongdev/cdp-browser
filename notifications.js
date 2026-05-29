@@ -14,10 +14,31 @@ function matchAdapter(url, adapters) {
   return adapters.find((a) => a.match(host)) || null
 }
 
+// The origin of a URL, or null when it has none / is unparseable.
+function originOf(url) {
+  if (!url) return null
+  try {
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}
+
+// The stable group key for a captured notification: the capture script's explicit
+// `groupKey` when present, else the owning Tab's URL origin. Keying everything on this
+// (with origin as the default) preserves today's per-origin grouping exactly, while a
+// future adapter can emit e.g. "slack:{teamId}" to split workspaces with no consumer
+// change. Returns "" when neither is resolvable (an unkeyable entry).
+function groupKeyFor(payload, targetUrl) {
+  const explicit = payload?.groupKey
+  if (explicit) return explicit
+  return originOf(targetUrl) || ""
+}
+
 // Stamps a payload as unread and prepends it (newest-first). Returns the new list
 // and the created entry (entry is null when the payload is rejected).
 function ingest(list, payload, cap) {
-  if (!payload || !payload.id) return { list, entry: null }
+  if (!payload?.id) return { list, entry: null }
   if (list.some((e) => e.id === payload.id)) return { list, entry: null }
   const entry = { ...payload, read: false }
   return { list: [entry, ...list].slice(0, cap), entry }
@@ -59,6 +80,7 @@ function unreadByTarget(list) {
 
 module.exports = {
   matchAdapter,
+  groupKeyFor,
   ingest,
   shouldNotifyOs,
   markRead,

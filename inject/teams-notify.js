@@ -77,11 +77,22 @@
         : messageId
           ? `${entity?.id ? entity.id : raw || ""}:${messageId}`
           : raw || `${entity?.id ? entity.id : ""}:${lines.join("|")}`
+    // Normalized deep-open intent: a "chats" toast carries a v2 thread id that opens the
+    // conversation (semantic id only — the chat-row selector lives in the Remote Page, not
+    // here). Other toasts (meeting-start "calls") have no thread → no activate (Tab only).
+    const activate =
+      entity &&
+      entity.type === "chats" &&
+      typeof entity.id === "string" &&
+      entity.id.startsWith("19:")
+        ? { type: "thread", id: entity.id }
+        : null
     const payload = {
       id,
       source: lines[0] || "",
       title: lines[1] || "",
       body: lines.slice(2).join(" ") || "",
+      activate,
       targetEntity: entity,
       ts: Date.now(),
     }

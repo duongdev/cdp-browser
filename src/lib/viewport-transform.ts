@@ -22,6 +22,50 @@ export function letterbox(frame: Size, canvas: Size): Letterbox {
   return { scale, dx, dy }
 }
 
+export interface Rect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * The pure geometry layout for painting one Screencast Frame into the canvas. The renderer
+ * applies this to the 2D context (`fillRect(fill)` then `drawImage(source, dest)`); the only
+ * Canvas touch stays in the component. Both paint paths (decoded `Image` and `ImageBitmap`)
+ * call `drawFrame` so the sizing/letterbox/fill/placement math has a single source.
+ */
+export interface FrameLayout {
+  /** Device-pixel canvas size to set on the element. */
+  canvas: Size
+  /** Letterbox fit of `frame` into `canvas`. */
+  box: Letterbox
+  /** Black-bar fill region — the whole canvas, behind the frame. */
+  fill: Rect
+  /** `drawImage` destination placement, in canvas (device) px. */
+  dest: { x: number; y: number; w: number; h: number }
+}
+
+/**
+ * Computes the canvas-paint layout for a Screencast Frame: the device-pixel canvas size,
+ * the letterbox fit, the full-canvas fill rect (black bars), and the `drawImage` destination.
+ *
+ * `frame` is the image px of the painted frame (a downscaled frame is smaller than its
+ * remote DIP viewport — image px, not DIP, drive `drawImage`, so the dest fills the same
+ * canvas region either way). Pure: returns geometry only, never touches a context. The hit
+ * test uses the same `letterbox`, so a point drawn under the cursor maps back through
+ * `toRemoteCoords` to where it was placed.
+ */
+export function drawFrame(canvas: Size, frame: Size): FrameLayout {
+  const box = letterbox(frame, canvas)
+  return {
+    canvas,
+    box,
+    fill: { left: 0, top: 0, width: canvas.w, height: canvas.h },
+    dest: { x: box.dx, y: box.dy, w: frame.w * box.scale, h: frame.h * box.scale },
+  }
+}
+
 export interface ModifierKeys {
   altKey: boolean
   ctrlKey: boolean
@@ -37,13 +81,6 @@ export function modifiers(e: ModifierKeys): number {
   if (e.metaKey) m |= 4
   if (e.shiftKey) m |= 8
   return m
-}
-
-export interface Rect {
-  left: number
-  top: number
-  width: number
-  height: number
 }
 
 /**

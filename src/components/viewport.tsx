@@ -3,8 +3,8 @@ import type { SwitchEffect } from "@/components/settings-dialog"
 import { type Event as AdaptiveEvent, type Bounds, initial, reduce } from "@/lib/adaptive-viewport"
 import { isOsReservedKey } from "@/lib/key-routing"
 import { perfFrame, perfMark } from "@/lib/perf-mark"
-import type { RemotePage, ScreencastMetadata } from "@/lib/remote-page"
-import { letterbox, toRemoteCoords } from "@/lib/viewport-transform"
+import type { RemotePage } from "@/lib/remote-page"
+import { drawFrame, type Size, toRemoteCoords } from "@/lib/viewport-transform"
 
 /** During a tab-switch settle, how long screencast frames must go quiet before we treat
  *  the reflow as finished and reveal the tab. Adapts the freeze to connection speed and
@@ -25,6 +25,18 @@ function effectFilters(effect: SwitchEffect): { active: string; rest: string } {
     active: `blur(${blur ? SWITCH_BLUR_PX : 0}px) grayscale(${gray ? 1 : 0})`,
     rest: "blur(0px) grayscale(0)",
   }
+}
+
+/** The frame-view snapshot both the draw path and the Input Forwarding hit-test read.
+ *  Captured at paint time so draw and input always reason about the same frame. */
+interface FrameView {
+  /** Image px of the painted Screencast Frame. */
+  frame: Size
+  /** Remote layout viewport DIP size when the frame is downscaled (metadata
+   *  `deviceWidth`/`deviceHeight`); omitted means a 1:1 (non-downscaled) frame. */
+  device?: Size
+  /** Metadata vertical DIP offset of the captured area (0 on desktop). */
+  offsetTop: number
 }
 
 interface ViewportProps {
@@ -65,10 +77,11 @@ export function Viewport({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef(new Image())
-  const imgSizeRef = useRef({ width: 0, height: 0 })
-  // Latest frame metadata: the remote viewport's DIP geometry, used to map input back
-  // into the remote page when the screencast frame is downscaled from it.
-  const metaRef = useRef<ScreencastMetadata | null>(null)
+  // The single frame-view snapshot, captured the moment a frame is painted: the painted
+  // frame's image px, plus its remote DIP geometry (device size + vertical offset) when
+  // downscaled. Both the draw path (re-letterbox on resize) and the Input Forwarding
+  // hit-test read it, so the two can never reason about different frame dimensions.
+  const frameViewRef = useRef<FrameView>({ frame: { w: 0, h: 0 }, offsetTop: 0 })
   const frameCountRef = useRef(0)
   const lastFpsTimeRef = useRef(Date.now())
 
@@ -95,31 +108,39 @@ export function Viewport({
   // are stale (old tab) and must not trigger a reveal.
   const connectedSinceSwitchRef = useRef(true)
 
-  // Letterbox the current frame into the canvas at the container's live size.
-  // Used both on new frames and on container resize (e.g. sidebar toggle), so
-  // the viewport reflows without waiting for the next remote frame.
-  const paint = useCallback(() => {
+  // Paint a frame source (decoded Image or ImageBitmap) into the canvas at the container's
+  // live size. The single Canvas touch — fed by the pure `drawFrame` geometry so both paint
+  // paths (and the hit-test) share one source of letterbox/placement truth.
+  const paintSource = useCallback((source: CanvasImageSource, frame: Size) => {
     const canvas = canvasRef.current
     const vp = containerRef.current
-    const img = imgRef.current
-    if (!canvas || !vp || !img.width) return
+    if (!canvas || !vp || !frame.w) return
     // biome-ignore lint/style/noNonNullAssertion: 2d context is always available on an HTMLCanvasElement
     const ctx = canvas.getContext("2d")!
 
-    canvas.width = vp.clientWidth * window.devicePixelRatio
-    canvas.height = vp.clientHeight * window.devicePixelRatio
+    const layout = drawFrame(
+      { w: vp.clientWidth * window.devicePixelRatio, h: vp.clientHeight * window.devicePixelRatio },
+      frame,
+    )
+    canvas.width = layout.canvas.w
+    canvas.height = layout.canvas.h
     canvas.style.width = `${vp.clientWidth}px`
     canvas.style.height = `${vp.clientHeight}px`
 
-    const { scale, dx, dy } = letterbox(
-      { w: img.width, h: img.height },
-      { w: canvas.width, h: canvas.height },
-    )
-
     ctx.fillStyle = "#000"
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale)
+    ctx.fillRect(layout.fill.left, layout.fill.top, layout.fill.width, layout.fill.height)
+    ctx.drawImage(source, layout.dest.x, layout.dest.y, layout.dest.w, layout.dest.h)
   }, [])
+
+  // Re-letterbox the current frame into the canvas at the container's live size, reading
+  // the painted frame's size from the snapshot. Used both on new (decoded-Image) frames and
+  // on container resize (e.g. sidebar toggle), so the viewport reflows without waiting for
+  // the next remote frame.
+  const paint = useCallback(() => {
+    const img = imgRef.current
+    if (!img.width) return
+    paintSource(img, { w: img.width, h: img.height })
+  }, [paintSource])
 
   // Re-issue the screencast at the current canvas size. Independent of adaptive mode:
   // off, it caps a letterboxed native frame; on, it matches the just-applied override.
@@ -253,7 +274,7 @@ export function Viewport({
     img.onload = () => {
       // [DEBUG-perf] img.src→onload spans base64-string parse + JPEG decode (data-URL path).
       if (tFrameRecv) perfMark("frameToDecode", performance.now() - tFrameRecv)
-      imgSizeRef.current = { width: img.width, height: img.height }
+      frameViewRef.current = { ...frameViewRef.current, frame: { w: img.width, h: img.height } }
 
       if (settlingRef.current) {
         if (!connectedSinceSwitchRef.current) return // stale old-tab frame
@@ -285,48 +306,35 @@ export function Viewport({
 
     return page.onFrame(async (frame) => {
       tFrameRecv = performance.now() // [DEBUG-perf]
-      metaRef.current = frame.metadata ?? null
+      // The remote DIP geometry half of the snapshot — set here so whichever paint path
+      // runs (and the hit-test) reads the same metadata for this frame; the frame's image
+      // px half is filled in at paint time by each path.
+      const m = frame.metadata
+      const device = m ? { w: m.deviceWidth, h: m.deviceHeight } : undefined
+      const offsetTop = m?.offsetTop ?? 0
       // Fast path: web build's binary WS delivers a Blob — decode via createImageBitmap,
       // off-main-thread + no data-URL allocation. Falls through to the data-URL path for
       // Electron (IPC carries the base64 string) and for SSE web mode.
       if (frame.dataBlob) {
         try {
           const bitmap = await createImageBitmap(frame.dataBlob)
-          imgSizeRef.current = { width: bitmap.width, height: bitmap.height }
-          // Replace the painted source with the bitmap; the existing paint() reads
-          // `imgRef.current.width/height` so we copy bitmap dims and draw via a
-          // side-channel ref instead. Simpler: directly draw here.
-          const canvas = canvasRef.current
-          const vp = containerRef.current
-          if (canvas && vp) {
-            // biome-ignore lint/style/noNonNullAssertion: 2d ctx always exists
-            const ctx = canvas.getContext("2d")!
-            canvas.width = vp.clientWidth * window.devicePixelRatio
-            canvas.height = vp.clientHeight * window.devicePixelRatio
-            canvas.style.width = `${vp.clientWidth}px`
-            canvas.style.height = `${vp.clientHeight}px`
-            const { scale, dx, dy } = letterbox(
-              { w: bitmap.width, h: bitmap.height },
-              { w: canvas.width, h: canvas.height },
-            )
-            ctx.fillStyle = "#000"
-            ctx.fillRect(0, 0, canvas.width, canvas.height)
-            const tPaint = performance.now() // [DEBUG-perf]
-            ctx.drawImage(bitmap, dx, dy, bitmap.width * scale, bitmap.height * scale)
-            perfMark("paint", performance.now() - tPaint)
-            perfMark("frameToDecode", performance.now() - tFrameRecv)
-            perfFrame()
-            onResolutionUpdate(`${bitmap.width}x${bitmap.height}`)
-          }
+          frameViewRef.current = { frame: { w: bitmap.width, h: bitmap.height }, device, offsetTop }
+          const tPaint = performance.now() // [DEBUG-perf]
+          paintSource(bitmap, { w: bitmap.width, h: bitmap.height })
+          perfMark("paint", performance.now() - tPaint)
+          perfMark("frameToDecode", performance.now() - tFrameRecv)
+          perfFrame()
+          onResolutionUpdate(`${bitmap.width}x${bitmap.height}`)
           bitmap.close()
           return
         } catch {
           // Decode failed — fall through to legacy data-URL path with whatever `data` is.
         }
       }
+      frameViewRef.current = { ...frameViewRef.current, device, offsetTop }
       img.src = `data:image/jpeg;base64,${frame.data}`
     })
-  }, [page, paint, onFpsUpdate, onResolutionUpdate, revealSettled])
+  }, [page, paint, paintSource, onFpsUpdate, onResolutionUpdate, revealSettled])
 
   // Start at an explicit resting filter (not `none`) so the first switch transition
   // interpolates instead of jumping.
@@ -340,15 +348,14 @@ export function Viewport({
     page.setCoordResolver((clientX, clientY) => {
       const canvas = canvasRef.current
       if (!canvas) return { x: 0, y: 0 }
-      const { width: w, height: h } = imgSizeRef.current
-      const m = metaRef.current
+      const view = frameViewRef.current
       return toRemoteCoords(
         { x: clientX, y: clientY },
         canvas.getBoundingClientRect(),
         window.devicePixelRatio,
-        { w, h },
-        m ? { w: m.deviceWidth, h: m.deviceHeight } : undefined,
-        m?.offsetTop ?? 0,
+        view.frame,
+        view.device,
+        view.offsetTop,
       )
     })
   }, [page])

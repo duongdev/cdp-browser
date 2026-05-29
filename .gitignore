@@ -8,3 +8,8 @@ web-notifications.json
 
 # Agent worktrees (transient, never commit)
 .claude/worktrees/
+
+# E2E run artifacts
+test-results/
+test/e2e/playwright-results.json
+playwright-report/

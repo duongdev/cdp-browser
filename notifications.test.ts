@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 // CommonJS module shared with main.js (which can't import src/lib ESM).
 import {
+  groupKeyFor,
   ingest,
   markAllRead,
   markRead,
@@ -16,6 +17,21 @@ const adapters = [{ name: "teams", match: (h: string) => /(^|\.)teams\.microsoft
 describe("matchAdapter", () => {
   it("matches a Teams URL to the teams adapter", () => {
     expect(matchAdapter("https://teams.microsoft.com/v2/", adapters)?.name).toBe("teams")
+  })
+})
+
+describe("groupKeyFor", () => {
+  it("defaults to the targetUrl origin when the payload omits groupKey", () => {
+    expect(groupKeyFor({}, "https://teams.microsoft.com/v2/")).toBe("https://teams.microsoft.com")
+  })
+
+  it("preserves an explicit groupKey from the capture payload", () => {
+    expect(groupKeyFor({ groupKey: "slack:T123" }, "https://app.slack.com/x")).toBe("slack:T123")
+  })
+
+  it("returns empty string when neither groupKey nor a parseable origin exists", () => {
+    expect(groupKeyFor({}, "not a url")).toBe("")
+    expect(groupKeyFor({}, undefined)).toBe("")
   })
 })
 

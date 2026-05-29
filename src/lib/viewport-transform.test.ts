@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { letterbox, modifiers, toRemoteCoords } from "./viewport-transform"
+import { drawFrame, letterbox, modifiers, toRemoteCoords } from "./viewport-transform"
 
 describe("letterbox", () => {
   it("centers a wide frame inside a square canvas with vertical offset", () => {
@@ -70,6 +70,90 @@ describe("toRemoteCoords", () => {
     )
     expect(p).toEqual({ x: 0, y: 460 })
   })
+})
+
+describe("drawFrame", () => {
+  it("fills the whole canvas and centers a frame that matches the canvas aspect (no bars)", () => {
+    const layout = drawFrame({ w: 1000, h: 1000 }, { w: 1000, h: 1000 })
+    expect(layout.canvas).toEqual({ w: 1000, h: 1000 })
+    expect(layout.box).toEqual({ scale: 1, dx: 0, dy: 0 })
+    expect(layout.fill).toEqual({ left: 0, top: 0, width: 1000, height: 1000 })
+    expect(layout.dest).toEqual({ x: 0, y: 0, w: 1000, h: 1000 })
+  })
+
+  it("leaves top/bottom bars for a wider-than-canvas frame", () => {
+    // 2:1 frame in a 1:1 canvas -> scaled to width, bars top/bottom
+    const layout = drawFrame({ w: 1000, h: 1000 }, { w: 1000, h: 500 })
+    expect(layout.box).toEqual({ scale: 1, dx: 0, dy: 250 })
+    expect(layout.fill).toEqual({ left: 0, top: 0, width: 1000, height: 1000 })
+    expect(layout.dest).toEqual({ x: 0, y: 250, w: 1000, h: 500 })
+  })
+
+  it("leaves left/right bars for a taller-than-canvas frame", () => {
+    // 1:2 frame in a 2:1 canvas -> scaled to height, bars left/right
+    const layout = drawFrame({ w: 2000, h: 1000 }, { w: 500, h: 1000 })
+    expect(layout.box).toEqual({ scale: 1, dx: 750, dy: 0 })
+    expect(layout.fill).toEqual({ left: 0, top: 0, width: 2000, height: 1000 })
+    expect(layout.dest).toEqual({ x: 750, y: 0, w: 500, h: 1000 })
+  })
+
+  it("drives drawImage placement with image px (not device DIP) on a downscaled frame", () => {
+    // The frame arrives at 1000x1000 image px even though the remote layout viewport is
+    // 2000x2000 DIP. drawImage must place the actual image px, filling the same canvas
+    // region a non-downscaled frame would.
+    const layout = drawFrame({ w: 1000, h: 1000 }, { w: 1000, h: 1000 })
+    expect(layout.dest).toEqual({ x: 0, y: 0, w: 1000, h: 1000 })
+  })
+
+  it("scales a frame up to fill the canvas when the canvas is larger", () => {
+    const layout = drawFrame({ w: 2000, h: 1000 }, { w: 1000, h: 500 })
+    expect(layout.box).toEqual({ scale: 2, dx: 0, dy: 0 })
+    expect(layout.dest).toEqual({ x: 0, y: 0, w: 2000, h: 1000 })
+  })
+})
+
+describe("drawFrame / toRemoteCoords agreement (divergence-proof)", () => {
+  // A point drawn at canvas position P must map back through toRemoteCoords to the remote
+  // DIP that drawFrame placed under P. Modeled on one frame-view snapshot, so the draw
+  // path and the hit-test can never reason about different frame dimensions.
+  //
+  // Downscaled + letterboxed: a 800x400 image-px frame from a 1600x800 DIP remote viewport
+  // (uniform 2x downscale — the screencast preserves aspect), painted into a 1000x1000
+  // device-px canvas. dpr 1 (rect == canvas), offsetTop 0.
+  const frame = { w: 800, h: 400 }
+  const device = { w: 1600, h: 800 }
+  const canvas = { w: 1000, h: 1000 }
+  const rect = { left: 0, top: 0, width: canvas.w, height: canvas.h }
+  const dpr = 1
+  const layout = drawFrame(canvas, frame)
+
+  // Invert drawFrame's placement: a remote DIP -> the canvas client point under it.
+  const dipToCanvas = (dipX: number, dipY: number) => {
+    // remote DIP -> image px -> scaled+offset canvas px (== client px at dpr 1)
+    const imgX = (dipX / device.w) * frame.w
+    const imgY = (dipY / device.h) * frame.h
+    return {
+      x: rect.left + layout.dest.x + imgX * layout.box.scale,
+      y: rect.top + layout.dest.y + imgY * layout.box.scale,
+    }
+  }
+
+  const corners: Array<[string, number, number]> = [
+    ["top-left", 0, 0],
+    ["top-right", device.w, 0],
+    ["bottom-left", 0, device.h],
+    ["bottom-right", device.w, device.h],
+    ["center", device.w / 2, device.h / 2],
+  ]
+
+  for (const [name, dipX, dipY] of corners) {
+    it(`round-trips the ${name} of the frame within rounding`, () => {
+      const p = dipToCanvas(dipX, dipY)
+      const back = toRemoteCoords(p, rect, dpr, frame, device, 0)
+      expect(back.x).toBe(Math.round(dipX))
+      expect(back.y).toBe(Math.round(dipY))
+    })
+  }
 })
 
 describe("modifiers", () => {

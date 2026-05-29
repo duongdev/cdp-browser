@@ -17,6 +17,9 @@ interface CdpNotification {
   targetId: string
   targetUrl?: string
   targetEntity?: unknown
+  adapter?: string | null
+  groupKey?: string
+  activate?: import("./lib/notification-activation").ActivateIntent | null
   icon?: string | null
   ts: number
   read: boolean

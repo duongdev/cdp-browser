@@ -12,10 +12,12 @@ const {
   systemPreferences,
   dialog,
 } = require("electron")
-const path = require("path")
-const fs = require("fs")
+const path = require("node:path")
+const fs = require("node:fs")
 const WebSocket = require("ws")
 const { emulatedMediaParams } = require("./theme-emulation")
+const { createSettingsStore } = require("./settings-store")
+const endpoints = require("./cdp-endpoints")
 
 // The window is a BaseWindow composed of a chrome view (the React UI, full
 // window) layered over zero-or-more local-tab page views. `chromeView` hosts
@@ -24,7 +26,7 @@ const { emulatedMediaParams } = require("./theme-emulation")
 // through the chrome view. See docs/adr/0005.
 let mainWindow
 let chromeView
-const chromeWc = () => chromeView && chromeView.webContents
+const chromeWc = () => chromeView?.webContents
 function chromeSend(channel, ...args) {
   const wc = chromeWc()
   if (wc && !wc.isDestroyed()) wc.send(channel, ...args)
@@ -37,10 +39,14 @@ let connectId = 0
 // first frame and the resulting jiggle. Cleared when the override is cleared.
 let cachedMetrics = null
 
-// Settings persistence
+// Settings persistence. The schema, defaults, and legacy migrations live in the
+// shared settings-store core; main.js injects only the fs write and reads the
+// initial parsed file. Electron-only keys the store doesn't model (localPins,
+// localExtensionPaths, …) live on the same persisted object — read/written via
+// `settings` (the store's live object) and the same `persist` writer.
 const settingsPath = path.join(app.getPath("userData"), "settings.json")
 
-function loadSettings() {
+function readSettingsFile() {
   try {
     return JSON.parse(fs.readFileSync(settingsPath, "utf8"))
   } catch {
@@ -48,26 +54,19 @@ function loadSettings() {
   }
 }
 
-function saveSettings(settings) {
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
-}
+const persist = (s) => fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2))
 
-const settings = loadSettings()
+const initialSettings = readSettingsFile()
+const hadLegacyKeys =
+  initialSettings.switchBlur !== undefined || initialSettings.bookmarks !== undefined
 
-// Migrate the legacy boolean `switchBlur` to the `switchEffect` enum.
-if (settings.switchEffect === undefined && settings.switchBlur !== undefined) {
-  settings.switchEffect = settings.switchBlur ? "blur" : "none"
-  delete settings.switchBlur
-  saveSettings(settings)
-}
+const settingsStore = createSettingsStore({ initial: initialSettings, persist })
+// Live settings object owned by the store; direct reads/writes for unmodeled keys.
+const settings = settingsStore.raw()
+const saveSettings = () => persist(settings)
 
-// Migrate legacy `bookmarks` to `pins` (pins are live-tab holders; the saved
-// fields are a superset of a bookmark, so the array carries over verbatim).
-if (settings.pins === undefined && settings.bookmarks !== undefined) {
-  settings.pins = settings.bookmarks
-  delete settings.bookmarks
-  saveSettings(settings)
-}
+// Re-persist the migrated shape once on first load when a legacy key was present.
+if (hadLegacyKeys) saveSettings()
 
 let cdpHost = settings.host
 let cdpPort = settings.port
@@ -83,7 +82,7 @@ function clearAdaptiveOverride(ws) {
     ws.send(
       JSON.stringify({ id: cmdId++, method: "Emulation.clearDeviceMetricsOverride", params: {} }),
     )
-  } catch (e) {}
+  } catch {}
 }
 
 // Push the app's resolved light/dark scheme to the remote page so sites (and extensions)
@@ -93,7 +92,7 @@ function applyThemeEmulation(ws) {
   const params = emulatedMediaParams(settings.syncTheme ?? true, nativeTheme.shouldUseDarkColors)
   try {
     ws.send(JSON.stringify({ id: cmdId++, method: "Emulation.setEmulatedMedia", params }))
-  } catch (e) {}
+  } catch {}
 }
 
 // Dev mode is signalled explicitly by the `dev` script (ELECTRON_DEV=1), not inferred
@@ -179,7 +178,8 @@ ipcMain.handle("cdp:copy-to-clipboard", (_, text) => {
 
 ipcMain.handle("cdp:list-tabs", async () => {
   try {
-    const res = await fetch(`http://${cdpHost}:${cdpPort}/json`)
+    const { url, method } = endpoints.list(cdpHost, cdpPort)
+    const res = await fetch(url, { method })
     return await res.json()
   } catch (e) {
     return { error: e.message }
@@ -188,9 +188,8 @@ ipcMain.handle("cdp:list-tabs", async () => {
 
 ipcMain.handle("cdp:new-tab", async (_, url) => {
   try {
-    const res = await fetch(`http://${cdpHost}:${cdpPort}/json/new?${url || "about:blank"}`, {
-      method: "PUT",
-    })
+    const req = endpoints.newTab(cdpHost, cdpPort, url)
+    const res = await fetch(req.url, { method: req.method })
     return await res.json()
   } catch (e) {
     return { error: e.message }
@@ -199,7 +198,8 @@ ipcMain.handle("cdp:new-tab", async (_, url) => {
 
 ipcMain.handle("cdp:close-tab", async (_, tabId) => {
   try {
-    await fetch(`http://${cdpHost}:${cdpPort}/json/close/${tabId}`)
+    const { url, method } = endpoints.close(cdpHost, cdpPort, tabId)
+    await fetch(url, { method })
     return { ok: true }
   } catch (e) {
     return { error: e.message }
@@ -214,7 +214,7 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
     clearAdaptiveOverride(old)
     try {
       old.close()
-    } catch (e) {}
+    } catch {}
   }
 
   const myId = ++connectId
@@ -222,14 +222,16 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
 
   try {
     // Activate the tab first
-    await fetch(`http://${cdpHost}:${cdpPort}/json/activate/${tabId}`)
+    const act = endpoints.activate(cdpHost, cdpPort, tabId)
+    await fetch(act.url, { method: act.method })
 
     // Small delay for activation
     await new Promise((r) => setTimeout(r, 200))
 
     if (myId !== connectId) return { error: "cancelled" }
 
-    const res = await fetch(`http://${cdpHost}:${cdpPort}/json`)
+    const listReq = endpoints.list(cdpHost, cdpPort)
+    const res = await fetch(listReq.url, { method: listReq.method })
     const tabs = await res.json()
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return { error: "Tab not found" }
@@ -306,7 +308,7 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
         try {
           const msg = JSON.parse(data.toString())
           chromeSend("cdp:event", msg)
-        } catch (e) {}
+        } catch {}
       })
 
       ws.on("close", () => {
@@ -347,7 +349,7 @@ ipcMain.handle("cdp:invoke", async (_, method, params) => {
           activeWs.off("message", handler)
           resolve(msg.result || {})
         }
-      } catch (e) {}
+      } catch {}
     }
     activeWs.on("message", handler)
     activeWs.send(JSON.stringify({ id, method, params: params || {} }))
@@ -358,13 +360,12 @@ ipcMain.handle("cdp:invoke", async (_, method, params) => {
   })
 })
 
-ipcMain.handle("cdp:config", () => ({ host: cdpHost, port: cdpPort }))
+ipcMain.handle("cdp:config", () => settingsStore.getConfig())
 
 ipcMain.handle("cdp:test-config", async (_, config) => {
   try {
-    const res = await fetch(`http://${config.host}:${config.port}/json/version`, {
-      signal: AbortSignal.timeout(5000),
-    })
+    const { url, method } = endpoints.version(config.host, config.port)
+    const res = await fetch(url, { method, signal: AbortSignal.timeout(5000) })
     if (!res.ok) return { error: `HTTP ${res.status}` }
     const info = await res.json()
     return { ok: true, browser: info.Browser || "Unknown browser" }
@@ -376,301 +377,132 @@ ipcMain.handle("cdp:test-config", async (_, config) => {
 ipcMain.handle("cdp:set-config", (_, config) => {
   cdpHost = config.host
   cdpPort = config.port
-  settings.host = config.host
-  settings.port = config.port
-  saveSettings(settings)
+  settingsStore.setConfig({ host: config.host, port: config.port })
 })
 
-ipcMain.handle("cdp:get-sidebar-width", () => settings.sidebarWidth || 220)
+ipcMain.handle("cdp:get-sidebar-width", () => settingsStore.getSidebarWidth())
 
-ipcMain.handle("cdp:set-sidebar-width", (_, width) => {
-  settings.sidebarWidth = width
-  saveSettings(settings)
-})
+ipcMain.handle("cdp:set-sidebar-width", (_, width) => settingsStore.setSidebarWidth(width))
 
-ipcMain.handle("cdp:get-ui-state", () => ({
-  sidebarCollapsed: settings.sidebarCollapsed ?? false,
-  pinnedOpen: settings.pinnedOpen ?? true,
-  adaptiveViewport: settings.adaptiveViewport ?? false,
-  forceOnClient: settings.forceOnClient ?? false,
-  switchEffect: settings.switchEffect ?? "blur",
-  notificationsEnabled: settings.notificationsEnabled ?? true,
-  syncTheme: settings.syncTheme ?? true,
-  autoGrantLocalMedia: settings.autoGrantLocalMedia ?? true,
-  restoreLocalPins: settings.restoreLocalPins ?? true,
-  localExtensionPaths: settings.localExtensionPaths ?? [],
-}))
+ipcMain.handle("cdp:get-ui-state", () => settingsStore.getUiState())
 
 ipcMain.handle("cdp:set-ui-state", (_, partial) => {
-  if ("sidebarCollapsed" in partial) settings.sidebarCollapsed = partial.sidebarCollapsed
-  if ("pinnedOpen" in partial) settings.pinnedOpen = partial.pinnedOpen
-  if ("adaptiveViewport" in partial) settings.adaptiveViewport = partial.adaptiveViewport
-  if ("forceOnClient" in partial) settings.forceOnClient = partial.forceOnClient
-  if ("switchEffect" in partial) settings.switchEffect = partial.switchEffect
-  if ("notificationsEnabled" in partial)
-    settings.notificationsEnabled = partial.notificationsEnabled
-  if ("syncTheme" in partial) {
-    settings.syncTheme = partial.syncTheme
-    applyThemeEmulation(activeWs)
-  }
-  if ("autoGrantLocalMedia" in partial) settings.autoGrantLocalMedia = partial.autoGrantLocalMedia
-  if ("restoreLocalPins" in partial) settings.restoreLocalPins = partial.restoreLocalPins
-  saveSettings(settings)
+  settingsStore.setUiState(partial)
+  // Theme emulation tracks the syncTheme toggle; re-apply on the live socket.
+  if ("syncTheme" in partial) applyThemeEmulation(activeWs)
 })
 
 // Pins (live-tab holders). The renderer owns link state (`targetId`); main is the
 // persistent store. `reorder-pins` replaces the whole array, so it also persists
-// link/unlink changes.
-ipcMain.handle("cdp:get-pins", () => {
-  return settings.pins || []
-})
-
-ipcMain.handle("cdp:add-pin", (_, pin) => {
-  if (!settings.pins) settings.pins = []
-  // Avoid duplicates by URL
-  if (!settings.pins.some((p) => p.url === pin.url)) {
-    settings.pins.push(pin)
-    saveSettings(settings)
-  }
-  return settings.pins
-})
-
-ipcMain.handle("cdp:update-pin", (_, id, patch) => {
-  if (!settings.pins) settings.pins = []
-  settings.pins = settings.pins.map((p) =>
-    p.id === id ? { ...p, title: patch.title, url: patch.url } : p,
-  )
-  saveSettings(settings)
-  return settings.pins
-})
-
-ipcMain.handle("cdp:remove-pin", (_, id) => {
-  if (!settings.pins) settings.pins = []
-  settings.pins = settings.pins.filter((p) => p.id !== id)
-  saveSettings(settings)
-  return settings.pins
-})
-
-ipcMain.handle("cdp:reorder-pins", (_, pins) => {
-  settings.pins = pins
-  saveSettings(settings)
-  return settings.pins
-})
+// link/unlink changes. Dedup-by-url and persistence live in the shared store.
+ipcMain.handle("cdp:get-pins", () => settingsStore.getPins())
+ipcMain.handle("cdp:add-pin", (_, pin) => settingsStore.addPin(pin))
+ipcMain.handle("cdp:update-pin", (_, id, patch) => settingsStore.updatePin(id, patch))
+ipcMain.handle("cdp:remove-pin", (_, id) => settingsStore.removePin(id))
+ipcMain.handle("cdp:reorder-pins", (_, pins) => settingsStore.reorderPins(pins))
 
 ipcMain.handle("cdp:set-theme-source", (_, source) => {
   nativeTheme.themeSource = source
-  settings.themeSource = source
-  saveSettings(settings)
+  settingsStore.setThemeSource(source)
 })
 
-ipcMain.handle("cdp:get-theme-source", () => {
-  return settings.themeSource || "system"
-})
+ipcMain.handle("cdp:get-theme-source", () => settingsStore.getThemeSource())
 
 // ---------------------------------------------------------------------------
 // Notifications: per-target read-only side-channels capture each site's in-app
 // toast (independent of the active-tab screencast socket). See docs/adr/0003.
 // ---------------------------------------------------------------------------
 
-// Adapters identify notification-capable sites by URL host. The injected script
-// (per adapter) ships captures through the `__cdpNotify` binding.
-const {
-  matchAdapter,
-  ingest,
-  shouldNotifyOs,
-  markRead,
-  markUnread,
-  markAllRead,
-  unreadCount,
-} = require("./notifications")
-const NOTIFY_BINDING = "__cdpNotify"
-const injectSource = fs.readFileSync(path.join(__dirname, "inject", "teams-notify.js"), "utf8")
-const outlookSource = fs.readFileSync(path.join(__dirname, "inject", "outlook-notify.js"), "utf8")
-const ADAPTERS = [
-  {
-    name: "teams",
-    match: (h) => /(^|\.)teams\.(microsoft|cloud\.microsoft)\.com$/.test(h),
-    source: injectSource,
-    iconUrl:
-      "https://statics.teams.cdn.office.net/evergreen-assets/icons/microsoft_teams_logo_refresh.ico",
-  },
-  {
-    name: "outlook",
-    match: (h) => /(^|\.)outlook\.(office\.com|live\.com|cloud\.microsoft)$/.test(h),
-    source: outlookSource,
-    iconUrl: "https://outlook.office365.com/owa/favicon.ico",
-  },
-]
-const adapterFor = (url) => matchAdapter(url, ADAPTERS)
+// The whole side-channel lifecycle + store lives in the shared core; main.js
+// injects only Electron effects (capture-script reads, /json target list, the
+// persisted store file, the OS Notification + dock badge gated by shouldNotifyOs).
+const { shouldNotifyOs } = require("./notifications")
+const { createNotificationCenter } = require("./notifications-sidechain")
 
 // Persisted store (separate from settings.json to keep that file lean).
 const notificationsPath = path.join(app.getPath("userData"), "notifications.json")
-let notifications = (() => {
+const readNotifications = () => {
   try {
     return JSON.parse(fs.readFileSync(notificationsPath, "utf8"))
   } catch {
     return []
   }
-})()
-const NOTIF_CAP = 50
-function saveNotifications() {
+}
+function saveNotifications(list) {
   try {
-    fs.writeFileSync(notificationsPath, JSON.stringify(notifications))
-  } catch (e) {}
+    fs.writeFileSync(notificationsPath, JSON.stringify(list))
+  } catch {}
 }
 
 // Dock badge mirrors total unread (macOS). 0 clears it.
 function updateBadge() {
-  if (typeof app.setBadgeCount === "function") app.setBadgeCount(unreadCount(notifications))
+  if (typeof app.setBadgeCount === "function") app.setBadgeCount(notificationCenter.unreadCount())
 }
 
-const sideChannels = new Map() // targetId -> ws
+const notificationCenter = createNotificationCenter({
+  readInject: (name) => fs.readFileSync(path.join(__dirname, "inject", name), "utf8"),
+  listTargets: async () => {
+    if (!cdpHost) return []
+    const { url, method } = endpoints.list(cdpHost, cdpPort)
+    const res = await fetch(url, { method })
+    return res.json()
+  },
+  load: readNotifications,
+  save: saveNotifications,
+  now: Date.now,
+  WebSocketCtor: WebSocket,
+  onEntry: (entry) => {
+    updateBadge()
+    chromeSend("cdp:notification", entry)
 
-function ingestNotification(raw, targetId, targetUrl) {
-  let n
-  try {
-    n = JSON.parse(raw)
-  } catch {
-    return
-  }
-  if (!n || typeof n !== "object") return
-  const { list, entry } = ingest(
-    notifications,
-    {
-      id: n.id,
-      source: n.source || "",
-      title: n.title || "",
-      body: n.body || "",
-      targetId,
-      targetUrl,
-      targetEntity: n.targetEntity || null,
-      icon: (adapterFor(targetUrl) || {}).iconUrl || null,
-      ts: n.ts || Date.now(),
-    },
-    NOTIF_CAP,
-  )
-  if (!entry) return // rejected: missing id or duplicate (cross-tab safe)
-  notifications = list
-  saveNotifications()
-  updateBadge()
-
-  chromeSend("cdp:notification", entry)
-
-  const windowFocused = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
-  if (
-    shouldNotifyOs(entry, {
-      activeTabId,
-      enabled: settings.notificationsEnabled ?? true,
-      windowFocused,
-    }) &&
-    Notification.isSupported()
-  ) {
-    const osN = new Notification({ title: entry.title || entry.source, body: entry.body })
-    osN.on("click", () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-        chromeSend("cdp:notification-activate", entry)
-      }
-    })
-    osN.show()
-  }
-}
-
-function attachSideChannel(target) {
-  const adapter = adapterFor(target.url)
-  if (!adapter || !target.webSocketDebuggerUrl) return
-  const ws = new WebSocket(target.webSocketDebuggerUrl)
-  sideChannels.set(target.id, ws)
-  ws.on("open", () => {
-    ws.send(JSON.stringify({ id: 1, method: "Runtime.enable", params: {} }))
-    ws.send(JSON.stringify({ id: 2, method: "Page.enable", params: {} }))
-    ws.send(
-      JSON.stringify({ id: 3, method: "Runtime.addBinding", params: { name: NOTIFY_BINDING } }),
-    )
-    // Future loads (document-start) + the already-loaded document.
-    ws.send(
-      JSON.stringify({
-        id: 4,
-        method: "Page.addScriptToEvaluateOnNewDocument",
-        params: { source: adapter.source },
-      }),
-    )
-    ws.send(
-      JSON.stringify({ id: 5, method: "Runtime.evaluate", params: { expression: adapter.source } }),
-    )
-  })
-  ws.on("message", (data) => {
-    try {
-      const msg = JSON.parse(data.toString())
-      if (msg.method === "Runtime.bindingCalled" && msg.params.name === NOTIFY_BINDING) {
-        ingestNotification(msg.params.payload, target.id, target.url)
-      }
-    } catch (e) {}
-  })
-  ws.on("close", () => {
-    if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
-  })
-  ws.on("error", () => {
-    if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
-  })
-}
-
-// Poll /json: attach to newly-seen matching targets, drop vanished ones.
-async function reconcileSideChannels() {
-  if (!cdpHost) return
-  let targets
-  try {
-    const res = await fetch(`http://${cdpHost}:${cdpPort}/json`)
-    targets = await res.json()
-  } catch {
-    return
-  }
-  if (!Array.isArray(targets)) return
-  const matched = targets.filter((t) => t.type === "page" && adapterFor(t.url))
-  const liveIds = new Set(matched.map((t) => t.id))
-  for (const [id, ws] of sideChannels) {
-    if (!liveIds.has(id)) {
-      try {
-        ws.close()
-      } catch (e) {}
-      sideChannels.delete(id)
+    const windowFocused = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
+    if (
+      shouldNotifyOs(entry, {
+        activeTabId,
+        enabled: settings.notificationsEnabled ?? true,
+        windowFocused,
+      }) &&
+      Notification.isSupported()
+    ) {
+      const osN = new Notification({ title: entry.title || entry.source, body: entry.body })
+      osN.on("click", () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show()
+          mainWindow.focus()
+          chromeSend("cdp:notification-activate", entry)
+        }
+      })
+      osN.show()
     }
-  }
-  for (const t of matched) {
-    if (!sideChannels.has(t.id)) attachSideChannel(t)
-  }
-}
-setInterval(reconcileSideChannels, 5000)
+  },
+})
+
+setInterval(() => notificationCenter.reconcile(), 5000)
 app.whenReady().then(() => {
   updateBadge() // restore dock badge from persisted unread
-  setTimeout(reconcileSideChannels, 1000)
+  setTimeout(() => notificationCenter.reconcile(), 1000)
 })
 
-ipcMain.handle("cdp:get-notifications", () => notifications)
+ipcMain.handle("cdp:get-notifications", () => notificationCenter.list())
 ipcMain.handle("cdp:mark-notification-read", (_, id) => {
-  notifications = markRead(notifications, id)
-  saveNotifications()
+  const list = notificationCenter.markRead(id)
   updateBadge()
-  return notifications
+  return list
 })
 ipcMain.handle("cdp:mark-notification-unread", (_, id) => {
-  notifications = markUnread(notifications, id)
-  saveNotifications()
+  const list = notificationCenter.markUnread(id)
   updateBadge()
-  return notifications
+  return list
 })
 ipcMain.handle("cdp:mark-notifications-read", () => {
-  notifications = markAllRead(notifications)
-  saveNotifications()
+  const list = notificationCenter.markAllRead()
   updateBadge()
-  return notifications
+  return list
 })
 ipcMain.handle("cdp:clear-notifications", () => {
-  notifications = []
-  saveNotifications()
+  const list = notificationCenter.clear()
   updateBadge()
-  return notifications
+  return list
 })
 
 // ---------------------------------------------------------------------------
@@ -731,7 +563,7 @@ function prepareExtension(src) {
   const dest = path.join(app.getPath("userData"), "loaded-extensions", path.basename(src))
   try {
     fs.rmSync(dest, { recursive: true, force: true })
-  } catch (e) {}
+  } catch {}
   fs.cpSync(src, dest, { recursive: true })
   try {
     const mpath = path.join(dest, "manifest.json")
@@ -779,14 +611,14 @@ async function ensureMediaAccess() {
       if (systemPreferences.getMediaAccessStatus(kind) !== "granted") {
         await systemPreferences.askForMediaAccess(kind)
       }
-    } catch (e) {}
+    } catch {}
   }
 }
 
 ipcMain.handle("local:get-pins", () => settings.localPins || [])
 ipcMain.handle("local:save-pins", (_e, pins) => {
   settings.localPins = pins
-  saveSettings(settings)
+  saveSettings()
 })
 
 // Validate an unpacked-extension folder before loading. Returns the parsed
@@ -855,7 +687,7 @@ ipcMain.handle("local:pick-extension", async () => {
   if (!settings.localExtensionPaths) settings.localExtensionPaths = []
   if (!settings.localExtensionPaths.includes(p)) {
     settings.localExtensionPaths.push(p)
-    saveSettings(settings)
+    saveSettings()
   }
   return { extensions: extensionInfo() }
 })
@@ -865,7 +697,7 @@ ipcMain.handle("local:reload-extension", async (_e, p) => {
     const ex = loadedExt.get(p)
     if (ex) localSession().extensions.removeExtension(ex.id)
     loadedExt.delete(p)
-  } catch (e) {}
+  } catch {}
   if (!(await loadOneExtension(p))) return { error: "Failed to reload extension." }
   return { extensions: extensionInfo() }
 })
@@ -891,7 +723,7 @@ function closeActionPopup() {
   try {
     mainWindow.contentView.removeChildView(v)
     v.webContents.close()
-  } catch (e) {}
+  } catch {}
 }
 
 ipcMain.handle("local:close-action-popup", () => closeActionPopup())
@@ -906,7 +738,7 @@ ipcMain.handle("local:open-action-popup", async (_e, { id, anchor }) => {
   actionPopupOpening = true
 
   const ext = extensionInfo().find((e) => e.id === id)
-  if (!ext || !ext.popupUrl) {
+  if (!ext?.popupUrl) {
     actionPopupOpening = false
     return
   }
@@ -936,7 +768,7 @@ ipcMain.handle("local:open-action-popup", async (_e, { id, anchor }) => {
     size = await wc.executeJavaScript(
       "({w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight})",
     )
-  } catch (e) {}
+  } catch {}
   actionPopupOpening = false
   // Closed during the async setup — don't resurrect it.
   if (actionPopupView !== view) return
@@ -952,12 +784,12 @@ ipcMain.handle("local:open-action-popup", async (_e, { id, anchor }) => {
 
 ipcMain.handle("local:remove-extension", (_e, p) => {
   settings.localExtensionPaths = (settings.localExtensionPaths || []).filter((x) => x !== p)
-  saveSettings(settings)
+  saveSettings()
   try {
     const ex = loadedExt.get(p)
     if (ex) localSession().extensions.removeExtension(ex.id)
     loadedExt.delete(p)
-  } catch (e) {}
+  } catch {}
   return { extensions: extensionInfo() }
 })
 
@@ -966,12 +798,8 @@ app.on("window-all-closed", () => {
     clearAdaptiveOverride(activeWs)
     try {
       activeWs.close()
-    } catch (e) {}
+    } catch {}
   }
-  for (const ws of sideChannels.values()) {
-    try {
-      ws.close()
-    } catch (e) {}
-  }
+  notificationCenter.close()
   app.quit()
 })

@@ -51,4 +51,51 @@ describe("groupByConversation", () => {
     expect(g.icon).toBe("teams.ico")
     expect(g.unread).toBe(1)
   })
+
+  it("keys on groupKey when present, ignoring conversation id and title", () => {
+    const list = [
+      e({ id: "a", title: "alpha", groupKey: "slack:T1", targetEntity: { id: "c1" } }),
+      e({ id: "b", title: "beta", groupKey: "slack:T1", targetEntity: { id: "c2" } }),
+      e({ id: "c", title: "gamma", groupKey: "slack:T2", targetEntity: { id: "c1" } }),
+    ]
+    const groups = groupByConversation(list)
+    expect(groups.map((g) => g.key)).toEqual(["slack:T1", "slack:T2"])
+    expect(groups[0].items.map((i) => i.id)).toEqual(["a", "b"])
+  })
+
+  it("with groupKey === origin, groups and per-group unread match the pre-change keying", () => {
+    // Same input keyed by targetEntity.id (old) vs groupKey set to a stable value (new):
+    // two messages in conversation c1, one in c2, mirrored to per-origin groupKeys.
+    const list = [
+      e({
+        id: "m3",
+        title: "third",
+        ts: 300,
+        read: false,
+        groupKey: "https://o",
+        targetEntity: { id: "c1" },
+      }),
+      e({
+        id: "m2",
+        title: "second",
+        ts: 200,
+        read: true,
+        groupKey: "https://o",
+        targetEntity: { id: "c1" },
+      }),
+      e({
+        id: "m1",
+        title: "first",
+        ts: 100,
+        read: false,
+        groupKey: "https://o",
+        targetEntity: { id: "c1" },
+      }),
+    ]
+    const groups = groupByConversation(list)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].key).toBe("https://o")
+    expect(groups[0].unread).toBe(2)
+    expect(groups[0].items.map((i) => i.id)).toEqual(["m3", "m2", "m1"])
+  })
 })

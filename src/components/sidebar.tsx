@@ -944,7 +944,7 @@ function SortablePinTile({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
-      <TooltipContent className="max-w-[260px]" side="right">
+      <TooltipContent className="max-w-[260px] flex-col items-start" side="bottom">
         <p className="text-xs font-medium line-clamp-2">{title}</p>
         <p className="text-[10px] text-background/60 break-all line-clamp-2">
           {linkedTab?.url || pin.url}

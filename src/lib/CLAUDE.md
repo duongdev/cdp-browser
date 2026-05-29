@@ -1,6 +1,6 @@
 # src/lib — Domain Modules
 
-Ten modules that form the renderer's domain layer, plus a React hook that wires them to the component tree. Use the vocabulary from `CONTEXT.md` when reading or changing these files.
+Domain modules that form the renderer's logic layer, plus a React hook that wires them to the component tree. Use the vocabulary from `CONTEXT.md` when reading or changing these files.
 
 ## Modules
 
@@ -24,20 +24,36 @@ Ten modules that form the renderer's domain layer, plus a React hook that wires 
 
 **`key-routing.ts`** — Pure predicate for macOS OS-reserved key combos. `isOsReservedKey(e: KeyLike)` returns `true` for combos that must fall through to native macOS handlers (Hide, Minimize, Quit, Fullscreen, Cycle Windows). Matches on `e.code` (physical key), not `e.key`, so Option-rewritten characters (e.g. Cmd+Opt+H → "˙") don't break matching. Called by `viewport.tsx` to gate Input Forwarding — reserved combos are neither forwarded nor `preventDefault`ed. Requires `metaKey`; non-Cmd combos always return `false`.
 
+**`tab-lifecycle.ts`** — Pure close/switch planner. `planClose(input)` resolves what happens when a CDP or local tab closes: which `ClosedEntry` to push, which surface to activate next (MRU across kinds via `active-order.ts`, then first-visible fallback), whether to clear the active surface entirely, and whether a Pin must revert to unlinked. `planSwitch(order, ref)` is a thin named wrapper over `touchActive` so both the switch path and the close path share vocabulary. Pure: no React, no IPC. `app.tsx` executes all effects.
+
+**`unread-aggregator.ts`** — Pure unread-count aggregation. `aggregateUnread(notifications, tabs, pins, linkedTabByPin)` makes one pass over the notification list to build `{ byGroup, byTab, byPin }` count maps. Notifications key by `groupKey ?? originOf(targetUrl)`; a Tab resolves through its own URL origin; a Pin resolves through its linked Tab's live URL (via `linkedTabByPin`) or its saved URL. Replaces the per-origin inline accounting that was scattered across `app.tsx`.
+
+**`notification-activation.ts`** — Activation dispatch registry. `createActivationRegistry()` maps each `ActivateIntent` variant (`spa-link` → `navigateSpa`, `thread` → `openTeamsThread`) to a `RemotePageIntention` (`{ method, arg }`) that `app.tsx` executes as `page[method](arg)` after activating the owning Tab. `resolveActivation(registry, activate)` returns `null` for unknown variants (degrade to Tab-only). Adding a new adapter's deep-open = one new variant in `ActivateIntent` + one entry in the registry; the dispatch loop is unchanged. Pure: no IPC, no Remote Page reference.
+
 ## Web transport (web build only)
 
-Four files in `src/lib/` are not domain modules — they implement the browser-side half of the web transport (WS, SSE + POST) when no Electron preload is present. They live here (not in `src/components/`) because they contain no React and must be unit-testable in isolation.
+Seven files in `src/lib/` are not domain modules — they implement the browser-side half of the web transport (WS, SSE + POST) when no Electron preload is present. They live here (not in `src/components/`) because they contain no React and must be unit-testable in isolation.
 
-**`cdp-web-transport.ts`** — installs `window.cdp` (the `CdpBridge` contract) over WebSocket (`createWsChannel`) + `EventSource` + `fetch` POST when no preload is detected. Manages the WS channel (full-duplex; frames + events + input ride one socket when active), the SSE stream, the streaming input channel (`POST /api/input-stream`), the POST fallback, E2E seal/open, theme sync, tab/pin/settings REST calls, and Web Push subscription (`getPushVapidKey`, `subscribePush`, `unsubscribePush` — optional methods absent under Electron; used by `settings-dialog.tsx` when `webPush` is toggled in standalone PWA mode). Routes mouse input: drag (button held) → `batcher.coalesce`; hover (no button) → `hover.move` (bypassed on WS/stream); press/release → `hover.cancel` + `batcher.immediate`; wheel → `batcher.append`. `collapseMoves(items)` — the CDP-specific merge function for `createSingleFlight`: drops all but the last consecutive `mouseMoved` in a run, preserving clicks/wheel/keys in order.
+The transport is split into three named seams assembled by a thin shim:
+
+**`downlink-dispatcher.ts`** — the server→client half. Two pieces:
+- `Downlink` — a shallow source abstraction. Exactly one is live at a time (WS-backed or SSE-backed); switching sources tears the prior one down fully so a stale source never leaks.
+- `Dispatcher` (`createDownlinkDispatcher`) — the deep module: a decoded inbound message is fanned out to every registered listener of its kind (`cdp`, `disconnected`, `notification`, `notification-activate`), and the OS/web toast fires exactly once per Notification. All paths (SSE `cdp` listener, WS `onEvent`, WS binary-frame) route here; decode/filter/fan-out/toast logic lives in one place.
+
+**`uplink-router.ts`** — the client→server command path. `Uplink` is the seam every outbound command crosses (WS / stream / POST each implement it). `createUplinkRouter({ adapters, advise })` routes each command to the advised adapter if ready, falling through WS → stream → batch, so a command is never dropped. Readiness belongs to the adapters; mode advice comes from `transport-selector.ts`.
+
+**`crypto-context.ts`** — the single owner of E2E in the web build. `createCryptoContext(init)` wraps `crypto-envelope.ts` seal/open into one object (`sealText`/`openText`/`confirm`/`mode`/`ready`). The uplink router seals every client→server body once before it leaves; the downlink dispatcher opens every server→client payload once on the way in. No transport re-touches crypto.
+
+**`cdp-web-transport.ts`** — thin assembler. Constructs a `Downlink`, `UplinkRouter`, and `CryptoContext`, wires them together, and exposes the REST bridge (tabs/config/ui-state/pins/notifications/theme) plus the `CdpBridge` surface as `window.cdp`. Also holds Web Push methods (`getPushVapidKey`, `subscribePush`, `unsubscribePush` — absent under Electron). Routes mouse input: drag (button held) → `batcher.coalesce`; hover (no button) → `hover.move` (bypassed on WS/stream); press/release → `hover.cancel` + `batcher.immediate`; wheel → `batcher.append`. `collapseMoves(items)` — the CDP-specific merge function for `createSingleFlight`.
 
 **`input-coalesce.ts`** — generic batching + backpressure primitives (no CDP-specific logic):
 - `createBatcher<T>` — coalesces high-frequency commands onto a scheduler (one POST per rAF instead of one per event).
 - `createHoverGate<T>` — holds a buttons-up move and emits it only once the cursor stops (injected `delay`); `cancel()` drops the held move. Keeps hover from flooding the POST fallback.
 - `createSingleFlight<T>` — at most one `post` in flight; items pushed while waiting accumulate and `merge` into one next post on settle. Bounds the POST rate to link RTT. A failed post does not wedge the queue.
 
-**`crypto-envelope.ts`** — browser-side AES-256-GCM seal/open for the optional E2E mode. `deriveKey(passphrase, salt)` runs PBKDF2-SHA256; `seal(key, plaintext)` / `open(key, ct)` wrap SubtleCrypto. Mirrors `crypto-envelope.js` (server side, CJS). No state; pure crypto.
+**`crypto-envelope.ts`** — browser-side AES-256-GCM seal/open primitives. `deriveKey(passphrase, salt)` runs PBKDF2-SHA256; `seal(key, obj)` / `open(key, ct)` wrap SubtleCrypto. No state; pure crypto. Used by `crypto-context.ts`; mirrors `crypto-envelope.js` (server side, CJS).
 
-**`transport-selector.ts`** — pure state machine for the connection-mode picker (t019). Models the Auto chain (WS → Stream → Batch), per-mode retry bounds (3 attempts), last-good cache via injected `localStorage`-shaped store, manual-pick error tracking, and the degraded → re-probe-on-focus transition. No I/O — the actual WS open/close lives in `cdp-web-transport.ts` (`createWsChannel`); the selector just tells callers what to do next. See ADR-0007.
+**`transport-selector.ts`** — pure mode-selection state machine (t019). Models the Auto chain (WS → Stream → Batch), per-mode retry bounds (3 attempts), last-good cache via injected `localStorage`-shaped store, manual-pick error tracking, and the degraded → re-probe-on-focus transition. No I/O — the actual WS open/close lives in `cdp-web-transport.ts`; the selector only advises the router. See ADR-0007.
 
 ## Transport seam
 
@@ -58,6 +74,12 @@ Four files in `src/lib/` are not domain modules — they implement the browser-s
 - Key Routing (`key-routing.ts`) is pure — no DOM access, no side effects. Callers decide what to do (skip forward, skip `preventDefault`).
 - Pins (`pins.ts`) is pure — it resolves links over data only. Opening/closing tabs, persistence, and IPC live in `app.tsx`/main. `targetId` is a hint, always revalidated against the live target list.
 - Active Order (`active-order.ts`) is pure — returns new arrays, never mutates. Callers hold the array in state; `app.tsx` drives effects (which tab to activate on close).
+- Tab Lifecycle (`tab-lifecycle.ts`) is pure — returns directives, never executes them. `app.tsx` applies every effect (close the target, swap the active surface, push the Closed Tabs entry, revert the Pin, persist).
+- Unread Aggregator (`unread-aggregator.ts`) is pure — `aggregateUnread` is a plain function over data. `app.tsx` supplies `linkedTabByPin` and holds the result in state.
+- Notification Activation (`notification-activation.ts`) is pure — no Remote Page reference, no IPC. `app.tsx` calls `page[method](arg)` after resolving the intention.
+- Downlink Dispatcher (`downlink-dispatcher.ts`) is pure (lib-style) — fan-out + toast-once gating only. WS/SSE attach, E2E decode, and the actual OS/web toast effect stay in `cdp-web-transport.ts`, which injects the toast and decodes before calling `dispatch`.
+- Uplink Router (`uplink-router.ts`) is pure — holds no socket, opens no fetch. Adapter readiness and mode advice are injected; the router owns only the pick logic.
+- Crypto Context (`crypto-context.ts`) is pure — wraps `crypto-envelope.ts` primitives, holds no socket. The wire format (plaintext JSON or base64 AES-GCM) is byte-identical to the pre-seam baseline.
 
 ## Testing
 

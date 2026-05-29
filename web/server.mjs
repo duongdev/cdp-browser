@@ -16,9 +16,9 @@ import WebSocket, { WebSocketServer } from "ws"
 import endpoints from "../cdp-endpoints.js"
 import { deriveKey, open, seal } from "../crypto-envelope.js"
 import { createLineSplitter } from "../line-splitter.js"
-import { ingest, markAllRead, markRead, markUnread, matchAdapter } from "../notifications.js"
+import sidechain from "../notifications-sidechain.js"
+import connector from "../remote-page-connector.js"
 import { createSettingsStore } from "../settings-store.js"
-import { emulatedMediaParams } from "../theme-emulation.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
@@ -227,298 +227,123 @@ function broadcast(event, payload) {
 }
 
 // ---- active screencast socket (1 upstream -> N SSE subscribers) ----------
-let activeWs = null
-let connectId = 0
-let cmdId = 100
-let cachedMetrics = null
+// The connect/disconnect choreography + the single-socket invariant (ADR-0001), the
+// connectId race-guard, and the cached-metrics-before-startScreencast re-apply
+// (ADR-0002) all live in the backend-agnostic connector (remote-page-connector.js).
+// This file injects its effects (WebSocket factory, activate builder, target list,
+// settings) and fans out the raw CDP messages it emits — frame ack, broadcast, and
+// the binary fast path stay here, tied to this server's SSE/WS subscriber machinery.
 let themeDark = false // renderer drives this via /api/theme (matchMedia)
-
-const wsOpen = (ws) => ws && ws.readyState === WebSocket.OPEN
-function rawSend(ws, method, params) {
-  if (wsOpen(ws)) ws.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
-}
-function applyThemeEmulation(ws) {
-  if (!wsOpen(ws)) return
-  rawSend(
-    ws,
-    "Emulation.setEmulatedMedia",
-    emulatedMediaParams(settings.getUiState().syncTheme, themeDark),
-  )
-}
-function clearAdaptiveOverride(ws) {
-  if (settings.getUiState().adaptiveViewport && wsOpen(ws))
-    rawSend(ws, "Emulation.clearDeviceMetricsOverride", {})
-}
 
 async function fetchJson(desc) {
   const res = await fetch(desc.url, { method: desc.method })
   return res.json()
 }
 
-async function connect(tabId) {
-  if (activeWs) {
-    const old = activeWs
-    activeWs = null
-    clearAdaptiveOverride(old)
-    try {
-      old.close()
-    } catch {}
-  }
-  const myId = ++connectId
-  try {
-    await fetch(endpoints.activate(host(), port(), tabId).url)
-    // Give the remote browser time to promote the tab before we list its WS URL.
-    await new Promise((r) => setTimeout(r, 200))
-    if (myId !== connectId) return { error: "cancelled" }
-    const tabs = await fetchJson(endpoints.list(host(), port()))
-    const tab = tabs.find((t) => t.id === tabId)
-    if (!tab) return { error: "Tab not found" }
+const { createRemotePageConnector } = connector
+const remotePage = createRemotePageConnector({
+  transport: (wsUrl) => new WebSocket(wsUrl),
+  endpoints: { activate: (h, p, id) => endpoints.activate(h, p, id) },
+  config: () => settings.getConfig(),
+  uiState: () => settings.getUiState(),
+  themeDark: () => themeDark,
+  activate: (desc) => fetch(desc.url, { method: desc.method }),
+  listTargets: () => fetchJson(endpoints.list(host(), port())),
+})
 
-    return await new Promise((resolve) => {
-      const ws = new WebSocket(tab.webSocketDebuggerUrl)
-      ws.on("open", () => {
-        if (myId !== connectId) {
-          ws.close()
-          return resolve({ error: "cancelled" })
-        }
-        activeWs = ws
-        resolve({ ok: true })
-        rawSend(ws, "Page.enable")
-        rawSend(ws, "Input.enable")
-        applyThemeEmulation(ws)
-        const ui = settings.getUiState()
-        if (ui.adaptiveViewport && cachedMetrics) {
-          rawSend(ws, "Emulation.setDeviceMetricsOverride", cachedMetrics)
-        } else if (!ui.adaptiveViewport) {
-          // Release any override a prior crash left pinned (take ownership, then clear).
-          rawSend(ws, "Emulation.setDeviceMetricsOverride", {
-            width: 1400,
-            height: 900,
-            deviceScaleFactor: 1,
-            mobile: false,
-          })
-          rawSend(ws, "Emulation.clearDeviceMetricsOverride", {})
-        }
-        rawSend(ws, "Page.startScreencast", {
-          format: "jpeg",
-          quality: 80,
-          maxWidth: 3000,
-          maxHeight: 2000,
-        })
-        rawSend(ws, "Runtime.evaluate", {
-          expression: "document.addEventListener('contextmenu',e=>e.preventDefault(),true)",
-        })
-      })
-      ws.on("message", (data) => {
-        if (activeWs !== ws) return
-        // Fastest path: skip `data.toString()` + JSON.parse on the 200KB envelope when the
-        // message is a Page.screencastFrame, we have only WS subscribers (no SSE need for
-        // the full JSON), and E2E is off. We extract sessionId + JPEG bytes + metadata
-        // straight from the raw Buffer — saves the bulk of per-frame server CPU.
-        if (wsClients.size > 0 && !e2eKey && sseClients.size === 0) {
-          const fast = extractScreencastFast(data)
-          if (fast) {
-            rawSend(ws, "Page.screencastFrameAck", { sessionId: fast.sessionId })
-            broadcastFrameBinaryRaw(fast.bytes, {
-              sessionId: fast.sessionId,
-              metadata: fast.metadata,
-            })
-            return
-          }
-        }
-        try {
-          const msg = JSON.parse(data.toString())
-          // Ack frames here (not from the browser) — a per-frame HTTP POST round-trip
-          // would throttle the stream and add latency. See docs/tasks/006.
-          if (msg.method === "Page.screencastFrame") {
-            rawSend(ws, "Page.screencastFrameAck", { sessionId: msg.params.sessionId })
-            // Fast path for WS subscribers: send the JPEG bytes as a **binary** WS frame
-            // (no base64, no JSON.parse of a 250KB string on the renderer thread). SSE
-            // subscribers keep the legacy JSON-with-base64 path. See t019 + ADR-0007.
-            // E2E gates the binary path: under E2E the data needs sealing; defer that and
-            // keep the sealed JSON path so the security model stays intact.
-            if (wsClients.size > 0 && !e2eKey) {
-              broadcastFrameBinary(msg.params)
-              broadcastSseOnly("cdp", msg)
-              return
-            }
-          }
-          broadcast("cdp", msg)
-        } catch {}
-      })
-      ws.on("close", () => {
-        if (activeWs === ws) activeWs = null
-        broadcast("disconnected", {})
-      })
-      ws.on("error", (e) => {
-        if (activeWs === ws) activeWs = null
-        resolve({ error: e.message })
-      })
-    })
-  } catch (e) {
-    return { error: e.message }
-  }
-}
-
-function invoke(method, params) {
-  const ws = activeWs
-  if (!wsOpen(ws)) return Promise.resolve({ error: "not connected" })
-  const id = cmdId++
-  return new Promise((resolve) => {
-    const handler = (data) => {
-      try {
-        const msg = JSON.parse(data.toString())
-        if (msg.id === id) {
-          ws.off("message", handler)
-          resolve(msg.result || {})
-        }
-      } catch {}
+// Host fan-out of every raw CDP message from the active Remote Page socket. The
+// connector guards staleness (only the active socket reaches us); we own the frame
+// ack + the binary/SSE broadcast split. Frames are acked via the connector so the
+// ack rides the connector-owned socket and id counter.
+remotePage.onEvent((data) => {
+  // Fastest path: skip `data.toString()` + JSON.parse on the 200KB envelope when the
+  // message is a Page.screencastFrame, we have only WS subscribers (no SSE need for
+  // the full JSON), and E2E is off. We extract sessionId + JPEG bytes + metadata
+  // straight from the raw Buffer — saves the bulk of per-frame server CPU.
+  if (wsClients.size > 0 && !e2eKey && sseClients.size === 0) {
+    const fast = extractScreencastFast(data)
+    if (fast) {
+      remotePage.ackFrame(fast.sessionId)
+      broadcastFrameBinaryRaw(fast.bytes, { sessionId: fast.sessionId, metadata: fast.metadata })
+      return
     }
-    ws.on("message", handler)
-    ws.send(JSON.stringify({ id, method, params: params || {} }))
-    setTimeout(() => {
-      ws.off("message", handler)
-      resolve({ error: "timeout" })
-    }, 3000)
-  })
-}
+  }
+  try {
+    const msg = JSON.parse(data.toString())
+    // Ack frames here (not from the browser) — a per-frame HTTP POST round-trip
+    // would throttle the stream and add latency. See docs/tasks/006.
+    if (msg.method === "Page.screencastFrame") {
+      remotePage.ackFrame(msg.params.sessionId)
+      // Fast path for WS subscribers: send the JPEG bytes as a **binary** WS frame
+      // (no base64, no JSON.parse of a 250KB string on the renderer thread). SSE
+      // subscribers keep the legacy JSON-with-base64 path. See t019 + ADR-0007.
+      // E2E gates the binary path: under E2E the data needs sealing; defer that and
+      // keep the sealed JSON path so the security model stays intact.
+      if (wsClients.size > 0 && !e2eKey) {
+        broadcastFrameBinary(msg.params)
+        broadcastSseOnly("cdp", msg)
+        return
+      }
+    }
+    broadcast("cdp", msg)
+  } catch {}
+})
+remotePage.onClose(() => broadcast("disconnected", {}))
 
-function send(method, params) {
-  if (method === "Emulation.setDeviceMetricsOverride") cachedMetrics = params
-  else if (method === "Emulation.clearDeviceMetricsOverride") cachedMetrics = null
-  rawSend(activeWs, method, params)
-}
+const connect = (tabId) => remotePage.connect({ tabId })
+const invoke = (method, params) => remotePage.invoke(method, params)
+const send = (method, params) => remotePage.send(method, params)
+const applyThemeEmulation = () => remotePage.applyTheme()
 
 // A coalesced batch of raw CDP commands from the web transport (input + acks).
 // The renderer (remote-page) already translated InputIntent → Input.dispatch*; we
 // just relay each command to the active socket in order.
 function applyBatch(items) {
-  for (const c of items || []) if (c && c.method) send(c.method, c.params)
+  for (const c of items || []) if (c?.method) send(c.method, c.params)
 }
 
-// ---- notification side-channels (port of main.js, sans OS toast) ----------
-const NOTIFY_BINDING = "__cdpNotify"
-const injectSrc = (f) => readFileSync(join(HERE, "..", "inject", f), "utf8")
-const ADAPTERS = [
-  {
-    name: "teams",
-    match: (h) => /(^|\.)teams\.(microsoft|cloud\.microsoft)\.com$/.test(h),
-    source: injectSrc("teams-notify.js"),
-    iconUrl:
-      "https://statics.teams.cdn.office.net/evergreen-assets/icons/microsoft_teams_logo_refresh.ico",
-  },
-  {
-    name: "outlook",
-    match: (h) => /(^|\.)outlook\.(office\.com|live\.com|cloud\.microsoft)$/.test(h),
-    source: injectSrc("outlook-notify.js"),
-    iconUrl: "https://outlook.office365.com/owa/favicon.ico",
-  },
-]
-const adapterFor = (url) => matchAdapter(url, ADAPTERS)
-const NOTIF_CAP = 50
-let notifications = loadJson(NOTIFS_PATH, [])
-const saveNotifs = () => {
-  try {
-    writeFileSync(NOTIFS_PATH, JSON.stringify(notifications))
-  } catch (e) {
-    console.error("[web] saveNotifs failed:", e.message)
-  }
-}
-const sideChannels = new Map()
-
-function ingestNotification(raw, targetId, targetUrl) {
-  let n
-  try {
-    n = JSON.parse(raw)
-  } catch {
-    return
-  }
-  if (!n || typeof n !== "object") return
-  const { list, entry } = ingest(
-    notifications,
-    {
-      id: n.id,
-      source: n.source || "",
-      title: n.title || "",
-      body: n.body || "",
-      targetId,
-      targetUrl,
-      targetEntity: n.targetEntity || null,
-      icon: (adapterFor(targetUrl) || {}).iconUrl || null,
-      ts: n.ts || Date.now(),
-    },
-    NOTIF_CAP,
-  )
-  if (!entry) return
-  notifications = list
-  saveNotifs()
-  broadcast("notification", entry)
-  // Fire-and-forget push to all subscribers; backgrounded PWAs only get the event
-  // when delivered via Web Push (the SSE broadcast is foreground-only on iOS).
-  sendPushToAll({
-    id: entry.id,
-    title: entry.title,
-    body: entry.body,
-    targetId: entry.targetId,
-    targetUrl: entry.targetUrl,
-    targetEntity: entry.targetEntity,
-    icon: entry.icon,
-    ts: entry.ts,
-  })
-}
-
-function attachSideChannel(target) {
-  const adapter = adapterFor(target.url)
-  if (!adapter || !target.webSocketDebuggerUrl) return
-  const ws = new WebSocket(target.webSocketDebuggerUrl)
-  sideChannels.set(target.id, ws)
-  ws.on("open", () => {
-    rawSend(ws, "Runtime.enable")
-    rawSend(ws, "Page.enable")
-    ws.send(
-      JSON.stringify({
-        id: cmdId++,
-        method: "Runtime.addBinding",
-        params: { name: NOTIFY_BINDING },
-      }),
-    )
-    rawSend(ws, "Page.addScriptToEvaluateOnNewDocument", { source: adapter.source })
-    rawSend(ws, "Runtime.evaluate", { expression: adapter.source })
-  })
-  ws.on("message", (data) => {
+// ---- notification side-channel (shared core, headless) --------------------
+// The whole lifecycle + store lives in notifications-sidechain.js; the server
+// injects only its effects (capture-script reads, /json target list, the
+// persisted store file, the in-band broadcast + Web Push). It runs headless on
+// the server lifecycle, so capture + persistence + push fire with no client
+// connected; the in-band broadcast simply reaches no one until a client attaches.
+const { createNotificationCenter } = sidechain
+const notificationCenter = createNotificationCenter({
+  readInject: (f) => readFileSync(join(HERE, "..", "inject", f), "utf8"),
+  listTargets: () => fetchJson(endpoints.list(host(), port())),
+  load: () => loadJson(NOTIFS_PATH, []),
+  save: (list) => {
     try {
-      const msg = JSON.parse(data.toString())
-      if (msg.method === "Runtime.bindingCalled" && msg.params.name === NOTIFY_BINDING)
-        ingestNotification(msg.params.payload, target.id, target.url)
-    } catch {}
-  })
-  const drop = () => sideChannels.get(target.id) === ws && sideChannels.delete(target.id)
-  ws.on("close", drop)
-  ws.on("error", drop)
-}
-
-async function reconcileSideChannels() {
-  let targets
-  try {
-    targets = await fetchJson(endpoints.list(host(), port()))
-  } catch {
-    return
-  }
-  if (!Array.isArray(targets)) return
-  const matched = targets.filter((t) => t.type === "page" && adapterFor(t.url))
-  const liveIds = new Set(matched.map((t) => t.id))
-  for (const [id, ws] of sideChannels) {
-    if (!liveIds.has(id)) {
-      try {
-        ws.close()
-      } catch {}
-      sideChannels.delete(id)
+      writeFileSync(NOTIFS_PATH, JSON.stringify(list))
+    } catch (e) {
+      console.error("[web] saveNotifs failed:", e.message)
     }
-  }
-  for (const t of matched) if (!sideChannels.has(t.id)) attachSideChannel(t)
-}
-setInterval(reconcileSideChannels, 5000)
-setTimeout(reconcileSideChannels, 1000)
+  },
+  now: Date.now,
+  WebSocketCtor: WebSocket,
+  onEntry: (entry) => {
+    broadcast("notification", entry)
+    // Fire-and-forget push to all subscribers; backgrounded PWAs only get the event
+    // when delivered via Web Push (the SSE broadcast is foreground-only on iOS).
+    sendPushToAll({
+      id: entry.id,
+      source: entry.source,
+      title: entry.title,
+      body: entry.body,
+      targetId: entry.targetId,
+      targetUrl: entry.targetUrl,
+      targetEntity: entry.targetEntity,
+      adapter: entry.adapter,
+      groupKey: entry.groupKey,
+      activate: entry.activate,
+      icon: entry.icon,
+      ts: entry.ts,
+    })
+  },
+})
+setInterval(() => notificationCenter.reconcile(), 5000)
+setTimeout(() => notificationCenter.reconcile(), 1000)
 
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
@@ -684,7 +509,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/ui-state" && POST) {
       const before = settings.getUiState().syncTheme
       settings.setUiState(await body(req))
-      if (settings.getUiState().syncTheme !== before) applyThemeEmulation(activeWs)
+      if (settings.getUiState().syncTheme !== before) applyThemeEmulation()
       return res.writeHead(204).end()
     }
     if (p === "/api/theme-source" && !POST) return json(res, settings.getThemeSource())
@@ -694,7 +519,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/theme" && POST) {
       themeDark = !!(await body(req)).isDark
-      applyThemeEmulation(activeWs)
+      applyThemeEmulation()
       return res.writeHead(204).end()
     }
     // pins
@@ -708,27 +533,14 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/pins/reorder" && POST)
       return json(res, settings.reorderPins((await body(req)).pins))
     // notifications
-    if (p === "/api/notifications" && !POST) return json(res, notifications)
-    if (p === "/api/notifications/mark-read" && POST) {
-      notifications = markRead(notifications, (await body(req)).id)
-      saveNotifs()
-      return json(res, notifications)
-    }
-    if (p === "/api/notifications/mark-unread" && POST) {
-      notifications = markUnread(notifications, (await body(req)).id)
-      saveNotifs()
-      return json(res, notifications)
-    }
-    if (p === "/api/notifications/mark-all-read" && POST) {
-      notifications = markAllRead(notifications)
-      saveNotifs()
-      return json(res, notifications)
-    }
-    if (p === "/api/notifications/clear" && POST) {
-      notifications = []
-      saveNotifs()
-      return json(res, notifications)
-    }
+    if (p === "/api/notifications" && !POST) return json(res, notificationCenter.list())
+    if (p === "/api/notifications/mark-read" && POST)
+      return json(res, notificationCenter.markRead((await body(req)).id))
+    if (p === "/api/notifications/mark-unread" && POST)
+      return json(res, notificationCenter.markUnread((await body(req)).id))
+    if (p === "/api/notifications/mark-all-read" && POST)
+      return json(res, notificationCenter.markAllRead())
+    if (p === "/api/notifications/clear" && POST) return json(res, notificationCenter.clear())
     // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
     // the client uses it as `applicationServerKey` for pushManager.subscribe.
     if (p === "/api/notifications/vapid-public-key" && !POST) {
@@ -736,7 +548,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/notifications/subscribe" && POST) {
       const sub = await body(req)
-      if (!sub || !sub.endpoint) return json(res, { error: "missing endpoint" }, 400)
+      if (!sub?.endpoint) return json(res, { error: "missing endpoint" }, 400)
       // Dedupe by endpoint URL so re-subscribing on the same device replaces in place.
       pushSubs = pushSubs.filter((s) => s.endpoint !== sub.endpoint)
       pushSubs.push(sub)
@@ -767,100 +579,8 @@ server.requestTimeout = 0
 // CDP events fan in via broadcast() (added to wsClients above); requests fan out via
 // the existing invoke()/send() helpers, so the WS path is a thin envelope layer.
 const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
-// Pass-through WS tunnel to a CDP target (t019, fastest path). Bypasses the server's
-// JSON.parse/JSON.stringify per frame and the 1→N broadcast loop — bytes flow CDP↔client
-// raw. Bandwidth is the network's ceiling, not the proxy's. The browser can't hit the
-// CDP host directly because (a) HTTPS PWAs can't open ws:// (mixed content) and (b)
-// Chrome/Edge reject /json WS handshakes carrying Origin without --remote-allow-origins.
-// This tunnel keeps TLS on the browser hop while removing the proxy's per-frame cost.
-const tunnelWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://localhost")
-  if (url.pathname.startsWith("/api/cdp-ws/")) {
-    const tabId = url.pathname.slice("/api/cdp-ws/".length)
-    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
-      socket.destroy()
-      return
-    }
-    const cdpUrl = `ws://${host()}:${port()}/devtools/page/${tabId}`
-    let upstream
-    try {
-      upstream = new WebSocket(cdpUrl, { maxPayload: 16 * 1024 * 1024 })
-    } catch {
-      socket.destroy()
-      return
-    }
-    // Buffer upstream→client messages until handleUpgrade resolves. Critical: if upstream
-    // opens before handleUpgrade fires (race on LAN with fast CDP host), we'd miss the
-    // open event. Wire listeners on upstream synchronously here so nothing is lost.
-    let client = null
-    const upstreamToClientBuffer = []
-    let upstreamOpen = false
-    upstream.on("open", () => {
-      upstreamOpen = true
-    })
-    upstream.on("message", (data, isBinary) => {
-      if (client && client.readyState === 1) {
-        try {
-          client.send(data, { binary: isBinary })
-        } catch {}
-      } else {
-        upstreamToClientBuffer.push({ data, isBinary })
-      }
-    })
-    upstream.on("close", () => {
-      try {
-        client?.close()
-      } catch {}
-    })
-    upstream.on("error", () => {
-      try {
-        client?.close()
-      } catch {}
-    })
-    tunnelWss.handleUpgrade(req, socket, head, (c) => {
-      client = c
-      // Replay any messages that arrived before the client was ready.
-      for (const { data, isBinary } of upstreamToClientBuffer) {
-        try {
-          c.send(data, { binary: isBinary })
-        } catch {}
-      }
-      upstreamToClientBuffer.length = 0
-      const clientToUpstreamQueue = []
-      c.on("message", (data, isBinary) => {
-        if (!upstreamOpen) {
-          clientToUpstreamQueue.push({ data, isBinary })
-          return
-        }
-        try {
-          upstream.send(data, { binary: isBinary })
-        } catch {}
-      })
-      // Flush queued client→upstream messages once upstream opens.
-      if (!upstreamOpen) {
-        upstream.once("open", () => {
-          for (const { data, isBinary } of clientToUpstreamQueue) {
-            try {
-              upstream.send(data, { binary: isBinary })
-            } catch {}
-          }
-          clientToUpstreamQueue.length = 0
-        })
-      }
-      c.on("close", () => {
-        try {
-          upstream.close()
-        } catch {}
-      })
-      c.on("error", () => {
-        try {
-          upstream.close()
-        } catch {}
-      })
-    })
-    return
-  }
   if (url.pathname !== "/api/ws") {
     socket.destroy()
     return

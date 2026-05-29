@@ -49,9 +49,15 @@ self.addEventListener("push", (e) => {
     timestamp: data.ts || Date.now(),
     data: {
       id: data.id,
+      source: data.source,
+      title: data.title,
+      body: data.body,
       targetId: data.targetId,
       targetUrl: data.targetUrl,
       targetEntity: data.targetEntity,
+      adapter: data.adapter,
+      groupKey: data.groupKey,
+      activate: data.activate,
     },
   }
   e.waitUntil(self.registration.showNotification(title, options))
