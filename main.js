@@ -439,6 +439,10 @@ function updateBadge() {
   if (typeof app.setBadgeCount === "function") app.setBadgeCount(notificationCenter.unreadCount())
 }
 
+// Retain shown Notification objects: Electron/V8 garbage-collects a Notification with no
+// live reference, and the collected object never delivers its `click` event — the banner
+// shows but clicking it does nothing. Held until the user clicks or it closes.
+const liveNotifications = new Set()
 const notificationCenter = createNotificationCenter({
   readInject: (name) => fs.readFileSync(path.join(__dirname, "inject", name), "utf8"),
   listTargets: async () => {
@@ -465,13 +469,17 @@ const notificationCenter = createNotificationCenter({
       Notification.isSupported()
     ) {
       const osN = new Notification({ title: entry.title || entry.source, body: entry.body })
+      liveNotifications.add(osN)
+      const cleanupN = () => liveNotifications.delete(osN)
       osN.on("click", () => {
+        cleanupN()
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.show()
           mainWindow.focus()
           chromeSend("cdp:notification-activate", entry)
         }
       })
+      osN.on("close", cleanupN)
       osN.show()
     }
   },
