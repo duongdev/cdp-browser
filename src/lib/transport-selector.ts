@@ -1,7 +1,68 @@
+import {
+  type BackoffConfig,
+  type BackoffState,
+  initialBackoff,
+  nextBackoff,
+} from "./reconnect-backoff"
+
 export type InputTransportMode = "auto" | "ws" | "stream" | "batch"
 
 interface TransportSelectorOptions {
   cache: { getItem(key: string): string | null; setItem(key: string, val: string): void }
+}
+
+/**
+ * The injected runtime facts the visible-tab WS re-climb (t041) decides over. All four are
+ * supplied by the effectful caller (`cdp-web-transport.ts`) — the predicate never reads
+ * `document`, `WebSocket`, or `fetch`, so it stays pure and unit-testable.
+ */
+export interface ReconnectState {
+  /** `document.visibilityState === "visible"` — the timer goes quiet while backgrounded. */
+  visible: boolean
+  /** The shared WS socket is open and ready (so there is nothing to re-climb). */
+  wsUp: boolean
+  /** A WS open is already in flight — don't kick a second concurrent attempt. */
+  attemptInFlight: boolean
+  /** The advised transport is WS (Auto resolving to WS, or a manual Fastest pick). When the
+   *  user has manually pinned Streaming/Basic this is false and the re-climb stands down. */
+  intendsWs: boolean
+}
+
+/**
+ * The pure verdict for the visible-tab WS re-climb (t041). True ⇔ the document is visible,
+ * WS is the intended transport, WS is down, and no attempt is already in flight. Backgrounded,
+ * WS-up, attempt-in-flight, or a manual non-WS pick all veto. No I/O — the caller injects the
+ * four facts and owns the timer + the actual `openWs()` call.
+ */
+export function shouldReconnect(s: ReconnectState): boolean {
+  return s.visible && s.intendsWs && !s.wsUp && !s.attemptInFlight
+}
+
+/**
+ * The re-climb cadence — a thin shell over the t040 backoff schedule (`reconnect-backoff.ts`)
+ * so the visible-tab timer spaces its attempts on the *same* growing-then-capped curve the
+ * real-drop loop uses, rather than a second competing counter. `next()` advances one rung and
+ * returns the delay to wait before the next attempt; `reset()` is called when WS comes back so
+ * the curve restarts from the base. The `giveUp` ceiling is ignored here — while the tab stays
+ * visible and WS-intended we keep re-attempting at the capped cadence (the user is looking at a
+ * degraded session and wants the fast path back), so the schedule is used only for its spacing.
+ */
+export function createWsReclimbSchedule(config: BackoffConfig) {
+  let state: BackoffState = initialBackoff()
+  return {
+    /** Advance one rung; returns the ms to wait before the next re-climb attempt. */
+    next(): number {
+      const { state: nextState, step } = nextBackoff(state, "drop", config)
+      // Past the give-up budget the schedule stops growing (delay 0); pin to the cap so the
+      // timer keeps a sane, spaced cadence instead of busy-looping.
+      state = nextState
+      return step.giveUp ? config.capMs : step.delayMs
+    },
+    /** WS recovered — restart the curve from the base for the next blip. */
+    reset(): void {
+      state = nextBackoff(state, "success", config).state
+    },
+  }
 }
 
 export function createTransportSelector(opts: TransportSelectorOptions) {

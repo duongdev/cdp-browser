@@ -62,6 +62,43 @@ describe("settings-store", () => {
     expect(s.getPins()).toEqual([])
   })
 
+  it("partial patch with only title preserves the stored url and targetId", () => {
+    const s = createSettingsStore({
+      initial: { pins: [{ id: "1", url: "u", title: "t", targetId: "X" }] },
+      persist,
+    })
+    s.updatePin("1", { title: "T2" })
+    expect(s.getPins()[0]).toEqual({ id: "1", url: "u", title: "T2", targetId: "X" })
+  })
+
+  it("partial patch with only url preserves the stored title", () => {
+    const s = createSettingsStore({
+      initial: { pins: [{ id: "1", url: "u", title: "t" }] },
+      persist,
+    })
+    s.updatePin("1", { url: "u2" })
+    expect(s.getPins()[0]).toEqual({ id: "1", url: "u2", title: "t" })
+  })
+
+  it("merges an extra patch key through without dropping title/url", () => {
+    const s = createSettingsStore({
+      initial: { pins: [{ id: "1", url: "u", title: "t" }] },
+      persist,
+    })
+    s.updatePin("1", { targetId: "X" })
+    expect(s.getPins()[0]).toEqual({ id: "1", url: "u", title: "t", targetId: "X" })
+  })
+
+  it("update for an unknown id leaves all pins unchanged and still persists", () => {
+    const s = createSettingsStore({
+      initial: { pins: [{ id: "1", url: "u", title: "t" }] },
+      persist,
+    })
+    s.updatePin("nope", { title: "T2" })
+    expect(s.getPins()).toEqual([{ id: "1", url: "u", title: "t" }])
+    expect(persist).toHaveBeenCalled()
+  })
+
   it("reorder replaces the whole pins array (carries link/unlink changes)", () => {
     const s = createSettingsStore({ initial: { pins: [{ id: "1" }, { id: "2" }] }, persist })
     s.reorderPins([{ id: "2" }, { id: "1", targetId: "X" }])

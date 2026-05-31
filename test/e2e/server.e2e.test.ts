@@ -1,12 +1,12 @@
 // Hermetic E2E specs: spawn the real web/server.mjs against the fake CDP host,
 // assert behavior over HTTP/SSE/WS. Node env (no browser), no arbitrary sleeps.
 
-import WebSocket from "ws"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import WebSocket from "ws"
 
 const { startFakeCdpHost, DEFAULT_TARGETS } = await import("./fake-cdp-host.mjs")
 const { startWebServer } = await import("./server-harness.mjs")
-const { deriveKey, open, seal } = await import("../../crypto-envelope.js")
+const { deriveKey, open, seal } = await import("../../core/crypto-envelope.js")
 
 // Poll until predicate is true or timeout.
 function waitFor(fn: () => boolean | Promise<boolean>, ms = 5000, interval = 80): Promise<void> {
@@ -73,6 +73,82 @@ describe("connect + screencast", () => {
   it("server acks frames and activation is recorded", async () => {
     await connectAndWait(server, fake, "plain-1")
     expect(fake.getActivations()).toContain("plain-1")
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("disconnect signal (switch silent, real drop loud)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS, frameCadenceMs: 100 })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("switching tabs does NOT emit a 'disconnected' event", async () => {
+    // Open an SSE stream and watch it across a connect → switch → switch sequence.
+    // A "disconnected" event during the window fails the test; we let the collector
+    // run to timeout (no early-exit predicate) and assert none arrived.
+    const collectPromise = server.collectSse(
+      (ev: { event: string }) => ev.event === "disconnected",
+      2500,
+    )
+    await new Promise((r) => setTimeout(r, 100))
+
+    await connectAndWait(server, fake, "plain-1")
+    await connectAndWait(server, fake, "teams-1")
+    await connectAndWait(server, fake, "outlook-1")
+
+    const events = await collectPromise
+    expect(events.some((e: any) => e.event === "disconnected")).toBe(false)
+  })
+
+  it("a real host drop DOES emit a 'disconnected' event", async () => {
+    await connectAndWait(server, fake, "plain-1")
+
+    const collectPromise = server.collectSse(
+      (ev: { event: string }) => ev.event === "disconnected",
+      5000,
+    )
+    await new Promise((r) => setTimeout(r, 100))
+
+    // Kill the active screencast socket from the host side (CDP host died).
+    fake.dropConnections("plain-1")
+
+    const events = await collectPromise
+    expect(events.some((e: any) => e.event === "disconnected")).toBe(true)
+  })
+
+  it("re-connecting after a real drop resumes frames (the reconnect loop's server half)", async () => {
+    // The renderer's bounded-backoff driver (t040) re-POSTs /api/connect after a real drop.
+    // This asserts the server half of that loop: a connect issued after the host socket
+    // died re-runs the full choreography and frames flow again — no reload, no restart.
+    await connectAndWait(server, fake, "plain-1")
+
+    // Kill the active screencast socket (host died) and wait for the disconnected signal.
+    const dropSeen = server.collectSse((ev: { event: string }) => ev.event === "disconnected", 5000)
+    await new Promise((r) => setTimeout(r, 100))
+    fake.dropConnections("plain-1")
+    expect((await dropSeen).some((e: any) => e.event === "disconnected")).toBe(true)
+
+    // Drive what the driver does after the backoff window: re-connect the same tab.
+    const recovered = server.collectSse(
+      (ev: { event: string; data: any }) =>
+        ev.event === "cdp" && ev.data?.method === "Page.screencastFrame",
+      8000,
+    )
+    await new Promise((r) => setTimeout(r, 100))
+    const res = await server.post("/api/connect", { id: "plain-1" })
+    expect(res.ok).toBe(true)
+    const events = await recovered
+    expect(
+      events.some((e: any) => e.event === "cdp" && e.data?.method === "Page.screencastFrame"),
+    ).toBe(true)
   })
 })
 
@@ -208,10 +284,7 @@ describe("notifications", () => {
     server = await startWebServer(fake)
     // Server's initial reconcile fires after 1s; side-channel WS connections attach then.
     // We wait for them to appear by polling until fireNotification returns true.
-    await waitFor(
-      () => fake.fireNotification("teams-1", { id: "__probe__", ts: 0 }),
-      6000,
-    )
+    await waitFor(() => fake.fireNotification("teams-1", { id: "__probe__", ts: 0 }), 6000)
     // Clear any probe effects by waiting for the server to process it (no-op since
     // id="__probe__" is missing source/title so ingest may reject it — fine).
   })
@@ -252,10 +325,7 @@ describe("notifications", () => {
   })
 
   it("Outlook __cdpNotify fires → entry has adapter:outlook + spa-link activate", async () => {
-    await waitFor(
-      () => fake.fireNotification("outlook-1", { id: "__probe__", ts: 0 }),
-      6000,
-    )
+    await waitFor(() => fake.fireNotification("outlook-1", { id: "__probe__", ts: 0 }), 6000)
     fake.fireNotification("outlook-1", OUTLOOK_PAYLOAD)
 
     await waitFor(async () => {
@@ -292,10 +362,7 @@ describe("headless notification capture", () => {
   beforeEach(async () => {
     fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS })
     server = await startWebServer(fake)
-    await waitFor(
-      () => fake.fireNotification("teams-1", { id: "__probe__", ts: 0 }),
-      6000,
-    )
+    await waitFor(() => fake.fireNotification("teams-1", { id: "__probe__", ts: 0 }), 6000)
   })
   afterEach(async () => {
     server.stop()
@@ -437,7 +504,11 @@ describe("WS transport", () => {
         try {
           const msg = JSON.parse(raw.toString())
           if (msg.t === "event" && msg.event === "cdp-frame") frames.push(msg)
-          else if (msg.t === "event" && msg.event === "cdp" && msg.data?.method === "Page.screencastFrame")
+          else if (
+            msg.t === "event" &&
+            msg.event === "cdp" &&
+            msg.data?.method === "Page.screencastFrame"
+          )
             frames.push(msg)
         } catch {}
       }
@@ -446,6 +517,122 @@ describe("WS transport", () => {
     await server.post("/api/connect", { id: "plain-1" })
     await waitFor(() => frames.length > 0, 6000)
     expect(frames.length).toBeGreaterThan(0)
+    ws.close()
+  })
+
+  it("WS ping is echoed back as a pong with the same seq/ts (t057 RTT + keepalive)", async () => {
+    const ws = server.openWs()
+    await server.wsReady(ws)
+
+    const pong = await new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("pong timeout")), 5000)
+      ws.on("message", (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString())
+          if (msg.t === "pong") {
+            clearTimeout(timer)
+            resolve(msg)
+          }
+        } catch {}
+      })
+      ws.send(JSON.stringify({ t: "ping", seq: 7, ts: 123456 }))
+    })
+
+    expect(pong.seq).toBe(7)
+    expect(pong.ts).toBe(123456) // echoed unchanged — only the client measures RTT
+    ws.close()
+  })
+
+  it("WS screencast frame carries a server send timestamp (t057 frame age)", async () => {
+    const ws = server.openWs()
+    await server.wsReady(ws)
+
+    const before = Date.now()
+    const stamped = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("frame timeout")), 6000)
+      ws.on("message", (raw: any, isBinary: boolean) => {
+        if (isBinary) return
+        try {
+          const msg = JSON.parse(raw.toString())
+          const params =
+            msg.event === "cdp-frame"
+              ? msg.data?.params
+              : msg.event === "cdp" && msg.data?.method === "Page.screencastFrame"
+                ? msg.data?.params
+                : null
+          if (params && typeof params.serverTs === "number") {
+            clearTimeout(timer)
+            resolve(params.serverTs)
+          }
+        } catch {}
+      })
+      void server.post("/api/connect", { id: "plain-1" })
+    })
+
+    expect(stamped).toBeGreaterThanOrEqual(before)
+    expect(stamped).toBeLessThanOrEqual(Date.now())
+    ws.close()
+  })
+
+  // t056: a WS client that announces ack-after-paint support caps the in-flight queue at
+  // one — the server forwards one frame, then defers its remote-ack and withholds the next
+  // until the client's `frame-ack` lands. The fake host blasts frames every 100ms without
+  // gating on acks, so the server's one-in-flight gate is what holds the line.
+  it("WS ack-after-paint client gets one frame in flight; the next waits for its frame-ack", async () => {
+    const ws = server.openWs()
+    await server.wsReady(ws)
+    // Announce support before connecting so the gate is armed for the first frame.
+    ws.send(JSON.stringify({ t: "frame-ack-mode" }))
+
+    // Count cdp-frame envelopes (one per relayed frame); capture each frame's sessionId so
+    // we can ack the exact frame the server is waiting on.
+    const frameEnvelopes: any[] = []
+    ws.on("message", (raw: any, isBinary: boolean) => {
+      if (isBinary) return
+      try {
+        const msg = JSON.parse(raw.toString())
+        if (msg.t === "event" && msg.event === "cdp-frame") frameEnvelopes.push(msg.data?.params)
+      } catch {}
+    })
+
+    await server.post("/api/connect", { id: "plain-1" })
+
+    // First frame flows; then the gate holds — even across several 100ms cadence ticks no
+    // second frame is broadcast while the first is unacked.
+    await waitFor(() => frameEnvelopes.length >= 1, 6000)
+    await new Promise((r) => setTimeout(r, 500)) // 5 cadence ticks — all should be dropped
+    expect(frameEnvelopes.length).toBe(1)
+
+    // Ack the outstanding frame's paint → the server acks the remote and the next frame is
+    // admitted within a cadence tick.
+    const firstSid = frameEnvelopes[0].sessionId
+    ws.send(JSON.stringify({ t: "frame-ack", sessionId: firstSid }))
+    await waitFor(() => frameEnvelopes.length >= 2, 3000)
+    expect(frameEnvelopes.length).toBeGreaterThanOrEqual(2)
+    ws.close()
+  })
+
+  // t056: with no ack from a supporting client, the watchdog frees the slot so a single
+  // dropped paint can't wedge the stream forever — frames resume on their own.
+  it("WS ack-after-paint stream self-heals if a paint-ack never arrives (watchdog)", async () => {
+    const ws = server.openWs()
+    await server.wsReady(ws)
+    ws.send(JSON.stringify({ t: "frame-ack-mode" }))
+
+    let frameCount = 0
+    ws.on("message", (raw: any, isBinary: boolean) => {
+      if (isBinary) return
+      try {
+        const msg = JSON.parse(raw.toString())
+        if (msg.t === "event" && msg.event === "cdp-frame") frameCount++
+      } catch {}
+    })
+
+    await server.post("/api/connect", { id: "plain-1" })
+    // Never ack. The 1s watchdog releases the slot, so more than one frame eventually flows
+    // despite the missing paint-ack (no permanent wedge).
+    await waitFor(() => frameCount >= 2, 6000)
+    expect(frameCount).toBeGreaterThanOrEqual(2)
     ws.close()
   })
 })

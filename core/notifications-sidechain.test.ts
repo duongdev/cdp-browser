@@ -17,7 +17,8 @@ class FakeWs {
   }
   static instances: FakeWs[] = []
   on(ev: string, fn: (...a: any[]) => void) {
-    ;(this.listeners[ev] ||= []).push(fn)
+    this.listeners[ev] ||= []
+    this.listeners[ev].push(fn)
     return this
   }
   emit(ev: string, ...args: any[]) {
@@ -243,7 +244,11 @@ describe("groupKey + activate seam (t028)", () => {
     await center.reconcile([teamsTarget()])
     const ws = FakeWs.instances[0]
     ws.open()
-    ws.notify({ id: "tn", title: "Teams toast", activate: { type: "thread", id: "19:x@thread.v2" } })
+    ws.notify({
+      id: "tn",
+      title: "Teams toast",
+      activate: { type: "thread", id: "19:x@thread.v2" },
+    })
     expect(center.list()[0].activate).toEqual({ type: "thread", id: "19:x@thread.v2" })
   })
 

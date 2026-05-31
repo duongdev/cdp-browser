@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createTransportSelector, type InputTransportMode } from "./transport-selector"
+import type { BackoffConfig } from "./reconnect-backoff"
+import {
+  createTransportSelector,
+  createWsReclimbSchedule,
+  type ReconnectState,
+  shouldReconnect,
+} from "./transport-selector"
 
 describe("transport-selector", () => {
   let selector: ReturnType<typeof createTransportSelector>
@@ -135,6 +141,63 @@ describe("transport-selector", () => {
       selector.cacheSuccess("ws")
       const nextProbe = selector.onFocus()
       expect(nextProbe).toBeNull()
+    })
+  })
+
+  describe("shouldReconnect — visible-tab WS re-climb (t041)", () => {
+    const base: ReconnectState = {
+      visible: true,
+      wsUp: false,
+      attemptInFlight: false,
+      intendsWs: true,
+    }
+
+    it("re-climbs when visible, ws-down, no attempt in flight, ws intended", () => {
+      expect(shouldReconnect(base)).toBe(true)
+    })
+
+    it("stands down while backgrounded even when ws is down", () => {
+      expect(shouldReconnect({ ...base, visible: false })).toBe(false)
+    })
+
+    it("stands down when ws is already up", () => {
+      expect(shouldReconnect({ ...base, wsUp: true })).toBe(false)
+    })
+
+    it("stands down when an attempt is already in flight (no second concurrent attempt)", () => {
+      expect(shouldReconnect({ ...base, attemptInFlight: true })).toBe(false)
+    })
+
+    it("stands down when ws is not the intended transport (manual Streaming/Basic pick)", () => {
+      expect(shouldReconnect({ ...base, intendsWs: false })).toBe(false)
+    })
+  })
+
+  describe("createWsReclimbSchedule — cadence (t041)", () => {
+    const CFG: BackoffConfig = { baseMs: 500, factor: 2, capMs: 8000, maxAttempts: 6 }
+
+    it("spaces successive down ticks on the t040 backoff curve", () => {
+      const sched = createWsReclimbSchedule(CFG)
+      expect([sched.next(), sched.next(), sched.next(), sched.next()]).toEqual([
+        500, 1000, 2000, 4000,
+      ])
+    })
+
+    it("clamps the cadence at the cap and keeps a spaced delay past the give-up budget", () => {
+      const sched = createWsReclimbSchedule(CFG)
+      const delays = Array.from({ length: 9 }, () => sched.next())
+      // 500,1000,2000,4000,8000,8000 then past maxAttempts: pinned to the cap, never 0.
+      expect(delays).toEqual([500, 1000, 2000, 4000, 8000, 8000, 8000, 8000, 8000])
+      expect(delays.every((d) => d > 0 && d <= CFG.capMs)).toBe(true)
+    })
+
+    it("resets the curve to the base after WS recovers", () => {
+      const sched = createWsReclimbSchedule(CFG)
+      sched.next() // 500
+      sched.next() // 1000
+      sched.next() // 2000
+      sched.reset()
+      expect(sched.next()).toBe(500)
     })
   })
 })

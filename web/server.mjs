@@ -6,6 +6,7 @@
 //
 // Run:  CDP_HOST=<remote-ip> CDP_PORT=9222 PORT=7800 node web/server.mjs
 
+import { execFileSync } from "node:child_process"
 import nodeCrypto from "node:crypto"
 import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs"
 import http from "node:http"
@@ -13,12 +14,14 @@ import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import webpush from "web-push"
 import WebSocket, { WebSocketServer } from "ws"
-import endpoints from "../cdp-endpoints.js"
-import { deriveKey, open, seal } from "../crypto-envelope.js"
-import { createLineSplitter } from "../line-splitter.js"
-import sidechain from "../notifications-sidechain.js"
-import connector from "../remote-page-connector.js"
-import { createSettingsStore } from "../settings-store.js"
+import endpoints from "../core/cdp-endpoints.js"
+import { deriveKey, open, seal } from "../core/crypto-envelope.js"
+import { createAckGate } from "../core/frame-ack-gate.js"
+import { createFrameThrottle } from "../core/frame-throttle.js"
+import { createLineSplitter } from "../core/line-splitter.js"
+import sidechain from "../core/notifications-sidechain.js"
+import connector from "../core/remote-page-connector.js"
+import { createSettingsStore } from "../core/settings-store.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
@@ -28,6 +31,29 @@ const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notificatio
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
 const APP_TITLE = process.env.APP_TITLE || "CDP Portal"
+
+// Build identity, set at deploy time (mirrors APP_TITLE). GIT_SHA comes from the
+// build pipeline (Dockerfile ARG / deploy env) since the server can't see the Vite
+// define; the version defaults to the co-located package.json. Surfaced via /api/version.
+const APP_VERSION =
+  process.env.APP_VERSION ||
+  JSON.parse(readFileSync(join(HERE, "..", "package.json"), "utf8")).version
+// The build pipeline doesn't always set GIT_SHA (the redeploy script ships none), which
+// stranded /api/version at "unknown" and broke the PWA's version-poll update check (t045).
+// The server runs from a git checkout, so fall back to the deployed HEAD short sha,
+// resolved once at boot. Keep "unknown" if git is unavailable (e.g. a tarball deploy).
+function resolveGitSha() {
+  if (process.env.GIT_SHA) return process.env.GIT_SHA
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: join(HERE, ".."),
+      encoding: "utf8",
+    }).trim()
+  } catch {
+    return "unknown"
+  }
+}
+const GIT_SHA = resolveGitSha()
 
 // Optional E2E: with E2E_PASSPHRASE set, every /api body + SSE frame is sealed with a
 // PBKDF2/AES-GCM key a TLS-intercepting proxy never has. The salt is public (served via
@@ -114,6 +140,17 @@ const port = () => settings.getConfig().port
 // ---- SSE fan-out ----------------------------------------------------------
 const sseClients = new Set()
 const wsClients = new Set() // WebSocket subscribers — receive same events SSE clients do (t019)
+// WS clients that announced ack-after-paint support (t056): they ack each Screencast
+// Frame only after painting it, so the server defers its own remote-ack and gates the
+// next frame on their paint-ack — at most one frame in flight on the link instead of an
+// unbounded stale-frame backlog. A client opts in by sending `{ t: "frame-ack-mode" }`
+// after the ready handshake; absence keeps the legacy server-self-ack behavior (SSE-only
+// clients and older WS clients are unaffected).
+const paintAckClients = new Set()
+// True while ≥1 supporting client is connected — the only condition under which the
+// server defers its self-ack to the client's paint-ack. With zero supporting clients
+// (SSE-only, e2e harness, old clients) the server self-acks eagerly as before.
+const paintAckActive = () => paintAckClients.size > 0
 // Binary WS path for screencast frames (t019, fast path). Sends a small JSON envelope
 // describing the frame metadata, then the raw JPEG bytes as a binary WS message
 // immediately after — clients pair them by order. Skips base64 encoding (33% bandwidth)
@@ -125,10 +162,16 @@ function broadcastFrameBinary(params) {
   broadcastFrameBinaryRaw(bytes, meta)
 }
 function broadcastFrameBinaryRaw(bytes, meta) {
+  // Stamp the server send time so the client can compute frame age (t057). It is the
+  // server wall clock; the client's RTT-derived one-way offset corrects the skew. The
+  // fast extract path comes through here with no stamp; the slow path pre-stamps `meta`.
   const envelope = JSON.stringify({
     t: "event",
     event: "cdp-frame",
-    data: { method: "Page.screencastFrame", params: meta },
+    data: {
+      method: "Page.screencastFrame",
+      params: { ...meta, serverTs: meta.serverTs ?? Date.now() },
+    },
   })
   for (const ws of wsClients) {
     try {
@@ -240,7 +283,70 @@ async function fetchJson(desc) {
   return res.json()
 }
 
-const { createRemotePageConnector } = connector
+const { createRemotePageConnector, SCREENCAST_TARGET_FPS } = connector
+// Relay-side fresh-frame-wins throttle (t054): ack every frame so the remote keeps
+// producing, but only broadcast at the target rate so a slow link drains the freshest
+// frame instead of a backlog of stale ones. The rate ceiling lives in the connector.
+const frameThrottle = createFrameThrottle({ targetFps: SCREENCAST_TARGET_FPS })
+
+// One-frame-in-flight gate for the ack-after-paint path (t056). While a supporting client
+// is connected, the server defers its remote-ack until the client paints + acks the
+// outstanding frame, so at most one Screencast Frame is in flight on the link instead of a
+// growing backlog. With no supporting client the gate is bypassed and the server self-acks
+// eagerly (the t054 throttle then governs the broadcast rate). Coalesce-to-latest: a frame
+// arriving while one is outstanding is dropped (never queued) so the freshest always wins.
+const frameAckGate = createAckGate()
+// Stranded-paint watchdog: if a supporting client never acks (decode error, tab hidden, a
+// connection drop that didn't surface as a close), free the slot and ack the remote anyway
+// so a single lost paint can't wedge the stream forever. Generous vs. the frame interval so
+// a healthy slow link is never tripped; the ack arriving first cancels it.
+const PAINT_ACK_WATCHDOG_MS = 1000
+let paintAckWatchdog = null
+function clearPaintAckWatchdog() {
+  if (paintAckWatchdog !== null) {
+    clearTimeout(paintAckWatchdog)
+    paintAckWatchdog = null
+  }
+}
+// Decide a Screencast Frame's ack timing. Returns whether to broadcast it now.
+//   - paint-ack mode active + free slot → forward, mark outstanding, defer the remote-ack
+//     to the client's paint-ack (arm the watchdog).
+//   - paint-ack mode active + slot busy → drop (the client hasn't caught up; coalesce).
+//   - no supporting client → self-ack immediately, honor the t054 broadcast throttle.
+function admitFrame(sessionId) {
+  if (!paintAckActive()) {
+    remotePage.ackFrame(sessionId)
+    return frameThrottle.shouldEmit()
+  }
+  if (!frameAckGate.mayProceed()) return false
+  frameAckGate.markSent(sessionId)
+  clearPaintAckWatchdog()
+  paintAckWatchdog = setTimeout(() => {
+    const stranded = frameAckGate.outstanding()
+    frameAckGate.reset()
+    paintAckWatchdog = null
+    if (stranded !== null) remotePage.ackFrame(stranded) // release the remote despite no paint
+  }, PAINT_ACK_WATCHDOG_MS)
+  return true
+}
+// A supporting client painted + acked the outstanding frame: clear the slot, cancel the
+// watchdog, and ack the remote so the next frame flows. Any-client ack releases the slot
+// (one client is the daily-driver case; the fastest client's ack frees it for the rest).
+function onClientPaintAck(sessionId) {
+  if (frameAckGate.outstanding() === null) return
+  frameAckGate.ackReceived(sessionId)
+  if (frameAckGate.outstanding() === null) {
+    clearPaintAckWatchdog()
+    remotePage.ackFrame(sessionId)
+  }
+}
+// Free the slot when the in-flight assumptions change — a remote close, or the last
+// supporting client leaving — so a stale pending ack never blocks the next stream.
+function resetPaintAckGate() {
+  clearPaintAckWatchdog()
+  frameAckGate.reset()
+}
+
 const remotePage = createRemotePageConnector({
   transport: (wsUrl) => new WebSocket(wsUrl),
   endpoints: { activate: (h, p, id) => endpoints.activate(h, p, id) },
@@ -263,8 +369,11 @@ remotePage.onEvent((data) => {
   if (wsClients.size > 0 && !e2eKey && sseClients.size === 0) {
     const fast = extractScreencastFast(data)
     if (fast) {
-      remotePage.ackFrame(fast.sessionId)
-      broadcastFrameBinaryRaw(fast.bytes, { sessionId: fast.sessionId, metadata: fast.metadata })
+      // admitFrame owns the ack timing: self-ack + throttle when no supporting client,
+      // or defer the ack to the client's paint-ack and gate the next frame to one in
+      // flight when one is connected (t056). It returns whether to broadcast this frame.
+      if (admitFrame(fast.sessionId))
+        broadcastFrameBinaryRaw(fast.bytes, { sessionId: fast.sessionId, metadata: fast.metadata })
       return
     }
   }
@@ -273,7 +382,12 @@ remotePage.onEvent((data) => {
     // Ack frames here (not from the browser) — a per-frame HTTP POST round-trip
     // would throttle the stream and add latency. See docs/tasks/006.
     if (msg.method === "Page.screencastFrame") {
-      remotePage.ackFrame(msg.params.sessionId)
+      // admitFrame owns the ack timing (t056): self-ack + t054 throttle when no supporting
+      // client; defer to the client's paint-ack and cap to one in flight when one exists.
+      if (!admitFrame(msg.params.sessionId)) return
+      // Server send timestamp for client-side frame age (t057). Stamped on the relayed
+      // params so it rides whichever path carries this frame (binary WS, SSE, or sealed).
+      msg.params.serverTs = Date.now()
       // Fast path for WS subscribers: send the JPEG bytes as a **binary** WS frame
       // (no base64, no JSON.parse of a 250KB string on the renderer thread). SSE
       // subscribers keep the legacy JSON-with-base64 path. See t019 + ADR-0007.
@@ -288,7 +402,12 @@ remotePage.onEvent((data) => {
     broadcast("cdp", msg)
   } catch {}
 })
-remotePage.onClose(() => broadcast("disconnected", {}))
+remotePage.onClose(() => {
+  // A remote drop strands any frame awaiting a paint-ack — free the slot so the next
+  // connect's first frame is immediately eligible (no wedge from a pending ack). (t056)
+  resetPaintAckGate()
+  broadcast("disconnected", {})
+})
 
 const connect = (tabId) => remotePage.connect({ tabId })
 const invoke = (method, params) => remotePage.invoke(method, params)
@@ -419,6 +538,14 @@ const server = http.createServer(async (req, res) => {
     sseClients.add(res)
     req.on("close", () => sseClients.delete(res))
     return
+  }
+
+  // Build identity — always plaintext (never E2E-sealed) so a deploy can be verified
+  // with `curl` through a TLS-intercepting proxy without the passphrase. See t036.
+  if (p === "/api/version" && !POST) {
+    return res
+      .writeHead(200, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ version: APP_VERSION, sha: GIT_SHA }))
   }
 
   // E2E bootstrap — always plaintext (the client needs it before it has a key). The
@@ -589,9 +716,48 @@ server.on("upgrade", (req, socket, head) => {
     wsClients.add(ws)
     ws.send(JSON.stringify({ t: "ready" }))
     ws.on("message", async (raw) => {
+      const text = raw.toString()
+      // Ping/pong is control traffic, never E2E-sealed (it carries only the client's own
+      // monotonic stamp, no user content) — handle it before the envelope open so it works
+      // identically with E2E on or off. The server echoes the stamp unchanged; only the
+      // client measures the round-trip against its own clock (t057). Doubles as a keepalive.
+      if (text.length < 64 && text.includes('"ping"')) {
+        let ping
+        try {
+          ping = JSON.parse(text)
+        } catch {
+          ping = null
+        }
+        if (ping?.t === "ping") {
+          try {
+            ws.send(JSON.stringify({ t: "pong", seq: ping.seq, ts: ping.ts }))
+          } catch {}
+          return
+        }
+      }
+      // Ack-after-paint control (t056) — plaintext like ping (a capability flag / a frame
+      // id, no user content), handled before the envelope open so it works identically with
+      // E2E on or off. `frame-ack-mode` opts the client in (server defers its self-ack and
+      // gates the next frame on this client's paint-ack); `frame-ack` is the paint-ack
+      // itself, clearing the one-in-flight slot and acking the remote.
+      if (text.length < 64 && text.includes('"frame-ack')) {
+        let ctrl
+        try {
+          ctrl = JSON.parse(text)
+        } catch {
+          ctrl = null
+        }
+        if (ctrl?.t === "frame-ack-mode") {
+          paintAckClients.add(ws)
+          return
+        }
+        if (ctrl?.t === "frame-ack") {
+          if (paintAckClients.has(ws)) onClientPaintAck(ctrl.sessionId)
+          return
+        }
+      }
       let parsed
       try {
-        const text = raw.toString()
         const body = e2eKey ? await open(text, e2eKey) : JSON.parse(text)
         parsed = body
       } catch (err) {
@@ -608,15 +774,22 @@ server.on("upgrade", (req, socket, head) => {
           ws.send(JSON.stringify({ t: "invoke-result", id, result: sealedResult }))
         } catch {}
       } else if (t === "send") {
-        // Page.screencastFrameAck is server-acked already; ignore client retries here.
+        // Page.screencastFrameAck is handled via the plaintext `frame-ack` control above
+        // (or server-self-acked for non-supporting clients) — ignore any stray `send` retry.
         if (method !== "Page.screencastFrameAck") send(method, params)
       } else if (t === "batch") {
         // Same shape as /api/cdp-batch: { items: [{ method, params }, …] }
         applyBatch(parsed.items)
       }
     })
-    ws.on("close", () => wsClients.delete(ws))
-    ws.on("error", () => wsClients.delete(ws))
+    const onWsGone = () => {
+      wsClients.delete(ws)
+      // If this was the last supporting client, free the in-flight slot so the next stream
+      // (a non-supporting reconnect, or before a new opt-in) isn't blocked by a stale ack.
+      if (paintAckClients.delete(ws) && paintAckClients.size === 0) resetPaintAckGate()
+    }
+    ws.on("close", onWsGone)
+    ws.on("error", onWsGone)
   })
 })
 

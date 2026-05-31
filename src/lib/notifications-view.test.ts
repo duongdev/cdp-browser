@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { GROUP_ITEM_CAP, groupByConversation, threadKey } from "./notifications-view"
+import { flattenRows, GROUP_ITEM_CAP, groupByConversation, threadKey } from "./notifications-view"
 
 const e = (over: Record<string, unknown>) => ({
   id: "x",
@@ -146,5 +146,29 @@ describe("groupByConversation", () => {
       e({ id: "b", activate: { type: "thread", id: "19:x" }, targetEntity: { id: "other" } }),
     ]
     expect(groupByConversation(list)).toHaveLength(1)
+  })
+})
+
+describe("flattenRows", () => {
+  it("flattens groups into one paint-ordered row list (group order, items within)", () => {
+    const list = [
+      e({ id: "m3", title: "third", ts: 300, targetEntity: { id: "c1" } }),
+      e({ id: "m2", title: "second", ts: 200, targetEntity: { id: "c2" } }),
+      e({ id: "m1", title: "first", ts: 100, targetEntity: { id: "c1" } }),
+    ]
+    const groups = groupByConversation(list)
+    expect(flattenRows(groups).map((r) => r.id)).toEqual(["m3", "m1", "m2"])
+  })
+
+  it("excludes collapsed (capped) items so it matches what is painted", () => {
+    const list = Array.from({ length: 5 }, (_, i) =>
+      e({ id: `m${i}`, ts: 100 - i, targetEntity: { id: "c1" } }),
+    )
+    const groups = groupByConversation(list)
+    expect(flattenRows(groups).map((r) => r.id)).toEqual(["m0", "m1", "m2"])
+  })
+
+  it("returns [] for an empty group list", () => {
+    expect(flattenRows([])).toEqual([])
   })
 })

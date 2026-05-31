@@ -24,11 +24,34 @@ export interface DispatcherDeps<N = unknown> {
    *  The caller gates it (visibility / permission / opt-in); the dispatcher only guarantees
    *  it is called at most once per notification, after the notification listeners. */
   toast: (entry: N) => void
+  /** Record a Screencast Frame's server send timestamp for always-on frame-age metrics
+   *  (t057) — handed in before fan-out, on the `cdp` route only when the payload is a
+   *  `Page.screencastFrame` carrying `serverTs`. The effectful `now`/snapshot read lives in
+   *  the recorder; the dispatcher just forwards the server stamp. Optional: tests and the
+   *  Electron path (no web timestamp) omit it. */
+  recordFrameAge?: (serverTs: number) => void
 }
+
+/** Pull a frame's server send timestamp off a `cdp` payload, if it is a screencast frame
+ *  that carries one. Non-frame events and timestamp-less frames (SSE without the field)
+ *  return undefined so frame age reports unavailable rather than fabricating one. */
+function frameServerTs(payload: unknown): number | undefined {
+  const params =
+    (payload as { method?: string; params?: { serverTs?: unknown } } | null)?.method ===
+    "Page.screencastFrame"
+      ? (payload as { params?: { serverTs?: unknown } }).params
+      : undefined
+  return typeof params?.serverTs === "number" ? params.serverTs : undefined
+}
+
+/** Phase carried by a `disconnected` dispatch — web auto-reconnect (t040) reports
+ *  "reconnecting" while the backoff loop retries and "lost" once it gives up. Absent ⇒
+ *  a plain terminal loss (the pre-t040 meaning). */
+export type DisconnectPhase = "reconnecting" | "lost"
 
 export interface Dispatcher<N = unknown> {
   onEvent(cb: (msg: unknown) => void): () => void
-  onDisconnected(cb: () => void): () => void
+  onDisconnected(cb: (phase?: DisconnectPhase) => void): () => void
   onNotification(cb: (entry: N) => void): () => void
   onNotificationActivate(cb: (entry: N) => void): () => void
   /** Fan a decoded payload out to its kind's listeners; `notification` also fires the toast. */
@@ -46,7 +69,7 @@ function register<T>(list: T[], cb: T): () => void {
 export function createDownlinkDispatcher<N = unknown>(deps: DispatcherDeps<N>): Dispatcher<N> {
   const listeners = {
     event: [] as ((msg: unknown) => void)[],
-    disconnected: [] as (() => void)[],
+    disconnected: [] as ((phase?: DisconnectPhase) => void)[],
     notification: [] as ((entry: N) => void)[],
     notificationActivate: [] as ((entry: N) => void)[],
   }
@@ -57,11 +80,16 @@ export function createDownlinkDispatcher<N = unknown>(deps: DispatcherDeps<N>): 
     onNotificationActivate: (cb) => register(listeners.notificationActivate, cb),
     dispatch(kind, payload) {
       switch (kind) {
-        case "cdp":
+        case "cdp": {
+          // Record frame age before fan-out (t057) — only a screencast frame with a server
+          // stamp; everything else is a no-op. Never alters the payload handed to listeners.
+          const serverTs = frameServerTs(payload)
+          if (serverTs !== undefined) deps.recordFrameAge?.(serverTs)
           for (const cb of listeners.event) cb(payload)
           return
+        }
         case "disconnected":
-          for (const cb of listeners.disconnected) cb()
+          for (const cb of listeners.disconnected) cb(payload as DisconnectPhase | undefined)
           return
         case "notification": {
           const entry = payload as N

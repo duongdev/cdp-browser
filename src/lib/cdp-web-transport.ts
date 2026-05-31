@@ -11,6 +11,7 @@
  * remote-page.ts. See docs/tasks/008.
  */
 
+import { DEFAULT_CAPS, getCaps, type WebCaps } from "./caps"
 import { type CryptoContext, createCryptoContext } from "./crypto-context"
 import { deriveKey as envDeriveKey, open as envOpen } from "./crypto-envelope"
 import {
@@ -20,30 +21,25 @@ import {
   type DownlinkSourceHandlers,
 } from "./downlink-dispatcher"
 import { type Batch, createBatcher, createHoverGate, createSingleFlight } from "./input-coalesce"
+import { noteFrameAge, notePing, notePong, resetLatencyMetrics } from "./latency-metrics"
 import { perfMark } from "./perf-mark"
-import { createTransportSelector, type InputTransportMode } from "./transport-selector"
+import {
+  type BackoffConfig,
+  type BackoffState,
+  initialBackoff,
+  nextBackoff,
+} from "./reconnect-backoff"
+import {
+  createTransportSelector,
+  createWsReclimbSchedule,
+  type InputTransportMode,
+  shouldReconnect,
+} from "./transport-selector"
 import { type AdvisedMode, createUplinkRouter, type Uplink } from "./uplink-router"
 
-export interface WebCaps {
-  /** True in the browser build. */
-  web: boolean
-  /** Local <webview> tabs — Electron only. */
-  localTabs: boolean
-  /** Unpacked MV3 extensions — Electron only. */
-  extensions: boolean
-}
-
-const DEFAULT_CAPS: WebCaps = { web: true, localTabs: false, extensions: false }
-
-export function getCaps(): WebCaps {
-  return (
-    (typeof window !== "undefined" && window.webCaps) || {
-      web: false,
-      localTabs: true,
-      extensions: true,
-    }
-  )
-}
+// Capabilities moved to ./caps (the pure source of truth). Re-exported so existing
+// importers of this module keep working — see docs/conventions/feature-gates.md.
+export { getCaps, type WebCaps }
 
 type Cmd = { method: string; params?: unknown }
 
@@ -63,6 +59,10 @@ export interface WebTransportDeps {
   /** The live E2E key (or null when off). A getter so production tracks the module var
    *  that `bootstrapE2E` sets; tests supply a fixed key. */
   getE2eKey?: () => CryptoKey | null
+  /** Backoff timer seam for the reconnect driver (t040). Defaults to the real
+   *  `setTimeout`/`clearTimeout`; tests inject fakes so the loop runs without waiting. */
+  setTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>
+  clearTimer?: (h: ReturnType<typeof setTimeout>) => void
 }
 
 function resolveDeps(): WebTransportDeps {
@@ -73,6 +73,130 @@ function resolveDeps(): WebTransportDeps {
     matchMedia: typeof window !== "undefined" ? (q) => window.matchMedia(q) : undefined,
     localStorage: typeof localStorage !== "undefined" ? localStorage : undefined,
     getE2eKey: () => e2eKey,
+    setTimer: (cb, ms) => setTimeout(cb, ms),
+    clearTimer: (h) => clearTimeout(h),
+  }
+}
+
+// Bounded-backoff defaults for auto-reconnect on a real drop (t040). 0.5s → 1s → 2s →
+// 4s → 8s → 16s (capped at 16s), giving up after 10 tries (~2 min of retries) — long
+// enough to ride out a host restart / network blip, bounded so a dead host settles on a
+// terminal "Disconnected" instead of retrying forever.
+const RECONNECT_CONFIG: BackoffConfig = {
+  baseMs: 500,
+  factor: 2,
+  capMs: 16000,
+  maxAttempts: 10,
+}
+
+/**
+ * The effectful reconnect loop (t040) — the pure schedule's caller. On a real Remote Page
+ * drop it re-invokes `connect(lastTabId)` on the bounded-backoff cadence, surfacing a
+ * "reconnecting" phase while it retries and a terminal "lost" once the ceiling is hit. A
+ * fresh `connect` (a tab switch, or a retry that lands) resets the schedule and cancels any
+ * queued retry; `stop()` (host-initiated teardown) does the same. The server-side
+ * `connectId` race-guard discards a retry that resolves after a newer connect, so this loop
+ * never promotes a stale socket — it just drives `connect` through the same guard.
+ */
+export function createReconnectDriver(opts: {
+  connect: (tabId: string) => Promise<{ ok?: boolean; error?: string }>
+  emit: (phase: "reconnecting" | "lost") => void
+  config?: BackoffConfig
+  setTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>
+  clearTimer?: (h: ReturnType<typeof setTimeout>) => void
+}) {
+  const cfg = opts.config ?? RECONNECT_CONFIG
+  const setTimer = opts.setTimer ?? ((cb, ms) => setTimeout(cb, ms))
+  const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h))
+
+  let state: BackoffState = initialBackoff()
+  let lastTabId: string | null = null
+  let pending: ReturnType<typeof setTimeout> | null = null
+  // Bumped on every connect()/stop(); a retry whose timer fires for a stale generation is
+  // dropped (the renderer-side mirror of the connector's connectId guard).
+  let generation = 0
+
+  function cancelPending() {
+    if (pending !== null) {
+      clearTimer(pending)
+      pending = null
+    }
+  }
+
+  function scheduleNext() {
+    const { state: next, step } = nextBackoff(state, "drop", cfg)
+    state = next
+    if (step.giveUp) {
+      opts.emit("lost")
+      return
+    }
+    opts.emit("reconnecting")
+    const myGen = generation
+    pending = setTimer(async () => {
+      pending = null
+      if (myGen !== generation || lastTabId === null) return
+      const result = await opts.connect(lastTabId)
+      if (myGen !== generation) return // a newer connect/stop superseded this retry
+      if (result?.ok) {
+        state = nextBackoff(state, "success", cfg).state
+        return
+      }
+      // "cancelled" means a newer connect took the slot — stop quietly (gen already bumped
+      // in that case). Any other error is the host still being down → climb the next rung.
+      if (result?.error !== "cancelled") scheduleNext()
+    }, step.delayMs)
+  }
+
+  return {
+    /** A fresh, intentional connect (tab switch or initial). Records the target, resets the
+     *  schedule, and cancels any queued retry so the loop never races a deliberate connect. */
+    noteConnect(tabId: string) {
+      lastTabId = tabId
+      generation++
+      cancelPending()
+      state = nextBackoff(state, "success", cfg).state
+    },
+    /** A real drop surfaced by the Downlink. Kicks the backoff loop. */
+    onDrop() {
+      if (lastTabId === null) {
+        // Never connected (or host-disconnected) — surface the terminal loss, don't retry.
+        opts.emit("lost")
+        return
+      }
+      cancelPending()
+      scheduleNext()
+    },
+    /** A manual force-reconnect (status-bar / settings tap, later the ⌘K command). Cancels
+     *  any pending backoff timer, resets the schedule to its base delay, and re-enters the
+     *  *same* `connect` path the auto-loop uses — immediately, for the last tab — never a
+     *  second competing loop. Bumping `generation` first supersedes any queued auto-retry
+     *  (the renderer mirror of the server `connectId` guard), so rapid taps don't stack: a
+     *  later tap discards the earlier attempt instead of opening a second socket. */
+    reconnectNow() {
+      if (lastTabId === null) return // nothing to reconnect to (never connected / host gone)
+      generation++
+      cancelPending()
+      state = initialBackoff()
+      const tabId = lastTabId
+      const myGen = generation
+      opts.emit("reconnecting")
+      void opts.connect(tabId).then((result) => {
+        if (myGen !== generation) return // a newer connect/tap/stop superseded this attempt
+        if (result?.ok) {
+          state = nextBackoff(state, "success", cfg).state
+          return
+        }
+        // Host still down → fall into the normal bounded-backoff climb (one loop, shared cfg).
+        if (result?.error !== "cancelled") scheduleNext()
+      })
+    },
+    /** Host-initiated teardown — stop retrying and forget the target. */
+    stop() {
+      generation++
+      cancelPending()
+      lastTabId = null
+      state = initialBackoff()
+    },
   }
 }
 
@@ -288,6 +412,50 @@ function createWsChannel(
   // socket's late `close` event doesn't clobber a newly-opened channel's outer state.
   let suppressClose = false
 
+  // Keepalive + RTT probe (t057). While the socket is ready, a plaintext `ping` carrying a
+  // client-monotonic stamp fires on a fixed interval regardless of input/frame traffic, so
+  // an idle WS isn't reaped by an upstream proxy (nginx default idle ~60s). The server pongs
+  // it straight back; the onmessage handler folds the round-trip into the RTT estimator. The
+  // ping is control traffic — never sealed, never routed through the dispatcher's CDP path.
+  const PING_INTERVAL_MS = 20000
+  let pingSeq = 0
+  let pingTimer: ReturnType<typeof setInterval> | null = null
+  function sendPing() {
+    if (!socket || socket.readyState !== deps.WebSocket.OPEN) return
+    const seq = ++pingSeq
+    const sentAt = performance.now()
+    notePing(seq, sentAt)
+    try {
+      // `ts` carries the client's monotonic stamp; the server echoes it unchanged. RTT is
+      // measured against the local `outstanding` map keyed by `seq`, never the echoed `ts`.
+      socket.send(JSON.stringify({ t: "ping", seq, ts: sentAt }))
+    } catch {}
+  }
+  function startPingPump() {
+    if (pingTimer !== null) return
+    sendPing() // probe immediately so RTT lands without waiting a full interval
+    pingTimer = setInterval(sendPing, PING_INTERVAL_MS)
+  }
+
+  // Ack-after-paint control (t056) — plaintext like ping (no user content), so it's E2E-
+  // agnostic and skips the seal round-trip. `frame-ack-mode` opts this client into the
+  // server's one-in-flight gate; `frame-ack` is the post-paint ack the viewport fires,
+  // releasing the slot so the server acks the remote and the next frame flows.
+  function sendControl(payload: unknown) {
+    if (!socket || socket.readyState !== deps.WebSocket.OPEN) return
+    try {
+      socket.send(JSON.stringify(payload))
+    } catch {}
+  }
+  function stopPingPump() {
+    if (pingTimer !== null) {
+      clearInterval(pingTimer)
+      pingTimer = null
+    }
+    // The estimator degrades cleanly when WS is gone — report unavailable, not a stale RTT.
+    resetLatencyMetrics()
+  }
+
   function open() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:"
     const url = `${proto}//${location.host}/api/ws`
@@ -321,7 +489,14 @@ function createWsChannel(
       const tEntry = performance.now() // [DEBUG-perf]
       const text = ev.data as string
       const tParse = performance.now() // [DEBUG-perf]
-      let msg: { t: string; event?: string; data?: unknown; id?: number; result?: unknown }
+      let msg: {
+        t: string
+        event?: string
+        data?: unknown
+        id?: number
+        result?: unknown
+        seq?: number
+      }
       try {
         msg = JSON.parse(text)
       } catch {
@@ -335,7 +510,13 @@ function createWsChannel(
       }
       if (msg.t === "ready") {
         ready = true
+        startPingPump()
+        sendControl({ t: "frame-ack-mode" }) // opt into the server's one-in-flight gate (t056)
         opts.onReady()
+      } else if (msg.t === "pong") {
+        // Control traffic — never fanned out as a CDP event. Fold the round-trip into the
+        // always-on RTT/jitter estimator against the client clock (t057).
+        if (typeof msg.seq === "number") notePong(msg.seq, performance.now())
       } else if (msg.t === "event" && msg.event === "cdp-frame") {
         // Stash metadata; the next binary message is the JPEG bytes for this frame.
         pendingFrame = msg.data as { method: string; params: Record<string, unknown> }
@@ -354,6 +535,7 @@ function createWsChannel(
     socket.onclose = () => {
       ready = false
       socket = null
+      stopPingPump()
       for (const cb of pending.values()) cb({ error: "ws closed" })
       pending.clear()
       if (suppressClose) return // caller already handled the outer state on explicit close
@@ -388,6 +570,7 @@ function createWsChannel(
       socket?.close()
     },
     send: (method: string, params?: unknown) => rawSend({ t: "send", method, params }),
+    paintAck: (sessionId: number) => sendControl({ t: "frame-ack", sessionId }),
     batch: (items: Cmd[]) => rawSend({ t: "batch", items }),
     invoke: (method: string, params?: unknown) =>
       new Promise<unknown>((resolve) => {
@@ -424,8 +607,32 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   // a Notification fires the toast exactly once. The four inline fan-out paths that used to
   // re-implement this collapsed into the one dispatcher. `nativeTheme` is a local-only
   // signal (no source push), so it stays a plain listener list.
-  const dispatcher = createDownlinkDispatcher<CdpNotification>({ toast: (e) => maybeToast(e) })
+  const dispatcher = createDownlinkDispatcher<CdpNotification>({
+    toast: (e) => maybeToast(e),
+    // Always-on frame age (t057): the dispatcher hands every screencast frame's server send
+    // timestamp here before fan-out; the recorder corrects for the RTT/2 one-way offset.
+    recordFrameAge: (serverTs) => noteFrameAge(performance.now(), serverTs),
+  })
   const nativeThemeListeners: ((isDark: boolean) => void)[] = []
+
+  // Auto-reconnect on a real drop (t040). The dispatcher's raw `disconnected` (the
+  // real-drop signal that survives t039) feeds the driver, which re-invokes the REST
+  // `connect` on a bounded-backoff cadence and surfaces a phase to the renderer:
+  // "reconnecting" while it retries, "lost" once the ceiling is hit. The renderer's
+  // `onDisconnected` listeners read the *driver's* phased output, not the raw dispatch, so
+  // a normal reconnect shows progress (not a terminal error) and only clears when frames
+  // resume. The retry's `connect` flows through the server-side `connectId` race-guard, so
+  // a retry overlapping a tab switch is discarded server-side — no stale socket promoted.
+  const disconnectedListeners: ((phase?: "reconnecting" | "lost") => void)[] = []
+  const reconnect = createReconnectDriver({
+    connect: (tabId) => rest.postJson("/api/connect", { id: tabId }),
+    emit: (phase) => {
+      for (const cb of disconnectedListeners) cb(phase)
+    },
+    setTimer: deps.setTimer,
+    clearTimer: deps.clearTimer,
+  })
+  dispatcher.onDisconnected(() => reconnect.onDrop())
 
   // The Downlink seam: exactly one live source (WS-backed or SSE-backed, never both) feeds
   // the dispatcher. The physical channel swaps mid-session (WS ready tears down SSE; WS drop
@@ -466,6 +673,9 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   })
   let wsReady = false
   let ws: ReturnType<typeof createWsChannel> | null = null
+  // Visible-tab WS re-climb cadence (t041): reuses the t040 backoff schedule so re-attempts
+  // are spaced on the same curve (no second competing counter), resetting when WS heals.
+  const reclimbSchedule = createWsReclimbSchedule(RECONNECT_CONFIG)
   // Active-mode tracking: what the runtime actually settled on (vs. what the user picked).
   // Emits to UI listeners so the settings badge can show "Active: …" when Auto downgrades.
   let activeMode: InputTransportMode = "batch"
@@ -611,6 +821,9 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
         selector.recordRetry("ws", true)
         // Coming back from a degraded state — clear it so onFocus doesn't re-trigger.
         if (selector.isDegraded()) selector.clearDegraded()
+        // The WS path healed — restart the visible-tab re-climb cadence so the next blip
+        // re-attempts from the base, not pinned at the prior rung (t041).
+        reclimbSchedule.reset()
         // Server now broadcasts every event to WS too — close SSE to stop the duplicate
         // frame stream that was costing real bandwidth (esp. iPad PWA where the screencast
         // decode loop is the bottleneck).
@@ -632,6 +845,9 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
         // off WS (whether dropped or user-toggled to Streaming/Basic).
         if (wasReady) reopenSse()
         setActiveMode(deriveActiveMode())
+        // WS just dropped — if we're foregrounded and still intend WS, schedule a spaced
+        // re-climb so the fast path self-heals (t041). Goes quiet while hidden / non-WS pick.
+        armReclimb(reclimbSchedule.next())
       },
     })
   }
@@ -806,20 +1022,70 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       if (wantMode === "ws") selector.setManualMode("ws")
       if (!ws) openWs()
     } else {
-      // stream or batch: tear down WS so input flows through the legacy paths.
+      // stream or batch: tear down WS so input flows through the legacy paths, and stop the
+      // re-climb timer so it never forces WS back against the user's manual non-WS pick (t041).
       selector.setManualMode(wantMode)
       closeWs()
+      cancelReclimb()
     }
     setActiveMode(deriveActiveMode())
   }
 
+  // Visible-tab WS re-climb (t041): while the document is foregrounded and WS is the intended
+  // transport, a bounded timer re-attempts `openWs()` whenever WS is down so a mid-session blip
+  // (idle-socket reap, iPad network change) self-heals within a few seconds instead of waiting
+  // for the next action. The pure `shouldReconnect` verdict gates each tick; the cadence reuses
+  // the t040 backoff schedule (no second competing loop). The timer never runs while hidden —
+  // it is armed on `visibilitychange → visible` and on a WS drop, and disarmed when hidden — so
+  // a parked PWA doesn't hammer the proxy. This re-climbs the WS *socket*; t040's driver owns
+  // the orthogonal Remote Page `/api/connect` reconnect.
+  let reclimbTimer: ReturnType<typeof setTimeout> | null = null
+  function cancelReclimb() {
+    if (reclimbTimer !== null) {
+      deps.clearTimer?.(reclimbTimer)
+      reclimbTimer = null
+    }
+  }
+  function reclimbState(): Parameters<typeof shouldReconnect>[0] {
+    const visible = typeof document === "undefined" || document.visibilityState === "visible"
+    return {
+      visible,
+      wsUp: wsReady,
+      attemptInFlight: !!ws && !wsReady,
+      intendsWs: shouldOpenWs(wantMode),
+    }
+  }
+  function reclimbTick() {
+    reclimbTimer = null
+    if (!shouldReconnect(reclimbState())) return // up, attempting, hidden, or non-WS pick
+    // Kick one attempt. Its outcome drives the next step: onReady stops the loop (WS is up),
+    // onClose re-arms the next spaced attempt. The tick never self-reschedules, so there is
+    // exactly one timer per attempt — no overlapping loops.
+    openWs()
+  }
+  function armReclimb(delayMs = 0) {
+    if (!deps.setTimer) return
+    // Only arm when a re-climb is actually warranted right now — visible, WS-intended, down,
+    // and no attempt already in flight (the `shouldReconnect` predicate). Otherwise idle until
+    // the next visibility return / WS drop re-arms us. (The tick re-checks before opening, so
+    // this is just to avoid a redundant no-op timer.)
+    if (!shouldReconnect(reclimbState())) return
+    cancelReclimb()
+    reclimbTimer = deps.setTimer(reclimbTick, delayMs)
+  }
+
   // Re-probe on visibility return: a network change (VPN flip, WiFi roam) is most likely
-  // when the user comes back. If we'd been degraded (Auto fell below WS), try WS again.
+  // when the user comes back. If we'd been degraded (Auto fell below WS), try WS again. The
+  // re-climb timer is armed on return-to-visible and torn down when the tab is backgrounded.
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") return
+      if (document.visibilityState !== "visible") {
+        cancelReclimb() // backgrounded — go quiet, no reconnect storm
+        return
+      }
       const probe = selector.onFocus()
       if (probe === "ws" && !wsReady && !ws && shouldOpenWs(wantMode)) openWs()
+      armReclimb() // foregrounded — heal the WS path if it's down
     })
   }
 
@@ -840,9 +1106,22 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     listTabs: () => rest.getJson("/api/tabs"),
     newTab: (url) => rest.postJson("/api/tabs/new", { url }),
     closeTab: (id) => rest.postJson("/api/tabs/close", { id }),
-    connect: (id) => rest.postJson("/api/connect", { id }),
+    connect: (id) => {
+      // An intentional connect (tab switch or initial): reset the backoff schedule and
+      // cancel any queued retry so the loop never races a deliberate switch.
+      reconnect.noteConnect(id)
+      return rest.postJson("/api/connect", { id })
+    },
+    // Manual force-reconnect (t042): the status-bar / settings Reconnect tap drives the same
+    // t040 driver — cancel the pending backoff timer, reset the schedule to base, and re-enter
+    // `connect` for the last tab through the existing generation guard. No second loop; rapid
+    // taps supersede via the guard. Electron's preload doesn't implement this — UI guards `?.`.
+    reconnect: () => reconnect.reconnectNow(),
     send: (method, params) => {
-      if (method === "Page.screencastFrameAck") return // server acks frames itself
+      // remote-page.ts auto-acks every frame the instant it dispatches it (pre-paint) — on
+      // web that's too early, so swallow it. The real ack rides `ackPaintedFrame` after the
+      // viewport paints, over the WS `frame-ack` control. SSE path: server self-acks. (t056)
+      if (method === "Page.screencastFrameAck") return
       const cmd: Cmd = { method, params }
       if (method === "Input.dispatchMouseEvent") {
         const p = params as { type?: string; buttons?: number } | undefined
@@ -866,12 +1145,20 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       if (method === "Input.dispatchKeyEvent") return batcher.immediate(cmd)
       uplink.send(cmd)
     },
+    // Post-paint frame ack (t056): the viewport calls this after it draws a frame, capping
+    // the in-flight queue at one. Only meaningful on the WS path — the server gates the next
+    // frame on it. On SSE (no WS) it's a no-op; the server self-acks there as before.
+    ackPaintedFrame: (sessionId) => {
+      if (wsReady && ws) ws.paintAck(sessionId)
+    },
     invoke: (method, params) => uplink.invoke(method, params),
     onEvent: (cb) => {
       dispatcher.onEvent(cb)
     },
     onDisconnected: (cb) => {
-      dispatcher.onDisconnected(cb)
+      // Listeners read the driver's phased output ("reconnecting" / "lost"), not the raw
+      // dispatch — the driver owns the drop now (see createReconnectDriver wiring above).
+      disconnectedListeners.push(cb)
     },
     getConfig: () => rest.getJson("/api/config"),
     setConfig: (config) => rest.postJson("/api/config", config),

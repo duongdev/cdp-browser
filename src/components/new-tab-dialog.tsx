@@ -33,6 +33,8 @@ interface NewTabDialogProps {
   onOpenChange: (open: boolean) => void
   cdpPins: Pin[]
   localPins: Pin[]
+  /** Electron only: when false the local mode + Tab-to-switch are hidden (web build). */
+  localEnabled: boolean
   onOpenUrl: (kind: NewTabKind, url: string) => void
   onActivatePin: (kind: NewTabKind, pin: Pin) => void
 }
@@ -43,6 +45,7 @@ export function NewTabDialog({
   onOpenChange,
   cdpPins,
   localPins,
+  localEnabled,
   onOpenUrl,
   onActivatePin,
 }: NewTabDialogProps) {
@@ -51,16 +54,16 @@ export function NewTabDialog({
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Seed mode + reset on each open.
+  // Seed mode + reset on each open. Web (no local) is always pinned to cdp.
   useEffect(() => {
     if (open) {
-      setKind(initialKind)
+      setKind(localEnabled ? initialKind : "cdp")
       setQuery("")
       setSelected(0)
       const t = setTimeout(() => inputRef.current?.focus(), 50)
       return () => clearTimeout(t)
     }
-  }, [open, initialKind])
+  }, [open, initialKind, localEnabled])
 
   const mode = MODE[kind]
   const pins = kind === "cdp" ? cdpPins : localPins
@@ -99,7 +102,7 @@ export function NewTabDialog({
 
   // All keys handled on the input so it never loses focus (arrows + Tab + Enter).
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Tab") {
+    if (e.key === "Tab" && localEnabled) {
       e.preventDefault()
       setKind((k) => (k === "cdp" ? "local" : "cdp"))
       setSelected(0)
@@ -167,7 +170,7 @@ export function NewTabDialog({
               return (
                 <button
                   className={cn(
-                    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+                    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors touch-target",
                     isSel ? "bg-foreground/[0.07]" : "hover:bg-foreground/[0.04]",
                   )}
                   key={item.kind === "url" ? "__url" : item.pin.id}
@@ -213,7 +216,7 @@ export function NewTabDialog({
         </div>
 
         <div className="flex items-center gap-3 border-t border-border/60 px-3.5 py-2 text-[11px] text-muted-foreground/60">
-          <Hint k="Tab">switch mode</Hint>
+          {localEnabled && <Hint k="Tab">switch mode</Hint>}
           <Hint k="↑↓">navigate</Hint>
           <Hint k="↵">open</Hint>
         </div>

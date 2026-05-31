@@ -78,10 +78,10 @@ The bar isn't "passes review." The bar is "I'd want to use this."
 
 ## Scope of the product
 
-CDP Browser is a desktop Electron app wrapping a Remote Browser, with Local Tabs as a first-class companion surface. It is not:
+CDP Browser ships on two surfaces wrapping a Remote Browser: a **web PWA** (the release surface, a daily driver on iPad) and a **desktop Electron app** (best-effort, with Local Tabs as a first-class companion surface). Its input model is **co-primary** — a Magic Keyboard + trackpad (keyboard-first) and couch finger-only (lightweight touch-scroll/tap/long-press). It is not:
 
 - A general-purpose web browser — no file downloads, no upload UI, no full extension ecosystem. Local Tabs support unpacked MV3 extensions scoped to the local session only.
-- A mobile app (no mobile targets, no touch-first UX).
+- A fully touch-native app — v0.1.0 finger input is a thin scroll/tap/long-press layer over the mouse pipeline; a soft keyboard and full multi-touch (pinch/momentum) are v0.2. Finger text entry assumes a hardware keyboard. See [ux.md](ux.md) and ADR-0009.
 - A multi-window app (one window, one Remote Browser connection at a time).
 
 Scope creep toward any of these is a design decision, not a task. Open an ADR.
@@ -90,4 +90,4 @@ Scope creep toward any of these is a design decision, not a task. Open an ADR.
 
 _Software is the means. A native-feeling, never-stuck browser is the point._
 
-_Last revisited: 2026-05-25_
+_Last revisited: 2026-05-30_

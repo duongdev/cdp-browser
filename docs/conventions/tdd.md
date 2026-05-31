@@ -12,7 +12,7 @@ Test-driven development for the parts that can be. This codebase has three disti
 │  2. MANUAL SMOKE — CDP/IPC glue; no fake-CDP harness              │  per-task checklist
 │     human verifies behavior with a live Remote Browser            │
 ├───────────────────────────────────────────────────────────────────┤
-│  1. STRICT TDD — pure functions in src/lib/* and notifications.js │  fast, automated
+│  1. STRICT TDD — pure functions in src/lib/* and core/*.js        │  fast, automated
 │     vitest; no external deps; runs in <5 seconds total            │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -23,7 +23,7 @@ Build every layer that applies. A pure state machine without unit tests is untes
 
 ## Layer 1 — Strict TDD for pure logic
 
-**Scope:** everything in `src/lib/`, `notifications.js`, and any pure-logic CommonJS file at the repo root (currently: `theme-emulation.js`). These are pure functions — no I/O, no IPC, no React. They are fully testable in isolation and they *must* be tested this way.
+**Scope:** everything in `src/lib/` and `core/` (all pure-logic CommonJS modules). These are pure functions — no I/O, no IPC, no React. They are fully testable in isolation and they *must* be tested this way.
 
 **Tools:** Vitest. All dependencies are either passed in (fake `Transport` for `createRemotePage`) or are pure computations (no mocking needed for math).
 
@@ -63,13 +63,28 @@ No exceptions for pure logic. If a test feels impossible to write, the design is
 | `cdp-web-transport.ts` | `cdp-web-transport.test.ts` | `collapseMoves` — run collapsing, click/wheel/key ordering |
 | `crypto-envelope.ts` | `crypto-envelope.test.ts` | seal/open round-trip, wrong-key rejection |
 | `input-coalesce.ts` | `input-coalesce.test.ts` | createBatcher, createHoverGate, createSingleFlight backpressure |
-| `notifications.js` | `notifications.test.ts` | dedup, cap, OS-toast gating, markUnread, unreadCount, unreadByTarget |
-| `theme-emulation.js` | `theme-emulation.test.ts` | emulatedMediaParams — sync on/off, dark/light mapping, reset to empty params |
-| `cdp-endpoints.js` | `cdp-endpoints.test.ts` | /json URL builders |
-| `settings-store.js` | `settings-store.test.ts` | config/ui-state defaults, pin CRUD + dedup, legacy migration (switchBlur→switchEffect, bookmarks→pins) |
-| `line-splitter.js` | `line-splitter.test.ts` | NDJSON reassembly — complete lines, partial/split chunks, blank-line keepalives |
+| `notifications.js` | `core/notifications.test.ts` | dedup, cap, OS-toast gating, markUnread, unreadCount, unreadByTarget |
+| `theme-emulation.js` | `core/theme-emulation.test.ts` | emulatedMediaParams — sync on/off, dark/light mapping, reset to empty params |
+| `cdp-endpoints.js` | `core/cdp-endpoints.test.ts` | /json URL builders |
+| `settings-store.js` | `core/settings-store.test.ts` | config/ui-state defaults, pin CRUD + dedup, legacy migration (switchBlur→switchEffect, bookmarks→pins) |
+| `line-splitter.js` | `core/line-splitter.test.ts` | NDJSON reassembly — complete lines, partial/split chunks, blank-line keepalives |
+| `frame-throttle.js` | `core/frame-throttle.test.ts` | createFrameThrottle rate gate, fresh-frame-wins drop, everyNthFrameFor |
+| `frame-ack-gate.js` | `core/frame-ack-gate.test.ts` | one-in-flight gate, watchdog timeout, ack-then-drop ordering |
+| `quality-tier.js` | `core/quality-tier.test.ts` | tierToParams, parseTier (garbage→default), all three tier presets |
+| `remote-page-connector.js` | `core/remote-page-connector.test.ts` | connect choreography, connectId race-guard, reconnect |
+| `notifications-sidechain.js` | `core/notifications-sidechain.test.ts` | createNotificationCenter side-channel lifecycle |
+| `touch-gesture.ts` | `touch-gesture.test.ts` | tap/drag/long-press classification, MOVE_THRESHOLD_PX jitter tolerance |
+| `find-bar.ts` | `find-bar.test.ts` | reduce transitions, counterLabel, next/prev wrap |
+| `hotkey-registry.ts` | `hotkey-registry.test.ts` | buildActions, filterActions, groupForOverlay |
+| `reconnect-backoff.ts` | `reconnect-backoff.test.ts` | exponential growth, cap, giveUp after maxAttempts, success resets |
+| `caps.ts` | `caps.test.ts` | getCaps with/without webCaps injection, localTabs/extensions flags |
+| `quality-tier.ts` | `quality-tier.ts` (renderer) | parseTier, QUALITY_TIERS shape |
+| `echo-cursor.ts` | `echo-cursor.test.ts` | down/move/up state, pointForEvent mapping |
+| `settings-dismiss.ts` | `settings-dismiss.test.ts` | shouldArmLeaveTimer — coarse guard, outside-container check |
+| `sw-cache-name.ts` | `sw-cache-name.test.ts` | cacheNameFor determinism, version+sha variants |
+| `latency-metrics.ts` | `latency-metrics.test.ts` | createRttEstimator EWMA, frameAge, clockOffsetFromRtt, singleton |
 
-Every new module under `src/lib/` or pure-logic file at root gets a colocated test file from its first commit.
+Every new module under `src/lib/` or `core/` gets a colocated test file from its first commit.
 
 **Example shape:**
 
@@ -133,6 +148,9 @@ These checklists live in the task file's **Test plan** section and in the PR des
 ## Test naming and organization
 
 ```
+core/
+├── notifications.js
+└── notifications.test.ts      # layer 1
 src/
 ├── lib/
 │   ├── tabs.ts
@@ -140,8 +158,6 @@ src/
 ├── components/
 │   ├── sidebar.tsx
 │   └── sidebar.test.tsx       # layer 3 unit (if warranted)
-notifications.js
-notifications.test.ts          # layer 1
 ```
 
 Naming:

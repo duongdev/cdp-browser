@@ -60,7 +60,7 @@ export function EditPinDialog({ open, onOpenChange, pin, liveUrl, onSave }: Edit
               <Label htmlFor="pin-url">URL</Label>
               {canUseCurrent && (
                 <button
-                  className="text-[11px] text-primary hover:underline"
+                  className="touch-slop-y text-[11px] text-primary hover:underline"
                   onClick={() => liveUrl && setUrl(liveUrl)}
                   type="button"
                 >

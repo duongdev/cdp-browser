@@ -471,3 +471,49 @@ describe("RemotePage navigation", () => {
     expect(expr).toContain("clearInterval")
   })
 })
+
+describe("RemotePage find", () => {
+  it("find searches via returnByValue and reports the match total", async () => {
+    const t = fakeTransport()
+    t.invoke.mockResolvedValue({ result: { value: { total: 7, index: 0 } } })
+    const page = createRemotePage(t.transport)
+
+    const r = await page.find("hello")
+
+    expect(r).toEqual({ total: 7 })
+    const [method, params] = t.invoke.mock.calls[0]
+    expect(method).toBe("Runtime.evaluate")
+    expect(params.returnByValue).toBe(true)
+    expect(params.expression).toContain("__cdpFind")
+    expect(params.expression).toContain(JSON.stringify("hello"))
+  })
+
+  it("find returns total 0 when nothing matches", async () => {
+    const t = fakeTransport()
+    t.invoke.mockResolvedValue({ result: { value: { total: 0, index: -1 } } })
+    expect(await createRemotePage(t.transport).find("zzz")).toEqual({ total: 0 })
+  })
+
+  it("findStep advances and returns the new index", async () => {
+    const t = fakeTransport()
+    t.invoke.mockResolvedValue({ result: { value: { index: 3 } } })
+    const page = createRemotePage(t.transport)
+
+    const r = await page.findStep("next")
+
+    expect(r).toEqual({ index: 3 })
+    expect(t.invoke.mock.calls[0][1].expression).toContain(JSON.stringify("next"))
+  })
+
+  it("clearFind drops highlights via a fire-and-forget send (no invoke)", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.clearFind()
+
+    expect(t.invoke).not.toHaveBeenCalled()
+    expect(t.sends).toHaveLength(1)
+    expect(t.sends[0].method).toBe("Runtime.evaluate")
+    expect(t.sends[0].params.expression).toContain("clear()")
+  })
+})

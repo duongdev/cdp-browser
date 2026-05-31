@@ -8,8 +8,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { collapseMoves, createWebCdp, type WebTransportDeps } from "./cdp-web-transport"
+import {
+  collapseMoves,
+  createReconnectDriver,
+  createWebCdp,
+  type WebTransportDeps,
+} from "./cdp-web-transport"
 import { deriveKey, open as envOpen, seal as envSeal } from "./crypto-envelope"
+import type { BackoffConfig } from "./reconnect-backoff"
 
 // --- fakes ----------------------------------------------------------------------------
 
@@ -87,6 +93,58 @@ function makeFakeFetch(opts: { reply?: (path: string) => unknown; status?: numbe
     } as unknown as Response
   })
   return { fetchFn, calls }
+}
+
+// A controllable backoff timer (t040): queue scheduled callbacks; `runNext()` fires the
+// head and awaits its async body, mirroring a backoff window elapsing. `cleared` records
+// cancellations so a test can assert a queued retry was dropped on noteConnect/stop.
+function fakeTimers() {
+  let nextHandle = 1
+  const queued = new Map<number, () => void>()
+  const cleared: number[] = []
+  return {
+    setTimer: (cb: () => void) => {
+      const h = nextHandle++
+      queued.set(h, cb)
+      return h as unknown as ReturnType<typeof setTimeout>
+    },
+    clearTimer: (h: ReturnType<typeof setTimeout>) => {
+      cleared.push(h as unknown as number)
+      queued.delete(h as unknown as number)
+    },
+    async runNext() {
+      const entry = [...queued.entries()][0]
+      if (!entry) return
+      const [h, cb] = entry
+      queued.delete(h)
+      cb()
+      await Promise.resolve()
+      await Promise.resolve()
+    },
+    pendingCount: () => queued.size,
+    cleared,
+  }
+}
+
+// A controllable fake `document` for the visible-tab WS re-climb (t041): a settable
+// `visibilityState` plus a `visibilitychange` listener registry so a test can drive
+// background/foreground transitions. Installed on globalThis for the createWebCdp run.
+function fakeDocument() {
+  const handlers: Record<string, Array<() => void>> = {}
+  const doc = {
+    visibilityState: "visible" as "visible" | "hidden",
+    addEventListener(type: string, cb: () => void) {
+      if (!handlers[type]) handlers[type] = []
+      handlers[type].push(cb)
+    },
+  }
+  return {
+    doc,
+    setVisibility(state: "visible" | "hidden") {
+      doc.visibilityState = state
+      for (const cb of handlers.visibilitychange ?? []) cb()
+    },
+  }
 }
 
 // The streaming input channel fires a one-shot probe POST to /api/input-stream at
@@ -180,6 +238,158 @@ describe("collapseMoves", () => {
   })
 })
 
+// --- reconnect driver (t040) ----------------------------------------------------------
+
+describe("createReconnectDriver", () => {
+  const fakeTimer = fakeTimers
+  const CFG: BackoffConfig = { baseMs: 500, factor: 2, capMs: 8000, maxAttempts: 3 }
+
+  it("a real drop kicks the loop: emits 'reconnecting' then re-invokes connect", async () => {
+    const t = fakeTimer()
+    const connect = vi.fn(async () => ({ ok: true }))
+    const phases: string[] = []
+    const d = createReconnectDriver({
+      connect,
+      emit: (p) => phases.push(p),
+      config: CFG,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.noteConnect("tab-1")
+    d.onDrop()
+    expect(phases).toEqual(["reconnecting"])
+    expect(connect).not.toHaveBeenCalled() // waits the backoff window first
+    await t.runNext()
+    expect(connect).toHaveBeenCalledWith("tab-1")
+  })
+
+  it("a failed retry climbs the next rung; a success stops the loop and resets", async () => {
+    const t = fakeTimer()
+    // First retry fails (host still down), second succeeds.
+    const results = [{ error: "Tab not found" }, { ok: true as const }]
+    const connect = vi.fn(async () => results.shift() ?? { ok: true })
+    const phases: string[] = []
+    const d = createReconnectDriver({
+      connect,
+      emit: (p) => phases.push(p),
+      config: CFG,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.noteConnect("tab-1")
+    d.onDrop()
+    await t.runNext() // first retry → fails → schedules another
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(t.pendingCount()).toBe(1)
+    await t.runNext() // second retry → ok → loop done
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(t.pendingCount()).toBe(0)
+    expect(phases).toEqual(["reconnecting", "reconnecting"])
+  })
+
+  it("gives up with 'lost' after the max-attempts ceiling, no further retries", async () => {
+    const t = fakeTimer()
+    const connect = vi.fn(async () => ({ error: "down" }))
+    const phases: string[] = []
+    const d = createReconnectDriver({
+      connect,
+      emit: (p) => phases.push(p),
+      config: CFG, // maxAttempts: 3
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.noteConnect("tab-1")
+    d.onDrop()
+    await t.runNext() // attempt 1
+    await t.runNext() // attempt 2
+    await t.runNext() // attempt 3 → next drop exceeds budget
+    expect(connect).toHaveBeenCalledTimes(3)
+    expect(phases).toEqual(["reconnecting", "reconnecting", "reconnecting", "lost"])
+    expect(t.pendingCount()).toBe(0)
+  })
+
+  it("a success outcome resets the budget so a later drop climbs the full ladder again", async () => {
+    const t = fakeTimer()
+    const results: Array<{ ok?: true; error?: string }> = [{ ok: true }]
+    const connect = vi.fn(async () => results.shift() ?? { error: "down" })
+    const phases: string[] = []
+    const d = createReconnectDriver({
+      connect,
+      emit: (p) => phases.push(p),
+      config: CFG,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.noteConnect("tab-1")
+    d.onDrop()
+    await t.runNext() // recovers (ok) → schedule resets
+    // A fresh drop must climb the full budget again (3 retries before "lost").
+    d.onDrop()
+    await t.runNext()
+    await t.runNext()
+    await t.runNext()
+    const lostCount = phases.filter((p) => p === "lost").length
+    const reconnectingCount = phases.filter((p) => p === "reconnecting").length
+    expect(lostCount).toBe(1)
+    expect(reconnectingCount).toBe(4) // 1 (recovered run) + 3 (the full second ladder)
+  })
+
+  it("noteConnect (a tab switch) cancels a queued retry and resets the schedule", async () => {
+    const t = fakeTimer()
+    const connect = vi.fn(async () => ({ error: "down" }))
+    const d = createReconnectDriver({
+      connect,
+      emit: () => {},
+      config: CFG,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.noteConnect("tab-1")
+    d.onDrop()
+    expect(t.pendingCount()).toBe(1) // a retry is queued
+    d.noteConnect("tab-2") // user switched tabs
+    expect(t.pendingCount()).toBe(0) // the queued retry was cancelled
+    expect(t.cleared.length).toBe(1)
+    // The stale timer firing late (gen mismatch) must NOT re-invoke connect.
+    await t.runNext()
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  it("stop() cancels a queued retry (host-initiated teardown halts the loop)", () => {
+    const t = fakeTimer()
+    const connect = vi.fn(async () => ({ error: "down" }))
+    const d = createReconnectDriver({
+      connect,
+      emit: () => {},
+      config: CFG,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.noteConnect("tab-1")
+    d.onDrop()
+    expect(t.pendingCount()).toBe(1)
+    d.stop()
+    expect(t.pendingCount()).toBe(0)
+  })
+
+  it("a drop before any connect is terminal 'lost' (nothing to reconnect to)", () => {
+    const t = fakeTimer()
+    const connect = vi.fn(async () => ({ ok: true }))
+    const phases: string[] = []
+    const d = createReconnectDriver({
+      connect,
+      emit: (p) => phases.push(p),
+      config: CFG,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    })
+    d.onDrop()
+    expect(phases).toEqual(["lost"])
+    expect(t.pendingCount()).toBe(0)
+    expect(connect).not.toHaveBeenCalled()
+  })
+})
+
 // --- event fan-out (SSE downlink) -----------------------------------------------------
 
 describe("event fan-out (SSE)", () => {
@@ -210,6 +420,27 @@ describe("event fan-out (SSE)", () => {
     cdp.onDisconnected(() => seen.push("b"))
     FakeEventSource.instances[0].emit("disconnected", "")
     expect(seen).toEqual(["a", "b"])
+  })
+
+  it("after a connect, a server 'disconnected' surfaces the 'reconnecting' phase to listeners", async () => {
+    const t = fakeTimers()
+    const { fetchFn, calls } = makeFakeFetch({ reply: () => ({ ok: true }) })
+    const cdp = createWebCdp(
+      baseDeps({
+        fetch: fetchFn as unknown as typeof fetch,
+        setTimer: t.setTimer,
+        clearTimer: t.clearTimer,
+      }),
+    )
+    const phases: Array<string | undefined> = []
+    cdp.onDisconnected((p) => phases.push(p))
+    await cdp.connect("plain-1") // arm the driver with the active tab
+    FakeEventSource.instances[0].emit("disconnected", "") // a real host drop
+    expect(phases).toEqual(["reconnecting"])
+    // The backoff window elapses → the driver re-POSTs /api/connect for the same tab.
+    await t.runNext()
+    const connectCalls = calls.filter((c) => c.path === "/api/connect")
+    expect(connectCalls.length).toBe(2) // the initial connect + one retry
   })
 
   it("notification reaches every onNotification listener once, in order", () => {
@@ -460,5 +691,119 @@ describe("theme push", () => {
     for (const cb of listeners) cb() // fire the mql change handler (pushTheme)
     expect(calls.some((c) => c.path === "/api/theme")).toBe(true)
     expect(seen).toEqual([true])
+  })
+})
+
+// --- visible-tab WS re-climb (t041) ---------------------------------------------------
+
+describe("visible-tab WS re-climb", () => {
+  // Install/restore a fake document so the visibilitychange listener and visibility gate are
+  // exercised (the node test env has no document by default).
+  let restoreDoc: () => void
+  function installDoc(fd: ReturnType<typeof fakeDocument>) {
+    const g = globalThis as { document?: unknown }
+    const prev = g.document
+    g.document = fd.doc
+    restoreDoc = () => {
+      g.document = prev
+    }
+  }
+  afterEach(() => restoreDoc?.())
+
+  function bootAuto() {
+    const fd = fakeDocument()
+    installDoc(fd)
+    const timers = fakeTimers()
+    const { fetchFn } = makeFakeFetch()
+    const cdp = createWebCdp(
+      baseDeps({
+        fetch: fetchFn as unknown as typeof fetch,
+        setTimer: timers.setTimer as unknown as (
+          cb: () => void,
+          ms: number,
+        ) => ReturnType<typeof setTimeout>,
+        clearTimer: timers.clearTimer,
+      }),
+    )
+    return { fd, timers, cdp }
+  }
+
+  it("schedules a spaced re-climb after a ready WS drops while foregrounded", async () => {
+    const { timers } = bootAuto()
+    const ws0 = FakeWebSocket.instances[0]
+    ws0.ready() // WS up
+    expect(timers.pendingCount()).toBe(0) // nothing to re-climb while up
+    ws0.close() // mid-session blip
+    // A re-climb attempt is queued (spaced via the backoff schedule), not fired inline.
+    expect(timers.pendingCount()).toBe(1)
+    const before = FakeWebSocket.instances.length
+    await timers.runNext() // the timer fires → openWs() opens a fresh socket
+    expect(FakeWebSocket.instances.length).toBe(before + 1)
+  })
+
+  it("re-climbs repeatedly until WS comes back, then stops", async () => {
+    const { timers } = bootAuto()
+    const ws0 = FakeWebSocket.instances[0]
+    ws0.ready()
+    ws0.close()
+    await timers.runNext() // attempt #1 → new socket (still not ready)
+    const ws1 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+    ws1.close() // attempt failed → another re-climb queued
+    expect(timers.pendingCount()).toBe(1)
+    await timers.runNext() // attempt #2 → new socket
+    const ws2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+    ws2.ready() // WS heals
+    expect(timers.pendingCount()).toBe(0) // no further re-climb once up
+  })
+
+  it("goes quiet while backgrounded: a queued re-climb is cancelled on hide, no attempt fires", () => {
+    const { fd, timers } = bootAuto()
+    const ws0 = FakeWebSocket.instances[0]
+    ws0.ready()
+    ws0.close() // re-climb queued
+    expect(timers.pendingCount()).toBe(1)
+    const before = FakeWebSocket.instances.length
+    fd.setVisibility("hidden") // backgrounded → cancel the pending re-climb
+    expect(timers.pendingCount()).toBe(0)
+    expect(FakeWebSocket.instances.length).toBe(before) // no new socket opened while hidden
+  })
+
+  it("resumes the re-climb on return to foreground", () => {
+    const { fd, timers } = bootAuto()
+    const ws0 = FakeWebSocket.instances[0]
+    ws0.ready()
+    ws0.close()
+    fd.setVisibility("hidden") // cancels the queued re-climb
+    expect(timers.pendingCount()).toBe(0)
+    fd.setVisibility("visible") // foregrounded → re-arm a single re-climb
+    expect(timers.pendingCount()).toBe(1)
+  })
+
+  it("does not force WS when the user manually picked Basic (batch)", () => {
+    const fd = fakeDocument()
+    installDoc(fd)
+    const timers = fakeTimers()
+    const { fetchFn } = makeFakeFetch()
+    createWebCdp(
+      baseDeps({
+        fetch: fetchFn as unknown as typeof fetch,
+        localStorage: {
+          getItem: (k) => (k === "inputTransport" ? "batch" : null),
+          setItem: () => {},
+        },
+        setTimer: timers.setTimer as unknown as (
+          cb: () => void,
+          ms: number,
+        ) => ReturnType<typeof setTimeout>,
+        clearTimer: timers.clearTimer,
+      }),
+    )
+    // Basic never opens WS, so there's nothing to drop — but a foreground transition must not
+    // arm a re-climb against the manual non-WS pick.
+    fd.setVisibility("hidden")
+    fd.setVisibility("visible")
+    expect(timers.pendingCount()).toBe(0)
+    // And no WS socket was ever opened.
+    expect(FakeWebSocket.instances.length).toBe(0)
   })
 })

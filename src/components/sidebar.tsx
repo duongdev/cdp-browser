@@ -21,6 +21,7 @@ import {
   ArrowRight01Icon,
   Cancel01Icon,
   CloudIcon,
+  Copy01Icon,
   Edit02Icon,
   Globe02Icon,
   Home01Icon,
@@ -28,13 +29,12 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  SidebarLeft01Icon,
-  SidebarLeftIcon,
 } from "@hugeicons/core-free-icons"
 import type { IconSvgElement } from "@hugeicons/react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { AnimatePresence, motion } from "motion/react"
 import { type PointerEvent as ReactPointerEvent, useState } from "react"
+import { toast } from "sonner"
 import type { TabInfo } from "@/app"
 import { InstallBanner } from "@/components/install-banner"
 import {
@@ -56,7 +56,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { getCaps } from "@/lib/cdp-web-transport"
+import { getCaps } from "@/lib/caps"
 import type { LocalTab } from "@/lib/local-tabs"
 import { cn } from "@/lib/utils"
 
@@ -71,7 +71,6 @@ interface SidebarProps {
   onCloseTabs: (ids: string[]) => void
   onNewTab: () => void
   collapsed: boolean
-  onToggleCollapse: () => void
   width: number
   onResize: (width: number) => void
   onResizeEnd: (width: number) => void
@@ -121,7 +120,6 @@ export function Sidebar({
   onCloseTabs,
   onNewTab,
   collapsed,
-  onToggleCollapse,
   width,
   onResize,
   onResizeEnd,
@@ -279,34 +277,15 @@ export function Sidebar({
         />
       )}
 
-      {/* Traffic-light drag region. Collapse control is top-right (clear of the
-          left traffic lights); the expand control lives inside the rail when
-          collapsed, so nothing overlaps the lights. */}
+      {/* Traffic-light drag region. The collapse toggle now lives in the toolbar, so
+          this header carries no controls in either state — it's purely the drag strip
+          that clears the macOS traffic lights. Top-left corner is the worst case in
+          landscape iPad: the top + left insets push the strip clear of the notch +
+          rounded corner; min-h-11 keeps the height identical at 0. */}
       <div
-        className="h-11 shrink-0 relative border-b border-border bg-card"
+        className="h-11 shrink-0 border-b border-border bg-card pl-[max(0px,env(safe-area-inset-left))]"
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-      >
-        {!collapsed && (
-          <div
-            className="absolute top-2.5 right-2 z-10"
-            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          >
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  className="text-muted-foreground hover:text-foreground"
-                  onClick={onToggleCollapse}
-                  size="icon-xs"
-                  variant="ghost"
-                >
-                  <HugeiconsIcon className="size-3.5" icon={SidebarLeft01Icon} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">Collapse sidebar</TooltipContent>
-            </Tooltip>
-          </div>
-        )}
-      </div>
+      />
 
       {collapsed ? (
         <CollapsedRail
@@ -314,7 +293,6 @@ export function Sidebar({
           localActiveId={localActiveId}
           localTabs={localTabs}
           onActivatePin={onActivatePin}
-          onExpand={onToggleCollapse}
           onNewTab={onNewTab}
           onSwitchLocalTab={onSwitchLocalTab}
           onSwitchTab={onSwitchTab}
@@ -325,7 +303,7 @@ export function Sidebar({
           unreadByTab={unreadByTab}
         />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden pl-[max(0.5rem,env(safe-area-inset-left))] pr-2 pt-1 pb-2">
           <InstallBanner />
           <DndContext
             collisionDetection={closestCenter}
@@ -524,18 +502,22 @@ function Folder({
           aligns with row favicons and the label with row titles. */}
       <div className="group/folder flex items-center rounded-lg pr-1">
         <button
-          className="flex flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left outline-none"
+          className="flex flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left outline-none touch-target"
           onClick={onToggle}
           type="button"
         >
           <span className="relative grid size-4 shrink-0 place-items-center">
+            {/* Folder icon at rest on a fine pointer; the disclosure chevron is revealed on
+                hover. A coarse pointer (iPad finger) has no hover, so it shows the rotating
+                chevron at rest instead — otherwise the section reads as a static label with
+                no cue that it's collapsible. */}
             <HugeiconsIcon
-              className="size-3.5 text-muted-foreground/70 transition-opacity duration-150 group-hover/folder:opacity-0"
+              className="size-3.5 text-muted-foreground/70 transition-opacity duration-150 group-hover/folder:opacity-0 [@media(hover:none)]:opacity-0"
               icon={icon}
             />
             <HugeiconsIcon
               className={cn(
-                "absolute size-3 text-muted-foreground opacity-0 transition-all duration-150 group-hover/folder:opacity-100",
+                "absolute size-3 text-muted-foreground opacity-0 transition-all duration-150 group-hover/folder:opacity-100 [@media(hover:none)]:opacity-100",
                 open && "rotate-90",
               )}
               icon={ArrowRight01Icon}
@@ -577,7 +559,6 @@ function CollapsedRail({
   onSwitchTab,
   onSwitchLocalTab,
   onNewTab,
-  onExpand,
   showNumbers,
 }: {
   pins: Pin[]
@@ -591,7 +572,6 @@ function CollapsedRail({
   onSwitchTab: (id: string) => void
   onSwitchLocalTab: (id: string) => void
   onNewTab: () => void
-  onExpand: () => void
   showNumbers: boolean
 }) {
   // Same Cmd+number order as the expanded sidebar: pins → CDP → local.
@@ -606,20 +586,7 @@ function CollapsedRail({
     return i >= 0 && i < 9 ? i + 1 : undefined
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden pt-2 pb-2">
-      {/* Expand control — below the traffic-light region so it never overlaps. */}
-      <Tooltip delayDuration={0}>
-        <TooltipTrigger asChild>
-          <button
-            className="mb-0.5 grid size-7 place-items-center rounded-md text-muted-foreground/70 hover:bg-foreground/[0.06] hover:text-foreground"
-            onClick={onExpand}
-            type="button"
-          >
-            <HugeiconsIcon className="size-3.5" icon={SidebarLeftIcon} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">Expand sidebar</TooltipContent>
-      </Tooltip>
+    <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden pl-[max(0px,env(safe-area-inset-left))] pt-2 pb-2">
       {pins.map((p) => (
         <RailTile
           active={p.targetId != null && p.targetId === activeTabId}
@@ -659,7 +626,7 @@ function CollapsedRail({
         <Tooltip delayDuration={0}>
           <TooltipTrigger asChild>
             <button
-              className="grid size-9 place-items-center rounded-[10px] text-muted-foreground/70 ring-1 ring-inset ring-border/60 hover:bg-foreground/[0.06] hover:text-foreground"
+              className="grid size-9 place-items-center rounded-[10px] text-muted-foreground/70 ring-1 ring-inset ring-border/60 hover:bg-foreground/[0.06] hover:text-foreground touch-slop"
               onClick={onNewTab}
               type="button"
             >
@@ -699,7 +666,7 @@ function RailTile({
       <TooltipTrigger asChild>
         <button
           className={cn(
-            "group relative grid size-9 shrink-0 place-items-center rounded-[10px] transition-all duration-150",
+            "group relative grid size-9 shrink-0 place-items-center rounded-[10px] transition-all duration-150 touch-slop",
             active
               ? "bg-foreground/10 shadow-sm ring-1 ring-inset ring-border/70"
               : "hover:bg-foreground/[0.06]",
@@ -825,6 +792,16 @@ function sortableStyle(
   return { transform: CSS.Transform.toString(transform), transition }
 }
 
+// Lift a tab/pin URL to the clipboard — the only way to copy an address on a
+// keyboard-less touch surface. navigator.clipboard needs a secure context and can
+// reject (unfocused doc / denied permission), so the catch keeps it non-crashing.
+function copyAddress(url: string) {
+  navigator.clipboard
+    .writeText(url)
+    .then(() => toast.success("Address copied"))
+    .catch(() => toast.error("Couldn't copy address"))
+}
+
 // --- Sortable Pin Tile (favicon-only grid cell) ---
 
 function SortablePinTile({
@@ -867,7 +844,7 @@ function SortablePinTile({
           <TooltipTrigger asChild>
             <button
               className={cn(
-                "group relative grid size-9 place-items-center rounded-[11px] transition-all duration-150 cursor-default",
+                "group relative grid size-9 place-items-center rounded-[11px] transition-all duration-150 cursor-default touch-target",
                 isDragging
                   ? "opacity-50"
                   : active
@@ -927,6 +904,12 @@ function SortablePinTile({
           </TooltipTrigger>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {(linkedTab?.url || pin.url) && (
+            <ContextMenuItem onSelect={() => copyAddress(linkedTab?.url || pin.url)}>
+              <HugeiconsIcon icon={Copy01Icon} />
+              Copy address
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onSelect={onEdit}>
             <HugeiconsIcon icon={Edit02Icon} />
             Edit
@@ -1004,7 +987,7 @@ function SortableTabItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default",
+                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1031,13 +1014,13 @@ function SortableTabItem({
                 <span className="flex-1 truncate text-xs">{displayTitle}</span>
                 <div
                   className={cn(
-                    "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100",
-                    active ? "from-sidebar-accent" : "from-accent",
+                    "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100",
+                    active ? "from-sidebar-accent" : "from-sidebar",
                   )}
                 />
                 <button
                   aria-label="Close tab"
-                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground"
+                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground touch-target-end"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClose()
@@ -1055,6 +1038,12 @@ function SortableTabItem({
               <HugeiconsIcon icon={PinIcon} />
               Pin
             </ContextMenuItem>
+            {tab.url && (
+              <ContextMenuItem onSelect={() => copyAddress(tab.url)}>
+                <HugeiconsIcon icon={Copy01Icon} />
+                Copy address
+              </ContextMenuItem>
+            )}
             <ContextMenuItem onSelect={onClose}>
               <HugeiconsIcon icon={Cancel01Icon} />
               Close
@@ -1117,7 +1106,7 @@ function SortableLocalItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default",
+                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1139,18 +1128,23 @@ function SortableLocalItem({
                 <span className="relative shrink-0">
                   <RowFavicon favicon={tab.favicon} />
                   <NumberHint n={number} />
+                  {/* Pinned cue as a favicon corner dot — shows identically on fine + coarse
+                      (the old right-side pin glyph was hidden on touch and collided with the
+                      always-on close X). Mirrors the collapsed-rail tile dot. */}
+                  {tab.pinned && (
+                    <span className="absolute bottom-0.5 right-0.5 size-1.5 rounded-full bg-foreground/40 ring-1 ring-sidebar" />
+                  )}
                 </span>
                 <span className="flex-1 truncate text-xs">{displayTitle}</span>
-                {/* pin indicator on the right so favicons + titles stay aligned */}
-                {tab.pinned && (
-                  <HugeiconsIcon
-                    className="size-3 shrink-0 text-muted-foreground/50 group-hover:hidden [@media(hover:none)]:hidden"
-                    icon={PinIcon}
-                  />
-                )}
+                <div
+                  className={cn(
+                    "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100",
+                    active ? "from-sidebar-accent" : "from-sidebar",
+                  )}
+                />
                 <button
                   aria-label="Close tab"
-                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground"
+                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground touch-target-end"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClose()

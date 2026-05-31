@@ -1,12 +1,22 @@
 # 003 — CI and GitHub release pipeline (signed mac + Claude workflows)
 
-- **Status:** ready
+- **Status:** ready — RESCOPED for v0.1.0 (2026-05-30): the v0.1.0 CI gate -> t037, version reset/SHA/api-version -> t035/t036, release-please pipeline -> t038. The signed/notarized macOS Electron release + the three Claude-bot workflows below are DEFERRED to v0.2 (Electron is best-effort, unsigned; the v0.1.0 release surface is the web PWA only).
 - **Mode:** HITL
 - **Estimate:** 1.5d
 - **Depends on:** none
 - **Blocks:** none (auto-update + Windows port tasks depend on this)
 
-## Goal
+## v0.1.0 rescope note
+
+v0.1.0 ships the **web PWA only**. Electron stays best-effort — keeps building via `scripts/install-local.sh`, unsigned, no formal ship.
+
+CI gate for v0.1.0 is carved out to **t037** (ci-pr-push-gate): typecheck + `pnpm test` + hermetic e2e + build smoke + `node --check web/server.mjs`; Biome scoped to changed files.
+
+Versioning for v0.1.0 is **release-please (t038)**, with the `package.json` 2.0.0->0.1.0 reset + git-SHA / build-version injection + `/api/version` in **t035/t036**. This SUPERSEDES this task's old manual-`workflow_dispatch` + semantic-versioning notes for v0.1.0.
+
+REMAINING here, DEFERRED to v0.2: the signed + notarized macOS electron-builder publish workflow (CSC_LINK/notarization, all-arch artifacts, latest-mac.yml, electron-updater) and the three Claude-bot workflows (@claude bot, claude-review, daily docs-revise) + usage scripts.
+
+## Goal (DEFERRED v0.2)
 
 Set up GitHub Actions CI (check+typecheck+test+packaging smoke) and a signed/notarized macOS release workflow (workflow_dispatch, all 3 arches: arm64+x64+universal, dmg+zip artifacts). Wire up electron-builder publish to GitHub releases, upload latest-mac.yml for future auto-update, and port lure's three Claude workflows (@claude bot, PR review, daily docs-revise) with custom-provider→OAuth fallback.
 

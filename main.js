@@ -15,9 +15,10 @@ const {
 const path = require("node:path")
 const fs = require("node:fs")
 const WebSocket = require("ws")
-const { emulatedMediaParams } = require("./theme-emulation")
-const { createSettingsStore } = require("./settings-store")
-const endpoints = require("./cdp-endpoints")
+const { emulatedMediaParams } = require("./core/theme-emulation")
+const { createSettingsStore } = require("./core/settings-store")
+const endpoints = require("./core/cdp-endpoints")
+const { tierToParams, DEFAULT_TIER } = require("./core/quality-tier")
 
 // The window is a BaseWindow composed of a chrome view (the React UI, full
 // window) layered over zero-or-more local-tab page views. `chromeView` hosts
@@ -34,10 +35,28 @@ function chromeSend(channel, ...args) {
 let activeWs = null
 let activeTabId = null
 let connectId = 0
-// Last device-metrics override the renderer applied. Re-sent on every (re)connect
-// before the screencast starts so a tab switch lands already sized — no native-size
-// first frame and the resulting jiggle. Cleared when the override is cleared.
+// Last device-metrics override the renderer applied. Re-sent on a (re)connect that
+// actually changes it (before the screencast starts) so a tab switch lands already
+// sized — no native-size first frame and the resulting jiggle. The override is bound
+// to the target and survives the socket swap, so an unchanged re-issue is a no-op
+// resize that visibly bounces the viewport — we skip it by comparing against
+// `appliedMetrics`. Cleared when the override is cleared.
 let cachedMetrics = null
+let appliedMetrics = null
+// Adaptive-OFF release dance (take-ownership + clear of any crash-pinned override)
+// runs at most once per process; after that the remote stays native and a switch
+// sends neither override nor clear (no bounce).
+let releasedPinnedOverride = false
+
+// Shallow value-compare for the small flat device-metrics object — used to skip
+// re-issuing identical metrics across a switch.
+const sameMetrics = (a, b) => {
+  if (a === b) return true
+  if (!a || !b) return false
+  const ka = Object.keys(a)
+  const kb = Object.keys(b)
+  return ka.length === kb.length && ka.every((k) => a[k] === b[k])
+}
 
 // Settings persistence. The schema, defaults, and legacy migrations live in the
 // shared settings-store core; main.js injects only the fs write and reads the
@@ -82,6 +101,8 @@ function clearAdaptiveOverride(ws) {
     ws.send(
       JSON.stringify({ id: cmdId++, method: "Emulation.clearDeviceMetricsOverride", params: {} }),
     )
+    // Released to native — the next connect must re-apply the cached override.
+    appliedMetrics = null
   } catch {}
 }
 
@@ -211,7 +232,14 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
   if (activeWs) {
     const old = activeWs
     activeWs = null
-    clearAdaptiveOverride(old)
+    // Switch teardown: we are connecting to a *different* target, so reset
+    // appliedMetrics — the new target has no prior override. The override is NOT
+    // cleared on the old socket (it's a different target and doesn't matter).
+    // Mark this teardown host-initiated so its close handler stays silent — switching
+    // tabs must not announce a disconnect. Only a close we did NOT trigger (a real drop)
+    // reaches the renderer as cdp:disconnected.
+    appliedMetrics = null
+    old.__intentional = true
     try {
       old.close()
     } catch {}
@@ -253,20 +281,28 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
         ws.send(JSON.stringify({ id: 2, method: "Input.enable", params: {} }))
         applyThemeEmulation(ws)
         // Re-apply the cached adaptive override before the screencast so the first
-        // frame is already sized to the window — prevents the tab-switch jiggle.
+        // frame is already sized to the window — prevents the tab-switch jiggle. The
+        // override survives the socket swap, so skip an unchanged re-issue (a no-op
+        // resize that would itself bounce the viewport).
         if (settings.adaptiveViewport && cachedMetrics) {
-          ws.send(
-            JSON.stringify({
-              id: 5,
-              method: "Emulation.setDeviceMetricsOverride",
-              params: cachedMetrics,
-            }),
-          )
-        } else if (!settings.adaptiveViewport) {
+          if (!sameMetrics(cachedMetrics, appliedMetrics)) {
+            ws.send(
+              JSON.stringify({
+                id: 5,
+                method: "Emulation.setDeviceMetricsOverride",
+                params: cachedMetrics,
+              }),
+            )
+            appliedMetrics = cachedMetrics
+          }
+        } else if (!settings.adaptiveViewport && !releasedPinnedOverride) {
           // Adaptive is off: release any device-metrics override a prior crash left
           // pinned on the host. A clean quit clears it; a force-kill can't. A bare clear
           // is a no-op on an override owned by the now-dead session, so first re-assert
           // one (taking ownership in this session), then clear it — releasing to native.
+          // Latched to run at most once per process — after the first release the remote
+          // stays native, so a switch sends neither override nor clear (no bounce).
+          releasedPinnedOverride = true
           const b = mainWindow.getBounds()
           ws.send(
             JSON.stringify({
@@ -279,15 +315,20 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
             JSON.stringify({ id: 6, method: "Emulation.clearDeviceMetricsOverride", params: {} }),
           )
         }
+        // Quality-latency tier (t055): Electron has no picker, so it uses the default
+        // tier (balanced ⇒ quality 80 / everyNthFrame 2, today's behavior). The numbers
+        // come from quality-tier.js so this path can't drift from the connector's.
+        const tier = tierToParams(DEFAULT_TIER)
         ws.send(
           JSON.stringify({
             id: 3,
             method: "Page.startScreencast",
             params: {
               format: "jpeg",
-              quality: 80,
+              quality: tier.jpegQuality,
               maxWidth: bounds.width * 2,
               maxHeight: bounds.height * 2,
+              everyNthFrame: tier.everyNthFrame,
             },
           }),
         )
@@ -313,7 +354,9 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
 
       ws.on("close", () => {
         if (activeWs === ws) activeWs = null
-        chromeSend("cdp:disconnected")
+        // A host-initiated teardown (tab switch) already detached the surface — stay
+        // silent. Only an unexpected close (real drop) surfaces cdp:disconnected.
+        if (!ws.__intentional) chromeSend("cdp:disconnected")
       })
 
       ws.on("error", (err) => {
@@ -329,9 +372,19 @@ ipcMain.handle("cdp:connect", async (_, tabId) => {
 
 let cmdId = 100
 ipcMain.on("cdp:send", (_, method, params) => {
-  if (method === "Emulation.setDeviceMetricsOverride") cachedMetrics = params
-  else if (method === "Emulation.clearDeviceMetricsOverride") cachedMetrics = null
+  if (method === "Emulation.setDeviceMetricsOverride") {
+    cachedMetrics = params
+    // appliedMetrics records what the remote ACTUALLY received, so it's stamped below
+    // only when the send goes out on an open socket. If we're mid-reconnect (activeWs
+    // null during the backoff window), the remote never gets these metrics — recording
+    // them as applied would make the next same-target reconnect wrongly skip the re-issue
+    // (sameMetrics(cached, applied)===true) and leave the page native-size → letterbox.
+  } else if (method === "Emulation.clearDeviceMetricsOverride") {
+    cachedMetrics = null
+    appliedMetrics = null
+  }
   if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+    if (method === "Emulation.setDeviceMetricsOverride") appliedMetrics = params
     activeWs.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
   }
 })
@@ -416,8 +469,8 @@ ipcMain.handle("cdp:get-theme-source", () => settingsStore.getThemeSource())
 // The whole side-channel lifecycle + store lives in the shared core; main.js
 // injects only Electron effects (capture-script reads, /json target list, the
 // persisted store file, the OS Notification + dock badge gated by shouldNotifyOs).
-const { shouldNotifyOs } = require("./notifications")
-const { createNotificationCenter } = require("./notifications-sidechain")
+const { shouldNotifyOs } = require("./core/notifications")
+const { createNotificationCenter } = require("./core/notifications-sidechain")
 
 // Persisted store (separate from settings.json to keep that file lean).
 const notificationsPath = path.join(app.getPath("userData"), "notifications.json")

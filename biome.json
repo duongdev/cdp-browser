@@ -85,7 +85,7 @@
       }
     },
     {
-      "includes": ["**/scripts/**", "main.js", "preload.js", "notifications.js", "inject/**"],
+      "includes": ["**/scripts/**", "main.js", "preload.js", "core/notifications.js", "inject/**"],
       "linter": {
         "rules": {
           "suspicious": { "noConsole": "off" },

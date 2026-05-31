@@ -1,6 +1,7 @@
-import { Settings01Icon } from "@hugeicons/core-free-icons"
+import { ArrowReloadHorizontalIcon, Cancel01Icon, Settings01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { readLatencyHudEnabled, setLatencyHudEnabled } from "@/components/latency-hud"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,9 +26,18 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { getCaps } from "@/lib/cdp-web-transport"
+import { isPointerFine, usePointerCoarse } from "@/hooks/use-pointer-coarse"
+import { getCaps } from "@/lib/caps"
+import { parseTier, QUALITY_TIER_KEY, QUALITY_TIERS, type QualityTier } from "@/lib/quality-tier"
+import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
 import type { InputTransportMode } from "@/lib/transport-selector"
 import { cn } from "@/lib/utils"
+import {
+  dispatchVirtualPointerMode,
+  parseMode,
+  VIRTUAL_POINTER_MODE_KEY,
+  type VirtualPointerMode,
+} from "@/lib/virtual-pointer"
 
 // VAPID public key is delivered as URL-safe base64 by the server; pushManager.subscribe
 // expects a raw ArrayBuffer. Standard helper from the Web Push spec.
@@ -42,6 +52,19 @@ function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
 }
 
 export type SwitchEffect = "none" | "blur" | "grayscale" | "blur-grayscale"
+
+// Build identity for the About row. Read the Vite defines first; "unknown"/empty means the
+// define wasn't injected (only happens on a .git-less web build), so the caller falls back
+// to GET /api/version. SHA shows short (7 chars) and never renders blank.
+function buildVersion(): string {
+  return __APP_VERSION__ || "unknown"
+}
+function shortSha(sha: string): string {
+  return sha && sha !== "unknown" ? sha.slice(0, 7) : "unknown"
+}
+function defineSha(): string {
+  return shortSha(__GIT_SHA__)
+}
 
 // Map the internal transport mode key to the same friendly label the picker uses,
 // so the active-mode badge reads consistently with the toggle ("Active: Fastest").
@@ -152,6 +175,9 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const [tab, setTab] = useState<"remote" | "local">("remote")
   const caps = getCaps()
+  // Touch is a co-primary input (ADR-0009): a coarse pointer gets explicit dismiss
+  // affordances (scrim tap + close button) and never the fine-pointer leave-timer.
+  const pointerCoarse = usePointerCoarse()
   const [pendingRemoveExt, setPendingRemoveExt] = useState<LocalExtensionInfo | null>(null)
   const [host, setHost] = useState("")
   const [port, setPort] = useState("")
@@ -163,6 +189,12 @@ export function SettingsDialog({
   const [webPush, setWebPush] = useState(false)
   const [pushPermBlocked, setPushPermBlocked] = useState(false)
   const [isStandalone, setIsStandalone] = useState(false)
+  // About row: build identity from the Vite defines, with a web-only fetch fallback when a
+  // define wasn't injected (a .git-less build). Electron always has the defines so it never fetches.
+  const [about, setAbout] = useState<{ version: string; sha: string }>(() => ({
+    version: buildVersion(),
+    sha: defineSha(),
+  }))
   // Web-only connection mode picker (t019). The pref persists to localStorage; calling
   // window.cdp.reconfigureInputTransport() re-opens/closes the WS to apply mid-session
   // (no reload needed). The "active" badge mirrors what actually connected — under Auto
@@ -181,6 +213,29 @@ export function SettingsDialog({
     // No unsubscribe surface on the bridge; the listener is harmless on remount and the
     // settings dialog is a long-lived singleton in practice.
   }, [])
+
+  // Web-only quality-latency tier (t055). Persists to localStorage (read back on mount)
+  // and mirrors into ui-state so the server applies the tier's jpegQuality/everyNthFrame
+  // to Page.startScreencast on the next (re)connect. Same persistence shape as the t019
+  // transport picker above. The default (balanced) lives in quality-tier.js.
+  const [qualityTier, setQualityTier] = useState<QualityTier>(() =>
+    typeof localStorage !== "undefined"
+      ? parseTier(localStorage.getItem(QUALITY_TIER_KEY))
+      : "balanced",
+  )
+
+  // Web-only latency HUD toggle (t059). Off by default; persists to localStorage and flips a
+  // mounted status-bar readout live via setLatencyHudEnabled. Display-only over t057 metrics.
+  const [latencyHud, setLatencyHud] = useState(readLatencyHudEnabled)
+
+  // Virtual-pointer (echo-cursor) visibility mode (t011). Persists server-side via ui-state
+  // (localStorage resets on this PWA), read on open below. On change we mirror to ui-state AND
+  // dispatch the live event so a mounted EchoOverlay flips without a reload. Shown on all builds.
+  const [virtualPointer, setVirtualPointer] = useState<VirtualPointerMode>("auto")
+
+  // The scrollable Sheet body. Its scrollTop persists server-side (settingsScrollTop, t014) so
+  // the drawer reopens where it was left, surviving a refresh — restored on open, saved on close.
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const toggleWebPush = useCallback(async (on: boolean) => {
     if (on && typeof Notification !== "undefined") {
@@ -234,8 +289,27 @@ export function SettingsDialog({
         setPort(p)
         setSaved({ host: config.host, port: p })
       })
+      // Virtual-pointer mode + scroll offset come from ui-state on every build (not web-gated).
+      // Restore scroll in a rAF so the content has laid out before we set scrollTop.
+      window.cdp.getUiState().then((s) => {
+        setVirtualPointer(parseMode(s[VIRTUAL_POINTER_MODE_KEY]))
+        const top = Number(s.settingsScrollTop) || 0
+        requestAnimationFrame(() => {
+          if (scrollRef.current) scrollRef.current.scrollTop = top
+        })
+      })
       if (caps.web) {
         setIsStandalone((navigator as unknown as { standalone?: boolean }).standalone === true)
+        // Fall back to the server's build identity only when a define is missing (no checkout
+        // at build time). A failed fetch leaves the "unknown" placeholder — never blank.
+        if (buildVersion() === "unknown" || defineSha() === "unknown") {
+          fetch("/api/version")
+            .then((r) => r.json())
+            .then((v: { version?: string; sha?: string }) => {
+              setAbout({ version: v.version || "unknown", sha: shortSha(v.sha || "") })
+            })
+            .catch(() => {})
+        }
         window.cdp.getUiState().then((s) => {
           const granted =
             typeof Notification !== "undefined" && Notification.permission === "granted"
@@ -254,6 +328,21 @@ export function SettingsDialog({
       leaveTimer.current = undefined
     }
   }, [])
+
+  // Persist the drawer's scroll offset to ui-state (t014) on the single open→false edge.
+  // A layout effect (not onOpenChange) is the one save path because not every close fires
+  // onOpenChange: Cmd+, and the extension-url open both flip the `open` prop directly via
+  // the parent, and Radix Dialog doesn't re-emit onOpenChange for an externally-driven close.
+  // useLayoutEffect runs synchronously after the prop flip but before paint/unmount, so
+  // scrollRef still points at the live, scrolled element — scrollTop isn't stale or zeroed.
+  // The previous-open ref gates it to the true→false transition (never the initial false).
+  const prevOpenRef = useRef(open)
+  useLayoutEffect(() => {
+    if (prevOpenRef.current && !open && scrollRef.current) {
+      window.cdp.setUiState({ settingsScrollTop: scrollRef.current.scrollTop })
+    }
+    prevOpenRef.current = open
+  }, [open])
 
   // A committed drawer (keyboard / Cmd+,) never auto-closes on leave.
   useEffect(() => {
@@ -297,10 +386,22 @@ export function SettingsDialog({
             <HugeiconsIcon className="size-3.5" icon={Settings01Icon} />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Settings</TooltipContent>
+        <TooltipContent side="bottom">Settings</TooltipContent>
       </Tooltip>
 
       <Sheet modal={false} onOpenChange={onOpenChange} open={open}>
+        {/* Coarse-pointer dismiss: a tap outside closes the drawer. There's no hover on
+            a finger, so a scrim tap replaces the fine-pointer mouse-leave. Rendered only
+            on coarse so the Mac flow (non-modal, live page interactive behind) is unchanged. */}
+        {open && pointerCoarse && (
+          <button
+            aria-label="Close settings"
+            className="fixed inset-0 z-40 cursor-default bg-transparent"
+            onClick={() => onOpenChange(false)}
+            tabIndex={-1}
+            type="button"
+          />
+        )}
         <SheetContent
           aria-describedby={undefined}
           className="flex w-[380px] flex-col gap-0 p-0 sm:max-w-[380px]"
@@ -320,25 +421,45 @@ export function SettingsDialog({
           }}
           onMouseEnter={clearLeaveTimer}
           onMouseLeave={() => {
-            if (committed || selectOpen) return
+            // Read the pointer live (per leave event), so a Magic-Keyboard detach flips
+            // to the coarse branch with no reload. A coarse pointer never arms the timer,
+            // so a finger-lift's synthesized mouseleave can't dismiss the drawer (ADR-0009).
+            if (!shouldArmLeaveTimer({ pointerFine: isPointerFine(), committed, selectOpen }))
+              return
             clearLeaveTimer()
             leaveTimer.current = setTimeout(() => onOpenChange(false), LEAVE_CLOSE_MS)
           }}
+          showCloseButton={false}
           showOverlay={false}
           side="right"
         >
-          <SheetHeader className="px-5 pt-5 pb-1">
+          <SheetHeader className="flex-row items-center justify-between px-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-1">
             <SheetTitle className="text-sm">Settings</SheetTitle>
+            {/* Explicit dismiss — the only manual close on a coarse pointer, where the
+                fine-pointer mouse-leave never fires. Clears the leave-timer defensively
+                so a pending fine-pointer close can't race the click. ≥44pt on coarse. */}
+            <Button
+              aria-label="Close settings"
+              className="-mr-1.5 text-muted-foreground hover:text-foreground touch-target-end"
+              onClick={() => {
+                clearLeaveTimer()
+                onOpenChange(false)
+              }}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <HugeiconsIcon className="size-3.5" icon={Cancel01Icon} />
+            </Button>
           </SheetHeader>
 
-          <div className="flex flex-col gap-3 overflow-y-auto px-5 pt-2 pb-6">
+          <div className="flex flex-col gap-3 overflow-y-auto px-5 pt-2 pb-6" ref={scrollRef}>
             {/* Remote (CDP) vs Local tabs — the Local toggle is Electron-only */}
             {caps.localTabs && (
               <div className="flex gap-1 rounded-lg bg-foreground/[0.06] p-0.5 text-xs">
                 {(["remote", "local"] as const).map((t) => (
                   <button
                     className={
-                      "flex-1 rounded-md px-2 py-1 font-medium transition-colors " +
+                      "flex-1 rounded-md px-2 py-1 font-medium transition-colors coarse:min-h-11 " +
                       (tab === t
                         ? "bg-background text-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground")
@@ -359,20 +480,64 @@ export function SettingsDialog({
                 <Card title="Appearance">
                   <div className="space-y-2">
                     <Label className="text-[13px]">Theme</Label>
-                    <Select
-                      onOpenChange={setSelectOpen}
-                      onValueChange={(v) => onThemeChange(v as "system" | "light" | "dark")}
-                      value={theme}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="system">System</SelectItem>
-                        <SelectItem value="light">Light</SelectItem>
-                        <SelectItem value="dark">Dark</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          { v: "light", label: "Light" },
+                          { v: "dark", label: "Dark" },
+                          { v: "system", label: "System" },
+                        ] as const
+                      ).map(({ v, label }) => (
+                        <button
+                          aria-pressed={theme === v}
+                          className={cn(
+                            "rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors coarse:min-h-11",
+                            theme === v
+                              ? "bg-foreground text-background"
+                              : "bg-foreground/[0.06] text-muted-foreground hover:text-foreground",
+                          )}
+                          key={v}
+                          onClick={() => onThemeChange(v)}
+                          type="button"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-3.5 space-y-2 border-t border-border/40 pt-3.5">
+                    <Label className="text-[13px]">Virtual pointer</Label>
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      Auto: shown only without a mouse/trackpad.
+                    </p>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          { v: "off", label: "Off" },
+                          { v: "on", label: "On" },
+                          { v: "auto", label: "Auto" },
+                        ] as const
+                      ).map(({ v, label }) => (
+                        <button
+                          aria-pressed={virtualPointer === v}
+                          className={cn(
+                            "rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors coarse:min-h-11",
+                            virtualPointer === v
+                              ? "bg-foreground text-background"
+                              : "bg-foreground/[0.06] text-muted-foreground hover:text-foreground",
+                          )}
+                          key={v}
+                          onClick={() => {
+                            setVirtualPointer(v)
+                            window.cdp.setUiState({ [VIRTUAL_POINTER_MODE_KEY]: v })
+                            dispatchVirtualPointerMode(v)
+                          }}
+                          type="button"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="mt-3 flex items-start justify-between gap-4">
                     <div className="space-y-0.5">
@@ -546,6 +711,21 @@ export function SettingsDialog({
                         {saving ? "Saving…" : "Save"}
                       </Button>
                     </div>
+                    {/* Force-reconnect the Remote Page (t042) — connect-only, never disconnects.
+                        Drives t040's driver via the bridge (web build only; Electron's preload
+                        has no `reconnect`, so the button only shows when the verb exists). The
+                        44pt coarse tap target comes from the global text-Button bump (index.css). */}
+                    {window.cdp?.reconnect && (
+                      <Button
+                        className="w-full"
+                        onClick={() => window.cdp.reconnect?.()}
+                        size="sm"
+                        variant="outline"
+                      >
+                        <HugeiconsIcon className="size-3.5" icon={ArrowReloadHorizontalIcon} />
+                        Reconnect now
+                      </Button>
+                    )}
                     {test.status === "ok" ? (
                       <p className="text-[11px] text-emerald-500">Connected — {test.browser}</p>
                     ) : test.status === "error" ? (
@@ -600,7 +780,7 @@ export function SettingsDialog({
                               <button
                                 aria-pressed={inputTransport === v}
                                 className={cn(
-                                  "rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors",
+                                  "rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors coarse:min-h-11",
                                   inputTransport === v
                                     ? "bg-foreground text-background"
                                     : "bg-foreground/[0.06] text-muted-foreground hover:text-foreground",
@@ -623,6 +803,78 @@ export function SettingsDialog({
                       </div>
                     </div>
                   )}
+                  {caps.web && (
+                    <div className="mt-4 space-y-2 border-border/60 border-t pt-3">
+                      <Label className="text-[13px]">Picture quality</Label>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        Trade sharpness for responsiveness. Applies on the next reconnect.
+                      </p>
+                      <div className="grid grid-cols-3 gap-1">
+                        {QUALITY_TIERS.map(({ id, label, tip }) => (
+                          <Tooltip key={id}>
+                            <TooltipTrigger asChild>
+                              <button
+                                aria-pressed={qualityTier === id}
+                                className={cn(
+                                  "rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors coarse:min-h-11",
+                                  qualityTier === id
+                                    ? "bg-foreground text-background"
+                                    : "bg-foreground/[0.06] text-muted-foreground hover:text-foreground",
+                                )}
+                                onClick={() => {
+                                  setQualityTier(id)
+                                  localStorage.setItem(QUALITY_TIER_KEY, id)
+                                  // Mirror into ui-state so the server reads the tier at
+                                  // connect, then reconnect to apply the new params.
+                                  window.cdp?.setUiState?.({ qualityTier: id })
+                                  window.cdp?.reconnect?.()
+                                }}
+                                type="button"
+                              >
+                                {label}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">{tip}</TooltipContent>
+                          </Tooltip>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {caps.web && (
+                    <div className="mt-4 flex items-start justify-between gap-4 border-border/60 border-t pt-3">
+                      <div className="space-y-0.5">
+                        <Label className="text-[13px]">Latency HUD</Label>
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          Show round-trip time, jitter, frame age and the active transport in the
+                          status bar — so a silent slowdown is visible.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={latencyHud}
+                        className="mt-0.5"
+                        onCheckedChange={(on) => {
+                          setLatencyHud(on)
+                          setLatencyHudEnabled(on)
+                        }}
+                      />
+                    </div>
+                  )}
+                </Card>
+
+                {/* About — read-only build identity, lowest-priority info at the bottom. */}
+                <Card title="About">
+                  <div className="space-y-1.5 text-[12px]">
+                    <div className="flex items-baseline justify-between gap-4">
+                      <span className="text-muted-foreground">Version</span>
+                      <span className="font-mono tabular-nums text-foreground">
+                        {about.version}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-4">
+                      <span className="text-muted-foreground">Build</span>
+                      <span className="font-mono tabular-nums text-foreground">{about.sha}</span>
+                    </div>
+                  </div>
                 </Card>
               </>
             )}

@@ -7,6 +7,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Runtime input modality (see src/lib/pointer-modality.ts). `coarse:` mirrors what
+   `@media (pointer: coarse)` used to gate, but follows the live pointer so a trackpad
+   in a standalone iPad PWA gets the dense layout instead of permanent 44pt touch sizing. */
+@custom-variant coarse (html.coarse-input &);
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: "Manrope Variable", sans-serif;
@@ -133,9 +138,91 @@
     height: 100vh;
     /* biome-ignore lint/suspicious/noDuplicateProperties: progressive enhancement fallback */
     height: 100dvh;
+    /* JS pins this to live innerHeight (src/lib/app-height.ts) so the iOS standalone PWA
+       doesn't render a short body (bottom blank) on first paint; falls back to 100dvh. */
+    /* biome-ignore lint/suspicious/noDuplicateProperties: JS-driven override of the dvh fallback */
+    height: var(--app-h, 100dvh);
   }
   #root {
     height: 100%;
+  }
+}
+
+/* Touch hit targets (ADR-0009 / t048). On a coarse pointer (iPad finger) every
+   interactive control must clear the 44pt Apple HIG minimum, while a fine pointer
+   (Mac trackpad) keeps the exact dense layout. Gated on the RUNTIME `html.coarse-input`
+   class (src/lib/pointer-modality.ts), not `@media (pointer: coarse)`: a standalone iPad
+   PWA reports pointer:coarse even when a Magic Keyboard trackpad drives it, so the media
+   query would lock the dense layout into permanent 44pt sizing. The runtime signal seeds
+   from the media query and flips on the live pointer. Lives here, in one block, so the
+   bump is auditable in one place and future components inherit it for free.
+
+   The shadcn `Button` icon sizes (24/28/32/36px) and the menu items are lifted by
+   slot; bespoke tappables that aren't a `Button` (sidebar rows, row close glyphs,
+   rail tiles) opt in with `.touch-target` (min box, layout otherwise unchanged). */
+html.coarse-input {
+  [data-slot="button"][data-size="icon-xs"],
+  [data-slot="button"][data-size="icon-sm"],
+  [data-slot="button"][data-size="icon"],
+  [data-slot="button"][data-size="icon-lg"] {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+  /* Text Buttons (Connection Test/Save, Edit-pin Cancel/Save) also clear 44pt. */
+  [data-slot="button"][data-size="sm"],
+  [data-slot="button"][data-size="default"],
+  [data-slot="button"][data-size="lg"] {
+    min-height: 2.75rem;
+  }
+  [data-slot="context-menu-item"],
+  [data-slot="context-menu-checkbox-item"],
+  [data-slot="context-menu-radio-item"],
+  [data-slot="context-menu-sub-trigger"] {
+    min-height: 2.75rem;
+  }
+  /* ⌘K command palette rows — the primary action list must clear 44pt on touch. */
+  [data-slot="command-item"] {
+    min-height: 2.75rem;
+  }
+  .touch-target {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+  /* Right-aligned icon-only tappable: a glyph anchored to the right edge of its box
+     (e.g. a row close X at `right-2`) keeps that edge position while the tap box grows
+     leftward to 44pt, instead of drifting to the box centre. */
+  .touch-target-end {
+    display: flex;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    align-items: center;
+    justify-content: flex-end;
+  }
+  /* Hit-slop only: lift the tap area to 44pt with symmetric vertical padding that a
+     matching negative margin cancels, so an inline control inside a slim bar (e.g.
+     the status bar) keeps its compact visual height while gaining a tappable box. */
+  .touch-slop-y {
+    min-height: 2.75rem;
+    padding-top: calc((2.75rem - 1.5rem) / 2);
+    padding-bottom: calc((2.75rem - 1.5rem) / 2);
+    margin-top: calc((2.75rem - 1.5rem) / -2);
+    margin-bottom: calc((2.75rem - 1.5rem) / -2);
+  }
+  /* Hit-slop only, both axes, zero layout cost: a 44pt centred pseudo-element
+     overlay receives the taps while the visual glyph keeps its small `size-*` box
+     and its tight rail gap. Tap zones may overlap into the gap — fine for a11y.
+     The host must be `position: relative` (the rail buttons already are). */
+  .touch-slop {
+    position: relative;
+  }
+  .touch-slop::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 2.75rem);
+    height: max(100%, 2.75rem);
+    transform: translate(-50%, -50%);
   }
 }
 

@@ -66,6 +66,14 @@ export function threadKey(e: ViewEntry): string {
   return scope ? `${scope}::${thread}` : thread
 }
 
+// Flatten the grouped popover back into one paint-ordered row list — group order
+// outer, the (capped) `items` within each group inner. Mirrors exactly what the bell
+// paints (collapsed/earlier messages are excluded), so roving keyboard selection indexes
+// the same rows the user sees. Pure.
+export function flattenRows<E extends ViewEntry>(groups: ConversationGroup<E>[]): E[] {
+  return groups.flatMap((g) => g.items)
+}
+
 export function groupByConversation<E extends ViewEntry>(list: E[]): ConversationGroup<E>[] {
   const groups: ConversationGroup<E>[] = []
   const byKey = new Map<string, ConversationGroup<E>>()

@@ -3,10 +3,31 @@
 // cached fallback offline); hashed static assets are cache-first. The API surface
 // (SSE event stream, streaming input upload, POSTs) and non-GET requests are NEVER
 // intercepted — they must always hit the network. See t011.
-const CACHE = "cdp-portal-v1"
 
-self.addEventListener("install", () => self.skipWaiting())
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()))
+// Per-build cache name: the registration passes the build identity as `?v=<version>-<sha>`
+// (main.tsx, from the Vite __APP_VERSION__/__GIT_SHA__ define). A new build => a new script
+// URL => the browser installs a fresh worker that waits. Mirrors cacheNameFor/isStaleCache
+// in src/lib/sw-cache-name.ts (static SW can't import it). See t044.
+const PREFIX = "cdp-portal-"
+const CACHE = PREFIX + (new URL(self.location).searchParams.get("v") || "unknown")
+
+// No unconditional skipWaiting — the new worker waits until the page opts in via the
+// SKIP_WAITING message (driven by the in-app "Update available" toast).
+self.addEventListener("message", (e) => {
+  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting()
+})
+
+self.addEventListener("activate", (e) =>
+  e.waitUntil(
+    (async () => {
+      const names = await caches.keys()
+      await Promise.all(
+        names.filter((n) => n.startsWith(PREFIX) && n !== CACHE).map((n) => caches.delete(n)),
+      )
+      await self.clients.claim()
+    })(),
+  ),
+)
 
 self.addEventListener("fetch", (e) => {
   const req = e.request

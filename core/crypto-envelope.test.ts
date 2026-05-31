@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
+// Browser twin (WebCrypto) — runs here since Node backs globalThis.crypto.
+import { open as webOpen, seal as webSeal } from "../src/lib/crypto-envelope"
 // Server-side AES-256-GCM envelope (node:crypto), shared with web/server.mjs.
 import { deriveKey, open, seal } from "./crypto-envelope"
-// Browser twin (WebCrypto) — runs here since Node backs globalThis.crypto.
-import { open as webOpen, seal as webSeal } from "./src/lib/crypto-envelope"
 
 const SALT = Buffer.from("0123456789abcdef").toString("base64")
 const key = deriveKey("correct horse battery staple", SALT, 10000)

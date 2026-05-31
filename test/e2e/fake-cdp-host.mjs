@@ -3,7 +3,7 @@
 // Each startFakeCdpHost() returns a running instance on an ephemeral port.
 
 import { createServer } from "node:http"
-import { WebSocketServer, WebSocket } from "ws"
+import { WebSocket, WebSocketServer } from "ws"
 
 // A valid 1×1 white JPEG (properly formed with FFD9 end marker).
 const BLANK_JPEG =
@@ -34,6 +34,9 @@ export async function startFakeCdpHost(opts = {}) {
   const screencastIntervals = new Set() // interval IDs for cleanup
   // All WS connections per target (screencast + side-channel)
   const allTargetWs = new Map() // targetId -> Set<ws>
+  // Sockets that issued Page.startScreencast (the active screencast attachments) — used
+  // by liveScreencastCount() to assert the single-socket invariant after a drop+recover.
+  const screencastingWs = new Set()
 
   const server = createServer()
   const wss = new WebSocketServer({ noServer: true })
@@ -124,6 +127,7 @@ export async function startFakeCdpHost(opts = {}) {
         }
 
         if (method === "Page.startScreencast") {
+          screencastingWs.add(ws)
           ws.send(JSON.stringify({ id, result: {} }))
           const iv = setInterval(() => {
             if (ws.readyState !== WebSocket.OPEN) {
@@ -165,6 +169,7 @@ export async function startFakeCdpHost(opts = {}) {
 
       ws.on("close", () => {
         allTargetWs.get(targetId)?.delete(ws)
+        screencastingWs.delete(ws)
       })
     })
   })
@@ -211,6 +216,36 @@ export async function startFakeCdpHost(opts = {}) {
         }
       }
       return sent
+    },
+
+    // Forcibly close every WS the server holds for a target — simulates the CDP host
+    // dying mid-session (a real drop), so the server's screencast socket sees an
+    // unexpected `close` it did not initiate. Returns how many sockets were closed.
+    dropConnections(targetId) {
+      const wsSet = allTargetWs.get(targetId)
+      if (!wsSet) return 0
+      let n = 0
+      for (const ws of wsSet) {
+        try {
+          ws.close()
+          n++
+        } catch {}
+      }
+      return n
+    },
+
+    // How many OPEN sockets on this target have an active screencast — the load-bearing
+    // "exactly one live socket after recovery" assertion. A leaked second socket (a stale
+    // reconnect promoting over the recovered one) would read as 2 here. The Notification
+    // Side-Channel never issues Page.startScreencast, so it is not counted.
+    liveScreencastCount(targetId) {
+      const wsSet = allTargetWs.get(targetId)
+      if (!wsSet) return 0
+      let n = 0
+      for (const ws of wsSet) {
+        if (ws.readyState === WebSocket.OPEN && screencastingWs.has(ws)) n++
+      }
+      return n
     },
 
     setTargets(newTargets) {

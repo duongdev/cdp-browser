@@ -152,11 +152,15 @@ describe("t023 — uplink single-seam routing (seal precedes transport pick)", (
     ws.ready()
     cdp.send("Input.dispatchMouseEvent", move(9).params)
     flushRaf()
-    await vi.waitFor(() => expect(ws.sent.length).toBeGreaterThan(0))
+    // Ping frames (t057 keepalive) are plaintext `{"t":"ping",…}`; the sealed batch is base64
+    // (no leading `{`). Wait for the sealed frame, ignoring the always-on ping traffic.
+    const isSealed = (s: string) => !s.trimStart().startsWith("{")
+    await vi.waitFor(() => expect(ws.sent.some(isSealed)).toBe(true))
     // No POST: the batch went out the one ready uplink (WS), sealed exactly once.
     expect(calls.some((c) => c.path === "/api/cdp-batch")).toBe(false)
     // The WS frame is a single sealed envelope that opens to the routing message { t, items }.
-    const opened = (await envOpen(ws.sent[ws.sent.length - 1], key)) as {
+    const sealed = ws.sent.filter(isSealed)
+    const opened = (await envOpen(sealed[sealed.length - 1], key)) as {
       t: string
       items: unknown[]
     }

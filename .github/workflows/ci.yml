@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need history + the base ref so Biome can diff changed files.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Hermetic e2e
+        run: pnpm test:e2e
+
+      - name: Build smoke (renderer bundle)
+        run: pnpm build
+
+      - name: Web server parses
+        run: node --check web/server.mjs
+
+      - name: Biome (changed files only)
+        # A clean checkout fails a pristine `biome check .` on pre-existing dirt
+        # in untouched files, so we scope Biome to the diff. On a PR, diff against
+        # the target branch; on a push to main, the previous commit.
+        env:
+          PR_BASE: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$PR_BASE" ]; then
+            BASE="origin/$PR_BASE"
+          elif git rev-parse --verify --quiet "$PUSH_BEFORE^{commit}" >/dev/null; then
+            BASE="$PUSH_BEFORE"
+          else
+            BASE="HEAD^"
+          fi
+          echo "Scoping Biome to files changed since $BASE"
+          BIOME_SINCE="$BASE" pnpm check:changed

@@ -141,7 +141,7 @@ The cost of a 10-minute self-review is much less than the cost of merging a regr
 
 ## Tags and releases
 
-- Annotated git tags: `v2.0.0`, `v2.1.0`.
+- Annotated git tags: `v0.1.0`, `v0.2.0`.
 - Changelog generated from commit messages (semantic format makes this trivial).
 - `pnpm run dist` produces the signed `.dmg` for macOS distribution.
 

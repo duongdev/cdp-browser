@@ -3,7 +3,7 @@
 - **Status:** ready
 - **Mode:** HITL
 - **Estimate:** 1d
-- **Depends on:** 015, 016, 017
+- **Depends on:** 015, 016, 017, 048, 049, 051, 061
 - **Blocks:** none
 
 ## Goal
@@ -25,6 +25,7 @@ This is the final gate before v1 is declared done. Tasks 015, 016, and 017 suppl
 - [ ] Screencast frame rate stable (no stuttering; responsive to scrolling)
 - [ ] Notifications arrive on lock screen; clicking them deep-links to the conversation
 - [ ] Sidebar at 180px width doesn't feel cramped; interactive targets are easily tappable
+- [ ] One session held entirely by FINGER (no Magic Keyboard, couch use): finger drag scrolls the remote page, a tap clicks at the correct coordinates, a long-press opens the context menu (via t051 touch-scroll-tap); the settings drawer is dismissable by touch (t049); all interactive targets are comfortably tappable at >=44pt (t048)
 - [ ] Settings persist across app close/reopen (theme, pins, sidebar width, notification toggle)
 - [ ] E2E mode, if enabled, passphrase entry works smoothly; encryption doesn't break push
 - [ ] Authentik session survives app close and PWA install (stay logged in)
@@ -86,26 +87,6 @@ No code changes expected. This is a verification-only task. If issues are found,
 ---
 
 **Phase 2 trigger conditions:** If Web Push proves unreliable (notifications lost, silent failures) or if keyboard shortcuts become critical daily pain, Phase 2 Capacitor wrapper is warranted. Otherwise, PWA is the supported model.
-
-## Definition of Done
-
-All must be true before status → done.
-
-- [ ] Layer 1 tests written and green (if pure logic was touched)
-- [ ] Layer 2 smoke checklist completed with a live Remote Browser (if main.js/IPC touched)
-- [ ] Layer 3 screenshots captured and committed (if UI touched)
-- [ ] `pnpm check` clean (Biome — lint + format)
-- [ ] `pnpm typecheck` clean
-- [ ] `pnpm test` green
-- [ ] `pnpm dev` boots cleanly and the changed surface works end-to-end
-- [ ] CLAUDE.md updated for any modified module
-- [ ] ADR written if an architectural decision was made
-- [ ] No commented-out code, no `console.log` debris, no AI attribution
-- [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
-
-## Notes
-
-Free-form scratchpad. Open questions during work, decisions made, links to references. Useful for the future-you reading the closed task.
 
 ---
 

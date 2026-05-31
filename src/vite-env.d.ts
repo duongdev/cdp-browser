@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
 
+// Build identity injected by Vite define (vite.config.ts): the package.json version
+// and the short git SHA at build time. __GIT_SHA__ is "unknown" outside a checkout.
+declare const __APP_VERSION__: string
+declare const __GIT_SHA__: string
+
 interface Pin {
   id: string
   title: string
@@ -30,10 +35,22 @@ interface CdpBridge {
   newTab: (url?: string) => Promise<any>
   closeTab: (id: string) => Promise<any>
   connect: (id: string) => Promise<any>
+  // Manual force-reconnect (web build only, t042). Cancels any pending backoff timer, resets
+  // the schedule to base, and re-enters connect() for the last tab through t040's driver +
+  // generation guard. Electron's preload doesn't implement it — the UI guards with `?.`.
+  reconnect?: () => void
   send: (method: string, params?: any) => void
+  // Ack a Screencast Frame *after* the renderer has painted it (web build only, t056). On
+  // the WS paint-ack path the server defers its own remote-ack and gates the next frame on
+  // this, capping the in-flight queue at one so a slow link can't accrue a stale-frame
+  // backlog. Electron's preload doesn't implement it (the renderer's remote-page auto-acks
+  // on handle) — the viewport guards with `?.`. A no-op on the SSE path (server self-acks).
+  ackPaintedFrame?: (sessionId: number) => void
   invoke: (method: string, params?: any) => Promise<any>
   onEvent: (cb: (msg: any) => void) => void
-  onDisconnected: (cb: () => void) => void
+  // The phase is web-only (auto-reconnect, t040): "reconnecting" while the backoff loop
+  // retries, "lost" once it gives up. Electron passes no arg → treated as a terminal loss.
+  onDisconnected: (cb: (phase?: "reconnecting" | "lost") => void) => void
   getConfig: () => Promise<{ host: string; port: number }>
   setConfig: (config: { host: string; port: number }) => Promise<void>
   testConfig: (config: {
@@ -54,6 +71,9 @@ interface CdpBridge {
     restoreLocalPins: boolean
     localExtensionPaths: string[]
     webPush: boolean
+    qualityTier: "sharp" | "balanced" | "snappy"
+    virtualPointerMode: "off" | "on" | "auto"
+    settingsScrollTop: number
   }>
   setUiState: (
     partial: Partial<{
@@ -67,6 +87,9 @@ interface CdpBridge {
       autoGrantLocalMedia: boolean
       restoreLocalPins: boolean
       webPush: boolean
+      qualityTier: "sharp" | "balanced" | "snappy"
+      virtualPointerMode: "off" | "on" | "auto"
+      settingsScrollTop: number
     }>,
   ) => Promise<void>
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>

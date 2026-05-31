@@ -13,7 +13,7 @@ A module, class, or function has **one reason to change**.
 **Smell:** a file imports from three unrelated subsystems, or its name has "and" in it.
 **Fix:** split. A 200-line file doing one thing beats a 50-line file doing three.
 
-In CDP Browser: `src/lib/viewport-transform.ts` only knows about coordinate math. It does not know about React state, IPC, or CDP connections. `notifications.js` only knows about dedup logic — it does not open sockets or fire Electron `Notification`. Effects stay in `main.js`; pure logic stays in the module.
+In CDP Browser: `src/lib/viewport-transform.ts` only knows about coordinate math. It does not know about React state, IPC, or CDP connections. `core/notifications.js` only knows about dedup logic — it does not open sockets or fire Electron `Notification`. Effects stay in `main.js`; pure logic stays in the module.
 
 ### O — Open/Closed
 
@@ -180,7 +180,7 @@ There is no project-wide error class hierarchy — this is not a large enough co
 
 - **Main process:** errors in IPC handlers are logged to `console.error` with context (what was attempted, the error message). Never swallow. When the error is recoverable (e.g. a failed CDP call), send an IPC reply with `{ error: string }` and let the renderer surface it.
 - **Renderer:** errors at async boundaries use typed discriminated returns or `try/catch` that renders an appropriate state. Never propagate raw `Error` objects to JSX.
-- **Pure modules (`src/lib/`, `notifications.js`):** throw on invariant violations; return `null` or a typed result for expected "miss" cases. Document which is which.
+- **Pure modules (`src/lib/`, `core/`):** throw on invariant violations; return `null` or a typed result for expected "miss" cases. Document which is which.
 - **Wrap render boundaries with ErrorBoundary** at the top level so a crash in one component doesn't blank the whole window.
 
 ---

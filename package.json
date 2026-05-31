@@ -1,6 +1,6 @@
 {
   "name": "cdp-browser",
-  "version": "2.0.0",
+  "version": "0.1.0",
   "productName": "CDP Browser",
   "description": "A lightweight browser that connects to remote Chromium via Chrome DevTools Protocol",
   "author": "duongdev",
@@ -8,7 +8,7 @@
   "main": "main.js",
   "packageManager": "pnpm@11.2.2",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.14"
   },
   "scripts": {
     "dev": "concurrently -k \"vite\" \"sleep 2 && ELECTRON_DEV=1 electron .\"",
@@ -23,6 +23,7 @@
     "test:e2e:browser": "playwright test",
     "typecheck": "tsc --noEmit",
     "check": "biome check .",
+    "check:changed": "biome check --changed --since=\"${BIOME_SINCE:-origin/main}\" --no-errors-on-unmatched",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "dist": "vite build && electron-builder --mac",
@@ -52,11 +53,9 @@
     "files": [
       "main.js",
       "preload.js",
-      "notifications.js",
-      "notifications-sidechain.js",
-      "theme-emulation.js",
-      "settings-store.js",
-      "cdp-endpoints.js",
+      "core/**/*.js",
+      "!core/**/*.test.ts",
+      "!core/**/*.test.js",
       "inject/**/*",
       "dist/**/*",
       "!node_modules/**/*",
@@ -74,6 +73,7 @@
     "@dnd-kit/modifiers": "^9.0.0",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "cmdk": "^1.1.1",
     "motion": "^12.40.0",
     "radix-ui": "^1.4.3",
     "sonner": "^2.0.7",

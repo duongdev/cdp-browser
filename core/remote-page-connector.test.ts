@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 // CommonJS backend-agnostic core — both web/server.mjs and (later) main.js consume it.
-import { createRemotePageConnector } from "./remote-page-connector"
+import { createRemotePageConnector, SCREENCAST_EVERY_NTH_FRAME } from "./remote-page-connector"
 
 // A fake `ws`-shaped socket: records sent CDP commands and lets a test drive
 // open/message/close/error like the real `ws` EventEmitter surface. `OPEN`/readyState
@@ -18,7 +18,8 @@ class FakeWs {
   }
   static instances: FakeWs[] = []
   on(ev: string, fn: (...a: any[]) => void) {
-    ;(this.listeners[ev] ||= []).push(fn)
+    this.listeners[ev] ||= []
+    this.listeners[ev].push(fn)
     return this
   }
   off(ev: string, fn: (...a: any[]) => void) {
@@ -125,6 +126,16 @@ describe("createRemotePageConnector", () => {
       expect(idx("Emulation.setEmulatedMedia")).toBeLessThan(idx("Page.startScreencast"))
     })
 
+    it("caps startScreencast with an explicit everyNthFrame from the connector (t054)", async () => {
+      const { connector } = makeConnector()
+
+      const { ws } = await connectAndOpen(connector)
+
+      const start = ws.sent.find((c: any) => c.method === "Page.startScreencast")
+      expect(start.params.everyNthFrame).toBe(SCREENCAST_EVERY_NTH_FRAME)
+      expect(SCREENCAST_EVERY_NTH_FRAME).toBeGreaterThanOrEqual(1)
+    })
+
     it("returns { ok } and reports isConnected after the socket opens", async () => {
       const { connector } = makeConnector()
 
@@ -135,7 +146,9 @@ describe("createRemotePageConnector", () => {
     })
 
     it("returns { error } when the resolved tab is not found", async () => {
-      const { connector } = makeConnector({ tabs: [{ id: "other", webSocketDebuggerUrl: "ws://x" }] })
+      const { connector } = makeConnector({
+        tabs: [{ id: "other", webSocketDebuggerUrl: "ws://x" }],
+      })
 
       const result = await connector.connect({ tabId: "t1" })
 
@@ -160,6 +173,69 @@ describe("createRemotePageConnector", () => {
 
       expect(connector.isConnected()).toBe(true)
       expect(second.closed).toBe(false)
+    })
+  })
+
+  describe("switch teardown is silent, real drop is loud", () => {
+    it("a second connect supersedes the prior socket without firing onClose (switch is silent)", async () => {
+      const closes: number[] = []
+      const { connector } = makeConnector()
+      connector.onClose(() => closes.push(1))
+
+      const { ws: first } = await connectAndOpen(connector)
+
+      // Switch: a new connect tears the prior socket down. Its close must NOT broadcast.
+      const p2 = connector.connect({ tabId: "t1" })
+      expect(first.closed).toBe(true)
+      await tick()
+      const second = FakeWs.instances[FakeWs.instances.length - 1]
+      second.open()
+      await p2
+
+      expect(closes).toHaveLength(0)
+    })
+
+    it("disconnect() closes the active socket silently (no onClose)", async () => {
+      const closes: number[] = []
+      const { connector } = makeConnector()
+      connector.onClose(() => closes.push(1))
+      const { ws } = await connectAndOpen(connector)
+
+      connector.disconnect()
+
+      expect(ws.closed).toBe(true)
+      expect(closes).toHaveLength(0)
+    })
+
+    it("a real drop (the active socket closes on its own) fires onClose exactly once", async () => {
+      const closes: number[] = []
+      const { connector } = makeConnector()
+      connector.onClose(() => closes.push(1))
+      const { ws } = await connectAndOpen(connector)
+
+      // The host did not tear this down — the underlying socket dropped.
+      ws.close()
+
+      expect(closes).toHaveLength(1)
+    })
+
+    it("after a switch, a later real drop of the NEW socket still fires exactly one onClose", async () => {
+      const closes: number[] = []
+      const { connector } = makeConnector()
+      connector.onClose(() => closes.push(1))
+
+      await connectAndOpen(connector)
+      // Switch to a fresh socket; the superseded one is silently detached.
+      const p2 = connector.connect({ tabId: "t1" })
+      await tick()
+      const second = FakeWs.instances[FakeWs.instances.length - 1]
+      second.open()
+      await p2
+
+      // The new active socket drops for real — must surface exactly one disconnect.
+      second.close()
+
+      expect(closes).toHaveLength(1)
     })
   })
 
@@ -204,7 +280,12 @@ describe("createRemotePageConnector", () => {
   describe("metrics re-apply on reconnect (ADR-0002)", () => {
     it("re-applies the cached device-metrics override before startScreencast when adaptive viewport is on", async () => {
       const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
-      ctl.connector.setMetricsOverride({ width: 800, height: 600, deviceScaleFactor: 1, mobile: false })
+      ctl.connector.setMetricsOverride({
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
 
       const { ws } = await connectAndOpen(ctl.connector)
 
@@ -218,12 +299,179 @@ describe("createRemotePageConnector", () => {
 
     it("re-applies nothing when the override is cleared (adaptive viewport dormant)", async () => {
       const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
-      ctl.connector.setMetricsOverride({ width: 800, height: 600, deviceScaleFactor: 1, mobile: false })
+      ctl.connector.setMetricsOverride({
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
       ctl.connector.setMetricsOverride(null)
 
       const { ws } = await connectAndOpen(ctl.connector)
 
       expect(ws.methods()).not.toContain("Emulation.setDeviceMetricsOverride")
+    })
+  })
+
+  // The original bug: device-metrics were re-issued on every fresh socket, bouncing
+  // the remote host viewport on every tab switch. e968839 tried to fix it by skipping
+  // unchanged metrics — but treated send() as "already applied to the new socket",
+  // which broke adaptive viewport: the new target had no override and got a big
+  // letterbox. The correct fix: reset appliedMetrics on switch teardown so a new
+  // target always gets the override. The "skip unchanged" guard still fires for the
+  // same-target-reconnect path (where a real drop and re-open uses send() state).
+  describe("metrics apply on switch / idempotence on same-target-reconnect", () => {
+    it("re-applies the override on every tab switch (new target has no prior override)", async () => {
+      const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
+      ctl.connector.setMetricsOverride({
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+
+      // First connect applies the override.
+      const { ws: ws1 } = await connectAndOpen(ctl.connector)
+      expect(ws1.methods()).toContain("Emulation.setDeviceMetricsOverride")
+
+      // Switching to a new target (second connect) — must re-apply even with the same
+      // metrics because the new target has no prior override (appliedMetrics was reset
+      // during the switch teardown, so sameMetrics check does not skip it).
+      const { ws: ws2 } = await connectAndOpen(ctl.connector)
+      expect(ws2.methods()).toContain("Emulation.setDeviceMetricsOverride")
+    })
+
+    it("DOES re-apply when the metrics actually change between connects (canvas resize)", async () => {
+      const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
+      ctl.connector.setMetricsOverride({
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+
+      await connectAndOpen(ctl.connector)
+
+      // A real change (e.g. the canvas resized → new adaptive metrics) must still apply.
+      ctl.connector.setMetricsOverride({
+        width: 1024,
+        height: 768,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+      const { ws: ws2 } = await connectAndOpen(ctl.connector)
+      const cmd = ws2.sent.find((c) => c.method === "Emulation.setDeviceMetricsOverride")
+      expect(cmd).toBeTruthy()
+      expect(cmd.params).toMatchObject({ width: 1024, height: 768 })
+    })
+
+    it("fires the adaptive-OFF release dance (override+clear) at most once across multiple connects", async () => {
+      const { connector } = makeConnector({ uiState: { adaptiveViewport: false } })
+
+      // First connect: take ownership of any crash-pinned override, then release it.
+      const { ws: ws1 } = await connectAndOpen(connector)
+      expect(ws1.methods()).toContain("Emulation.setDeviceMetricsOverride")
+      expect(ws1.methods()).toContain("Emulation.clearDeviceMetricsOverride")
+
+      // Every subsequent switch: neither override nor clear — the remote stays native,
+      // no resize/reflow bounce.
+      const { ws: ws2 } = await connectAndOpen(connector)
+      expect(ws2.methods()).not.toContain("Emulation.setDeviceMetricsOverride")
+      expect(ws2.methods()).not.toContain("Emulation.clearDeviceMetricsOverride")
+
+      const { ws: ws3 } = await connectAndOpen(connector)
+      expect(ws3.methods()).not.toContain("Emulation.setDeviceMetricsOverride")
+      expect(ws3.methods()).not.toContain("Emulation.clearDeviceMetricsOverride")
+    })
+
+    it("does NOT clear the override on a switch teardown (only on a real disconnect)", async () => {
+      const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
+      ctl.connector.setMetricsOverride({
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+
+      const { ws: ws1 } = await connectAndOpen(ctl.connector)
+      // Switching to a new tab tears ws1 down — it must NOT emit a clear (the override
+      // is intentionally kept across the switch).
+      await connectAndOpen(ctl.connector)
+      expect(ws1.methods()).not.toContain("Emulation.clearDeviceMetricsOverride")
+    })
+
+    // The latent letterbox: the Adaptive Viewport reducer can emit applyOverride while
+    // the socket is mid-reconnect (activeWs null during the t040 backoff window). send()
+    // must NOT record that metrics as applied — the remote never received it. Otherwise
+    // the subsequent SAME-TARGET reconnect (a real drop nulled activeWs, so connect()
+    // runs no switch teardown and never resets appliedMetrics) hits
+    // sameMetrics(cachedMetrics, appliedMetrics)===true and SKIPS the override → the
+    // remote stays native-size → letterbox.
+    it("a setDeviceMetricsOverride sent while the socket is CLOSED is NOT recorded applied → re-applies on the next same-target reconnect", async () => {
+      const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
+
+      const { ws: ws1 } = await connectAndOpen(ctl.connector)
+      // A real drop: the active socket closes on its own (NOT a switch / disconnect),
+      // so connect() later runs no teardown and never resets appliedMetrics.
+      ws1.close()
+      expect(ctl.connector.isConnected()).toBe(false)
+
+      // The Adaptive Viewport machine emits applyOverride during the backoff window —
+      // it lands while activeWs is null, so the remote NEVER receives it.
+      ctl.connector.send("Emulation.setDeviceMetricsOverride", {
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+
+      // The same tab reconnects. Because the metrics never actually went out, the
+      // reconnect MUST re-issue the override (not skip it as already-applied).
+      const { ws: ws2 } = await connectAndOpen(ctl.connector)
+      const cmd = ws2.sent.find((c: any) => c.method === "Emulation.setDeviceMetricsOverride")
+      expect(cmd).toBeTruthy()
+      expect(cmd.params).toMatchObject({ width: 800, height: 600 })
+    })
+
+    it("a genuine same-target reconnect where the override DID transmit on an open socket skips the duplicate", async () => {
+      const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
+
+      const { ws: ws1 } = await connectAndOpen(ctl.connector)
+      // The override transmits on the OPEN socket — the remote actually receives it,
+      // so appliedMetrics is stamped.
+      ctl.connector.send("Emulation.setDeviceMetricsOverride", {
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+      expect(ws1.methods()).toContain("Emulation.setDeviceMetricsOverride")
+
+      // A real drop then a same-target reconnect (no switch teardown, appliedMetrics
+      // survives). The metrics are unchanged AND were genuinely applied, so the
+      // reconnect must skip the duplicate (no bounce).
+      ws1.close()
+      const { ws: ws2 } = await connectAndOpen(ctl.connector)
+      expect(ws2.methods()).not.toContain("Emulation.setDeviceMetricsOverride")
+    })
+
+    it("clears the override on disconnect() and re-applies on the next connect", async () => {
+      const ctl = makeConnector({ uiState: { adaptiveViewport: true } })
+      ctl.connector.setMetricsOverride({
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 1,
+        mobile: false,
+      })
+
+      const { ws: ws1 } = await connectAndOpen(ctl.connector)
+      ctl.connector.disconnect()
+      // A real host-initiated teardown releases the override to native.
+      expect(ws1.methods()).toContain("Emulation.clearDeviceMetricsOverride")
+
+      // A fresh connect after a real disconnect re-applies the cached override.
+      const { ws: ws2 } = await connectAndOpen(ctl.connector)
+      expect(ws2.methods()).toContain("Emulation.setDeviceMetricsOverride")
     })
   })
 
@@ -290,29 +538,24 @@ describe("createRemotePageConnector", () => {
   })
 
   describe("send / invoke / setMetricsOverride bookkeeping", () => {
-    it("send caches a setDeviceMetricsOverride and clears it on clearDeviceMetricsOverride", async () => {
+    it("send caches metrics (live-applied) and clears cachedMetrics on clearDeviceMetricsOverride", async () => {
       const { connector } = makeConnector({ uiState: { adaptiveViewport: true } })
 
-      // Connect, then drive metrics through send() as the Adaptive Viewport machine does.
+      // Connect cold (no cachedMetrics yet), then drive metrics through send() as the
+      // Adaptive Viewport machine does — send applies live AND caches them.
       await connectAndOpen(connector)
-
       connector.send("Emulation.setDeviceMetricsOverride", {
         width: 1024,
         height: 768,
         deviceScaleFactor: 1,
         mobile: false,
       })
-
-      // Reconnect: the cached override must be re-applied.
+      // Switch to a new target: appliedMetrics is reset, so the new target gets the
+      // override (correct — the new target has never had it applied).
       const { ws: ws2 } = await connectAndOpen(connector)
-      expect(
-        ws2.sent.find((c) => c.method === "Emulation.setDeviceMetricsOverride").params,
-      ).toMatchObject({
-        width: 1024,
-        height: 768,
-      })
+      expect(ws2.methods()).toContain("Emulation.setDeviceMetricsOverride")
 
-      // Clear, reconnect again: nothing re-applied.
+      // Clear drops the cache; a reconnect then re-applies nothing.
       connector.send("Emulation.clearDeviceMetricsOverride", {})
       const { ws: ws3 } = await connectAndOpen(connector)
       expect(ws3.methods()).not.toContain("Emulation.setDeviceMetricsOverride")

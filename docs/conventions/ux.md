@@ -1,6 +1,8 @@
 # UX conventions
 
-CDP Browser's primary user drives it as a daily browser replacement — opening tabs, navigating pages, managing pins, reviewing notifications, adjusting settings. The UX optimization is **keyboard-first**: every action reachable from the keyboard should be. Mouse is the fallback, not the default.
+CDP Browser's primary user drives it as a daily browser replacement — opening tabs, navigating pages, managing pins, reviewing notifications, adjusting settings. The UX optimization is **keyboard-first**: every action reachable from the keyboard should be. Pointer (trackpad/mouse) is the fallback, not the default.
+
+Touch is a **co-primary surface**, not an afterthought — the web PWA is a daily driver on iPad (see [product.md](product.md)). Two input modes: a Magic Keyboard + trackpad (the primary, keyboard-first path above) and **couch finger-only** (secondary). For v0.1.0, finger input is a lightweight **touch-scroll/tap/long-press** layer over the existing mouse pipeline (finger drag → `mouseWheel` deltas, tap → click, long-press → right-click; reusing `toRemoteCoords`). A soft on-screen keyboard bridge and full multi-touch (`Input.dispatchTouchEvent` pinch/momentum) are **v0.2** — finger text entry assumes a hardware keyboard for now. See ADR-0009.
 
 This convention covers the *interaction model*. Implementation (state, components, hotkey registry) lives in [frontend.md](frontend.md). Visual quality discipline is summarized here and detailed in [product.md](product.md).
 
@@ -37,6 +39,7 @@ Naming follows mainstream tools (Arc, Linear, Raycast) so muscle memory transfer
 | `⌘L` | Focus address bar |
 | `Esc` | Close modal / clear address bar focus / cancel action |
 | `⌘R` | Reload active Remote Page |
+| `⌥N` | Toggle the notification box |
 
 ### Tab navigation
 
@@ -61,6 +64,18 @@ Naming follows mainstream tools (Arc, Linear, Raycast) so muscle memory transfer
 | `↵` | Activate selected tab |
 
 These sidebar shortcuts are scoped — they fire only when the sidebar has focus, never when an address bar or other input is active.
+
+### Notifications
+
+`⌥N` opens/closes the notification box from anywhere. These keys fire only while the box is open and focused (it has no input, so plain keys are safe):
+
+| Shortcut | Action |
+|---|---|
+| `↑` / `↓` / `j` / `k` | Move the selected row (wraps) |
+| `↵` | Open the selected notification (marks its thread read + activates the tab) |
+| `r` | Mark the selected thread read (no open) |
+| `⇧R` | Mark all read |
+| `⌫` | Clear all |
 
 ### Modifiers
 
@@ -114,8 +129,7 @@ Keyboard-first overlaps heavily with accessibility. Add:
 - **Don't rely on color alone** to convey meaning (e.g. tab state). Pair color with icon or text label.
 - **Screen reader labels** on icon-only buttons (`aria-label="Close tab"`, `aria-label="Open command palette"`).
 - **Reduced motion** — respect `prefers-reduced-motion`. The Switch Effect (tab blur) must be suppressed or shortened when the system preference is set.
-
-No mobile / touch targets needed — CDP Browser is a desktop Electron app.
+- **Touch hit targets** — on coarse-pointer (finger) surfaces, interactive controls meet a ≥44pt tap target. The bump lives in one `@media (pointer: coarse)` block in `src/index.css` (gated purely on the `pointer` feature — never viewport width or `navigator.standalone`): it lifts the shadcn `Button` icon sizes and menu items by `data-slot`, and bespoke tappables (sidebar rows, rail tiles, icon glyphs) opt in via `.touch-target` / `.touch-target-center` (44pt box, glyph centred) or `.touch-slop-y` (hit-slop only — padding + negative margin keeps a slim bar's visual height). Fine-pointer (Mac) layout is byte-unchanged. Gate pointer-only affordances (e.g. mouse-leave auto-close on the Settings drawer) behind `matchMedia('(pointer: fine)')` so a synthesized touch event never triggers them; coarse pointers get a tap-outside + explicit close button instead. See ADR-0009.
 
 ---
 
@@ -170,4 +184,4 @@ The visual review layer ([tdd.md](tdd.md) layer 3) covers:
 
 _The fastest way to use a tool is the way you don't have to think about. Keyboard-first gets there._
 
-_Last revisited: 2026-05-23_
+_Last revisited: 2026-05-30_

@@ -16,8 +16,13 @@ export interface Transport {
   invoke(method: string, params?: unknown): Promise<any>
   // biome-ignore lint/suspicious/noExplicitAny: CDP event params are dynamic
   onEvent(cb: (msg: { method: string; params?: any }) => void): void
-  onDisconnected(cb: () => void): void
+  onDisconnected(cb: (phase?: DisconnectPhase) => void): void
 }
+
+/** Why the Remote Page socket is down. Web auto-reconnect (t040) surfaces "reconnecting"
+ *  while the backoff loop retries and "lost" once it gives up; Electron sends no phase
+ *  (undefined ⇒ terminal loss). */
+export type DisconnectPhase = "reconnecting" | "lost"
 
 export interface NavState {
   url: string
@@ -30,7 +35,7 @@ export type RemotePageEvent =
   | { type: "navigated"; url: string }
   | { type: "loadingChanged"; loading: boolean }
   | { type: "windowOpened" }
-  | { type: "disconnected" }
+  | { type: "disconnected"; phase?: DisconnectPhase }
 
 /** CDP `Page.screencastFrame` metadata — the captured area's DIP geometry, used to map
  *  input back into the remote viewport when the frame is downscaled. */
@@ -130,6 +135,79 @@ function editingCommands(e: KeyEventLike): string[] {
   return []
 }
 
+/**
+ * The injected in-page find helper, installed once per document as `window.__cdpFind`.
+ * It owns what `window.find` cannot: counting matches, stepping with wrap, scrolling the
+ * current match into view, and a clean clear. Each call re-scans the live DOM (cheap and
+ * SPA-proof — no stale node refs across re-renders); the current match is shown via the
+ * native Selection so it highlights and reveals without injecting any styles. Ships as a
+ * compact IIFE evaluated through `Runtime.evaluate` + `returnByValue` (same precedent as
+ * `navigateSpa` / `openTeamsThread`); the named intentions below are the stable seam.
+ */
+const FIND_HELPER = `(function(){
+  if (window.__cdpFind) return;
+  var ranges = [], idx = -1;
+  function collect(q){
+    ranges = [];
+    if (!q) return;
+    var needle = q.toLowerCase();
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(n){
+        if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        var p = n.parentElement;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        var tag = p.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+        var st = getComputedStyle(p);
+        if (st.visibility === 'hidden' || st.display === 'none') return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var node;
+    while ((node = walker.nextNode())) {
+      var hay = node.nodeValue.toLowerCase(), from = 0, at;
+      while ((at = hay.indexOf(needle, from)) !== -1) {
+        var r = document.createRange();
+        r.setStart(node, at);
+        r.setEnd(node, at + needle.length);
+        ranges.push(r);
+        from = at + needle.length;
+      }
+    }
+  }
+  function reveal(){
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    if (idx < 0 || !ranges[idx]) return;
+    sel.addRange(ranges[idx]);
+    var el = ranges[idx].startContainer.parentElement;
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+  window.__cdpFind = {
+    search: function(q){
+      collect(q);
+      idx = ranges.length ? 0 : -1;
+      reveal();
+      return { total: ranges.length, index: idx };
+    },
+    step: function(dir){
+      if (!ranges.length) return { index: -1 };
+      idx = dir === 'prev'
+        ? (idx - 1 + ranges.length) % ranges.length
+        : (idx + 1) % ranges.length;
+      reveal();
+      return { index: idx };
+    },
+    clear: function(){
+      ranges = []; idx = -1;
+      var sel = window.getSelection();
+      if (sel) sel.removeAllRanges();
+    }
+  };
+})()`
+
+const findExpr = (call: string) => `(()=>{${FIND_HELPER};return window.__cdpFind.${call}})()`
+
 export interface RemotePage {
   navigate(url: string): void
   /**
@@ -153,6 +231,17 @@ export interface RemotePage {
   /** True while the page is still loading (document.readyState !== "complete"). */
   isLoading(): Promise<boolean>
   copySelection(): Promise<string>
+  /**
+   * In-page find (t001). The remote-side search is an injected per-document routine
+   * (`window.find` reports only a boolean — it can't count or step deterministically),
+   * so a small helper walks the DOM, counts case-insensitive matches, selects + scrolls
+   * the current one into view, and reports `{ total, index }` via `returnByValue`.
+   */
+  find(query: string): Promise<{ total: number }>
+  /** Advance to the next/prev match (wrapping), revealing it. Returns the new 0-based index. */
+  findStep(dir: "next" | "prev"): Promise<{ index: number }>
+  /** Drop the find highlights/selection left on the remote page. */
+  clearFind(): void
   on(cb: (event: RemotePageEvent) => void): Unsubscribe
   onFrame(cb: (frame: ScreencastFrame) => void): Unsubscribe
   forwardInput(intent: InputIntent): void
@@ -228,9 +317,9 @@ export function createRemotePage(
         break
     }
   })
-  transport.onDisconnected(() => {
+  transport.onDisconnected((phase) => {
     mainFrameId = undefined
-    fan({ type: "disconnected" })
+    fan({ type: "disconnected", phase })
   })
 
   return {
@@ -355,6 +444,25 @@ export function createRemotePage(
         returnByValue: true,
       })
       return r?.result?.value ?? ""
+    },
+    async find(query) {
+      const q = JSON.stringify(query)
+      const r = await transport.invoke("Runtime.evaluate", {
+        expression: findExpr(`search(${q})`),
+        returnByValue: true,
+      })
+      return { total: r?.result?.value?.total ?? 0 }
+    },
+    async findStep(dir) {
+      const d = JSON.stringify(dir)
+      const r = await transport.invoke("Runtime.evaluate", {
+        expression: findExpr(`step(${d})`),
+        returnByValue: true,
+      })
+      return { index: r?.result?.value?.index ?? -1 }
+    },
+    clearFind() {
+      transport.send("Runtime.evaluate", { expression: findExpr("clear()") })
     },
   }
 }

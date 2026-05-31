@@ -1,0 +1,35 @@
+// Renderer-facing half of the quality-latency tier (t055). The screencast params
+// (jpegQuality + everyNthFrame) live in the root CJS `quality-tier.js`, the single owner
+// read by both backends (remote-page-connector.js + main.js) per ADR-0008 — the renderer
+// never applies them, the server does. This module owns only what the web-only Settings
+// picker needs: the tier id type, the option list shown in the 2x2-style toggle, the
+// localStorage key, and a parse-with-fallback for reading the stored pref back on mount.
+// Mirrors how transport-selector.ts owns the InputTransportMode ids for the t019 picker.
+
+export type QualityTier = "sharp" | "balanced" | "snappy"
+
+export const QUALITY_TIER_KEY = "qualityTier"
+
+export const DEFAULT_TIER: QualityTier = "balanced"
+
+// Sharp → Balanced → Snappy, the same order and ids the root mapping uses. Labels/tips are
+// presentation-only; the load-bearing numbers stay in quality-tier.js.
+export const QUALITY_TIERS: { id: QualityTier; label: string; tip: string }[] = [
+  { id: "sharp", label: "Sharp", tip: "Highest JPEG quality, every frame. Best on a fast link." },
+  { id: "balanced", label: "Balanced", tip: "Default — today's quality and frame rate." },
+  {
+    id: "snappy",
+    label: "Snappy",
+    tip: "Lower quality, fewer frames. Lowest latency on a slow link.",
+  },
+]
+
+const VALID = new Set<QualityTier>(QUALITY_TIERS.map((t) => t.id))
+
+// Garbage / null / wrong case → DEFAULT_TIER, matching the root parseTier so a corrupt
+// stored value resolves the same way on both sides.
+export function parseTier(raw: string | null | undefined): QualityTier {
+  return typeof raw === "string" && VALID.has(raw as QualityTier)
+    ? (raw as QualityTier)
+    : DEFAULT_TIER
+}

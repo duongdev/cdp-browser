@@ -20,6 +20,17 @@ const UI_DEFAULTS = {
   // Web build only: opt-in browser push (Notification API) toasts. Off by default —
   // it requires an explicit permission grant. See t011.
   webPush: false,
+  // Web build only: Sharp/Balanced/Snappy screencast quality-latency tier (t055).
+  // Applied to Page.startScreencast on (re)connect; default balanced = today's behavior.
+  // Electron has no picker and uses the default tier. See quality-tier.js.
+  qualityTier: "balanced",
+  // Virtual pointer (the echo-cursor overlay) visibility: off | on | auto. Default auto
+  // shows it only when there is no fine pointer (bare-iPad touch), hiding it once a
+  // trackpad is attached. Server-mirrored so it survives a PWA refresh. See virtual-pointer.ts.
+  virtualPointerMode: "auto",
+  // Settings drawer scroll offset (px). Persisted server-side so the drawer reopens where
+  // it was left, surviving a PWA refresh (localStorage resets on this PWA). See t014.
+  settingsScrollTop: 0,
 }
 // Keys settable via setUiState (localExtensionPaths is owned by extension flows).
 const UI_SETTABLE = Object.keys(UI_DEFAULTS).filter((k) => k !== "localExtensionPaths")
@@ -84,9 +95,7 @@ function createSettingsStore({ initial, persist }) {
       return settings.pins
     },
     updatePin: (id, patch) => {
-      settings.pins = (settings.pins || []).map((p) =>
-        p.id === id ? { ...p, title: patch.title, url: patch.url } : p,
-      )
+      settings.pins = (settings.pins || []).map((p) => (p.id === id ? { ...p, ...patch } : p))
       save()
       return settings.pins
     },

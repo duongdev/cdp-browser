@@ -1,4 +1,13 @@
-import { ArrowLeft01Icon, ArrowRight01Icon, PinIcon, ReloadIcon } from "@hugeicons/core-free-icons"
+import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  CommandIcon,
+  PinIcon,
+  ReloadIcon,
+  Search01Icon,
+  SidebarLeft01Icon,
+  SidebarLeftIcon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
 import { type NotifEntry, NotificationBell } from "@/components/notification-bell"
@@ -10,6 +19,7 @@ import { cn } from "@/lib/utils"
 interface ToolbarProps {
   url: string
   sidebarCollapsed: boolean
+  onToggleSidebar: () => void
   onNavigate: (url: string) => void
   onBack: () => void
   onForward: () => void
@@ -23,6 +33,9 @@ interface ToolbarProps {
   onThemeChange: (theme: "system" | "light" | "dark") => void
   isPinned: boolean
   onTogglePin: () => void
+  onOpenFind: () => void
+  /** Touch launcher for the ⌘K command palette — iPad has no Cmd+K without a keyboard. */
+  onOpenCommandPalette: () => void
   settingsOpen: boolean
   settingsCommitted: boolean
   onSettingsOpenChange: (open: boolean) => void
@@ -42,6 +55,7 @@ interface ToolbarProps {
   onNotificationClick: (entry: NotifEntry) => void
   onNotificationToggleRead: (entry: NotifEntry) => void
   onMarkAllRead: () => void
+  onMarkThreadRead: (entry: NotifEntry) => void
   onClearNotifications: () => void
   notificationsEnabled: boolean
   onNotificationsEnabledChange: (enabled: boolean) => void
@@ -67,6 +81,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   {
     url,
     sidebarCollapsed,
+    onToggleSidebar,
     onNavigate,
     onBack,
     onForward,
@@ -80,6 +95,8 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onThemeChange,
     isPinned,
     onTogglePin,
+    onOpenFind,
+    onOpenCommandPalette,
     settingsOpen,
     settingsCommitted,
     onSettingsOpenChange,
@@ -99,6 +116,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onNotificationClick,
     onNotificationToggleRead,
     onMarkAllRead,
+    onMarkThreadRead,
     onClearNotifications,
     notificationsEnabled,
     onNotificationsEnabledChange,
@@ -150,8 +168,11 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   return (
     <div
       className={cn(
+        // Top safe-area inset is reserved at the app root (app.tsx). Fixed h-11 (not
+        // min-h-11) so the bar is exactly 44px and its bottom border lines up with the
+        // sidebar header's — a coarse-pointer 44px button + border-b would otherwise push
+        // a min-h-11 bar to 45px while the empty header stays 44.
         "flex items-center gap-1.5 h-11 px-3 bg-card border-b border-border",
-        sidebarCollapsed && "pl-20",
       )}
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
@@ -160,6 +181,27 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         className="flex items-center gap-0.5"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
+        {/* Sidebar collapse toggle — lives in the toolbar (not the sidebar) so it keeps a
+            fixed position regardless of collapsed state. Icon flips to hint direction. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              className="text-muted-foreground hover:text-foreground"
+              onClick={onToggleSidebar}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <HugeiconsIcon
+                className="size-3.5"
+                icon={sidebarCollapsed ? SidebarLeftIcon : SidebarLeft01Icon}
+              />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          </TooltipContent>
+        </Tooltip>
+
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -172,7 +214,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
               <HugeiconsIcon className="size-3.5" icon={ArrowLeft01Icon} />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Back</TooltipContent>
+          <TooltipContent side="bottom">Back</TooltipContent>
         </Tooltip>
 
         <Tooltip>
@@ -187,7 +229,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
               <HugeiconsIcon className="size-3.5" icon={ArrowRight01Icon} />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Forward</TooltipContent>
+          <TooltipContent side="bottom">Forward</TooltipContent>
         </Tooltip>
 
         <Tooltip>
@@ -201,7 +243,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
               <HugeiconsIcon className="size-3" icon={ReloadIcon} />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Reload</TooltipContent>
+          <TooltipContent side="bottom">Reload</TooltipContent>
         </Tooltip>
       </div>
 
@@ -233,7 +275,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
 
       {/* Right side actions */}
       <div
-        className="flex items-center gap-1 text-[10px] text-muted-foreground select-none shrink-0"
+        className="flex items-center gap-1 pr-[max(0px,env(safe-area-inset-right))] text-[10px] text-muted-foreground select-none shrink-0"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
         {fps && <span className="mr-1 inline-block w-[48px] text-right tabular-nums">{fps}</span>}
@@ -249,7 +291,42 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
               />
             </span>
           </TooltipTrigger>
-          <TooltipContent>{status}</TooltipContent>
+          <TooltipContent side="bottom">{status}</TooltipContent>
+        </Tooltip>
+
+        {/* Command palette — touch launcher (iPad has no ⌘K without a keyboard). Radix
+            Slot merges the child Button's data-slot/data-size through `asChild`, so the
+            coarse 44pt bump (keyed on data-slot="button") reaches it directly — same as
+            the find/pin/bell/settings siblings, no extra opt-in needed. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              aria-label="Open command palette"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={onOpenCommandPalette}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <HugeiconsIcon className="size-3.5" icon={CommandIcon} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Command palette (⌘K)</TooltipContent>
+        </Tooltip>
+
+        {/* Find in page */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              aria-label="Find in page"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={onOpenFind}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <HugeiconsIcon className="size-3.5" icon={Search01Icon} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Find in page</TooltipContent>
         </Tooltip>
 
         {/* Pin */}
@@ -271,7 +348,9 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
               />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>{isPinned ? "Unpin this tab" : "Pin this tab"}</TooltipContent>
+          <TooltipContent side="bottom">
+            {isPinned ? "Unpin this tab" : "Pin this tab"}
+          </TooltipContent>
         </Tooltip>
 
         {/* Loaded extension action icons — local tabs only (Electron has no
@@ -294,7 +373,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
                     <img alt="" className="size-4 rounded-sm" src={ext.icon as string} />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>{ext.name}</TooltipContent>
+                <TooltipContent side="bottom">{ext.name}</TooltipContent>
               </Tooltip>
             ))}
 
@@ -304,6 +383,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onClearAll={onClearNotifications}
           onClickItem={onNotificationClick}
           onMarkAllRead={onMarkAllRead}
+          onMarkThreadRead={onMarkThreadRead}
           onOpenChange={onBellOpenChange}
           onToggleRead={onNotificationToggleRead}
           open={bellOpen}
