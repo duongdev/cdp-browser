@@ -11,6 +11,9 @@ permissions:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    env:
+      # corepack auto-downloads the packageManager-pinned pnpm without an interactive prompt
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,18 +21,17 @@ jobs:
           # Need history + the base ref so Biome can diff changed files.
           fetch-depth: 0
 
-      # Node before pnpm: pnpm@11 needs Node >=22.13, but pnpm/action-setup runs its
-      # installer on the runner's default Node (v20) if Node isn't set up first. .nvmrc
-      # pins 24. (setup-node's `cache: pnpm` can't run here — pnpm isn't installed yet.)
+      # pnpm@11 needs Node >=22.13. pnpm/action-setup runs its self-installer on the
+      # runner's own Node-20 action runtime (ignores setup-node), so it can't install
+      # pnpm 11. Use corepack instead: it runs as a normal step on the setup-node Node
+      # (24, from .nvmrc) and activates the pnpm version pinned in package.json#packageManager.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.2.2
+      - name: Enable pnpm (corepack)
+        run: corepack enable
 
       - name: Cache pnpm store
         uses: actions/cache@v4
