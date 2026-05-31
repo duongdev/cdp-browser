@@ -18,16 +18,25 @@ jobs:
           # Need history + the base ref so Biome can diff changed files.
           fetch-depth: 0
 
+      # Node before pnpm: pnpm@11 needs Node >=22.13, but pnpm/action-setup runs its
+      # installer on the runner's default Node (v20) if Node isn't set up first. .nvmrc
+      # pins 24. (setup-node's `cache: pnpm` can't run here — pnpm isn't installed yet.)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 11.2.2
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Cache pnpm store
+        uses: actions/cache@v4
         with:
-          node-version-file: .nvmrc
-          cache: pnpm
+          path: ~/.local/share/pnpm/store
+          key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-
 
       - name: Install
         run: pnpm install --frozen-lockfile
