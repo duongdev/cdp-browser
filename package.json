@@ -1,6 +1,6 @@
 {
   "name": "cdp-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "productName": "CDP Browser",
   "description": "A lightweight browser that connects to remote Chromium via Chrome DevTools Protocol",
   "author": "duongdev",
