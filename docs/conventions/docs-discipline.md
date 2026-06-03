@@ -151,4 +151,4 @@ If a doc has rotted beyond repair, delete it and write a fresh one. A wrong doc 
 
 _Docs you don't maintain are a liability. Docs you maintain are a force multiplier._
 
-_Last revisited: 2026-05-29_
+_Last revisited: 2026-06-03_

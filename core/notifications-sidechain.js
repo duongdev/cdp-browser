@@ -13,6 +13,7 @@
 const {
   matchAdapter,
   groupKeyFor,
+  slackGroupKey,
   ingest,
   markRead,
   markUnread,
@@ -39,6 +40,17 @@ const ADAPTERS = [
     script: "outlook-notify.js",
     match: (h) => /(^|\.)outlook\.(office\.com|live\.com|cloud\.microsoft)$/.test(h),
     iconUrl: "https://outlook.office365.com/owa/favicon.ico",
+  },
+  {
+    name: "slack",
+    script: "slack-notify.js",
+    match: (h) => /(^|\.)slack\.com$/.test(h),
+    iconUrl: "https://a.slack-edge.com/80588/marketing/img/icons/favicon-32-electron.png",
+    // Slack runs every workspace under one origin (app.slack.com), so the default
+    // per-origin grouping would merge all workspaces into one badge. Derive the group
+    // key from the Tab's URL team id instead — one Tab per workspace, so the URL is the
+    // authoritative workspace identity (more durable than the in-page capture script).
+    groupKey: slackGroupKey,
   },
 ]
 
@@ -76,9 +88,10 @@ function createNotificationCenter(deps) {
       {
         id: n.id,
         adapter: adapter ? adapter.name : null,
-        // Stable grouping key — the capture script's explicit groupKey, else the Tab's
-        // URL origin (today's per-origin grouping). Consumers key on this, never origin.
-        groupKey: groupKeyFor(n, target.url),
+        // Stable grouping key — an adapter's URL-derived key (e.g. Slack's per-workspace
+        // `slack:{teamId}`) wins; else the capture script's explicit groupKey, else the
+        // Tab's URL origin (today's per-origin grouping). Consumers key on this, never origin.
+        groupKey: adapter?.groupKey?.(target.url) || groupKeyFor(n, target.url),
         source: n.source || "",
         title: n.title || "",
         body: n.body || "",

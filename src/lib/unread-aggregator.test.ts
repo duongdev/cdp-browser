@@ -131,4 +131,59 @@ describe("aggregateUnread", () => {
       expect(byTab.t1).toBe(1)
     })
   })
+
+  describe("slack multi-workspace (t064)", () => {
+    // Every Slack workspace shares the app.slack.com origin, so the tab/pin must resolve
+    // to its per-workspace `slack:{teamId}` bucket — not the shared origin — to badge.
+    it("badges a Slack tab via its team-id bucket, not the shared origin", () => {
+      const notifications = [
+        notif({ groupKey: "slack:T111", targetUrl: "https://app.slack.com/client/T111/C1" }),
+      ]
+      const tabs = [{ id: "w1", url: "https://app.slack.com/client/T111/C9" }]
+
+      const { byGroup, byTab } = aggregateUnread(notifications, tabs, [], {})
+
+      expect(byGroup["slack:T111"]).toBe(1)
+      expect(byTab.w1).toBe(1)
+    })
+
+    it("keeps two workspaces on app.slack.com distinct (no cross-bleed)", () => {
+      const notifications = [
+        notif({ groupKey: "slack:T111", targetUrl: "https://app.slack.com/client/T111/C1" }),
+        notif({ groupKey: "slack:T222", targetUrl: "https://app.slack.com/client/T222/C1" }),
+        notif({ groupKey: "slack:T222", targetUrl: "https://app.slack.com/client/T222/C2" }),
+      ]
+      const tabs = [
+        { id: "w1", url: "https://app.slack.com/client/T111/C9" },
+        { id: "w2", url: "https://app.slack.com/client/T222/C9" },
+      ]
+
+      const { byTab } = aggregateUnread(notifications, tabs, [], {})
+
+      expect(byTab.w1).toBe(1)
+      expect(byTab.w2).toBe(2)
+    })
+
+    it("resolves an Enterprise Grid (E-prefixed) workspace tab", () => {
+      const notifications = [
+        notif({ groupKey: "slack:E333", targetUrl: "https://app.slack.com/client/E333/C1" }),
+      ]
+      const tabs = [{ id: "w1", url: "https://app.slack.com/client/E333/C9" }]
+
+      const { byTab } = aggregateUnread(notifications, tabs, [], {})
+
+      expect(byTab.w1).toBe(1)
+    })
+
+    it("badges a dormant Slack pin by its saved workspace URL", () => {
+      const notifications = [
+        notif({ groupKey: "slack:T111", targetUrl: "https://app.slack.com/client/T111/C1" }),
+      ]
+      const pins = [{ id: "p1", url: "https://app.slack.com/client/T111/C2" }]
+
+      const { byPin } = aggregateUnread(notifications, [], pins, {})
+
+      expect(byPin.p1).toBe(1)
+    })
+  })
 })

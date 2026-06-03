@@ -49,11 +49,11 @@ A read-only CDP WebSocket attached to a background tab's target — no screencas
 _Avoid_: background session, helper socket, spy socket.
 
 **Notification Adapter**:
-A drop-in seam that spans both capture and activation for one notification-capable site. Each entry in the `ADAPTERS` array of `notifications-sidechain.js` carries: `name` (stable identifier), hostname `match` regex, capture `script` (injected at document-start), `iconUrl`, `groupKey` override (optional; defaults to URL origin), and optional `activate` tagged union (`spa-link` | `thread`) that encodes a deep-open intent as semantic ids — never DOM selectors. The renderer's activation registry (`src/lib/notification-activation.ts`) maps the `activate` type to a Remote Page intention (`navigateSpa` or `openTeamsThread`), keyed by the same `name`. Adding an adapter = one config entry in `ADAPTERS` + one capture script + one activation handler in the renderer registry. Teams and Outlook (OWA) are the current adapters.
+A drop-in seam that spans both capture and activation for one notification-capable site. Each entry in the `ADAPTERS` array of `notifications-sidechain.js` carries: `name` (stable identifier), hostname `match` regex, capture `script` (injected at document-start), `iconUrl`, optional `groupKey(url)` hook (URL-derived per-workspace bucketing; defaults to URL origin), and optional `activate` tagged union (`spa-link` | `thread`) that encodes a deep-open intent as semantic ids — never DOM selectors. The renderer's activation registry (`src/lib/notification-activation.ts`) maps the `activate` type to a Remote Page intention (`navigateSpa` or `openTeamsThread`), keyed by the same `name`. Adding an adapter = one config entry in `ADAPTERS` + one capture script + one activation handler in the renderer registry. Teams, Outlook (OWA), and Slack are the current adapters.
 _Avoid_: plugin, connector, integration.
 
 **Notification Capture**:
-The act of a `MutationObserver` inside an injected script observing the site's own in-app toast node, extracting text and `targetEntity` from the DOM/React fiber, and shipping the result through the `__cdpNotify` binding. Pure capture — never navigates.
+The act of an injected script shipping notification payloads through the `__cdpNotify` binding. Capture style varies by site: Teams and Outlook use a `MutationObserver` on the site's own in-app toast DOM; Slack has no in-app toast, so its script patches `window.Notification` (the Web Notifications API hijack) and forces `Notification.permission` → `"granted"` so Slack actually fires. Pure capture — never navigates.
 _Avoid_: scraping, hooking, interception.
 
 **Local Tab**:

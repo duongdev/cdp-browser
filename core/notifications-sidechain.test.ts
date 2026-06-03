@@ -262,6 +262,52 @@ describe("groupKey + activate seam (t028)", () => {
   })
 })
 
+describe("slack adapter — per-workspace grouping (t064)", () => {
+  const slackTarget = (id: string, teamId: string) => ({
+    id,
+    type: "page" as const,
+    url: `https://app.slack.com/client/${teamId}/C001`,
+    webSocketDebuggerUrl: `ws://host/devtools/page/${id}`,
+  })
+
+  it("matches any *.slack.com host to the slack adapter", () => {
+    const { center } = makeCenter()
+    expect(center.adapterFor("https://app.slack.com/client/T1/C1")?.name).toBe("slack")
+    expect(center.adapterFor("https://acme.slack.com/messages")?.name).toBe("slack")
+  })
+
+  it("derives groupKey from the Tab URL team id (server-side), ignoring origin", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackTarget("s1", "T111")])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    // The capture script ships no groupKey; the adapter's groupKey(url) hook supplies it.
+    ws.notify({ id: "sn", title: "@alice: hi", source: "Acme" })
+    expect(center.list()[0].groupKey).toBe("slack:T111")
+  })
+
+  it("buckets two workspaces sharing app.slack.com under distinct group keys", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackTarget("s1", "T111"), slackTarget("s2", "T222")])
+    const [wsA, wsB] = FakeWs.instances
+    wsA.open()
+    wsB.open()
+    wsA.notify({ id: "a1", title: "ping A" })
+    wsB.notify({ id: "b1", title: "ping B" })
+    const keys = center.list().map((e: any) => e.groupKey)
+    expect(new Set(keys)).toEqual(new Set(["slack:T111", "slack:T222"]))
+  })
+
+  it("passes a channel spa-link activate intent through untouched", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackTarget("s1", "T111")])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    ws.notify({ id: "sn", title: "@alice", activate: { type: "spa-link", url: "/client/T111/C9" } })
+    expect(center.list()[0].activate).toEqual({ type: "spa-link", url: "/client/T111/C9" })
+  })
+})
+
 describe("store mutations + persistence", () => {
   async function seeded() {
     const ctx = makeCenter()

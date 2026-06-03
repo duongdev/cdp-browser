@@ -2,11 +2,13 @@
 // per-group, per-Tab, and per-Pin unread badge counts.
 //
 // Notifications are attributed by *group*, so every Tab and Pin of the same app
-// (all Teams, all Outlook) shares one count whether or not it captured the
-// toast, and a dormant Pin still badges by its saved URL's origin. The group key
-// is `groupKey ?? originOf(targetUrl)`: today notifications carry no `groupKey`
-// so the key is the URL origin (byte-identical to the prior by-origin behavior);
-// task 028 introduces a real `groupKey` and this module is already ready for it.
+// (all Teams, all Outlook, all of one Slack workspace) shares one count whether or
+// not it captured the toast, and a dormant Pin still badges by its saved URL. The
+// notification center stamps each entry's `groupKey` (an adapter's URL-derived key,
+// else an explicit one, else the targetUrl origin); byGroup keys on it. A Tab/Pin
+// resolves to its bucket via `groupKeyForUrl(url)` — the SAME derivation, so a Slack
+// tab (all workspaces share the app.slack.com origin) resolves to its per-workspace
+// `slack:{teamId}` key instead of the shared origin, keeping workspace counts distinct.
 //
 // Pure: no React, no window, no DOM. Effects (building `linkedTabByPin`, wiring
 // the result into the sidebar/bell) live in app.tsx.
@@ -15,7 +17,8 @@
 export interface UnreadNotification {
   read: boolean
   targetUrl?: string
-  /** Absent today; introduced by task 028. Falls back to the targetUrl origin. */
+  /** Stamped by the notification center: an adapter-derived key (e.g. `slack:{teamId}`),
+   *  an explicit capture-script key, or the targetUrl origin fallback. */
   groupKey?: string
 }
 
@@ -32,7 +35,7 @@ export interface UnreadPin {
 }
 
 export interface UnreadResult {
-  /** key = groupKey ?? origin → unread count */
+  /** key = groupKeyForUrl-style bucket → unread count */
   byGroup: Record<string, number>
   /** tab.id → unread count */
   byTab: Record<string, number>
@@ -49,9 +52,36 @@ function originOf(url: string | undefined): string | null {
   }
 }
 
-/** A notification's group key: its explicit `groupKey`, else its targetUrl origin. */
+// Slack runs every workspace under one origin (app.slack.com), so resolving a Slack
+// tab/pin by origin would merge all workspaces into one badge. Key it by team id instead
+// — matching the `slack:{teamId}` group key the notification center stamps server-side
+// (mirrors core/notifications.js `slackGroupKey`; one tab per workspace, so the URL is
+// authoritative). `T…` standard / `E…` Enterprise Grid, legacy subdomain fallback.
+function slackGroupKey(url: string | undefined): string | null {
+  if (!url) return null
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (!/(^|\.)slack\.com$/.test(u.hostname)) return null
+  const m = u.pathname.match(/\/client\/([TE][A-Z0-9]+)/)
+  if (m) return `slack:${m[1]}`
+  const sub = u.hostname.replace(/\.slack\.com$/, "")
+  return sub && sub !== "app" ? `slack:${sub}` : null
+}
+
+/** A URL's unread bucket: Slack's per-workspace `slack:{teamId}`, else the URL origin.
+ *  The single key derivation shared by notification keying and Tab/Pin resolution. */
+function groupKeyForUrl(url: string | undefined): string | null {
+  return slackGroupKey(url) ?? originOf(url)
+}
+
+/** A notification's group key: its explicit stamped `groupKey`, else derived from its
+ *  targetUrl (Slack workspace key or origin) — the same derivation Tabs/Pins use. */
 function notificationKey(n: UnreadNotification): string | null {
-  return n.groupKey ?? originOf(n.targetUrl)
+  return n.groupKey ?? groupKeyForUrl(n.targetUrl)
 }
 
 /**
@@ -75,13 +105,13 @@ export function aggregateUnread(
 
   const byTab: Record<string, number> = {}
   for (const t of tabs) {
-    const key = originOf(t.url)
+    const key = groupKeyForUrl(t.url)
     byTab[t.id] = key ? byGroup[key] || 0 : 0
   }
 
   const byPin: Record<string, number> = {}
   for (const pin of pins) {
-    const key = originOf(linkedTabByPin[pin.id]?.url ?? pin.url)
+    const key = groupKeyForUrl(linkedTabByPin[pin.id]?.url ?? pin.url)
     byPin[pin.id] = key ? byGroup[key] || 0 : 0
   }
 

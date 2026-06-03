@@ -7,7 +7,9 @@ import {
   markRead,
   markUnread,
   matchAdapter,
+  parseSlackContext,
   shouldNotifyOs,
+  slackGroupKey,
   unreadByTarget,
   unreadCount,
 } from "./notifications"
@@ -32,6 +34,65 @@ describe("groupKeyFor", () => {
   it("returns empty string when neither groupKey nor a parseable origin exists", () => {
     expect(groupKeyFor({}, "not a url")).toBe("")
     expect(groupKeyFor({}, undefined)).toBe("")
+  })
+})
+
+describe("parseSlackContext", () => {
+  it("extracts teamId and channelId from the unified client URL", () => {
+    expect(parseSlackContext("https://app.slack.com/client/T04FTGB9SD3/C03K3382")).toEqual({
+      teamId: "T04FTGB9SD3",
+      channelId: "C03K3382",
+    })
+  })
+
+  it("parses an Enterprise Grid (E-prefixed) team id", () => {
+    expect(parseSlackContext("https://app.slack.com/client/E0761H36LHY/C0AJ98M85A5")).toEqual({
+      teamId: "E0761H36LHY",
+      channelId: "C0AJ98M85A5",
+    })
+  })
+
+  it("returns teamId with null channel when the URL is the workspace root", () => {
+    expect(parseSlackContext("https://app.slack.com/client/T123")).toEqual({
+      teamId: "T123",
+      channelId: null,
+    })
+  })
+
+  it("accepts DM (D) and group (G) channel ids", () => {
+    expect(parseSlackContext("https://app.slack.com/client/T1/D999").channelId).toBe("D999")
+    expect(parseSlackContext("https://app.slack.com/client/T1/G999").channelId).toBe("G999")
+  })
+
+  it("falls back to the subdomain as teamId for legacy workspace URLs", () => {
+    expect(parseSlackContext("https://acme.slack.com/messages")).toEqual({
+      teamId: "acme",
+      channelId: null,
+    })
+  })
+
+  it("returns nulls for non-Slack and unparseable URLs", () => {
+    expect(parseSlackContext("https://teams.microsoft.com/v2/")).toEqual({
+      teamId: null,
+      channelId: null,
+    })
+    expect(parseSlackContext("https://slack.com.evil.com/client/T1")).toEqual({
+      teamId: null,
+      channelId: null,
+    })
+    expect(parseSlackContext("not a url")).toEqual({ teamId: null, channelId: null })
+  })
+})
+
+describe("slackGroupKey", () => {
+  it("buckets by team id so workspaces sharing app.slack.com stay distinct", () => {
+    expect(slackGroupKey("https://app.slack.com/client/T111/C1")).toBe("slack:T111")
+    expect(slackGroupKey("https://app.slack.com/client/T222/C1")).toBe("slack:T222")
+  })
+
+  it("returns empty string when no team id is resolvable", () => {
+    expect(slackGroupKey("https://app.slack.com/")).toBe("")
+    expect(slackGroupKey("not a url")).toBe("")
   })
 })
 

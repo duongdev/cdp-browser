@@ -35,6 +35,36 @@ function groupKeyFor(payload, targetUrl) {
   return originOf(targetUrl) || ""
 }
 
+// Slack workspace context from a tab URL. Modern Slack runs every workspace under one
+// origin (`app.slack.com/client/{TEAM}/{CHANNEL}`), so per-origin grouping can't tell
+// workspaces apart — the team id (path segment, `T…` standard or `E…` Enterprise Grid)
+// is the real key. Legacy `acme.slack.com` URLs fall back to the subdomain as the team
+// id. Returns nulls for non-Slack / unparseable URLs. Pure.
+function parseSlackContext(url) {
+  let u
+  try {
+    u = new URL(url)
+  } catch {
+    return { teamId: null, channelId: null }
+  }
+  if (!/(^|\.)slack\.com$/.test(u.hostname)) return { teamId: null, channelId: null }
+  const m = u.pathname.match(/\/client\/([TE][A-Z0-9]+)(?:\/([CDG][A-Z0-9]+))?/)
+  if (m) return { teamId: m[1], channelId: m[2] || null }
+  // Legacy per-workspace subdomain (acme.slack.com) — not app.slack.com.
+  const sub = u.hostname.replace(/\.slack\.com$/, "")
+  if (sub && sub !== "app" && sub !== "slack.com") return { teamId: sub, channelId: null }
+  return { teamId: null, channelId: null }
+}
+
+// The per-workspace group key for a Slack tab URL: `slack:{teamId}`, or "" when no team
+// id is resolvable (an unkeyable entry, like `groupKeyFor`'s empty case). Wired as the
+// Slack adapter's `groupKey(url)` hook so unread bucketing splits by workspace even
+// though every workspace shares the app.slack.com origin. Pure.
+function slackGroupKey(url) {
+  const { teamId } = parseSlackContext(url)
+  return teamId ? `slack:${teamId}` : ""
+}
+
 // Stamps a payload as unread and prepends it (newest-first). Returns the new list
 // and the created entry (entry is null when the payload is rejected).
 function ingest(list, payload, cap) {
@@ -81,6 +111,8 @@ function unreadByTarget(list) {
 module.exports = {
   matchAdapter,
   groupKeyFor,
+  parseSlackContext,
+  slackGroupKey,
   ingest,
   shouldNotifyOs,
   markRead,
