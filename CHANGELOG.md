@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.2.0...cdp-browser-v0.2.1) (2026-06-03)
+
+
+### Features
+
+* **notifications:** capture slack notifications with per-workspace grouping (t064) ([6ef97ab](https://github.com/duongdev/cdp-browser/commit/6ef97ab))
+
 ## [0.2.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.1.0...cdp-browser-v0.2.0) (2026-06-01)
 
 
