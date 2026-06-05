@@ -1194,6 +1194,17 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
         console.error("[web] clipboard write failed:", e)
       }
     },
+    readClipboard: async () => {
+      try {
+        return (await navigator.clipboard?.readText?.()) ?? ""
+      } catch (e) {
+        console.error("[web] clipboard read failed:", e)
+        return ""
+      }
+    },
+    // Web reads the clipboard from the native `paste` event (app.tsx), not here — the
+    // async Clipboard API can't reliably read images on Safari/iPad. Stub returns null.
+    readClipboardImage: async () => null,
     onSwipe: () => {}, // no trackpad swipe over the web
     getPins: () => rest.getJson("/api/pins"),
     addPin: (pin) => rest.postJson("/api/pins/add", pin),

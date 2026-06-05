@@ -627,8 +627,14 @@ export function Viewport({
       !!document.activeElement?.closest(
         '[data-radix-popper-content-wrapper],[role="dialog"],[role="alertdialog"]',
       )
+    // ⌘/Ctrl+V is clipboard paste, handled at the app level (Electron) or by the native
+    // paste event (web) — never forwarded to the remote as a raw keystroke, which would
+    // make the remote paste its own (wrong) clipboard. On web we must NOT preventDefault
+    // it here either, or the browser's `paste` event won't fire.
+    const isPasteCombo = (e: KeyboardEvent) =>
+      (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "v"
     const skip = (e: KeyboardEvent) =>
-      isField(e) || isOsReservedKey(e) || e.defaultPrevented || inOverlay()
+      isField(e) || isOsReservedKey(e) || isPasteCombo(e) || e.defaultPrevented || inOverlay()
     const handleKeyDown = (e: KeyboardEvent) => {
       if (skip(e)) return
       e.preventDefault()

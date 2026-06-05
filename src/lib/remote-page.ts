@@ -232,6 +232,18 @@ export interface RemotePage {
   isLoading(): Promise<boolean>
   copySelection(): Promise<string>
   /**
+   * Pastes text into the remote page. When rich=false (default), uses Input.insertText
+   * for plain-text insertion into a focused input. When rich=true, pre-seeds the remote
+   * clipboard via Runtime.evaluate and forwards Cmd+V so the page's onpaste handler runs.
+   */
+  paste(text: string, options?: { rich?: boolean }): void
+  /**
+   * Pastes an image into the remote page's focused element by synthesizing a `paste`
+   * ClipboardEvent carrying the image as a File (rich editors read clipboardData.files).
+   * `dataUrl` is a `data:image/...;base64,…` string.
+   */
+  pasteImage(dataUrl: string): void
+  /**
    * In-page find (t001). The remote-side search is an injected per-document routine
    * (`window.find` reports only a boolean — it can't count or step deterministically),
    * so a small helper walks the DOM, counts case-insensitive matches, selects + scrolls
@@ -444,6 +456,46 @@ export function createRemotePage(
         returnByValue: true,
       })
       return r?.result?.value ?? ""
+    },
+    async paste(text, { rich = false } = {}) {
+      if (rich) {
+        await transport.invoke("Runtime.evaluate", {
+          expression: `navigator.clipboard.writeText(${JSON.stringify(text)})`,
+          awaitPromise: true,
+        })
+        transport.send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "v",
+          code: "KeyV",
+          commandKey: true,
+          windowsVirtualKeyCode: 86,
+        })
+        transport.send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "v",
+          code: "KeyV",
+          windowsVirtualKeyCode: 86,
+        })
+      } else {
+        transport.send("Input.insertText", { text })
+      }
+    },
+    pasteImage(dataUrl) {
+      // Input.insertText can't carry images, so synthesize a paste event on the remote's
+      // focused element with a DataTransfer holding the image File — rich editors (Slack,
+      // Gmail, Docs) that listen for `paste` read it from clipboardData.files.
+      transport.invoke("Runtime.evaluate", {
+        expression: `(async () => {
+          const res = await fetch(${JSON.stringify(dataUrl)});
+          const blob = await res.blob();
+          const file = new File([blob], "pasted-image.png", { type: blob.type || "image/png" });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const el = document.activeElement || document.body;
+          el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+        })()`,
+        awaitPromise: true,
+      })
     },
     async find(query) {
       const q = JSON.stringify(query)

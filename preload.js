@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("cdp", {
   onNativeThemeChanged: (cb) =>
     ipcRenderer.on("cdp:native-theme-changed", (_, isDark) => cb(isDark)),
   copyToClipboard: (text) => ipcRenderer.invoke("cdp:copy-to-clipboard", text),
+  readClipboard: () => ipcRenderer.invoke("cdp:read-clipboard"),
+  readClipboardImage: () => ipcRenderer.invoke("cdp:read-clipboard-image"),
   onSwipe: (cb) => ipcRenderer.on("cdp:swipe", (_, direction) => cb(direction)),
   // Pins
   getPins: () => ipcRenderer.invoke("cdp:get-pins"),

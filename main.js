@@ -197,6 +197,15 @@ ipcMain.handle("cdp:copy-to-clipboard", (_, text) => {
   clipboard.writeText(text)
 })
 
+ipcMain.handle("cdp:read-clipboard", () => {
+  return clipboard.readText()
+})
+
+ipcMain.handle("cdp:read-clipboard-image", () => {
+  const img = clipboard.readImage()
+  return img.isEmpty() ? null : img.toDataURL()
+})
+
 ipcMain.handle("cdp:list-tabs", async () => {
   try {
     const { url, method } = endpoints.list(cdpHost, cdpPort)

@@ -315,6 +315,61 @@ describe("RemotePage input forwarding", () => {
   })
 })
 
+describe("RemotePage clipboard paste", () => {
+  it("plain paste sends Input.insertText with the text", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.paste("hello", { rich: false })
+
+    expect(t.sends).toEqual([{ method: "Input.insertText", params: { text: "hello" } }])
+  })
+
+  it("defaults to plain (insertText) when no options are passed", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.paste("hi")
+
+    expect(t.sends).toEqual([{ method: "Input.insertText", params: { text: "hi" } }])
+  })
+
+  it("rich paste pre-seeds the clipboard then forwards Cmd+V", async () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.paste("hi", { rich: true })
+    await Promise.resolve()
+
+    // pre-seed clipboard via Runtime.evaluate
+    expect(t.invoke).toHaveBeenCalledWith(
+      "Runtime.evaluate",
+      expect.objectContaining({ awaitPromise: true }),
+    )
+    // then a Cmd+V keyDown/keyUp pair
+    expect(t.sends.map((s) => s.method)).toEqual([
+      "Input.dispatchKeyEvent",
+      "Input.dispatchKeyEvent",
+    ])
+    expect(t.sends[0].params).toMatchObject({ type: "keyDown", key: "v", commandKey: true })
+  })
+
+  it("pasteImage evaluates a synthetic paste event injecting the data URL", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.pasteImage("data:image/png;base64,ABC")
+
+    expect(t.invoke).toHaveBeenCalledWith(
+      "Runtime.evaluate",
+      expect.objectContaining({ awaitPromise: true }),
+    )
+    const expr = t.invoke.mock.calls[0][1].expression as string
+    expect(expr).toContain('ClipboardEvent("paste"')
+    expect(expr).toContain("data:image/png;base64,ABC")
+  })
+})
+
 describe("RemotePage screencast frames", () => {
   it("delivers frames to onFrame and auto-acks the session", () => {
     const t = fakeTransport()

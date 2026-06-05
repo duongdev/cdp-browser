@@ -32,6 +32,7 @@ import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
 import { startUpdateWatcher } from "@/lib/sw-update"
 import { planClose, planSwitch } from "@/lib/tab-lifecycle"
 import { reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
+import { isTypingSurface } from "@/lib/typing-surface"
 import { aggregateUnread } from "@/lib/unread-aggregator"
 import { cn } from "@/lib/utils"
 import {
@@ -987,8 +988,26 @@ export default function App() {
         target?.tagName === "TEXTAREA" ||
         target?.isContentEditable === true
 
-      // ? : shortcut-help overlay. Plain key (Shift+/), so never while an input owns it.
-      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey && !inInput) {
+      // ? : shortcut-help overlay (when app chrome is focused). Plain key (Shift+/),
+      // so never while an input owns it OR while the canvas/webview is the active
+      // typing surface (then ? types literally into the remote page).
+      if (
+        e.key === "?" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !inInput &&
+        !isTypingSurface(activeKind)
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        setShortcutsOpen((prev) => !prev)
+        return
+      }
+
+      // ⌘/ : alternative opener for shortcut-help overlay, reachable everywhere
+      // except a local input. Avoids bare ? firing over the canvas.
+      if ((e.metaKey || e.ctrlKey) && e.key === "/" && !e.altKey && !inInput) {
         e.preventDefault()
         e.stopPropagation()
         setShortcutsOpen((prev) => !prev)
@@ -1150,6 +1169,33 @@ export default function App() {
           })
           break
         }
+        case "v": {
+          // Cmd+V: paste from local clipboard into remote page
+          const target = e.target as HTMLElement
+          if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break // let native paste work
+          // Web: navigator.clipboard.readText() is blocked on Safari/iPad PWA. Don't handle
+          // here — let the browser's native `paste` event fire (see the paste listener
+          // effect), which is gesture-bound, permission-free, and also carries images.
+          if (caps.web) break
+          e.preventDefault()
+          e.stopPropagation()
+          // Electron: read the local clipboard in main (image first, then text) and inject.
+          window.cdp
+            .readClipboardImage()
+            .then((dataUrl) => {
+              if (dataUrl) {
+                page.pasteImage(dataUrl)
+                return
+              }
+              return window.cdp.readClipboard().then((text) => {
+                if (text) page.paste(text, { rich: false })
+              })
+            })
+            .catch(() => {
+              // clipboard read failed; silently ignore (no permission, not focused, etc)
+            })
+          break
+        }
         case "a": {
           // Cmd+A: select all on remote page
           const target = e.target as HTMLElement
@@ -1178,6 +1224,44 @@ export default function App() {
     page,
     caps.web,
   ])
+
+  // Web clipboard paste (t065). On Safari/iPad PWA navigator.clipboard.readText() is
+  // blocked, so we read from the native `paste` event instead — gesture-bound,
+  // permission-free, and it carries images too. The Cmd+V keydown is left un-prevented on
+  // web (see the "v" case + viewport's isPasteCombo skip) so the browser fires this event.
+  useEffect(() => {
+    if (!caps.web) return
+    const onPaste = (e: ClipboardEvent) => {
+      const el = document.activeElement as HTMLElement | null
+      // A local input/textarea/contenteditable owns the paste — let it paste natively.
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
+        return
+      const dt = e.clipboardData
+      if (!dt) return
+      const imageItem = Array.from(dt.items).find(
+        (it) => it.kind === "file" && it.type.startsWith("image/"),
+      )
+      if (imageItem) {
+        const file = imageItem.getAsFile()
+        if (file) {
+          e.preventDefault()
+          const reader = new FileReader()
+          reader.onload = () => {
+            if (typeof reader.result === "string") page.pasteImage(reader.result)
+          }
+          reader.readAsDataURL(file)
+          return
+        }
+      }
+      const text = dt.getData("text/plain")
+      if (text) {
+        e.preventDefault()
+        page.paste(text, { rich: false })
+      }
+    }
+    document.addEventListener("paste", onPaste)
+    return () => document.removeEventListener("paste", onPaste)
+  }, [page])
 
   // Initial load: resolve pin links against the live targets, then activate the
   // first visible tab. Pins re-link to their persisted target (or a URL match)

@@ -96,6 +96,9 @@ interface CdpBridge {
   getThemeSource: () => Promise<"system" | "light" | "dark">
   onNativeThemeChanged: (cb: (isDark: boolean) => void) => void
   copyToClipboard: (text: string) => Promise<void>
+  readClipboard: () => Promise<string>
+  /** Electron-only: the local clipboard's image as a data URL, or null if none. */
+  readClipboardImage: () => Promise<string | null>
   onSwipe: (cb: (direction: string) => void) => void
   // Pins
   getPins: () => Promise<Pin[]>
