@@ -11,6 +11,7 @@ const {
   desktopCapturer,
   systemPreferences,
   dialog,
+  nativeImage,
 } = require("electron")
 const path = require("node:path")
 const fs = require("node:fs")
@@ -478,7 +479,7 @@ ipcMain.handle("cdp:get-theme-source", () => settingsStore.getThemeSource())
 // The whole side-channel lifecycle + store lives in the shared core; main.js
 // injects only Electron effects (capture-script reads, /json target list, the
 // persisted store file, the OS Notification + dock badge gated by shouldNotifyOs).
-const { shouldNotifyOs } = require("./core/notifications")
+const { shouldNotifyOs, dockOverlayIcon } = require("./core/notifications")
 const { createNotificationCenter } = require("./core/notifications-sidechain")
 
 // Persisted store (separate from settings.json to keep that file lean).
@@ -501,6 +502,127 @@ function updateBadge() {
   if (typeof app.setBadgeCount === "function") app.setBadgeCount(notificationCenter.unreadCount())
 }
 
+// --- Dock icon composite (t066): overlay the notifying app's favicon on the bottom-right
+// of CDP Browser's dock icon, so the dock tells you WHICH app pinged you (Slack vs Teams),
+// not just a number. The compositing runs in the chrome renderer (its <img> decodes .ico
+// + data-URL inputs don't taint the canvas), driven from main via executeJavaScript.
+const APP_ICON_PATH = path.join(__dirname, "build", "icon.png")
+let baseIconDataUrl = null
+function baseIcon() {
+  if (baseIconDataUrl != null) return baseIconDataUrl
+  try {
+    baseIconDataUrl = `data:image/png;base64,${fs.readFileSync(APP_ICON_PATH).toString("base64")}`
+  } catch {
+    baseIconDataUrl = ""
+  }
+  return baseIconDataUrl
+}
+
+// Fetch a remote favicon's bytes in the main process (no browser CORS wall) and return a
+// data URL, memoized per source URL. Returns "" on failure. A 3s timeout is mandatory: a
+// hung favicon fetch (corporate proxy / Zscaler black-holing slack-edge.com etc.) must
+// never stall a caller. This is decorative; it can fail freely.
+const faviconDataUrlCache = new Map()
+// Normalized 64px PNG favicon for the notification banner, keyed by source icon URL. Warmed
+// by syncDockIcon so onEntry can attach the banner icon synchronously (never blocking).
+const badgeDataUrlCache = new Map()
+async function faviconDataUrl(url) {
+  if (!url) return ""
+  if (faviconDataUrlCache.has(url)) return faviconDataUrlCache.get(url)
+  let out = ""
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
+    if (res.ok) {
+      const mime = res.headers.get("content-type") || "image/png"
+      const buf = Buffer.from(await res.arrayBuffer())
+      out = `data:${mime};base64,${buf.toString("base64")}`
+    }
+  } catch {}
+  faviconDataUrlCache.set(url, out)
+  return out
+}
+
+// In the renderer: draw base icon + favicon-in-corner, plus a normalized 64px favicon PNG
+// for the notification banner. Returns { dock, badge } PNG data URLs, or null on failure.
+async function composeDockBadge(faviconUrl) {
+  const wc = chromeWc()
+  const base = baseIcon()
+  if (!wc || !base || !faviconUrl) return null
+  const expr = `(async () => {
+    // Resolve to null on error OR timeout — never hang executeJavaScript on a stuck decode.
+    const load = (src) => new Promise((res) => {
+      const img = new Image()
+      const done = (v) => res(v)
+      img.onload = () => done(img); img.onerror = () => done(null)
+      setTimeout(() => done(null), 2500)
+      img.src = src
+    })
+    try {
+      const [base, fav] = await Promise.all([load(${JSON.stringify(base)}), load(${JSON.stringify(faviconUrl)})])
+      if (!base || !fav) return null
+      const S = base.naturalWidth || 1024
+      const c = document.createElement("canvas"); c.width = S; c.height = S
+      const x = c.getContext("2d")
+      x.drawImage(base, 0, 0, S, S)
+      const bs = Math.round(S * 0.42), pad = Math.round(S * 0.04)
+      const bx = S - bs - pad, by = S - bs - pad, r = Math.round(bs * 0.22)
+      x.save()
+      x.beginPath()
+      x.moveTo(bx + r, by)
+      x.arcTo(bx + bs, by, bx + bs, by + bs, r)
+      x.arcTo(bx + bs, by + bs, bx, by + bs, r)
+      x.arcTo(bx, by + bs, bx, by, r)
+      x.arcTo(bx, by, bx + bs, by, r)
+      x.closePath()
+      x.shadowColor = "rgba(0,0,0,0.35)"; x.shadowBlur = Math.round(S * 0.02)
+      x.fillStyle = "#fff"; x.fill()
+      x.restore()
+      const inset = Math.round(bs * 0.12)
+      x.drawImage(fav, bx + inset, by + inset, bs - 2 * inset, bs - 2 * inset)
+      const fc = document.createElement("canvas"); fc.width = 64; fc.height = 64
+      fc.getContext("2d").drawImage(fav, 0, 0, 64, 64)
+      return { dock: c.toDataURL("image/png"), badge: fc.toDataURL("image/png") }
+    } catch { return null }
+  })()`
+  try {
+    return await wc.executeJavaScript(expr)
+  } catch {
+    return null
+  }
+}
+
+function setDockIcon(dataUrl) {
+  if (!app.dock || !dataUrl) return
+  try {
+    app.dock.setIcon(nativeImage.createFromDataURL(dataUrl))
+  } catch {}
+}
+function clearDockIcon() {
+  if (!app.dock) return
+  try {
+    app.dock.setIcon(nativeImage.createFromPath(APP_ICON_PATH))
+  } catch {}
+}
+
+// Reconcile the dock icon with the store: show the newest-unread app's favicon, or restore
+// the plain icon when nothing is unread. Fire-and-forget — callers MUST NOT await this on a
+// path that gates a notification (a hung favicon fetch would swallow the toast). Also warms
+// badgeDataUrlCache so the next notification can attach the banner icon synchronously.
+async function syncDockIcon() {
+  try {
+    const iconUrl = dockOverlayIcon(notificationCenter.list())
+    if (!iconUrl) {
+      clearDockIcon()
+      return
+    }
+    const favUrl = await faviconDataUrl(iconUrl)
+    const composed = favUrl ? await composeDockBadge(favUrl) : null
+    if (composed?.badge) badgeDataUrlCache.set(iconUrl, composed.badge)
+    if (composed?.dock) setDockIcon(composed.dock)
+    else clearDockIcon()
+  } catch {}
+}
+
 // Retain shown Notification objects: Electron/V8 garbage-collects a Notification with no
 // live reference, and the collected object never delivers its `click` event — the banner
 // shows but clicking it does nothing. Held until the user clicks or it closes.
@@ -521,6 +643,10 @@ const notificationCenter = createNotificationCenter({
     updateBadge()
     chromeSend("cdp:notification", entry)
 
+    // Fire the OS notification FIRST and synchronously — it must NEVER be gated by favicon
+    // or network work (a hung favicon fetch previously swallowed every toast). The banner
+    // icon is best-effort: use the cached normalized favicon if we already have it, else
+    // fire without one (the app icon shows regardless). The dock sync below warms the cache.
     const windowFocused = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
     if (
       shouldNotifyOs(entry, {
@@ -530,7 +656,14 @@ const notificationCenter = createNotificationCenter({
       }) &&
       Notification.isSupported()
     ) {
-      const osN = new Notification({ title: entry.title || entry.source, body: entry.body })
+      const opts = { title: entry.title || entry.source, body: entry.body }
+      const badge = entry.icon && badgeDataUrlCache.get(entry.icon)
+      if (badge) {
+        try {
+          opts.icon = nativeImage.createFromDataURL(badge)
+        } catch {}
+      }
+      const osN = new Notification(opts)
       liveNotifications.add(osN)
       const cleanupN = () => liveNotifications.delete(osN)
       osN.on("click", () => {
@@ -544,34 +677,45 @@ const notificationCenter = createNotificationCenter({
       osN.on("close", cleanupN)
       osN.show()
     }
+
+    // Update the dock favicon overlay + warm the banner-icon cache — fire-and-forget so a
+    // slow favicon fetch can never delay or swallow the notification above.
+    void syncDockIcon()
   },
 })
 
 setInterval(() => notificationCenter.reconcile(), 5000)
 app.whenReady().then(() => {
   updateBadge() // restore dock badge from persisted unread
-  setTimeout(() => notificationCenter.reconcile(), 1000)
+  setTimeout(() => {
+    notificationCenter.reconcile()
+    syncDockIcon() // restore dock favicon overlay once the chrome renderer can composite
+  }, 1000)
 })
 
 ipcMain.handle("cdp:get-notifications", () => notificationCenter.list())
 ipcMain.handle("cdp:mark-notification-read", (_, id) => {
   const list = notificationCenter.markRead(id)
   updateBadge()
+  syncDockIcon()
   return list
 })
 ipcMain.handle("cdp:mark-notification-unread", (_, id) => {
   const list = notificationCenter.markUnread(id)
   updateBadge()
+  syncDockIcon()
   return list
 })
 ipcMain.handle("cdp:mark-notifications-read", () => {
   const list = notificationCenter.markAllRead()
   updateBadge()
+  syncDockIcon()
   return list
 })
 ipcMain.handle("cdp:clear-notifications", () => {
   const list = notificationCenter.clear()
   updateBadge()
+  syncDockIcon()
   return list
 })
 

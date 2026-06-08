@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 // CommonJS module shared with main.js (which can't import src/lib ESM).
 import {
+  dockOverlayIcon,
   groupKeyFor,
   ingest,
   markAllRead,
@@ -180,5 +181,38 @@ describe("shouldNotifyOs", () => {
     expect(
       shouldNotifyOs(entry, { activeTabId: "tab-B", enabled: false, windowFocused: false }),
     ).toBe(false)
+  })
+})
+
+describe("dockOverlayIcon (t066)", () => {
+  it("returns null for an empty list", () => {
+    expect(dockOverlayIcon([])).toBeNull()
+  })
+  it("returns null when every notification is read", () => {
+    expect(
+      dockOverlayIcon([
+        { read: true, icon: "slack.png" },
+        { read: true, icon: "teams.ico" },
+      ]),
+    ).toBeNull()
+  })
+  it("returns the icon of the most-recent unread (list is newest-first)", () => {
+    expect(
+      dockOverlayIcon([
+        { read: false, icon: "slack.png" },
+        { read: false, icon: "teams.ico" },
+      ]),
+    ).toBe("slack.png")
+  })
+  it("skips read entries ahead of the newest unread", () => {
+    expect(
+      dockOverlayIcon([
+        { read: true, icon: "slack.png" },
+        { read: false, icon: "teams.ico" },
+      ]),
+    ).toBe("teams.ico")
+  })
+  it("returns null when the newest unread carries no icon", () => {
+    expect(dockOverlayIcon([{ read: false }])).toBeNull()
   })
 })
