@@ -338,6 +338,85 @@ describe("slack adapter — per-workspace grouping (t064)", () => {
   })
 })
 
+describe("service-worker capture (t067)", () => {
+  const slackSwTarget = (id = "sw1", over = {}) => ({
+    id,
+    type: "service_worker" as const,
+    url: "https://app.slack.com/service-worker.js",
+    webSocketDebuggerUrl: `ws://host/devtools/worker/${id}`,
+    ...over,
+  })
+
+  it("attaches to a service_worker target whose adapter declares a swScript and injects it via Runtime.evaluate (no Page domain)", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackSwTarget()])
+    expect(FakeWs.instances).toHaveLength(1)
+    const ws = FakeWs.instances[0]
+    ws.open()
+    const methods = ws.sent.map((m) => m.method)
+    expect(methods).toContain("Runtime.enable")
+    expect(methods).toContain("Runtime.addBinding")
+    expect(methods).toContain("Runtime.evaluate")
+    expect(methods).not.toContain("Page.enable")
+    expect(methods).not.toContain("Page.addScriptToEvaluateOnNewDocument")
+    const evalCmd = ws.sent.find((m) => m.method === "Runtime.evaluate")
+    expect(evalCmd.params.expression).toContain("slack-sw-notify.js")
+  })
+
+  it("does not attach to a service_worker whose adapter has no swScript (Teams)", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([
+      {
+        id: "tsw",
+        type: "service_worker",
+        url: "https://teams.microsoft.com/sw.js",
+        webSocketDebuggerUrl: "ws://host/devtools/worker/tsw",
+      },
+    ])
+    expect(FakeWs.instances).toHaveLength(0)
+  })
+
+  it("ingests a toast from the SW channel, stamped with the slack adapter + payload groupKey", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackSwTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    // SW URL has no team id, so the worker script supplies the per-workspace groupKey.
+    ws.notify({ id: "swn", title: "@bob: ping", groupKey: "slack:T999" })
+    expect(center.list()[0].adapter).toBe("slack")
+    expect(center.list()[0].groupKey).toBe("slack:T999")
+  })
+
+  it("never sends keep-alive on a SW channel (no web lifecycle on a worker)", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackSwTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await center.reconcile([slackSwTarget()]) // triggers the keep-alive re-apply pass
+    expect(ws.sent.filter((m) => m.method === "Page.setWebLifecycleState")).toHaveLength(0)
+  })
+
+  it("drops the SW channel when the worker vanishes", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackSwTarget()])
+    const ws = FakeWs.instances[0]
+    await center.reconcile([])
+    expect(ws.closed).toBe(true)
+  })
+
+  it("attaches both the page and the SW channel for the same workspace", async () => {
+    const { center } = makeCenter()
+    const slackPage = {
+      id: "p1",
+      type: "page" as const,
+      url: "https://app.slack.com/client/T1/C1",
+      webSocketDebuggerUrl: "ws://host/devtools/page/p1",
+    }
+    await center.reconcile([slackPage, slackSwTarget()])
+    expect(FakeWs.instances).toHaveLength(2)
+  })
+})
+
 describe("store mutations + persistence", () => {
   async function seeded() {
     const ctx = makeCenter()

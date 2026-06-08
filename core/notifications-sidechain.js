@@ -51,6 +51,12 @@ const ADAPTERS = [
     // key from the Tab's URL team id instead — one Tab per workspace, so the URL is the
     // authoritative workspace identity (more durable than the in-page capture script).
     groupKey: slackGroupKey,
+    // Slack delivers many notifications from its service worker's `push` handler
+    // (`registration.showNotification`), a realm the page hook can't reach. `swScript`
+    // is injected into the matching service_worker target to patch showNotification there
+    // and ship the same `__cdpNotify` toasts (t067). The SW URL carries no team id, so the
+    // script derives the per-workspace groupKey from the notification payload instead.
+    swScript: "slack-sw-notify.js",
   },
 ]
 
@@ -66,6 +72,15 @@ function createNotificationCenter(deps) {
   const sourceFor = (adapter) => {
     if (!sourceCache.has(adapter.name)) sourceCache.set(adapter.name, readInject(adapter.script))
     return sourceCache.get(adapter.name)
+  }
+  // Service-worker capture script, memoized per adapter (separate cache key so it never
+  // collides with the page `script`). Only adapters that declare `swScript` have one.
+  const swSourceCache = new Map()
+  const swSourceFor = (adapter) => {
+    if (!swSourceCache.has(adapter.name)) {
+      swSourceCache.set(adapter.name, readInject(adapter.swScript))
+    }
+    return swSourceCache.get(adapter.name)
   }
 
   const seeded = load()
@@ -144,6 +159,35 @@ function createNotificationCenter(deps) {
       cdp("Runtime.evaluate", { expression: sourceFor(adapter) })
       keepAlive()
     })
+    wireToastAndDrop(ws, target)
+  }
+
+  // Service-worker side-channel (t067). Slack/Teams/Outlook deliver many notifications from
+  // their service worker's `push` handler via `registration.showNotification` — a realm the
+  // page hook (`window.Notification`) can't reach. A service_worker target supports Runtime
+  // (not Page), so we patch via a one-shot Runtime.evaluate into the running worker rather
+  // than Page.addScriptToEvaluateOnNewDocument. Best-effort: a worker that spins up fresh on
+  // a push and fires before the next 5s reconcile attaches is missed (no SW-start barrier
+  // here). The page keep-alive (t066) keeps the registration warm, which keeps the worker
+  // listed in /json across reconciles. No keep-alive on the worker itself (no web lifecycle).
+  function attachServiceWorker(target) {
+    const adapter = adapterFor(target.url)
+    if (!adapter?.swScript || !target.webSocketDebuggerUrl) return
+    const ws = new WebSocketCtor(target.webSocketDebuggerUrl)
+    let cmdId = 1
+    const cdp = (method, params) =>
+      ws.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
+    sideChannels.set(target.id, { ws, keepAlive: () => {} })
+    ws.on("open", () => {
+      cdp("Runtime.enable")
+      cdp("Runtime.addBinding", { name: NOTIFY_BINDING })
+      cdp("Runtime.evaluate", { expression: swSourceFor(adapter) })
+    })
+    wireToastAndDrop(ws, target)
+  }
+
+  // Shared toast ingest + self-removal wiring for both the page and service-worker channels.
+  function wireToastAndDrop(ws, target) {
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString())
@@ -172,8 +216,10 @@ function createNotificationCenter(deps) {
       }
     }
     if (!Array.isArray(list)) return
-    const matched = list.filter((t) => t.type === "page" && adapterFor(t.url))
-    const liveIds = new Set(matched.map((t) => t.id))
+    const pages = list.filter((t) => t.type === "page" && adapterFor(t.url))
+    // Service-worker targets whose adapter declares a swScript (t067).
+    const workers = list.filter((t) => t.type === "service_worker" && adapterFor(t.url)?.swScript)
+    const liveIds = new Set([...pages, ...workers].map((t) => t.id))
     for (const [id, { ws }] of sideChannels) {
       if (!liveIds.has(id)) {
         try {
@@ -182,9 +228,10 @@ function createNotificationCenter(deps) {
         sideChannels.delete(id)
       }
     }
-    for (const t of matched) if (!sideChannels.has(t.id)) attach(t)
+    for (const t of pages) if (!sideChannels.has(t.id)) attach(t)
+    for (const t of workers) if (!sideChannels.has(t.id)) attachServiceWorker(t)
     // Re-apply keep-alive to every live side-channel each cycle — the browser may have
-    // re-frozen a backgrounded Tab since the last pass (t066).
+    // re-frozen a backgrounded Tab since the last pass (t066). SW channels no-op.
     for (const [, ch] of sideChannels) ch.keepAlive()
   }
 
