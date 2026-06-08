@@ -99,6 +99,15 @@ function unreadCount(list) {
   return list.reduce((acc, n) => acc + (n.read ? 0 : 1), 0)
 }
 
+// The favicon to overlay on the app's dock icon: the icon of the most-recent UNREAD
+// notification (the list is newest-first), or null when nothing is unread (clear the
+// overlay, restore the plain app icon). Pure — main.js owns the image composite +
+// app.dock.setIcon effect. See t066.
+function dockOverlayIcon(list) {
+  const newestUnread = list.find((n) => !n.read)
+  return newestUnread?.icon || null
+}
+
 // { [targetId]: unreadCount } — only targets with at least one unread appear.
 function unreadByTarget(list) {
   const out = {}
@@ -115,6 +124,7 @@ module.exports = {
   slackGroupKey,
   ingest,
   shouldNotifyOs,
+  dockOverlayIcon,
   markRead,
   markUnread,
   markAllRead,

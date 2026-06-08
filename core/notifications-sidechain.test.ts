@@ -172,6 +172,36 @@ describe("reconcile — idempotent / drop", () => {
   })
 })
 
+describe("keep-alive (t066) — prevent background-tab freeze", () => {
+  it("forces the page web lifecycle to active on open so a backgrounded Tab keeps firing notifications", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    const keepAlive = ws.sent.filter((m) => m.method === "Page.setWebLifecycleState")
+    expect(keepAlive).toHaveLength(1)
+    expect(keepAlive[0].params.state).toBe("active")
+  })
+
+  it("does not send keep-alive before the socket opens", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    const count = ws.sent.filter((m) => m.method === "Page.setWebLifecycleState").length
+    expect(count).toBe(0)
+  })
+
+  it("re-applies keep-alive on each reconcile (browser may re-freeze the Tab)", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await center.reconcile([teamsTarget()]) // same target, socket already open
+    const count = ws.sent.filter((m) => m.method === "Page.setWebLifecycleState").length
+    expect(count).toBe(2)
+  })
+})
+
 describe("ingest dedup", () => {
   it("drops a duplicate toast within the dedup window — one stored entry, one onEntry", async () => {
     const { center, onEntry } = makeCenter()

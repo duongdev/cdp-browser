@@ -102,7 +102,7 @@ function createNotificationCenter(deps) {
         // back-compatible display.
         activate: n.activate || null,
         targetEntity: n.targetEntity || null,
-        icon: (adapter || {}).iconUrl || null,
+        icon: adapter?.iconUrl || null,
         ts: n.ts || (deps.now ? deps.now() : Date.now()),
       },
       cap,
@@ -117,17 +117,32 @@ function createNotificationCenter(deps) {
     const adapter = adapterFor(target.url)
     if (!adapter || !target.webSocketDebuggerUrl) return
     const ws = new WebSocketCtor(target.webSocketDebuggerUrl)
-    sideChannels.set(target.id, ws)
     let cmdId = 1
+    let opened = false
     const cdp = (method, params) =>
       ws.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
+    // Keep the remote Tab's page alive so its capture script keeps firing even when the
+    // Tab is backgrounded on the remote browser. Chromium freezes idle background tabs
+    // (~5 min), which pauses the page JS that calls `new Notification()` — so background
+    // Tabs silently stop delivering toasts (the asymmetry where only the active Tab
+    // notified). Forcing the web lifecycle to "active" prevents the freeze WITHOUT making
+    // the page "visible" (visibility is orthogonal in the CDP spec — verified against
+    // Page.setWebLifecycleState, which only takes "frozen"|"active"), so Slack still treats
+    // the Tab as hidden and keeps firing desktop notifications for the side-channel to
+    // capture. Re-applied every reconcile because the browser can re-freeze. See t066.
+    const keepAlive = () => {
+      if (opened) cdp("Page.setWebLifecycleState", { state: "active" })
+    }
+    sideChannels.set(target.id, { ws, keepAlive })
     ws.on("open", () => {
+      opened = true
       cdp("Runtime.enable")
       cdp("Page.enable")
       cdp("Runtime.addBinding", { name: NOTIFY_BINDING })
       // document-start for future loads + the already-loaded document.
       cdp("Page.addScriptToEvaluateOnNewDocument", { source: sourceFor(adapter) })
       cdp("Runtime.evaluate", { expression: sourceFor(adapter) })
+      keepAlive()
     })
     ws.on("message", (data) => {
       try {
@@ -138,7 +153,8 @@ function createNotificationCenter(deps) {
       } catch {}
     })
     const drop = () => {
-      if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
+      const cur = sideChannels.get(target.id)
+      if (cur && cur.ws === ws) sideChannels.delete(target.id)
     }
     ws.on("close", drop)
     ws.on("error", drop)
@@ -158,7 +174,7 @@ function createNotificationCenter(deps) {
     if (!Array.isArray(list)) return
     const matched = list.filter((t) => t.type === "page" && adapterFor(t.url))
     const liveIds = new Set(matched.map((t) => t.id))
-    for (const [id, ws] of sideChannels) {
+    for (const [id, { ws }] of sideChannels) {
       if (!liveIds.has(id)) {
         try {
           ws.close()
@@ -167,6 +183,9 @@ function createNotificationCenter(deps) {
       }
     }
     for (const t of matched) if (!sideChannels.has(t.id)) attach(t)
+    // Re-apply keep-alive to every live side-channel each cycle — the browser may have
+    // re-frozen a backgrounded Tab since the last pass (t066).
+    for (const [, ch] of sideChannels) ch.keepAlive()
   }
 
   return {
@@ -195,7 +214,7 @@ function createNotificationCenter(deps) {
     },
     unreadCount: () => unreadCount(notifications),
     close: () => {
-      for (const [, ws] of sideChannels) {
+      for (const [, { ws }] of sideChannels) {
         try {
           ws.close()
         } catch {}
