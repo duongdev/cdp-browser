@@ -58,6 +58,8 @@
       "!core/**/*.test.js",
       "inject/**/*",
       "dist/**/*",
+      "build/icon.png",
+      "build/notif-icons/**/*",
       "!node_modules/**/*",
       "node_modules/ws/**/*"
     ],

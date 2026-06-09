@@ -368,6 +368,19 @@ describe("RemotePage clipboard paste", () => {
     expect(expr).toContain('ClipboardEvent("paste"')
     expect(expr).toContain("data:image/png;base64,ABC")
   })
+
+  it("pasteFile carries the file name and mime type into the synthesized File", () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    page.pasteFile("data:video/mp4;base64,XYZ", "clip.mp4", "video/mp4")
+
+    const expr = t.invoke.mock.calls[0][1].expression as string
+    expect(expr).toContain('ClipboardEvent("paste"')
+    expect(expr).toContain("data:video/mp4;base64,XYZ")
+    expect(expr).toContain("clip.mp4")
+    expect(expr).toContain("video/mp4")
+  })
 })
 
 describe("RemotePage screencast frames", () => {

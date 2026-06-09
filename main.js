@@ -19,6 +19,7 @@ const WebSocket = require("ws")
 const { emulatedMediaParams } = require("./core/theme-emulation")
 const { createSettingsStore } = require("./core/settings-store")
 const endpoints = require("./core/cdp-endpoints")
+const { mimeForName: clipboardMime } = require("./core/clipboard")
 const { tierToParams, DEFAULT_TIER } = require("./core/quality-tier")
 
 // The window is a BaseWindow composed of a chrome view (the React UI, full
@@ -205,6 +206,42 @@ ipcMain.handle("cdp:read-clipboard", () => {
 ipcMain.handle("cdp:read-clipboard-image", () => {
   const img = clipboard.readImage()
   return img.isEmpty() ? null : img.toDataURL()
+})
+
+// Real files on the clipboard (e.g. a video copied in Finder) — read the actual bytes
+// rather than clipboard.readImage(), which only yields the file's icon/thumbnail. Returns
+// [{ name, type, dataUrl }]; empty when the clipboard holds no file reference. Reading
+// happens in main (full fs access, no browser CORS/permission wall).
+const MAX_CLIPBOARD_FILE_BYTES = 150 * 1024 * 1024 // 150 MB — guards against OOM on huge media
+ipcMain.handle("cdp:read-clipboard-files", () => {
+  let paths = []
+  try {
+    // macOS: a single copied file exposes public.file-url (file:///…); read it directly.
+    const fileUrl = clipboard.read("public.file-url")
+    if (fileUrl) {
+      const p = decodeURIComponent(fileUrl.replace(/^file:\/\//, ""))
+      if (p) paths = [p]
+    }
+  } catch {
+    // format absent on this platform / clipboard — fall through to empty
+  }
+  const out = []
+  for (const p of paths) {
+    try {
+      const stat = fs.statSync(p)
+      if (!stat.isFile() || stat.size > MAX_CLIPBOARD_FILE_BYTES) continue
+      const buf = fs.readFileSync(p)
+      const type = clipboardMime(path.basename(p))
+      out.push({
+        name: path.basename(p),
+        type,
+        dataUrl: `data:${type};base64,${buf.toString("base64")}`,
+      })
+    } catch {
+      // unreadable path — skip
+    }
+  }
+  return out
 })
 
 ipcMain.handle("cdp:list-tabs", async () => {
@@ -479,7 +516,7 @@ ipcMain.handle("cdp:get-theme-source", () => settingsStore.getThemeSource())
 // The whole side-channel lifecycle + store lives in the shared core; main.js
 // injects only Electron effects (capture-script reads, /json target list, the
 // persisted store file, the OS Notification + dock badge gated by shouldNotifyOs).
-const { shouldNotifyOs, dockOverlayIcon } = require("./core/notifications")
+const { shouldNotifyOs } = require("./core/notifications")
 const { createNotificationCenter } = require("./core/notifications-sidechain")
 
 // Persisted store (separate from settings.json to keep that file lean).
@@ -518,38 +555,50 @@ function baseIcon() {
   return baseIconDataUrl
 }
 
-// Fetch a remote favicon's bytes in the main process (no browser CORS wall) and return a
-// data URL, memoized per source URL. Returns "" on failure. A 3s timeout is mandatory: a
-// hung favicon fetch (corporate proxy / Zscaler black-holing slack-edge.com etc.) must
-// never stall a caller. This is decorative; it can fail freely.
-const faviconDataUrlCache = new Map()
-// Normalized 64px PNG favicon for the notification banner, keyed by source icon URL. Warmed
-// by syncDockIcon so onEntry can attach the banner icon synchronously (never blocking).
-const badgeDataUrlCache = new Map()
-async function faviconDataUrl(url) {
-  if (!url) return ""
-  if (faviconDataUrlCache.has(url)) return faviconDataUrlCache.get(url)
-  let out = ""
+// Bundled per-adapter app icons (Slack/Teams/Outlook), keyed by adapter name. Local files —
+// NO network: remote favicon URLs were unreliable (Slack's returned HTTP 403, corporate
+// proxies black-holed the fetch, and the first notification always missed the cache). Local
+// PNGs render on the very first notification and can't hang. See build/notif-icons/.
+const NOTIF_ICONS_DIR = path.join(__dirname, "build", "notif-icons")
+// Human label per adapter for the macOS notification subtitle (text fallback when the OS
+// banner ignores the custom icon).
+const NOTIF_APP_LABELS = { slack: "Slack", teams: "Microsoft Teams", outlook: "Outlook" }
+const localIconImageCache = new Map() // adapter -> NativeImage | null
+function localIconImage(adapter) {
+  if (!adapter) return null
+  if (localIconImageCache.has(adapter)) return localIconImageCache.get(adapter)
+  let img = null
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
-    if (res.ok) {
-      const mime = res.headers.get("content-type") || "image/png"
-      const buf = Buffer.from(await res.arrayBuffer())
-      out = `data:${mime};base64,${buf.toString("base64")}`
+    const p = path.join(NOTIF_ICONS_DIR, `${adapter}.png`)
+    if (fs.existsSync(p)) {
+      const candidate = nativeImage.createFromPath(p)
+      if (!candidate.isEmpty()) img = candidate
     }
   } catch {}
-  faviconDataUrlCache.set(url, out)
+  localIconImageCache.set(adapter, img)
+  return img
+}
+const localIconDataUrlCache = new Map() // adapter -> dataURL | ""
+function localIconDataUrl(adapter) {
+  if (!adapter) return ""
+  if (localIconDataUrlCache.has(adapter)) return localIconDataUrlCache.get(adapter)
+  let out = ""
+  try {
+    const p = path.join(NOTIF_ICONS_DIR, `${adapter}.png`)
+    if (fs.existsSync(p)) out = `data:image/png;base64,${fs.readFileSync(p).toString("base64")}`
+  } catch {}
+  localIconDataUrlCache.set(adapter, out)
   return out
 }
 
-// In the renderer: draw base icon + favicon-in-corner, plus a normalized 64px favicon PNG
-// for the notification banner. Returns { dock, badge } PNG data URLs, or null on failure.
-async function composeDockBadge(faviconUrl) {
+// In the renderer: draw base app icon + the adapter icon in the bottom-right corner.
+// Returns the composited dock PNG data URL, or null on failure. Inputs are local data URLs,
+// so the canvas is never cross-origin-tainted; a per-image timeout prevents any hang.
+async function composeDockIcon(iconDataUrl) {
   const wc = chromeWc()
   const base = baseIcon()
-  if (!wc || !base || !faviconUrl) return null
+  if (!wc || !base || !iconDataUrl) return null
   const expr = `(async () => {
-    // Resolve to null on error OR timeout — never hang executeJavaScript on a stuck decode.
     const load = (src) => new Promise((res) => {
       const img = new Image()
       const done = (v) => res(v)
@@ -558,7 +607,7 @@ async function composeDockBadge(faviconUrl) {
       img.src = src
     })
     try {
-      const [base, fav] = await Promise.all([load(${JSON.stringify(base)}), load(${JSON.stringify(faviconUrl)})])
+      const [base, fav] = await Promise.all([load(${JSON.stringify(base)}), load(${JSON.stringify(iconDataUrl)})])
       if (!base || !fav) return null
       const S = base.naturalWidth || 1024
       const c = document.createElement("canvas"); c.width = S; c.height = S
@@ -579,9 +628,7 @@ async function composeDockBadge(faviconUrl) {
       x.restore()
       const inset = Math.round(bs * 0.12)
       x.drawImage(fav, bx + inset, by + inset, bs - 2 * inset, bs - 2 * inset)
-      const fc = document.createElement("canvas"); fc.width = 64; fc.height = 64
-      fc.getContext("2d").drawImage(fav, 0, 0, 64, 64)
-      return { dock: c.toDataURL("image/png"), badge: fc.toDataURL("image/png") }
+      return c.toDataURL("image/png")
     } catch { return null }
   })()`
   try {
@@ -604,21 +651,15 @@ function clearDockIcon() {
   } catch {}
 }
 
-// Reconcile the dock icon with the store: show the newest-unread app's favicon, or restore
-// the plain icon when nothing is unread. Fire-and-forget — callers MUST NOT await this on a
-// path that gates a notification (a hung favicon fetch would swallow the toast). Also warms
-// badgeDataUrlCache so the next notification can attach the banner icon synchronously.
+// Reconcile the dock icon with the store: overlay the newest-unread app's icon, or restore
+// the plain icon when nothing is unread. Fire-and-forget — never awaited on a path that
+// gates a notification. Uses bundled local icons, so it can't hang on the network.
 async function syncDockIcon() {
   try {
-    const iconUrl = dockOverlayIcon(notificationCenter.list())
-    if (!iconUrl) {
-      clearDockIcon()
-      return
-    }
-    const favUrl = await faviconDataUrl(iconUrl)
-    const composed = favUrl ? await composeDockBadge(favUrl) : null
-    if (composed?.badge) badgeDataUrlCache.set(iconUrl, composed.badge)
-    if (composed?.dock) setDockIcon(composed.dock)
+    const newest = notificationCenter.list().find((n) => !n.read)
+    const iconDataUrl = newest ? localIconDataUrl(newest.adapter) : ""
+    const dock = iconDataUrl ? await composeDockIcon(iconDataUrl) : null
+    if (dock) setDockIcon(dock)
     else clearDockIcon()
   } catch {}
 }
@@ -657,12 +698,15 @@ const notificationCenter = createNotificationCenter({
       Notification.isSupported()
     ) {
       const opts = { title: entry.title || entry.source, body: entry.body }
-      const badge = entry.icon && badgeDataUrlCache.get(entry.icon)
-      if (badge) {
-        try {
-          opts.icon = nativeImage.createFromDataURL(badge)
-        } catch {}
-      }
+      // Tell the user WHICH app pinged them, two ways for robustness:
+      //  - icon: bundled local adapter logo (Slack/Teams/Outlook). Works on Windows/Linux and
+      //    in macOS Notification Center; macOS banners may fall back to the app icon.
+      //  - subtitle (macOS): the app label in TEXT — always visible even if the icon is
+      //    suppressed, so "Slack" vs "Teams" is never ambiguous.
+      const img = localIconImage(entry.adapter)
+      if (img) opts.icon = img
+      const label = NOTIF_APP_LABELS[entry.adapter]
+      if (label) opts.subtitle = label
       const osN = new Notification(opts)
       liveNotifications.add(osN)
       const cleanupN = () => liveNotifications.delete(osN)

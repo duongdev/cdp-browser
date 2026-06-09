@@ -45,7 +45,9 @@ const ADAPTERS = [
     name: "slack",
     script: "slack-notify.js",
     match: (h) => /(^|\.)slack\.com$/.test(h),
-    iconUrl: "https://a.slack-edge.com/80588/marketing/img/icons/favicon-32-electron.png",
+    // Renderer-bell icon only (the OS banner + dock use bundled build/notif-icons/slack.png).
+    // The old favicon-32-electron.png path 404/403'd; app-256.png is a stable Slack logo.
+    iconUrl: "https://a.slack-edge.com/80588/img/icons/app-256.png",
     // Slack runs every workspace under one origin (app.slack.com), so the default
     // per-origin grouping would merge all workspaces into one badge. Derive the group
     // key from the Tab's URL team id instead — one Tab per workspace, so the URL is the

@@ -1179,16 +1179,25 @@ export default function App() {
           if (caps.web) break
           e.preventDefault()
           e.stopPropagation()
-          // Electron: read the local clipboard in main (image first, then text) and inject.
+          // Electron: read the local clipboard in main and inject. Order matters: a copied
+          // *file* (e.g. a video from Finder) must be read as a real file — readClipboardImage
+          // would otherwise return the file's icon thumbnail and paste that instead. So:
+          // files → image bits → text.
           window.cdp
-            .readClipboardImage()
-            .then((dataUrl) => {
-              if (dataUrl) {
-                page.pasteImage(dataUrl)
+            .readClipboardFiles()
+            .then((files) => {
+              if (files && files.length) {
+                for (const f of files) page.pasteFile(f.dataUrl, f.name, f.type)
                 return
               }
-              return window.cdp.readClipboard().then((text) => {
-                if (text) page.paste(text, { rich: false })
+              return window.cdp.readClipboardImage().then((dataUrl) => {
+                if (dataUrl) {
+                  page.pasteImage(dataUrl)
+                  return
+                }
+                return window.cdp.readClipboard().then((text) => {
+                  if (text) page.paste(text, { rich: false })
+                })
               })
             })
             .catch(() => {
@@ -1238,16 +1247,17 @@ export default function App() {
         return
       const dt = e.clipboardData
       if (!dt) return
-      const imageItem = Array.from(dt.items).find(
-        (it) => it.kind === "file" && it.type.startsWith("image/"),
-      )
-      if (imageItem) {
-        const file = imageItem.getAsFile()
+      // Any file (image, video, doc) — not just images. Preserve name + type so the
+      // remote upload target accepts a video instead of receiving a bare image.
+      const fileItem = Array.from(dt.items).find((it) => it.kind === "file")
+      if (fileItem) {
+        const file = fileItem.getAsFile()
         if (file) {
           e.preventDefault()
           const reader = new FileReader()
           reader.onload = () => {
-            if (typeof reader.result === "string") page.pasteImage(reader.result)
+            if (typeof reader.result === "string")
+              page.pasteFile(reader.result, file.name, file.type)
           }
           reader.readAsDataURL(file)
           return

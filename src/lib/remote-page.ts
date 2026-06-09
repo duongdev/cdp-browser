@@ -244,6 +244,14 @@ export interface RemotePage {
    */
   pasteImage(dataUrl: string): void
   /**
+   * Pastes an arbitrary file (video, audio, doc, image) into the remote page's
+   * focused element by synthesizing a `paste` ClipboardEvent carrying the file as a
+   * `File` in a `DataTransfer`. Unlike `pasteImage` this preserves the original file
+   * name + MIME type so upload targets that sniff extension/type (Slack, Drive) accept
+   * it. `dataUrl` is a `data:<mime>;base64,…` string.
+   */
+  pasteFile(dataUrl: string, name: string, type: string): void
+  /**
    * In-page find (t001). The remote-side search is an injected per-document routine
    * (`window.find` reports only a boolean — it can't count or step deterministically),
    * so a small helper walks the DOM, counts case-insensitive matches, selects + scrolls
@@ -481,14 +489,19 @@ export function createRemotePage(
       }
     },
     pasteImage(dataUrl) {
-      // Input.insertText can't carry images, so synthesize a paste event on the remote's
-      // focused element with a DataTransfer holding the image File — rich editors (Slack,
-      // Gmail, Docs) that listen for `paste` read it from clipboardData.files.
+      this.pasteFile(dataUrl, "pasted-image.png", "image/png")
+    },
+    pasteFile(dataUrl, name, type) {
+      // Input.insertText can't carry binary, so synthesize a paste event on the remote's
+      // focused element with a DataTransfer holding the File — rich editors / upload
+      // surfaces (Slack, Gmail, Drive) that listen for `paste` read it from
+      // clipboardData.files. Name + type are preserved so the target accepts the file
+      // (a video needs its real extension/MIME, not a generic image).
       transport.invoke("Runtime.evaluate", {
         expression: `(async () => {
           const res = await fetch(${JSON.stringify(dataUrl)});
           const blob = await res.blob();
-          const file = new File([blob], "pasted-image.png", { type: blob.type || "image/png" });
+          const file = new File([blob], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} || blob.type || "application/octet-stream" });
           const dt = new DataTransfer();
           dt.items.add(file);
           const el = document.activeElement || document.body;
