@@ -94,6 +94,13 @@ export type InputIntent =
     }
   | { kind: "wheel"; event: WheelEventLike }
 
+/** A file to inject into the remote page (paste or drop), as a base64 data URL. */
+export interface DropFileSpec {
+  dataUrl: string
+  name: string
+  type: string
+}
+
 export interface RemotePageOptions {
   /** Maps a client point to Remote Page pixels (the injected Viewport Transform). */
   resolveCoords?: (clientX: number, clientY: number) => { x: number; y: number }
@@ -242,7 +249,25 @@ export interface RemotePage {
    * ClipboardEvent carrying the image as a File (rich editors read clipboardData.files).
    * `dataUrl` is a `data:image/...;base64,…` string.
    */
-  pasteImage(dataUrl: string): void
+  pasteImage(dataUrl: string): Promise<void>
+  /**
+   * Pastes an arbitrary file (video, audio, doc, image) into the remote page's
+   * focused element by synthesizing a `paste` ClipboardEvent carrying the file as a
+   * `File` in a `DataTransfer`. Unlike `pasteImage` this preserves the original file
+   * name + MIME type so upload targets that sniff extension/type (Slack, Drive) accept
+   * it. `dataUrl` is a `data:<mime>;base64,…` string. The payload is streamed to the
+   * remote in chunks (see `streamFiles`) so a large file can't freeze the CDP link.
+   */
+  pasteFile(dataUrl: string, name: string, type: string): Promise<void>
+  /**
+   * Drops one or more files onto the remote page at the given client coordinates by
+   * synthesizing dragenter/dragover/drop DragEvents on the element under the cursor,
+   * each carrying the files in a `DataTransfer` (upload dropzones — Slack, Gmail, Drive —
+   * read `dataTransfer.files`). `clientX`/`clientY` are canvas-relative client px, mapped
+   * to Remote Page DIP via the injected coord resolver (the same path as Input Forwarding).
+   * Payload is streamed in chunks so a large video can't freeze the link. No-op when empty.
+   */
+  dropFiles(files: DropFileSpec[], clientX: number, clientY: number): Promise<void>
   /**
    * In-page find (t001). The remote-side search is an injected per-document routine
    * (`window.find` reports only a boolean — it can't count or step deterministically),
@@ -265,6 +290,62 @@ function normalizeUrl(url: string): string {
   return /^https?:\/\//.test(url) ? url : `https://${url}`
 }
 
+/**
+ * ~2 MB of base64 chars per Runtime.evaluate. Small enough that the remote parses each
+ * chunk's source literal in a single fast tick (a whole-file literal — tens of MB — would
+ * block the renderer parsing it, freezing the screencast that shares the CDP socket), big
+ * enough to keep the round-trip count low. See `streamFiles`.
+ */
+const FILE_CHUNK_CHARS = 2_000_000
+
+/**
+ * Streams each file's base64 payload into the remote page in bounded chunks, accumulating
+ * them under `window.__cdpFiles[key]`. Returns the per-file keys (in input order) so the
+ * caller's assemble step can join + decode them. Sequential by design — order matters for
+ * the join, and interleaving small evaluates with screencast frames is what keeps the link
+ * from stalling. The bytes never travel inside an evaluate's source as one giant literal.
+ */
+async function streamFiles(
+  transport: Transport,
+  files: DropFileSpec[],
+  seq: number,
+): Promise<string[]> {
+  const keys: string[] = []
+  for (let fi = 0; fi < files.length; fi++) {
+    const key = `s${seq}_${fi}`
+    keys.push(key)
+    const b64 = files[fi].dataUrl.slice(files[fi].dataUrl.indexOf(",") + 1)
+    await transport.invoke("Runtime.evaluate", {
+      expression: `((window.__cdpFiles||(window.__cdpFiles={}))[${JSON.stringify(key)}]=[])`,
+    })
+    for (let i = 0; i < b64.length; i += FILE_CHUNK_CHARS) {
+      await transport.invoke("Runtime.evaluate", {
+        expression: `window.__cdpFiles[${JSON.stringify(key)}].push(${JSON.stringify(
+          b64.slice(i, i + FILE_CHUNK_CHARS),
+        )})`,
+      })
+    }
+  }
+  return keys
+}
+
+/**
+ * In-page JS that reconstructs a `DataTransfer` (`dt`) from the streamed chunks: joins each
+ * file's base64, decodes to bytes, and builds a real `File` (name + MIME preserved) the
+ * remote page reads from `clipboardData.files` / `dataTransfer.files`. Frees `__cdpFiles`
+ * after. Returns a statement block defining `dt`; pairs with `streamFiles`.
+ */
+function assembleFilesExpr(keys: string[], files: DropFileSpec[]): string {
+  const metas = keys.map((key, i) => ({ key, name: files[i].name, type: files[i].type }))
+  return `const dt = new DataTransfer();
+    for (const m of ${JSON.stringify(metas)}) {
+      const b64 = ((window.__cdpFiles||{})[m.key]||[]).join("");
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      dt.items.add(new File([bytes], m.name, { type: m.type || "application/octet-stream" }));
+      try { delete window.__cdpFiles[m.key]; } catch (e) {}
+    }`
+}
+
 export function createRemotePage(
   transport: Transport,
   options: RemotePageOptions = {},
@@ -283,6 +364,8 @@ export function createRemotePage(
   // parentId); seeded from the first loading event when still unknown, and reset on
   // disconnect so each tab tracks its own frame.
   let mainFrameId: string | undefined
+  // Monotonic id so concurrent file injections never clobber each other's `__cdpFiles` keys.
+  let fileSeq = 0
 
   // One registration on the raw transport, demuxed to typed subscribers. Subscribers
   // come and go via `on`'s unsubscribe — the transport listener is registered once.
@@ -481,20 +564,42 @@ export function createRemotePage(
       }
     },
     pasteImage(dataUrl) {
-      // Input.insertText can't carry images, so synthesize a paste event on the remote's
-      // focused element with a DataTransfer holding the image File — rich editors (Slack,
-      // Gmail, Docs) that listen for `paste` read it from clipboardData.files.
-      transport.invoke("Runtime.evaluate", {
-        expression: `(async () => {
-          const res = await fetch(${JSON.stringify(dataUrl)});
-          const blob = await res.blob();
-          const file = new File([blob], "pasted-image.png", { type: blob.type || "image/png" });
-          const dt = new DataTransfer();
-          dt.items.add(file);
+      return this.pasteFile(dataUrl, "pasted-image.png", "image/png")
+    },
+    async pasteFile(dataUrl, name, type) {
+      // Input.insertText can't carry binary, so synthesize a paste event on the remote's
+      // focused element with a DataTransfer holding the File — rich editors / upload
+      // surfaces (Slack, Gmail, Drive) that listen for `paste` read it from
+      // clipboardData.files. Name + type are preserved so the target accepts the file
+      // (a video needs its real extension/MIME, not a generic image). Streamed in chunks
+      // so a large file never lands as one giant Runtime.evaluate literal (that freezes CDP).
+      const files = [{ dataUrl, name, type }]
+      const keys = await streamFiles(transport, files, fileSeq++)
+      await transport.invoke("Runtime.evaluate", {
+        expression: `(() => {
+          ${assembleFilesExpr(keys, files)}
           const el = document.activeElement || document.body;
           el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
         })()`,
-        awaitPromise: true,
+      })
+    },
+    async dropFiles(files, clientX, clientY) {
+      if (!files.length) return
+      // Map the drop point to Remote Page DIP (same resolver as Input Forwarding), then
+      // synthesize dragenter/dragover/drop on the element under the cursor. Many upload
+      // dropzones only listen for `drop` + `dataTransfer.files`; the lead-in drag events
+      // satisfy the ones that gate on a prior dragover. Streamed in chunks (see streamFiles).
+      const { x, y } = resolveCoords(clientX, clientY)
+      const keys = await streamFiles(transport, files, fileSeq++)
+      await transport.invoke("Runtime.evaluate", {
+        expression: `(() => {
+          ${assembleFilesExpr(keys, files)}
+          const el = document.elementFromPoint(${x}, ${y}) || document.body;
+          const base = { bubbles: true, cancelable: true, composed: true, clientX: ${x}, clientY: ${y}, dataTransfer: dt };
+          el.dispatchEvent(new DragEvent("dragenter", base));
+          el.dispatchEvent(new DragEvent("dragover", base));
+          el.dispatchEvent(new DragEvent("drop", base));
+        })()`,
       })
     },
     async find(query) {

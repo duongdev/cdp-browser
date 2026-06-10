@@ -354,19 +354,63 @@ describe("RemotePage clipboard paste", () => {
     expect(t.sends[0].params).toMatchObject({ type: "keyDown", key: "v", commandKey: true })
   })
 
-  it("pasteImage evaluates a synthetic paste event injecting the data URL", () => {
+  it("pasteImage streams the payload in chunks then dispatches a paste event", async () => {
     const t = fakeTransport()
     const page = createRemotePage(t.transport)
 
-    page.pasteImage("data:image/png;base64,ABC")
+    await page.pasteImage("data:image/png;base64,ABC")
 
-    expect(t.invoke).toHaveBeenCalledWith(
-      "Runtime.evaluate",
-      expect.objectContaining({ awaitPromise: true }),
+    const exprs = t.invoke.mock.calls.map((c) => c[1].expression as string)
+    const dispatch = exprs[exprs.length - 1]
+    expect(dispatch).toContain('ClipboardEvent("paste"')
+    expect(dispatch).toContain("pasted-image.png")
+    // The base64 payload rides the chunk pushes, never the final dispatch (no giant literal).
+    expect(exprs.some((e) => e.includes("ABC"))).toBe(true)
+    expect(dispatch).not.toContain("ABC")
+  })
+
+  it("pasteFile carries the file name and mime type into the synthesized File", async () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    await page.pasteFile("data:video/mp4;base64,XYZ", "clip.mp4", "video/mp4")
+
+    const exprs = t.invoke.mock.calls.map((c) => c[1].expression as string)
+    const dispatch = exprs[exprs.length - 1]
+    expect(dispatch).toContain('ClipboardEvent("paste"')
+    expect(dispatch).toContain("clip.mp4")
+    expect(dispatch).toContain("video/mp4")
+    expect(exprs.some((e) => e.includes("XYZ"))).toBe(true)
+    expect(dispatch).not.toContain("XYZ")
+  })
+
+  it("dropFiles streams chunks then dispatches a drop at the resolved remote coords", async () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+    page.setCoordResolver(() => ({ x: 100, y: 200 }))
+
+    await page.dropFiles(
+      [{ dataUrl: "data:video/mp4;base64,XYZ", name: "clip.mp4", type: "video/mp4" }],
+      10,
+      20,
     )
-    const expr = t.invoke.mock.calls[0][1].expression as string
-    expect(expr).toContain('ClipboardEvent("paste"')
-    expect(expr).toContain("data:image/png;base64,ABC")
+
+    const exprs = t.invoke.mock.calls.map((c) => c[1].expression as string)
+    const dispatch = exprs[exprs.length - 1]
+    expect(dispatch).toContain('DragEvent("drop"')
+    expect(dispatch).toContain("elementFromPoint(100, 200)")
+    expect(dispatch).toContain("clip.mp4")
+    expect(exprs.some((e) => e.includes("XYZ"))).toBe(true)
+    expect(dispatch).not.toContain("XYZ")
+  })
+
+  it("dropFiles is a no-op when no files are given", async () => {
+    const t = fakeTransport()
+    const page = createRemotePage(t.transport)
+
+    await page.dropFiles([], 10, 20)
+
+    expect(t.invoke).not.toHaveBeenCalled()
   })
 })
 

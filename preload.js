@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("cdp", {
   copyToClipboard: (text) => ipcRenderer.invoke("cdp:copy-to-clipboard", text),
   readClipboard: () => ipcRenderer.invoke("cdp:read-clipboard"),
   readClipboardImage: () => ipcRenderer.invoke("cdp:read-clipboard-image"),
+  readClipboardFiles: () => ipcRenderer.invoke("cdp:read-clipboard-files"),
   onSwipe: (cb) => ipcRenderer.on("cdp:swipe", (_, direction) => cb(direction)),
   // Pins
   getPins: () => ipcRenderer.invoke("cdp:get-pins"),

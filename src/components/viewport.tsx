@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { toast } from "sonner"
 import type { SwitchEffect } from "@/components/settings-dialog"
 import { useAnyPointerFine } from "@/hooks/use-pointer-coarse"
 import { type Event as AdaptiveEvent, type Bounds, initial, reduce } from "@/lib/adaptive-viewport"
@@ -13,7 +14,7 @@ import {
 } from "@/lib/echo-cursor"
 import { isOsReservedKey } from "@/lib/key-routing"
 import { perfFrame, perfMark } from "@/lib/perf-mark"
-import type { RemotePage } from "@/lib/remote-page"
+import type { DropFileSpec, RemotePage } from "@/lib/remote-page"
 import { createTouchGesture, type GestureEvent, LONGPRESS_MS } from "@/lib/touch-gesture"
 import { drawFrame, type Size, toRemoteCoords } from "@/lib/viewport-transform"
 import {
@@ -28,6 +29,34 @@ import {
  *  the reflow as finished and reveal the tab. Adapts the freeze to connection speed and
  *  page complexity (a heavy page like Outlook keeps emitting frames until it's done). */
 const FRAMES_QUIET_MS = 200
+
+/** Files dropped onto the canvas cross the CDP wire as a base64 data URL inside a
+ *  Runtime.evaluate expression — fine for screenshots/clips, ruinous for a multi-GB movie.
+ *  Cap each file and toast the ones skipped so a huge drop fails loudly, not silently. */
+const MAX_DROP_FILE_BYTES = 100 * 1024 * 1024 // 100 MB
+
+/** Reads a dropped FileList into data-URL specs, skipping files over the size cap.
+ *  Returns the readable specs plus the names of any skipped (too-large) files. */
+async function readDroppedFiles(
+  files: File[],
+): Promise<{ specs: DropFileSpec[]; skipped: string[] }> {
+  const specs: DropFileSpec[] = []
+  const skipped: string[] = []
+  for (const file of files) {
+    if (file.size > MAX_DROP_FILE_BYTES) {
+      skipped.push(file.name)
+      continue
+    }
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null)
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(file)
+    })
+    if (dataUrl) specs.push({ dataUrl, name: file.name, type: file.type })
+  }
+  return { specs, skipped }
+}
 /** Safety cap on the tab-switch freeze, in case frames never go quiet (animated page). */
 const SETTLE_CAP_MS = 1500
 /** Blur applied to the frozen frame during a tab-switch settle; eased back to 0 on
@@ -94,6 +123,11 @@ export function Viewport({
 }: ViewportProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  // True while an OS file drag hovers the canvas — drives the drop-target highlight.
+  const [dragOver, setDragOver] = useState(false)
+  // Nested dragenter/dragleave fire per child; a depth counter keeps the highlight stable
+  // until the drag truly leaves the container (leave at depth 0).
+  const dragDepthRef = useRef(0)
   const imgRef = useRef(new Image())
   // The single frame-view snapshot, captured the moment a frame is painted: the painted
   // frame's image px, plus its remote DIP geometry (device size + vertical offset) when
@@ -653,8 +687,77 @@ export function Viewport({
     }
   }, [page, maybeRearm])
 
+  // An OS file dropped anywhere on an Electron window otherwise navigates it to file://.
+  // Swallow the default for file drags outside an editable field / local webview (those
+  // own their drops); the canvas's own onDrop still runs and forwards the files.
+  useEffect(() => {
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files")
+    const isOwnTarget = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null
+      if (!el?.tagName) return false
+      return (
+        el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "WEBVIEW" ||
+        el.isContentEditable
+      )
+    }
+    const guard = (e: DragEvent) => {
+      if (hasFiles(e) && !isOwnTarget(e.target)) e.preventDefault()
+    }
+    window.addEventListener("dragover", guard)
+    window.addEventListener("drop", guard)
+    return () => {
+      window.removeEventListener("dragover", guard)
+      window.removeEventListener("drop", guard)
+    }
+  }, [])
+
+  const hasDragFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files")
+
   return (
-    <div className="flex-1 relative bg-black overflow-hidden" ref={containerRef}>
+    <div
+      className="flex-1 relative bg-black overflow-hidden"
+      onDragEnter={(e) => {
+        if (!hasDragFiles(e)) return
+        e.preventDefault()
+        dragDepthRef.current += 1
+        setDragOver(true)
+      }}
+      onDragLeave={(e) => {
+        if (!hasDragFiles(e)) return
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+        if (dragDepthRef.current === 0) setDragOver(false)
+      }}
+      onDragOver={(e) => {
+        if (!hasDragFiles(e)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = "copy"
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer?.files?.length) return
+        e.preventDefault()
+        dragDepthRef.current = 0
+        setDragOver(false)
+        const { clientX, clientY } = e
+        const files = Array.from(e.dataTransfer.files)
+        void readDroppedFiles(files).then(({ specs, skipped }) => {
+          if (specs.length) {
+            const names = specs.map((s) => s.name).join(", ")
+            // The bytes stream to the remote in chunks (seconds for a big video); keep the
+            // toast up so the wait reads as progress, not a hang.
+            const tid = toast.loading(`Sending ${names} to the page…`)
+            page
+              .dropFiles(specs, clientX, clientY)
+              .then(() => toast.success(`Sent ${names} to the page`, { id: tid }))
+              .catch(() => toast.error(`Couldn't send ${names}`, { id: tid }))
+          }
+          if (skipped.length) toast(`Too large to drop (max 100 MB): ${skipped.join(", ")}`)
+        })
+      }}
+      ref={containerRef}
+    >
       <canvas
         className="w-full h-full block cursor-default touch-none transition-[filter] duration-200 ease-out"
         onContextMenu={(e) => {
@@ -747,6 +850,13 @@ export function Viewport({
         ref={canvasRef}
       />
       {showVirtualPointer && <EchoOverlay echo={echo} />}
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-primary/10 ring-2 ring-inset ring-primary/70">
+          <div className="rounded-md bg-background/90 px-4 py-2 text-sm font-medium text-foreground shadow-lg">
+            Drop files to send to the page
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -15,7 +15,7 @@
  * @param {string} [origin] - Optional origin to scope permissions. If omitted, applies to all.
  * @returns {{origin?: string, permissions: string[]}} Payload for Browser.grantPermissions.
  */
-export function buildClipboardPermissionsModern(origin) {
+function buildClipboardPermissionsModern(origin) {
   const payload = {
     permissions: ["clipboardRead", "clipboardWrite"],
   }
@@ -31,7 +31,7 @@ export function buildClipboardPermissionsModern(origin) {
  * @param {string} [origin]
  * @returns {{origin?: string, permissions: string[]}}
  */
-export function buildClipboardPermissionsLegacy(origin) {
+function buildClipboardPermissionsLegacy(origin) {
   const payload = {
     permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
   }
@@ -51,7 +51,56 @@ export function buildClipboardPermissionsLegacy(origin) {
  * @returns {string} .route - Either 'insertText' (plain) or 'preseed' (rich).
  * @returns {string} .reason - Human-readable explanation.
  */
-export function selectPasteRoute(focusDescriptor) {
+/**
+ * Minimal extension → MIME map for clipboard file paste. Covers the file kinds a
+ * user is likely to copy-paste into a remote page (images + video + a few docs);
+ * anything unknown falls back to application/octet-stream so the remote `File`
+ * still carries bytes + a name (the target site sniffs content / extension).
+ *
+ * The map is the source of truth for paste mime — `clipboard.readImage()` only
+ * yields a thumbnail icon for a copied *file*, so the file path is read directly
+ * and its type derived from the name here.
+ *
+ * @param {string} name - File name or path.
+ * @returns {string} MIME type.
+ */
+function mimeForName(name) {
+  const ext = String(name || "")
+    .toLowerCase()
+    .split(".")
+    .pop()
+  const map = {
+    // images
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+    heic: "image/heic",
+    avif: "image/avif",
+    // video
+    mp4: "video/mp4",
+    m4v: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
+    // audio
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    ogg: "audio/ogg",
+    // docs
+    pdf: "application/pdf",
+    txt: "text/plain",
+    zip: "application/zip",
+  }
+  return (ext && map[ext]) || "application/octet-stream"
+}
+
+function selectPasteRoute(focusDescriptor) {
   const { isContentEditable = false, isRichEditor = false } = focusDescriptor || {}
 
   if (isContentEditable || isRichEditor) {
@@ -66,4 +115,11 @@ export function selectPasteRoute(focusDescriptor) {
     route: "insertText",
     reason: "Plain input; use Input.insertText for direct text insertion",
   }
+}
+
+module.exports = {
+  buildClipboardPermissionsModern,
+  buildClipboardPermissionsLegacy,
+  mimeForName,
+  selectPasteRoute,
 }

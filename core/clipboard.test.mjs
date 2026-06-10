@@ -2,8 +2,29 @@ import { describe, expect, it } from "vitest"
 import {
   buildClipboardPermissionsLegacy,
   buildClipboardPermissionsModern,
+  mimeForName,
   selectPasteRoute,
 } from "./clipboard.js"
+
+describe("mimeForName", () => {
+  it("maps common video extensions", () => {
+    expect(mimeForName("clip.mp4")).toBe("video/mp4")
+    expect(mimeForName("movie.MOV")).toBe("video/quicktime")
+    expect(mimeForName("a.webm")).toBe("video/webm")
+  })
+
+  it("maps common image extensions", () => {
+    expect(mimeForName("pic.png")).toBe("image/png")
+    expect(mimeForName("photo.JPG")).toBe("image/jpeg")
+    expect(mimeForName("anim.gif")).toBe("image/gif")
+  })
+
+  it("falls back to octet-stream for unknown or missing extensions", () => {
+    expect(mimeForName("noext")).toBe("application/octet-stream")
+    expect(mimeForName("archive.zzz")).toBe("application/octet-stream")
+    expect(mimeForName("")).toBe("application/octet-stream")
+  })
+})
 
 describe("clipboard permissions", () => {
   describe("buildClipboardPermissionsModern", () => {

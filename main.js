@@ -11,6 +11,7 @@ const {
   desktopCapturer,
   systemPreferences,
   dialog,
+  nativeImage,
 } = require("electron")
 const path = require("node:path")
 const fs = require("node:fs")
@@ -18,6 +19,7 @@ const WebSocket = require("ws")
 const { emulatedMediaParams } = require("./core/theme-emulation")
 const { createSettingsStore } = require("./core/settings-store")
 const endpoints = require("./core/cdp-endpoints")
+const { mimeForName: clipboardMime } = require("./core/clipboard")
 const { tierToParams, DEFAULT_TIER } = require("./core/quality-tier")
 
 // The window is a BaseWindow composed of a chrome view (the React UI, full
@@ -204,6 +206,42 @@ ipcMain.handle("cdp:read-clipboard", () => {
 ipcMain.handle("cdp:read-clipboard-image", () => {
   const img = clipboard.readImage()
   return img.isEmpty() ? null : img.toDataURL()
+})
+
+// Real files on the clipboard (e.g. a video copied in Finder) — read the actual bytes
+// rather than clipboard.readImage(), which only yields the file's icon/thumbnail. Returns
+// [{ name, type, dataUrl }]; empty when the clipboard holds no file reference. Reading
+// happens in main (full fs access, no browser CORS/permission wall).
+const MAX_CLIPBOARD_FILE_BYTES = 150 * 1024 * 1024 // 150 MB — guards against OOM on huge media
+ipcMain.handle("cdp:read-clipboard-files", () => {
+  let paths = []
+  try {
+    // macOS: a single copied file exposes public.file-url (file:///…); read it directly.
+    const fileUrl = clipboard.read("public.file-url")
+    if (fileUrl) {
+      const p = decodeURIComponent(fileUrl.replace(/^file:\/\//, ""))
+      if (p) paths = [p]
+    }
+  } catch {
+    // format absent on this platform / clipboard — fall through to empty
+  }
+  const out = []
+  for (const p of paths) {
+    try {
+      const stat = fs.statSync(p)
+      if (!stat.isFile() || stat.size > MAX_CLIPBOARD_FILE_BYTES) continue
+      const buf = fs.readFileSync(p)
+      const type = clipboardMime(path.basename(p))
+      out.push({
+        name: path.basename(p),
+        type,
+        dataUrl: `data:${type};base64,${buf.toString("base64")}`,
+      })
+    } catch {
+      // unreadable path — skip
+    }
+  }
+  return out
 })
 
 ipcMain.handle("cdp:list-tabs", async () => {
@@ -501,6 +539,131 @@ function updateBadge() {
   if (typeof app.setBadgeCount === "function") app.setBadgeCount(notificationCenter.unreadCount())
 }
 
+// --- Dock icon composite (t066): overlay the notifying app's favicon on the bottom-right
+// of CDP Browser's dock icon, so the dock tells you WHICH app pinged you (Slack vs Teams),
+// not just a number. The compositing runs in the chrome renderer (its <img> decodes .ico
+// + data-URL inputs don't taint the canvas), driven from main via executeJavaScript.
+const APP_ICON_PATH = path.join(__dirname, "build", "icon.png")
+let baseIconDataUrl = null
+function baseIcon() {
+  if (baseIconDataUrl != null) return baseIconDataUrl
+  try {
+    baseIconDataUrl = `data:image/png;base64,${fs.readFileSync(APP_ICON_PATH).toString("base64")}`
+  } catch {
+    baseIconDataUrl = ""
+  }
+  return baseIconDataUrl
+}
+
+// Bundled per-adapter app icons (Slack/Teams/Outlook), keyed by adapter name. Local files —
+// NO network: remote favicon URLs were unreliable (Slack's returned HTTP 403, corporate
+// proxies black-holed the fetch, and the first notification always missed the cache). Local
+// PNGs render on the very first notification and can't hang. See build/notif-icons/.
+const NOTIF_ICONS_DIR = path.join(__dirname, "build", "notif-icons")
+// Human label per adapter for the macOS notification subtitle (text fallback when the OS
+// banner ignores the custom icon).
+const NOTIF_APP_LABELS = { slack: "Slack", teams: "Microsoft Teams", outlook: "Outlook" }
+const localIconImageCache = new Map() // adapter -> NativeImage | null
+function localIconImage(adapter) {
+  if (!adapter) return null
+  if (localIconImageCache.has(adapter)) return localIconImageCache.get(adapter)
+  let img = null
+  try {
+    const p = path.join(NOTIF_ICONS_DIR, `${adapter}.png`)
+    if (fs.existsSync(p)) {
+      const candidate = nativeImage.createFromPath(p)
+      if (!candidate.isEmpty()) img = candidate
+    }
+  } catch {}
+  localIconImageCache.set(adapter, img)
+  return img
+}
+const localIconDataUrlCache = new Map() // adapter -> dataURL | ""
+function localIconDataUrl(adapter) {
+  if (!adapter) return ""
+  if (localIconDataUrlCache.has(adapter)) return localIconDataUrlCache.get(adapter)
+  let out = ""
+  try {
+    const p = path.join(NOTIF_ICONS_DIR, `${adapter}.png`)
+    if (fs.existsSync(p)) out = `data:image/png;base64,${fs.readFileSync(p).toString("base64")}`
+  } catch {}
+  localIconDataUrlCache.set(adapter, out)
+  return out
+}
+
+// In the renderer: draw base app icon + the adapter icon in the bottom-right corner.
+// Returns the composited dock PNG data URL, or null on failure. Inputs are local data URLs,
+// so the canvas is never cross-origin-tainted; a per-image timeout prevents any hang.
+async function composeDockIcon(iconDataUrl) {
+  const wc = chromeWc()
+  const base = baseIcon()
+  if (!wc || !base || !iconDataUrl) return null
+  const expr = `(async () => {
+    const load = (src) => new Promise((res) => {
+      const img = new Image()
+      const done = (v) => res(v)
+      img.onload = () => done(img); img.onerror = () => done(null)
+      setTimeout(() => done(null), 2500)
+      img.src = src
+    })
+    try {
+      const [base, fav] = await Promise.all([load(${JSON.stringify(base)}), load(${JSON.stringify(iconDataUrl)})])
+      if (!base || !fav) return null
+      const S = base.naturalWidth || 1024
+      const c = document.createElement("canvas"); c.width = S; c.height = S
+      const x = c.getContext("2d")
+      x.drawImage(base, 0, 0, S, S)
+      const bs = Math.round(S * 0.42), pad = Math.round(S * 0.04)
+      const bx = S - bs - pad, by = S - bs - pad, r = Math.round(bs * 0.22)
+      x.save()
+      x.beginPath()
+      x.moveTo(bx + r, by)
+      x.arcTo(bx + bs, by, bx + bs, by + bs, r)
+      x.arcTo(bx + bs, by + bs, bx, by + bs, r)
+      x.arcTo(bx, by + bs, bx, by, r)
+      x.arcTo(bx, by, bx + bs, by, r)
+      x.closePath()
+      x.shadowColor = "rgba(0,0,0,0.35)"; x.shadowBlur = Math.round(S * 0.02)
+      x.fillStyle = "#fff"; x.fill()
+      x.restore()
+      const inset = Math.round(bs * 0.12)
+      x.drawImage(fav, bx + inset, by + inset, bs - 2 * inset, bs - 2 * inset)
+      return c.toDataURL("image/png")
+    } catch { return null }
+  })()`
+  try {
+    return await wc.executeJavaScript(expr)
+  } catch {
+    return null
+  }
+}
+
+function setDockIcon(dataUrl) {
+  if (!app.dock || !dataUrl) return
+  try {
+    app.dock.setIcon(nativeImage.createFromDataURL(dataUrl))
+  } catch {}
+}
+function clearDockIcon() {
+  if (!app.dock) return
+  try {
+    app.dock.setIcon(nativeImage.createFromPath(APP_ICON_PATH))
+  } catch {}
+}
+
+// Reconcile the dock icon with the store: overlay the newest-unread app's icon, or restore
+// the plain icon when nothing is unread. Fire-and-forget — never awaited on a path that
+// gates a notification. Uses bundled local icons, so it can't hang on the network.
+async function syncDockIcon() {
+  try {
+    const newest = notificationCenter.list().find((n) => !n.read)
+    const iconDataUrl = newest ? localIconDataUrl(newest.adapter) : ""
+    const dock = iconDataUrl ? await composeDockIcon(iconDataUrl) : null
+    if (dock) setDockIcon(dock)
+    else clearDockIcon()
+  } catch {}
+}
+
 // Retain shown Notification objects: Electron/V8 garbage-collects a Notification with no
 // live reference, and the collected object never delivers its `click` event — the banner
 // shows but clicking it does nothing. Held until the user clicks or it closes.
@@ -521,6 +684,10 @@ const notificationCenter = createNotificationCenter({
     updateBadge()
     chromeSend("cdp:notification", entry)
 
+    // Fire the OS notification FIRST and synchronously — it must NEVER be gated by favicon
+    // or network work (a hung favicon fetch previously swallowed every toast). The banner
+    // icon is best-effort: use the cached normalized favicon if we already have it, else
+    // fire without one (the app icon shows regardless). The dock sync below warms the cache.
     const windowFocused = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
     if (
       shouldNotifyOs(entry, {
@@ -530,7 +697,17 @@ const notificationCenter = createNotificationCenter({
       }) &&
       Notification.isSupported()
     ) {
-      const osN = new Notification({ title: entry.title || entry.source, body: entry.body })
+      const opts = { title: entry.title || entry.source, body: entry.body }
+      // Tell the user WHICH app pinged them, two ways for robustness:
+      //  - icon: bundled local adapter logo (Slack/Teams/Outlook). Works on Windows/Linux and
+      //    in macOS Notification Center; macOS banners may fall back to the app icon.
+      //  - subtitle (macOS): the app label in TEXT — always visible even if the icon is
+      //    suppressed, so "Slack" vs "Teams" is never ambiguous.
+      const img = localIconImage(entry.adapter)
+      if (img) opts.icon = img
+      const label = NOTIF_APP_LABELS[entry.adapter]
+      if (label) opts.subtitle = label
+      const osN = new Notification(opts)
       liveNotifications.add(osN)
       const cleanupN = () => liveNotifications.delete(osN)
       osN.on("click", () => {
@@ -544,34 +721,45 @@ const notificationCenter = createNotificationCenter({
       osN.on("close", cleanupN)
       osN.show()
     }
+
+    // Update the dock favicon overlay + warm the banner-icon cache — fire-and-forget so a
+    // slow favicon fetch can never delay or swallow the notification above.
+    void syncDockIcon()
   },
 })
 
 setInterval(() => notificationCenter.reconcile(), 5000)
 app.whenReady().then(() => {
   updateBadge() // restore dock badge from persisted unread
-  setTimeout(() => notificationCenter.reconcile(), 1000)
+  setTimeout(() => {
+    notificationCenter.reconcile()
+    syncDockIcon() // restore dock favicon overlay once the chrome renderer can composite
+  }, 1000)
 })
 
 ipcMain.handle("cdp:get-notifications", () => notificationCenter.list())
 ipcMain.handle("cdp:mark-notification-read", (_, id) => {
   const list = notificationCenter.markRead(id)
   updateBadge()
+  syncDockIcon()
   return list
 })
 ipcMain.handle("cdp:mark-notification-unread", (_, id) => {
   const list = notificationCenter.markUnread(id)
   updateBadge()
+  syncDockIcon()
   return list
 })
 ipcMain.handle("cdp:mark-notifications-read", () => {
   const list = notificationCenter.markAllRead()
   updateBadge()
+  syncDockIcon()
   return list
 })
 ipcMain.handle("cdp:clear-notifications", () => {
   const list = notificationCenter.clear()
   updateBadge()
+  syncDockIcon()
   return list
 })
 

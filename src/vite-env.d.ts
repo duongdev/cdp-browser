@@ -99,6 +99,11 @@ interface CdpBridge {
   readClipboard: () => Promise<string>
   /** Electron-only: the local clipboard's image as a data URL, or null if none. */
   readClipboardImage: () => Promise<string | null>
+  /**
+   * Electron-only: real files referenced on the local clipboard (e.g. a video copied in
+   * Finder), read as `{ name, type, dataUrl }`. Empty when no file reference is present.
+   */
+  readClipboardFiles: () => Promise<Array<{ name: string; type: string; dataUrl: string }>>
   onSwipe: (cb: (direction: string) => void) => void
   // Pins
   getPins: () => Promise<Pin[]>
