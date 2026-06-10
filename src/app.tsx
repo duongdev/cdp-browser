@@ -1186,7 +1186,7 @@ export default function App() {
           window.cdp
             .readClipboardFiles()
             .then((files) => {
-              if (files && files.length) {
+              if (files?.length) {
                 for (const f of files) page.pasteFile(f.dataUrl, f.name, f.type)
                 return
               }
