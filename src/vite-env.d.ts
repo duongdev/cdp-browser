@@ -74,6 +74,7 @@ interface CdpBridge {
     qualityTier: "sharp" | "balanced" | "snappy"
     virtualPointerMode: "off" | "on" | "auto"
     settingsScrollTop: number
+    slackExcludes: { team: string; channelId: string; label: string }[]
   }>
   setUiState: (
     partial: Partial<{
@@ -90,6 +91,7 @@ interface CdpBridge {
       qualityTier: "sharp" | "balanced" | "snappy"
       virtualPointerMode: "off" | "on" | "auto"
       settingsScrollTop: number
+      slackExcludes: { team: string; channelId: string; label: string }[]
     }>,
   ) => Promise<void>
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>

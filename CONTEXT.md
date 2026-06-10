@@ -53,8 +53,20 @@ A drop-in seam that spans both capture and activation for one notification-capab
 _Avoid_: plugin, connector, integration.
 
 **Notification Capture**:
-The act of an injected script shipping notification payloads through the `__cdpNotify` binding. Capture style varies by site: Teams and Outlook use a `MutationObserver` on the site's own in-app toast DOM; Slack has no in-app toast, so its script patches `window.Notification` (the Web Notifications API hijack) and forces `Notification.permission` → `"granted"` so Slack actually fires. Pure capture — never navigates.
+The act of shipping notification payloads into the store. Two modalities exist. **In-page capture**: an injected script ships payloads through the `__cdpNotify` binding — Teams and Outlook use a `MutationObserver` on the site's own in-app toast DOM; Slack has no in-app toast, so its script patches `window.Notification` (the Web Notifications API hijack) and forces `Notification.permission` → `"granted"`. **Content sweep** (Slack only, ADR-0011): the server reads Slack's authoritative server-side unread state via Slack's web API and synthesizes entries. For Slack the sweep is the authoritative store writer; the hijack is demoted to an instant foreground toast that no longer writes store entries. Pure capture — never navigates.
 _Avoid_: scraping, hooking, interception.
+
+**Slack Content Sweep**:
+The server-side, authoritative Slack capture modality (ADR-0011). The web server polls Slack's web API (`client.counts` for per-channel unread/mention/thread counts + `last_read`; `conversations.history` for message content; `users.info` for name resolution) using credentials extracted from a live tab (the `xoxc-…` token + `d` cookie), synthesizes notification entries keyed by stable Slack message identity (`slack:{team}:{channel}:{ts}`), and owns the persisted Slack store. Parity baseline = counts-driven (DMs, group DMs, channel mentions, thread replies) + honor Slack muted channels + a user **Channel Exclude** list. Follows Slack `last_read` to auto-mark entries read across all clients. Survives native-app routing, tab focus/suppression, tab sleep, tab closure, and server gaps (caught up via a per-channel watermark on the next poll) — the failure class the in-page hijack alone cannot cover.
+_Avoid_: scraper, poller, backfill.
+
+**Workspace Registry**:
+The server-side persistence (`slack-workspaces.json`) mapping each Slack `teamId` → `{ url, creds, lastSeen }`, populated the first time a workspace tab is seen live (ADR-0011). It drives two things: re-extraction targets for stale creds, and the **Parked Tab** keep-alive loop, which ensures exactly one tab per registered workspace exists on the remote browser (recreated via `/json/new` if closed or after a browser restart) so creds self-refresh and the hijack stays armed. Distinct from ADR-0010 **Workspaces** (multi-CDP-host UI), though both stamp entries with a workspace key.
+_Avoid_: account list, team store, tenant table.
+
+**Channel Exclude**:
+A user-configured per-channel mute for the **Slack Content Sweep**, stored in server ui-state (survives the iPad PWA's localStorage wipe). Each entry is `{ team, channelId, label }` keyed by the stable channel id. Added via a "Mute this channel" action on a notification or the Settings list. Applied on top of Slack's own muted-channel flag (which the sweep already honors). Distinct from a **Pin** or a muted **Local Tab**.
+_Avoid_: mute list, blocklist, filter.
 
 **Local Tab**:
 A locally-rendered web page displayed as an in-DOM Electron `<webview>` element inside the chrome view. Unlike a **Tab** (which renders a remote page as a JPEG screencast), a Local Tab has full device access: real OS notifications, audio, mic, camera, screen-share, and loadable MV3 extensions. The renderer holds `LocalTab` metadata (`{ id, url, title, favicon?, pinned, loading, canGoBack, canGoForward, audible, muted }`); the main process owns the `persist:local` session and extension loading. Local Tabs occupy the LOCAL TABS sidebar section; a `pinned` flag (distinct from CDP Pins) keeps them atop that section and restores them on relaunch. See `docs/adr/0005-local-tabs-base-window.md`.
@@ -68,6 +80,7 @@ _Avoid_: native tab, page view, webview tab.
 - **Viewport Transform** maps canvas coordinates to **Remote Page** coordinates for both drawing **Screencast Frames** and hit-testing **Input Forwarding**.
 - **Adaptive Viewport** (when enabled) resizes the **Remote Page** to the canvas so **Screencast Frames** fill it without letterbox bars.
 - A **Notification Side-Channel** attaches to a background **Tab**'s target and uses a **Notification Adapter** to run **Notification Capture** — independent of the **Active Tab**'s screencast socket. Clicking the result activates the owning Tab and, if the entry carries an `activate` intent, the activation registry maps it to a **Remote Page** deep-open intention.
+- For Slack, the **Slack Content Sweep** is the authoritative **Notification Capture** writer; the in-page hijack provides only an instant foreground toast. The sweep reads creds from a live **Tab**, persists workspaces in the **Workspace Registry**, keeps a **Parked Tab** alive per registered workspace, and respects the **Channel Exclude** list.
 - A **Local Tab** renders a real local web page (in-DOM `<webview>`) alongside CDP Tabs — it does not use **Screencast Frames** or **Input Forwarding**; it gets direct device access instead.
 
 ## Example dialogue

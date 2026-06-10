@@ -101,3 +101,19 @@ self.addEventListener("notificationclick", (e) => {
     }),
   )
 })
+
+// Push subscription change handler — fires when the push service rotates or revokes a
+// subscription (e.g., after a period of inactivity, or when the device re-registers).
+// Notifies the page so it can re-subscribe with the current VAPID key (which the page has).
+self.addEventListener("pushsubscriptionchange", (e) => {
+  e.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientsArr) => {
+        for (const client of clientsArr) {
+          client.postMessage({ type: "push-subscription-change" })
+        }
+      })
+      .catch((err) => console.error("[sw] pushsubscriptionchange notify failed:", err)),
+  )
+})

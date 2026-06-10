@@ -19,15 +19,29 @@ import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
 import { createFrameThrottle } from "../core/frame-throttle.js"
 import { createLineSplitter } from "../core/line-splitter.js"
+import { buildHealth, shouldAlert } from "../core/notification-health.js"
 import sidechain from "../core/notifications-sidechain.js"
 import connector from "../core/remote-page-connector.js"
 import { createSettingsStore } from "../core/settings-store.js"
+import { createSlackApi } from "../core/slack-api.js"
+import { createSlackSweeper } from "../core/slack-sweep-runner.js"
+import {
+  liveTeamIds as slackLiveTeamIds,
+  planParkedTabs as slackPlanParkedTabs,
+  teamIdOf as slackTeamIdOf,
+  upsertWorkspace as slackUpsertWorkspace,
+} from "../core/slack-workspaces.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
 const PORT = Number(process.env.PORT || 7800)
 const SETTINGS_PATH = process.env.SETTINGS_PATH || join(HERE, "..", "web-settings.json")
 const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notifications.json")
+// Slack workspace registry (t070) — non-secret metadata only (teamId → {url,name,lastSeen}).
+// Drives the parked-tab keeper so a closed/lost Slack tab is recreated. No creds on disk:
+// the shared d cookie + all-team localConfig re-extract from any live Slack tab.
+const SLACK_WORKSPACES_PATH =
+  process.env.SLACK_WORKSPACES_PATH || join(HERE, "..", "slack-workspaces.json")
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
 const APP_TITLE = process.env.APP_TITLE || "CDP Portal"
@@ -113,18 +127,28 @@ const savePushSubs = () => {
 }
 
 // Send a push payload to every registered subscription. Subscriptions that come
-// back 404/410 (gone) are pruned so we don't keep retrying dead endpoints.
+// back 404/410 (gone) are pruned so we don't keep retrying dead endpoints. Transient
+// failures are retried once before giving up (t066).
 async function sendPushToAll(payload) {
   if (pushSubs.length === 0) return
   const data = JSON.stringify(payload)
   const dead = []
   await Promise.all(
     pushSubs.map(async (sub) => {
-      try {
-        await webpush.sendNotification(sub, data)
-      } catch (e) {
-        if (e.statusCode === 404 || e.statusCode === 410) dead.push(sub.endpoint)
-        else console.error("[web] push failed:", e.statusCode, e.body || e.message)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await webpush.sendNotification(sub, data)
+          return // success
+        } catch (e) {
+          if (e.statusCode === 404 || e.statusCode === 410) {
+            dead.push(sub.endpoint)
+            return // permanent, don't retry
+          }
+          // transient error — retry once
+          if (attempt === 1) {
+            console.error("[web] push failed (after retry):", e.statusCode, e.body || e.message)
+          }
+        }
       }
     }),
   )
@@ -441,6 +465,21 @@ const notificationCenter = createNotificationCenter({
   },
   now: Date.now,
   WebSocketCtor: WebSocket,
+  log: (m) => console.log(m),
+  // Slack creds extracted from a live tab (t069). The sweep (t071) reads them via
+  // notificationCenter.listCreds(); a fresh extraction triggers an immediate sweep so a
+  // newly-attached workspace is caught up without waiting for the next interval.
+  onCreds: (rec) => {
+    console.log(`[web] slack creds ready: ${rec.teamId} (${rec.name})`)
+    if (slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
+  },
+  // The Slack hijack (t064) is demoted to a "sweep now" trigger (ADR-0011): a fired
+  // notification means something happened, so sweep that workspace immediately for the
+  // authoritative, message-anchored entry — sub-second delivery, no double-notify.
+  onSlackSignal: (teamId) => {
+    const rec = notificationCenter.getCreds(teamId)
+    if (rec && rec.fresh !== false && slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
+  },
   onEntry: (entry) => {
     broadcast("notification", entry)
     // Fire-and-forget push to all subscribers; backgrounded PWAs only get the event
@@ -461,8 +500,166 @@ const notificationCenter = createNotificationCenter({
     })
   },
 })
-setInterval(() => notificationCenter.reconcile(), 5000)
-setTimeout(() => notificationCenter.reconcile(), 1000)
+// ---- Slack parked-tab keeper (t070) ---------------------------------------
+// Registers each Slack workspace seen as its own tab and recreates a tab for any registered
+// workspace with no live tab (closed by the user, or gone after a browser restart) — so the
+// sweep's creds self-refresh and the hijack stays armed. Per the user's "fully live" choice,
+// this actively provisions tabs via /json/new. Registry persists non-secret metadata only.
+let slackRegistry = loadJson(SLACK_WORKSPACES_PATH, {})
+const slackCreatedAt = {} // teamId → last /json/new timestamp (create cooldown)
+const saveSlackRegistry = () => {
+  try {
+    writeFileSync(SLACK_WORKSPACES_PATH, JSON.stringify(slackRegistry, null, 2))
+  } catch (e) {
+    console.error("[web] saveSlackRegistry failed:", e.message)
+  }
+}
+
+async function keepSlackTabsAlive(targets) {
+  // Register every workspace currently seen as its own tab.
+  let changed = false
+  for (const t of targets) {
+    if (t.type !== "page") continue
+    const teamId = slackTeamIdOf(t.url || "")
+    if (!teamId) continue
+    const before = slackRegistry[teamId]
+    slackRegistry = slackUpsertWorkspace(
+      slackRegistry,
+      { teamId, url: t.url, name: before?.name },
+      Date.now(),
+    )
+    if (!before) changed = true
+  }
+  // Recreate a tab for any registered workspace that has no live tab.
+  const live = slackLiveTeamIds(targets)
+  const plans = slackPlanParkedTabs(slackRegistry, live, slackCreatedAt, Date.now())
+  for (const plan of plans) {
+    slackCreatedAt[plan.teamId] = Date.now()
+    try {
+      await fetchJson(endpoints.newTab(host(), port(), plan.url))
+      console.log(`[web] parked-tab keeper: recreated Slack tab for ${plan.teamId}`)
+    } catch (e) {
+      console.error(`[web] parked-tab create failed for ${plan.teamId}:`, e.message)
+    }
+  }
+  if (changed) saveSlackRegistry()
+}
+
+// One combined reconcile cycle: notification side-channels + the Slack parked-tab keeper.
+// A single /json fetch feeds both so we don't double-poll the remote browser.
+async function reconcileCycle() {
+  let targets
+  try {
+    targets = await fetchJson(endpoints.list(host(), port()))
+  } catch {
+    return
+  }
+  if (!Array.isArray(targets)) return
+  await notificationCenter.reconcile(targets)
+  await keepSlackTabsAlive(targets)
+}
+setInterval(reconcileCycle, 5000)
+setTimeout(reconcileCycle, 1000)
+
+// ---- Slack content sweep (t071) -------------------------------------------
+// The authoritative Slack capture: polls each workspace's real unread state via the Slack
+// web API (using creds extracted in t069) and writes message-anchored entries the hijack no
+// longer writes. Completeness is independent of native-app routing, tab focus/sleep/closure,
+// and server gaps (caught up via the per-channel watermark). Per-workspace sweep state lives
+// in memory — the store's stable-id dedup makes a cold start re-fetch (not re-notify).
+const slackSweepState = {
+  watermark: {}, // teamId → { channelId: ts }
+  seeded: new Set(), // teamIds whose baseline is established
+  muted: {}, // teamId → channelId[]
+  userNames: {}, // teamId → { userId: name } — lazy users.info cache (t073)
+  channelNames: {}, // teamId → { channelId: name } — lazy conversations.info cache (t073)
+  meta: {}, // teamId → { seeded, lastSweepOk, lastEntryTs } — health surface (t074)
+  alertStatus: {}, // teamId → last health status, gates the one-time degraded alert (t074)
+}
+const nameCacheGet = (bucket, team, id) => slackSweepState[bucket][team]?.[id]
+const nameCacheSet = (bucket, team, id, name) => {
+  if (!slackSweepState[bucket][team]) slackSweepState[bucket][team] = {}
+  slackSweepState[bucket][team][id] = name
+}
+const slackSweeper = createSlackSweeper({
+  listCreds: () => notificationCenter.listCreds(),
+  makeApi: (cred) => createSlackApi({ token: cred.token, cookie: cred.cookie }),
+  getWatermark: (t) => slackSweepState.watermark[t] || {},
+  setWatermark: (t, w) => {
+    slackSweepState.watermark[t] = w
+  },
+  isSeeded: (t) => slackSweepState.seeded.has(t),
+  markSeeded: (t) => slackSweepState.seeded.add(t),
+  // Channel Exclude list (t072): the excluded channel ids for this workspace, read live
+  // from ui-state (`slackExcludes: {team,channelId,label}[]`) so a mute applies next sweep.
+  getExcludes: (team) => {
+    const list = settings.getUiState().slackExcludes
+    return Array.isArray(list)
+      ? list.filter((e) => e && e.team === team).map((e) => e.channelId)
+      : []
+  },
+  getMuted: (t) => slackSweepState.muted[t],
+  setMuted: (t, m) => {
+    slackSweepState.muted[t] = m
+  },
+  getSelfUserId: (t) => notificationCenter.getCreds(t)?.selfUserId,
+  setSelfUserId: (t, u) => notificationCenter.setSelfUserId(t, u),
+  // Lazy name caches for content rendering (t073).
+  getUserName: (t, id) => nameCacheGet("userNames", t, id),
+  setUserName: (t, id, name) => nameCacheSet("userNames", t, id, name),
+  getChannelName: (t, id) => nameCacheGet("channelNames", t, id),
+  setChannelName: (t, id, name) => nameCacheSet("channelNames", t, id, name),
+  ingestEntry: (entry) => {
+    if (!slackSweepState.meta[entry.team]) slackSweepState.meta[entry.team] = {}
+    slackSweepState.meta[entry.team].lastEntryTs = entry.ts
+    return notificationCenter.ingestSlackEntry(entry)
+  },
+  markSwept: (t) => {
+    if (!slackSweepState.meta[t]) slackSweepState.meta[t] = {}
+    slackSweepState.meta[t].seeded = true
+    slackSweepState.meta[t].lastSweepOk = Date.now()
+  },
+  applyReadUpdates: (_team, lastRead) => notificationCenter.applySlackReadUpdates(lastRead),
+  applyReadByUnread: (team, unreadSet) =>
+    notificationCenter.applySlackReadByUnread(team, unreadSet),
+  markStale: (t, reason) => notificationCenter.markCredsStale(t, reason),
+  markUnsweepable: (t, reason) => notificationCenter.disableSweep(t, reason),
+  now: Date.now,
+  log: (m) => console.log(m),
+})
+// Compute the Slack capture health report from cred records + sweep metadata (t074).
+const slackHealth = () => buildHealth(notificationCenter.listCreds(), slackSweepState.meta)
+
+// Fire a one-time "reconnect Slack" alert when a workspace first degrades (stale creds) or
+// is found unsupported (Grid-restricted). Gated by the last-seen status so it never repeats.
+function checkSlackHealthAlerts() {
+  for (const row of slackHealth()) {
+    const prev = slackSweepState.alertStatus[row.teamId]
+    if (shouldAlert(prev, row.status)) {
+      const why =
+        row.status === "unsupported"
+          ? "can't read this workspace (restricted) — notifications limited"
+          : "needs reconnecting — open this Slack workspace to refresh"
+      sendPushToAll({
+        id: `slack-health:${row.teamId}:${row.status}`,
+        source: "CDP Browser",
+        title: `Slack: ${row.name}`,
+        body: why,
+        groupKey: `slack:${row.teamId}`,
+        ts: Date.now(),
+      })
+    }
+    slackSweepState.alertStatus[row.teamId] = row.status
+  }
+}
+
+// Periodic backstop sweep (every 15s) — the hijack trigger + cred-extraction trigger carry
+// real-time delivery; this guarantees completeness even if the hijack never fires (tab
+// asleep, native-app routing) or a signal was missed. Health alerts piggyback the cycle.
+setInterval(() => {
+  slackSweeper.runOnce().catch(() => {})
+  checkSlackHealthAlerts()
+}, 15_000)
 
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
@@ -661,6 +858,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, settings.reorderPins((await body(req)).pins))
     // notifications
     if (p === "/api/notifications" && !POST) return json(res, notificationCenter.list())
+    // Slack capture health per workspace (t074) — attached/creds/sweep state for the Settings row.
+    if (p === "/api/notifications/health" && !POST) return json(res, slackHealth())
     if (p === "/api/notifications/mark-read" && POST)
       return json(res, notificationCenter.markRead((await body(req)).id))
     if (p === "/api/notifications/mark-unread" && POST)

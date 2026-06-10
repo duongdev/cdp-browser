@@ -1,4 +1,4 @@
-import { Notification03Icon } from "@hugeicons/core-free-icons"
+import { Notification03Icon, NotificationOff03Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { flattenRows, groupByConversation, type ViewEntry } from "@/lib/notifications-view"
+import { excludeTargetFromEntry } from "@/lib/slack-excludes"
 import { cn } from "@/lib/utils"
 
 export type { ViewEntry as NotifEntry }
@@ -20,6 +21,8 @@ interface Props {
   onClearAll: () => void
   /** Mark only the selected row's whole thread read (the `r` action key). */
   onMarkThreadRead: (entry: ViewEntry) => void
+  /** Mute the channel/DM behind a swept Slack notification (Channel Exclude, t072). */
+  onMuteChannel: (entry: ViewEntry) => void
 }
 
 function relativeTime(ts: number): string {
@@ -39,6 +42,7 @@ export function NotificationBell({
   onMarkAllRead,
   onClearAll,
   onMarkThreadRead,
+  onMuteChannel,
 }: Props) {
   const [unreadOnly, setUnreadOnly] = useState(false)
   const unread = notifications.filter((n) => !n.read).length
@@ -231,6 +235,19 @@ export function NotificationBell({
                           </span>
                         </button>
                         <div className="pointer-events-none absolute top-2 right-3 flex items-center gap-1.5">
+                          {excludeTargetFromEntry(n) && (
+                            <button
+                              aria-label="Mute this channel"
+                              className="pointer-events-auto -m-1 p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:text-foreground group-hover/noti:opacity-100 [@media(hover:none)]:opacity-100"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onMuteChannel(n)
+                              }}
+                              type="button"
+                            >
+                              <HugeiconsIcon className="size-3" icon={NotificationOff03Icon} />
+                            </button>
+                          )}
                           <button
                             aria-label={n.read ? "Mark as unread" : "Mark as read"}
                             className="pointer-events-auto -m-1 p-1"

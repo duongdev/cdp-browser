@@ -56,6 +56,7 @@ interface ToolbarProps {
   onNotificationToggleRead: (entry: NotifEntry) => void
   onMarkAllRead: () => void
   onMarkThreadRead: (entry: NotifEntry) => void
+  onMuteChannel: (entry: NotifEntry) => void
   onClearNotifications: () => void
   notificationsEnabled: boolean
   onNotificationsEnabledChange: (enabled: boolean) => void
@@ -117,6 +118,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onNotificationToggleRead,
     onMarkAllRead,
     onMarkThreadRead,
+    onMuteChannel,
     onClearNotifications,
     notificationsEnabled,
     onNotificationsEnabledChange,
@@ -384,6 +386,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onClickItem={onNotificationClick}
           onMarkAllRead={onMarkAllRead}
           onMarkThreadRead={onMarkThreadRead}
+          onMuteChannel={onMuteChannel}
           onOpenChange={onBellOpenChange}
           onToggleRead={onNotificationToggleRead}
           open={bellOpen}

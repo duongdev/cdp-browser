@@ -87,7 +87,7 @@ Any non-trivial design decision gets an ADR. Examples of "non-trivial":
 
 ADRs are **append-only**. When a decision changes, write a new ADR that supersedes the old one. Update the old ADR's *Status* line to reference the superseder, but never edit its body. The history is the documentation.
 
-Current ADRs: `docs/adr/0001-single-remote-page.md`, `0002-adaptive-viewport.md`, `0003-notifications-side-channel.md`, `0004-pin-live-tab-model.md`, `0005-local-tabs-base-window.md`, `0006-web-proxy-sse-transport.md`, `0007-web-websocket-transport.md`, `0008-defer-monorepo-shared-cjs-core.md`.
+Current ADRs: `docs/adr/0001-single-remote-page.md`, `0002-adaptive-viewport.md`, `0003-notifications-side-channel.md`, `0004-pin-live-tab-model.md`, `0005-local-tabs-base-window.md`, `0006-web-proxy-sse-transport.md`, `0007-web-websocket-transport.md`, `0008-defer-monorepo-shared-cjs-core.md`, `0009-touch-first-co-primary-input-surface.md`, `0010-multiple-workspaces-deferred-design.md`, `0011-slack-content-sweep-guaranteed-delivery.md`.
 
 ---
 

@@ -31,6 +31,10 @@ const UI_DEFAULTS = {
   // Settings drawer scroll offset (px). Persisted server-side so the drawer reopens where
   // it was left, surviving a PWA refresh (localStorage resets on this PWA). See t014.
   settingsScrollTop: 0,
+  // Web build only: Channel Exclude list for the Slack content sweep (t072) — muted
+  // channels/DMs as { team, channelId, label }. The server sweep reads it; the renderer
+  // edits it (a "Mute this channel" action + the Settings list). See ADR-0011.
+  slackExcludes: [],
 }
 // Keys settable via setUiState (localExtensionPaths is owned by extension flows).
 const UI_SETTABLE = Object.keys(UI_DEFAULTS).filter((k) => k !== "localExtensionPaths")

@@ -20,9 +20,11 @@ const {
   markAllRead,
   unreadCount,
 } = require("./notifications")
+const { parseLocalConfig, pickDCookie, markFresh, markStale, redact } = require("./slack-creds")
+const { tsCmp } = require("./slack-sweep")
 
 const NOTIFY_BINDING = "__cdpNotify"
-const DEFAULT_CAP = 50
+const DEFAULT_CAP = 200
 
 // Notification Adapters identify notification-capable sites by URL hostname. Each
 // names its capture script (loaded via the injected `readInject`) and the icon to
@@ -51,6 +53,10 @@ const ADAPTERS = [
     // key from the Tab's URL team id instead — one Tab per workspace, so the URL is the
     // authoritative workspace identity (more durable than the in-page capture script).
     groupKey: slackGroupKey,
+    // Slack is the one adapter that also drives a server-side content sweep (ADR-0011).
+    // The side-channel extracts the xoxc token + d cookie from a live Slack tab so the
+    // server can read authoritative unread state independent of the page firing toasts.
+    extractCreds: true,
   },
 ]
 
@@ -73,6 +79,31 @@ function createNotificationCenter(deps) {
   const persist = () => save(notifications)
 
   const sideChannels = new Map() // targetId -> ws
+  // Slack credential records keyed by teamId (t069). Populated by side-channel extraction;
+  // read by the server-side content sweep (t071). Each: { teamId, token, cookie, name, url,
+  // enterpriseId, fresh, lastError, selfUserId? }. Creds are the user's own session secrets
+  // — never logged in full (see redact).
+  const credsByTeam = new Map()
+  // Workspaces whose web-API sweep is permanently unsupported (e.g. Enterprise Grid
+  // `team_is_restricted`). For these the hijack falls back to writing entries directly,
+  // since the sweep can't cover them.
+  const sweepDisabledTeams = new Set()
+  const log = deps.log || (() => {})
+
+  function recordCreds(team, cookie) {
+    const prev = credsByTeam.get(team.teamId) || {}
+    const rec = markFresh(prev, {
+      teamId: team.teamId,
+      token: team.token,
+      cookie,
+      name: team.name,
+      url: team.url,
+      enterpriseId: team.enterpriseId,
+    })
+    credsByTeam.set(team.teamId, rec)
+    log(`[slack-creds] extracted ${team.teamId} (${team.name}) token=${redact(team.token)}`)
+    if (deps.onCreds) deps.onCreds(rec)
+  }
 
   function handleToast(raw, target) {
     let n
@@ -83,6 +114,20 @@ function createNotificationCenter(deps) {
     }
     if (!n || typeof n !== "object") return
     const adapter = adapterFor(target.url)
+    // Slack with the sweep active (ADR-0011): the hijack no longer writes store entries
+    // (the sweep is the authoritative, message-anchored writer). It instead acts as an
+    // instant "sweep now" trigger so a real event is delivered in ~1s via the sweep —
+    // sub-second latency without the fuzzy hijack↔sweep dedup we deferred. EXCEPTION: a
+    // workspace whose sweep is unsupported (Enterprise Grid `team_is_restricted`) falls
+    // through to storing the hijack entry directly, so it isn't lost.
+    if (adapter && adapter.name === "slack" && deps.onSlackSignal) {
+      const teamId = slackGroupKey(target.url).replace(/^slack:/, "")
+      if (teamId && !sweepDisabledTeams.has(teamId)) {
+        deps.onSlackSignal(teamId)
+        return
+      }
+      // else: fall through to normal ingest (sweep can't cover this workspace).
+    }
     const { list, entry } = ingest(
       notifications,
       {
@@ -119,8 +164,18 @@ function createNotificationCenter(deps) {
     const ws = new WebSocketCtor(target.webSocketDebuggerUrl)
     sideChannels.set(target.id, ws)
     let cmdId = 1
+    // Fire-and-forget CDP send (capture-script injection doesn't need the reply).
     const cdp = (method, params) =>
       ws.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
+    // Awaitable CDP call — cred extraction needs the evaluate/getCookies results, so it
+    // correlates the reply by command id through `pending`.
+    const pending = new Map()
+    const cdpCall = (method, params) =>
+      new Promise((resolve) => {
+        const id = cmdId++
+        pending.set(id, resolve)
+        ws.send(JSON.stringify({ id, method, params: params || {} }))
+      })
     ws.on("open", () => {
       cdp("Runtime.enable")
       cdp("Page.enable")
@@ -128,10 +183,19 @@ function createNotificationCenter(deps) {
       // document-start for future loads + the already-loaded document.
       cdp("Page.addScriptToEvaluateOnNewDocument", { source: sourceFor(adapter) })
       cdp("Runtime.evaluate", { expression: sourceFor(adapter) })
+      // Slack only: pull the workspace creds for the server-side sweep (ADR-0011).
+      if (adapter.extractCreds && deps.onCreds) {
+        extractSlackCreds(cdpCall, target).catch(() => {})
+      }
     })
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString())
+        if (msg.id != null && pending.has(msg.id)) {
+          pending.get(msg.id)(msg)
+          pending.delete(msg.id)
+          return
+        }
         if (msg.method === "Runtime.bindingCalled" && msg.params.name === NOTIFY_BINDING) {
           handleToast(msg.params.payload, target)
         }
@@ -142,6 +206,32 @@ function createNotificationCenter(deps) {
     }
     ws.on("close", drop)
     ws.on("error", drop)
+  }
+
+  // Read the xoxc tokens (localConfig_v2) + the shared `d` session cookie off a live Slack
+  // tab and record one cred entry per signed-in workspace. Best-effort: a parse miss or a
+  // CDP error leaves any prior creds intact and logs — never throws into the attach path.
+  async function extractSlackCreds(cdpCall, target) {
+    try {
+      const evalRes = await cdpCall("Runtime.evaluate", {
+        expression: "localStorage.localConfig_v2 || ''",
+        returnByValue: true,
+      })
+      const raw = evalRes?.result?.result?.value
+      const { teams } = parseLocalConfig(raw)
+      if (!teams.length) return
+      const cookieRes = await cdpCall("Network.getCookies", {
+        urls: ["https://app.slack.com", ...teams.map((t) => t.url).filter(Boolean)],
+      })
+      const cookie = pickDCookie(cookieRes?.result?.cookies)
+      if (!cookie) {
+        log(`[slack-creds] no d cookie on ${target.url}`)
+        return
+      }
+      for (const team of teams) recordCreds(team, cookie)
+    } catch (e) {
+      log(`[slack-creds] extraction failed: ${e && e.message ? e.message : e}`)
+    }
   }
 
   // Attach to newly-seen adapter-matching Tab targets, drop vanished/changed ones.
@@ -194,6 +284,80 @@ function createNotificationCenter(deps) {
       return notifications
     },
     unreadCount: () => unreadCount(notifications),
+    // Slack cred accessors (t069) — the server-side sweep (t071) reads these.
+    listCreds: () => [...credsByTeam.values()],
+    getCreds: (teamId) => credsByTeam.get(teamId) || null,
+    // Mark a workspace's creds stale (e.g. the sweep got a 401) so the health surface
+    // (t074) can flag it and the parked-tab keeper (t070) re-extracts. Keeps the last creds.
+    markCredsStale: (teamId, reason) => {
+      const prev = credsByTeam.get(teamId)
+      if (prev) credsByTeam.set(teamId, markStale(prev, reason))
+    },
+    // The sweep caches the resolved self user id (for channel @-mention parity) here.
+    setSelfUserId: (teamId, selfUserId) => {
+      const prev = credsByTeam.get(teamId)
+      if (prev) credsByTeam.set(teamId, { ...prev, selfUserId })
+    },
+    // Permanently disable the sweep for a workspace (e.g. Grid `team_is_restricted`) so the
+    // hijack stores its notifications directly. Also stamped on the cred record for t074.
+    disableSweep: (teamId, reason) => {
+      sweepDisabledTeams.add(teamId)
+      const prev = credsByTeam.get(teamId)
+      if (prev) credsByTeam.set(teamId, { ...prev, sweepUnsupported: reason || true })
+    },
+    isSweepDisabled: (teamId) => sweepDisabledTeams.has(teamId),
+    // The Slack content sweep (t071) is the authoritative writer of Slack entries. It feeds
+    // already-shaped store entries (decorated by the runner) through the same dedup/cap/
+    // onEntry pipeline the hijack used — so broadcast + Web Push fire exactly once per entry,
+    // and the stable slack:{team}:{channel}:{ts} id makes re-runs idempotent.
+    ingestSlackEntry: (payload) => {
+      const { list, entry } = ingest(notifications, payload, cap)
+      if (!entry) return null
+      notifications = list
+      persist()
+      onEntry(entry)
+      return entry
+    },
+    // Restricted-path read-sync (t075): users.counts gives no last_read, so mark read any
+    // swept entry (for this team) whose channel is no longer in the unread set. Coarser than
+    // per-message last_read but correct: a conversation with zero unreads is fully read.
+    applySlackReadByUnread: (team, unreadChannelSet) => {
+      const groupKey = `slack:${team}`
+      let changed = false
+      const updated = notifications.map((e) => {
+        if (e.read || e.groupKey !== groupKey || !e.channelId) return e
+        if (!unreadChannelSet.has(e.channelId)) {
+          changed = true
+          return { ...e, read: true }
+        }
+        return e
+      })
+      if (changed) {
+        notifications = updated
+        persist()
+      }
+      return notifications
+    },
+    // Follow Slack last_read: flip swept entries (those carrying a slackTs + channelId) to
+    // read when their channel's last_read advances past them — keeps badges honest across
+    // all clients. Compares the original Slack ts (slackTs), not the ms-epoch display ts.
+    applySlackReadUpdates: (lastReadByChannel) => {
+      let changed = false
+      const updated = notifications.map((e) => {
+        if (e.read || !e.channelId || !e.slackTs) return e
+        const lr = lastReadByChannel[e.channelId]
+        if (lr && tsCmp(e.slackTs, lr) <= 0) {
+          changed = true
+          return { ...e, read: true }
+        }
+        return e
+      })
+      if (changed) {
+        notifications = updated
+        persist()
+      }
+      return notifications
+    },
     close: () => {
       for (const [, ws] of sideChannels) {
         try {

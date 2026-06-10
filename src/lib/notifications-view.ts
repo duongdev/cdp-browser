@@ -23,6 +23,9 @@ export interface ViewEntry {
   icon?: string | null
   ts: number
   read: boolean
+  // Slack content-sweep entries carry the source channel id (t071) — used by the
+  // "Mute this channel" exclude action (t072). Absent on hijack/Teams/Outlook entries.
+  channelId?: string
 }
 
 export interface ConversationGroup<E extends ViewEntry = ViewEntry> {

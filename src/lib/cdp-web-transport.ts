@@ -43,6 +43,24 @@ export { getCaps, type WebCaps }
 
 type Cmd = { method: string; params?: unknown }
 
+// Generate or retrieve a stable device ID for per-device state (e.g. webPush toggle).
+// Stored in localStorage so it persists across page reloads; on the iPad PWA it resets
+// on uninstall, correctly generating a new device ID for a fresh install (t066).
+function getOrCreateDeviceId(): string {
+  const key = "cdp_device_id"
+  try {
+    let id = localStorage?.getItem?.(key)
+    if (!id) {
+      id = `device_${Math.random().toString(36).slice(2, 9)}_${Date.now()}`
+      localStorage?.setItem?.(key, id)
+    }
+    return id
+  } catch {
+    // localStorage unavailable (private browsing) — return a session-only ID
+    return `device_session_${Math.random().toString(36).slice(2, 9)}`
+  }
+}
+
 /**
  * Injectable dependency bag (test seam, t020). Production calls `createWebCdp()` with no
  * argument, so `resolveDeps()` reaches for the real browser globals — the exact behavior
@@ -773,11 +791,14 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   }
 
   // OS toast via the web Notification API — the browser-side stand-in for the Electron
-  // Notification main fired. Opt-in: gated by the `webPush` setting (the "Push
-  // notifications" toggle handles the permission grant), only when the tab isn't
+  // Notification main fired. Opt-in: gated by the device-specific `webPush` setting (t066)
+  // (the "Push notifications" toggle handles the permission grant), only when the tab isn't
   // visible, and only with permission granted. Clicking re-focuses and routes through
   // the same notification-activate listeners the renderer registers.
   let webPush = false
+  const deviceId = getOrCreateDeviceId()
+  const webPushKey = `webPush_${deviceId}`
+
   function maybeToast(entry: CdpNotification) {
     if (!webPush) return
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return
@@ -1167,12 +1188,18 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     setSidebarWidth: (width) => rest.postJson("/api/sidebar-width", { width }),
     getUiState: async () => {
       const ui = await rest.getJson("/api/ui-state")
-      webPush = !!ui.webPush
+      webPush = !!ui[webPushKey]
       return ui
     },
     setUiState: (partial) => {
-      if ("webPush" in partial) webPush = !!partial.webPush
-      return rest.postJson("/api/ui-state", partial)
+      // Remap webPush to the device-keyed key before sending to server (t066).
+      const toSend: Record<string, unknown> = { ...partial }
+      if ("webPush" in partial) {
+        toSend[webPushKey] = (partial as Record<string, unknown>).webPush
+        delete toSend.webPush
+        webPush = !!(partial as Record<string, unknown>).webPush
+      }
+      return rest.postJson("/api/ui-state", toSend)
     },
     setThemeSource: async (source) => {
       themeSource = source

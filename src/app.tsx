@@ -29,6 +29,7 @@ import {
 } from "@/lib/notification-activation"
 import { threadKey } from "@/lib/notifications-view"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
+import { addExclude, excludeTargetFromEntry, type SlackExclude } from "@/lib/slack-excludes"
 import { startUpdateWatcher } from "@/lib/sw-update"
 import { planClose, planSwitch } from "@/lib/tab-lifecycle"
 import { reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
@@ -482,6 +483,22 @@ export default function App() {
 
   // Mark the selected row's whole thread read (the in-box `r` key) without opening it.
   const handleMarkThreadRead = markThreadRead
+
+  // "Mute this channel" (t072): add the entry's {team, channelId} to the server-stored
+  // Channel Exclude list so the sweep stops notifying it. Reads the current list from
+  // ui-state, appends (deduped), and writes back. Also marks the entry read for instant feedback.
+  const handleMuteChannel = useCallback((entry: NotifEntry) => {
+    const target = excludeTargetFromEntry(entry)
+    if (!target) return
+    const label = entry.source || target.channelId
+    window.cdp.getUiState().then((s) => {
+      const current = Array.isArray(s.slackExcludes) ? (s.slackExcludes as SlackExclude[]) : []
+      const next = addExclude(current, { ...target, label })
+      if (next !== current) window.cdp.setUiState({ slackExcludes: next })
+    })
+    setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)))
+    window.cdp.markNotificationRead(entry.id)
+  }, [])
 
   // Toggling the per-row indicator flips read state without opening the notification.
   const handleToggleRead = useCallback((entry: NotifEntry) => {
@@ -1575,6 +1592,7 @@ export default function App() {
             onForward={goForward}
             onMarkAllRead={handleMarkAllRead}
             onMarkThreadRead={handleMarkThreadRead}
+            onMuteChannel={handleMuteChannel}
             onNavigate={navigate}
             onNotificationClick={handleNotificationClick}
             onNotificationsEnabledChange={handleNotificationsEnabledChange}

@@ -38,6 +38,15 @@ class FakeWs {
   deliver(method: string, params: any) {
     this.emit("message", Buffer.from(JSON.stringify({ method, params })))
   }
+  // Reply to a previously-sent command by id (drives cdpCall's pending map).
+  reply(id: number, result: any) {
+    this.emit("message", Buffer.from(JSON.stringify({ id, result })))
+  }
+  // Find the id of the last sent command matching a method (for reply correlation).
+  lastId(method: string): number {
+    const m = [...this.sent].reverse().find((x) => x.method === method)
+    return m?.id
+  }
   notify(payload: any) {
     this.deliver("Runtime.bindingCalled", {
       name: "__cdpNotify",
@@ -62,6 +71,50 @@ const outlookTarget = (over = {}) => ({
   webSocketDebuggerUrl: "ws://host/devtools/page/o1",
   ...over,
 })
+const SLACK_URL = "https://app.slack.com/client/T01CDUT3CBD/C07QUF1RKJ4"
+const slackTarget = (over = {}) => ({
+  id: "s1",
+  type: "page",
+  url: SLACK_URL,
+  webSocketDebuggerUrl: "ws://host/devtools/page/s1",
+  ...over,
+})
+const LOCAL_CONFIG = JSON.stringify({
+  lastActiveTeamId: "T01CDUT3CBD",
+  teams: {
+    T01CDUT3CBD: { token: "xoxc-aaa", name: "Acme", url: "https://acme.slack.com/" },
+    E0761H36LHY: { token: "xoxc-bbb", name: "BigCo", url: "https://big.enterprise.slack.com/" },
+  },
+})
+// Drive the two-step cred extraction (Runtime.evaluate localConfig → Network.getCookies).
+// The extractor awaits each reply, so `Network.getCookies` is only sent after the eval
+// reply resolves on the next microtask — hence the awaits between replies.
+async function answerCredExtraction(
+  ws: FakeWs,
+  opts: { config?: string; dCookie?: string | null } = {},
+) {
+  const config = opts.config ?? LOCAL_CONFIG
+  const dCookie = opts.dCookie === undefined ? "xoxd-secret" : opts.dCookie
+  // The first Runtime.evaluate is the capture-script injection; the cred read is the one
+  // whose expression mentions localConfig_v2 — match by id of that specific send.
+  const evalSend = [...ws.sent]
+    .reverse()
+    .find(
+      (m) =>
+        m.method === "Runtime.evaluate" && String(m.params?.expression).includes("localConfig_v2"),
+    )
+  if (evalSend) ws.reply(evalSend.id, { result: { value: config } })
+  await Promise.resolve()
+  await Promise.resolve()
+  const cookieSend = [...ws.sent].reverse().find((m) => m.method === "Network.getCookies")
+  if (cookieSend) {
+    const cookies =
+      dCookie === null ? [{ name: "lc", value: "x" }] : [{ name: "d", value: dCookie }]
+    ws.reply(cookieSend.id, { cookies })
+  }
+  await Promise.resolve()
+  await Promise.resolve()
+}
 
 function makeCenter(over: Partial<any> = {}) {
   const saved: any[][] = []
@@ -305,6 +358,111 @@ describe("slack adapter — per-workspace grouping (t064)", () => {
     ws.open()
     ws.notify({ id: "sn", title: "@alice", activate: { type: "spa-link", url: "/client/T111/C9" } })
     expect(center.list()[0].activate).toEqual({ type: "spa-link", url: "/client/T111/C9" })
+  })
+})
+
+describe("slack cred extraction (t069)", () => {
+  it("extracts token + cookie per workspace when onCreds is provided", async () => {
+    const onCreds = vi.fn()
+    const { center } = makeCenter({ onCreds })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerCredExtraction(ws)
+    const creds = center.listCreds()
+    expect(creds.map((c: any) => c.teamId).sort()).toEqual(["E0761H36LHY", "T01CDUT3CBD"])
+    const acme = center.getCreds("T01CDUT3CBD")
+    expect(acme).toMatchObject({ token: "xoxc-aaa", cookie: "xoxd-secret", fresh: true })
+    expect(onCreds).toHaveBeenCalled()
+  })
+
+  it("does not extract creds when onCreds is absent (Electron / no sweep)", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    // No localConfig read should have been sent.
+    const credRead = ws.sent.find(
+      (m: any) =>
+        m.method === "Runtime.evaluate" && String(m.params?.expression).includes("localConfig_v2"),
+    )
+    expect(credRead).toBeUndefined()
+    expect(center.listCreds()).toEqual([])
+  })
+
+  it("records nothing when the d cookie is missing", async () => {
+    const onCreds = vi.fn()
+    const { center } = makeCenter({ onCreds })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerCredExtraction(ws, { dCookie: null })
+    expect(center.listCreds()).toEqual([])
+    expect(onCreds).not.toHaveBeenCalled()
+  })
+
+  it("markCredsStale flips fresh→false but keeps the creds", async () => {
+    const onCreds = vi.fn()
+    const { center } = makeCenter({ onCreds })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerCredExtraction(ws)
+    center.markCredsStale("T01CDUT3CBD", "invalid_auth")
+    const rec = center.getCreds("T01CDUT3CBD")
+    expect(rec).toMatchObject({ fresh: false, lastError: "invalid_auth", token: "xoxc-aaa" })
+  })
+
+  it("setSelfUserId caches the self user id on the cred record", async () => {
+    const onCreds = vi.fn()
+    const { center } = makeCenter({ onCreds })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerCredExtraction(ws)
+    center.setSelfUserId("T01CDUT3CBD", "U_ME")
+    expect(center.getCreds("T01CDUT3CBD")?.selfUserId).toBe("U_ME")
+  })
+})
+
+describe("slack hijack ↔ sweep handoff (t071)", () => {
+  const slackT = (teamId: string) => ({
+    id: `s-${teamId}`,
+    type: "page" as const,
+    url: `https://app.slack.com/client/${teamId}/C001`,
+    webSocketDebuggerUrl: `ws://host/devtools/page/${teamId}`,
+  })
+
+  it("a hijack toast triggers a sweep (not a store write) when the sweep owns the workspace", async () => {
+    const onSlackSignal = vi.fn()
+    const { center } = makeCenter({ onSlackSignal })
+    await center.reconcile([slackT("T111")])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    ws.notify({ id: "sn1", title: "@alice: hi" })
+    expect(onSlackSignal).toHaveBeenCalledWith("T111")
+    expect(center.list()).toHaveLength(0) // no store write — the sweep is authoritative
+  })
+
+  it("falls back to storing the hijack entry when the workspace sweep is disabled", async () => {
+    const onSlackSignal = vi.fn()
+    const { center } = makeCenter({ onSlackSignal })
+    await center.reconcile([slackT("T222")])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    center.disableSweep("T222", "team_is_restricted")
+    ws.notify({ id: "sn2", title: "@bob: hey", source: "Grid WS" })
+    expect(onSlackSignal).not.toHaveBeenCalled()
+    expect(center.list().map((e: any) => e.id)).toEqual(["sn2"]) // stored via hijack fallback
+  })
+
+  it("without onSlackSignal (Electron), slack toasts store as before", async () => {
+    const { center } = makeCenter()
+    await center.reconcile([slackT("T333")])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    ws.notify({ id: "sn3", title: "hi" })
+    expect(center.list().map((e: any) => e.id)).toEqual(["sn3"])
   })
 })
 

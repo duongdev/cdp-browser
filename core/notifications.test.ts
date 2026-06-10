@@ -123,6 +123,25 @@ describe("ingest", () => {
     for (let i = 0; i < 5; i++) list = ingest(list, payload({ id: `n${i}` }), 3).list
     expect(list.map((e) => e.id)).toEqual(["n4", "n3", "n2"])
   })
+
+  it("with a raised cap, cross-adapter entries survive (Slack does not evict Teams/Outlook)", () => {
+    // Scenario: 40 Slack entries ingested, then 15 Teams entries.
+    // With cap=50 (old): Teams entries would evict the oldest 5 Slack entries (no cross-adapter protection).
+    // With cap=200 (new): all 55 entries survive.
+    let list: any[] = []
+    // Ingest 40 Slack entries.
+    for (let i = 0; i < 40; i++)
+      list = ingest(list, payload({ id: `slack:${i}`, source: "Slack" }), 200).list
+    expect(list.length).toBe(40)
+    // Ingest 15 Teams entries.
+    for (let i = 0; i < 15; i++)
+      list = ingest(list, payload({ id: `teams:${i}`, source: "Teams" }), 200).list
+    // With cap=200, all 55 entries survive. All Teams entries present.
+    expect(list.length).toBe(55)
+    const teamIds = list.filter((n) => n.source === "Teams").map((n) => n.id)
+    expect(teamIds.length).toBe(15)
+    expect(teamIds[0]).toBe("teams:14") // Newest Team entry is prepended.
+  })
 })
 
 describe("read model", () => {

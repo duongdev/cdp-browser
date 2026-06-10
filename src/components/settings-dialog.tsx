@@ -30,6 +30,7 @@ import { isPointerFine, usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { getCaps } from "@/lib/caps"
 import { parseTier, QUALITY_TIER_KEY, QUALITY_TIERS, type QualityTier } from "@/lib/quality-tier"
 import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
+import { removeExclude, type SlackExclude } from "@/lib/slack-excludes"
 import type { InputTransportMode } from "@/lib/transport-selector"
 import { cn } from "@/lib/utils"
 import {
@@ -52,6 +53,14 @@ function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
 }
 
 export type SwitchEffect = "none" | "blur" | "grayscale" | "blur-grayscale"
+
+// One row of the Slack capture health report (t074), as returned by /api/notifications/health.
+type SlackHealthRow = {
+  teamId: string
+  name: string
+  status: "healthy" | "degraded" | "unsupported"
+  lastError: string | null
+}
 
 // Build identity for the About row. Read the Vite defines first; "unknown"/empty means the
 // define wasn't injected (only happens on a .git-less web build), so the caller falls back
@@ -189,6 +198,18 @@ export function SettingsDialog({
   const [webPush, setWebPush] = useState(false)
   const [pushPermBlocked, setPushPermBlocked] = useState(false)
   const [isStandalone, setIsStandalone] = useState(false)
+  // Muted Slack channels (Channel Exclude, t072) — stored in server ui-state. Listed here
+  // so a mute added from a notification can be reviewed and removed.
+  const [slackExcludes, setSlackExcludes] = useState<SlackExclude[]>([])
+  // Slack capture health per workspace (t074) — fetched from the server on open.
+  const [slackHealth, setSlackHealth] = useState<SlackHealthRow[]>([])
+  const removeSlackExclude = useCallback((team: string, channelId: string) => {
+    setSlackExcludes((prev) => {
+      const next = removeExclude(prev, team, channelId)
+      if (next !== prev) window.cdp.setUiState({ slackExcludes: next })
+      return next
+    })
+  }, [])
   // About row: build identity from the Vite defines, with a web-only fetch fallback when a
   // define wasn't injected (a .git-less build). Electron always has the defines so it never fetches.
   const [about, setAbout] = useState<{ version: string; sha: string }>(() => ({
@@ -237,48 +258,82 @@ export function SettingsDialog({
   // the drawer reopens where it was left, surviving a refresh — restored on open, saved on close.
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const toggleWebPush = useCallback(async (on: boolean) => {
-    if (on && typeof Notification !== "undefined") {
-      const perm = await Notification.requestPermission()
-      if (perm !== "granted") {
-        setPushPermBlocked(perm === "denied")
-        setWebPush(false)
-        return
-      }
-    }
-    setPushPermBlocked(false)
-    setWebPush(on)
-    window.cdp.setUiState({ webPush: on })
-    // Real Web Push subscribe/unsubscribe — fires after permission + ui-state are set.
-    // Wrapped in try/catch since service workers / pushManager may not exist on every
-    // browser; failures here don't undo the ui-state toggle (the user can retry).
+  // Re-subscribe when the SW detects a push-subscription-change (rotation/revocation).
+  const reValidateSubscription = useCallback(async () => {
     try {
       const reg = await navigator.serviceWorker?.ready
       if (!reg) return
-      if (on) {
-        const key = await window.cdp.getPushVapidKey?.()
-        if (!key) return
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToArrayBuffer(key),
-        })
-        await window.cdp.subscribePush?.(sub.toJSON() as PushSubscriptionJSON)
-      } else {
-        const sub = await reg.pushManager.getSubscription()
-        if (sub) {
-          await window.cdp.unsubscribePush?.(sub.endpoint)
-          await sub.unsubscribe()
-        }
-      }
+      const key = await window.cdp.getPushVapidKey?.()
+      if (!key) return
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToArrayBuffer(key),
+      })
+      await window.cdp.subscribePush?.(sub.toJSON() as PushSubscriptionJSON)
     } catch (e) {
-      console.error("[push] subscribe/unsubscribe failed:", e)
+      console.error("[push] re-validate subscription failed:", e)
     }
   }, [])
+
+  const toggleWebPush = useCallback(
+    async (on: boolean) => {
+      if (on && typeof Notification !== "undefined") {
+        const perm = await Notification.requestPermission()
+        if (perm !== "granted") {
+          setPushPermBlocked(perm === "denied")
+          setWebPush(false)
+          return
+        }
+      }
+      setPushPermBlocked(false)
+      setWebPush(on)
+      window.cdp.setUiState({ webPush: on })
+      // Real Web Push subscribe/unsubscribe — fires after permission + ui-state are set.
+      // Wrapped in try/catch since service workers / pushManager may not exist on every
+      // browser; failures here don't undo the ui-state toggle (the user can retry).
+      try {
+        const reg = await navigator.serviceWorker?.ready
+        if (!reg) return
+        if (on) {
+          const key = await window.cdp.getPushVapidKey?.()
+          if (!key) return
+          const sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToArrayBuffer(key),
+          })
+          await window.cdp.subscribePush?.(sub.toJSON() as PushSubscriptionJSON)
+        } else {
+          const sub = await reg.pushManager.getSubscription()
+          if (sub) {
+            await window.cdp.unsubscribePush?.(sub.endpoint)
+            await sub.unsubscribe()
+          }
+        }
+      } catch (e) {
+        console.error("[push] subscribe/unsubscribe failed:", e)
+      }
+    },
+    [reValidateSubscription],
+  )
 
   // Suppress the leave-timer while a Select popover (portaled outside the panel)
   // is open — the cursor naturally travels off-panel to reach its options.
   const [selectOpen, setSelectOpen] = useState(false)
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  // Listen for push subscription changes from the service worker (rotation/revocation).
+  useEffect(() => {
+    const handleSWMessage = (event: Event) => {
+      const e = event as MessageEvent
+      if (e.data?.type === "push-subscription-change" && webPush) {
+        reValidateSubscription()
+      }
+    }
+    navigator.serviceWorker?.controller?.addEventListener("message" as string, handleSWMessage)
+    return () => {
+      navigator.serviceWorker?.controller?.removeEventListener("message" as string, handleSWMessage)
+    }
+  }, [webPush, reValidateSubscription])
 
   useEffect(() => {
     if (open) {
@@ -317,10 +372,20 @@ export function SettingsDialog({
           setPushPermBlocked(
             typeof Notification !== "undefined" && Notification.permission === "denied",
           )
+          // Re-validate the push subscription on open when push is enabled. This catches
+          // subscription rotation/expiry and re-subscribes if needed (idempotent).
+          if (s.webPush && granted) {
+            reValidateSubscription()
+          }
+          setSlackExcludes(Array.isArray(s.slackExcludes) ? s.slackExcludes : [])
         })
+        fetch("/api/notifications/health")
+          .then((r) => r.json())
+          .then((rows: SlackHealthRow[]) => setSlackHealth(Array.isArray(rows) ? rows : []))
+          .catch(() => setSlackHealth([]))
       }
     }
-  }, [open, caps.web])
+  }, [open, caps.web, reValidateSubscription])
 
   const clearLeaveTimer = useCallback(() => {
     if (leaveTimer.current) {
@@ -667,6 +732,66 @@ export function SettingsDialog({
                     </div>
                   )}
                 </Card>
+
+                {caps.web && slackHealth.length > 0 && (
+                  <Card title="Slack capture">
+                    <ul className="space-y-1">
+                      {slackHealth.map((w) => {
+                        const dotColor =
+                          w.status === "healthy"
+                            ? "bg-emerald-500"
+                            : w.status === "degraded"
+                              ? "bg-amber-500"
+                              : "bg-muted-foreground/50"
+                        const note =
+                          w.status === "healthy"
+                            ? "Capturing"
+                            : w.status === "degraded"
+                              ? "Reconnect — open this workspace"
+                              : "Restricted (hijack only)"
+                        return (
+                          <li className="flex items-center gap-2 text-[12px]" key={w.teamId}>
+                            <span className={cn("size-2 shrink-0 rounded-full", dotColor)} />
+                            <span className="min-w-0 flex-1 truncate">{w.name}</span>
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              {note}
+                            </span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </Card>
+                )}
+
+                {caps.web && slackExcludes.length > 0 && (
+                  <Card title="Muted Slack channels">
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        These channels and DMs are silenced for the content sweep. Unmute to receive
+                        their notifications again.
+                      </p>
+                      <ul className="space-y-1">
+                        {slackExcludes.map((ex) => (
+                          <li
+                            className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1"
+                            key={`${ex.team}:${ex.channelId}`}
+                          >
+                            <span className="min-w-0 truncate text-[12px]">
+                              {ex.label || ex.channelId}
+                            </span>
+                            <button
+                              className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
+                              onClick={() => removeSlackExclude(ex.team, ex.channelId)}
+                              type="button"
+                            >
+                              Unmute
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </Card>
+                )}
 
                 <Card title="Connection">
                   <div className="space-y-2">
