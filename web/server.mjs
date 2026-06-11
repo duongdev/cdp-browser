@@ -129,9 +129,21 @@ const savePushSubs = () => {
 // Send a push payload to every registered subscription. Subscriptions that come
 // back 404/410 (gone) are pruned so we don't keep retrying dead endpoints. Transient
 // failures are retried once before giving up (t066).
+// Web Push payloads are capped (~4KB after encryption). The full entry can blow past that —
+// Teams' `targetEntity` is a multi-KB object and a Slack body can carry long URLs — which the
+// push service rejects with 413 PayloadTooLarge, dropping the notification entirely. Trim to
+// what the SW actually needs: drop `targetEntity` (the store keeps it for in-app clicks; the
+// phone deep-routes via `activate` + the conversation key) and cap the body.
+const PUSH_BODY_CAP = 240
+function trimPushPayload(payload) {
+  const { targetEntity: _drop, body, ...rest } = payload
+  const trimmed = body && body.length > PUSH_BODY_CAP ? `${body.slice(0, PUSH_BODY_CAP)}…` : body
+  return { ...rest, body: trimmed }
+}
+
 async function sendPushToAll(payload) {
   if (pushSubs.length === 0) return
-  const data = JSON.stringify(payload)
+  const data = JSON.stringify(trimPushPayload(payload))
   const dead = []
   await Promise.all(
     pushSubs.map(async (sub) => {
