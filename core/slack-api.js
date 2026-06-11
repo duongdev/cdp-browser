@@ -105,6 +105,14 @@ function createSlackApi(deps) {
     usersPrefsGet: () => call("users.prefs.get"),
     // The viewer's own user id — needed for channel @-mention parity (t068's isMention).
     authTest: () => call("auth.test"),
+    // Post a text-only reply (t078) — the reader composer's write. thread_ts targets a
+    // thread; omitted → plain channel/DM message. Target selection lives in the renderer's
+    // selectReplyTarget (the single policy owner), never here.
+    chatPostMessage: (channel, text, threadTs) =>
+      call(
+        "chat.postMessage",
+        threadTs ? { channel, text, thread_ts: threadTs } : { channel, text },
+      ),
   }
 }
 

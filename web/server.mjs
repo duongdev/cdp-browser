@@ -497,6 +497,14 @@ const notificationCenter = createNotificationCenter({
       activate: entry.activate,
       icon: entry.icon,
       ts: entry.ts,
+      // Conversation identity for the reader deep-route + composer (t080) — present on
+      // swept Slack entries, absent elsewhere (the reader stubs those).
+      channelId: entry.channelId,
+      slackKind: entry.slackKind,
+      slackTs: entry.slackTs,
+      slackThreadTs: entry.slackThreadTs,
+      // Home-screen badge mirror (t080): the SW calls setAppBadge with this.
+      unread: notificationCenter.list().filter((n) => !n.read).length,
     })
   },
 })
@@ -867,6 +875,41 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/notifications/mark-all-read" && POST)
       return json(res, notificationCenter.markAllRead())
     if (p === "/api/notifications/clear" && POST) return json(res, notificationCenter.clear())
+    // Group-level clear (t085): remove every entry in a conversation by id.
+    if (p === "/api/notifications/remove" && POST)
+      return json(res, notificationCenter.removeMany((await body(req)).ids))
+    // Conversation Reader history (t077, ADR-0012): one rendered conversations.history
+    // page through the sweep's creds + name caches. Read-only (never touches the
+    // watermark); typed errors map to honest HTTP statuses for the reader's states.
+    if (p === "/api/slack/history" && POST) {
+      const { team, channel } = await body(req)
+      if (!team || !channel) return json(res, { error: "missing team/channel" }, 400)
+      const cred = notificationCenter.getCreds(team)
+      if (!cred || cred.fresh === false) return json(res, { error: "invalid_auth" }, 401)
+      const out = await slackSweeper.fetchConversation(cred, channel)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error === "rate_limited") return json(res, out, 429)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Reader composer reply (t078, ADR-0012 §3): one text-only chat.postMessage through
+    // the sweep's creds. The reply target ({channel, thread_ts?}) is selected client-side
+    // by the single policy owner (src/lib/slack-reply.ts) — the server never re-decides.
+    if (p === "/api/slack/reply" && POST) {
+      const { team, channel, thread_ts, text } = await body(req)
+      if (!team || !channel || !text?.trim()) return json(res, { error: "missing fields" }, 400)
+      const cred = notificationCenter.getCreds(team)
+      if (!cred || cred.fresh === false) return json(res, { error: "invalid_auth" }, 401)
+      const api = createSlackApi({ token: cred.token, cookie: cred.cookie })
+      const out = await api.chatPostMessage(channel, text, thread_ts || undefined)
+      if (out?.error === "invalid_auth") {
+        notificationCenter.markCredsStale(team, "invalid_auth")
+        return json(res, { error: "invalid_auth" }, 401)
+      }
+      if (out?.error === "rate_limited") return json(res, { error: "rate_limited" }, 429)
+      if (!out?.ok) return json(res, { error: out?.error || "send_failed" }, 502)
+      return json(res, { ok: true, ts: out.ts })
+    }
     // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
     // the client uses it as `applicationServerKey` for pushManager.subscribe.
     if (p === "/api/notifications/vapid-public-key" && !POST) {

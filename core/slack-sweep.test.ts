@@ -242,3 +242,16 @@ describe("applyReadUpdates — follow Slack last_read", () => {
     expect(out).toBe(entries)
   })
 })
+
+describe("thread_ts passthrough (t078 reply targeting)", () => {
+  it("carries a candidate's thread_ts onto the entry", () => {
+    const { newEntries } = reduceMessages({
+      team: "T1",
+      candidates: [
+        { channelId: "D1", kind: "im", ts: "5.0", user: "U2", text: "hi", thread_ts: "4.0" },
+        { channelId: "D1", kind: "im", ts: "6.0", user: "U2", text: "top-level" },
+      ],
+    })
+    expect(newEntries.map((e: any) => e.threadTs)).toEqual(["4.0", null])
+  })
+})

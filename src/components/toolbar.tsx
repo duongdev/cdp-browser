@@ -2,6 +2,7 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   CommandIcon,
+  InboxIcon,
   PinIcon,
   ReloadIcon,
   Search01Icon,
@@ -20,6 +21,8 @@ interface ToolbarProps {
   url: string
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
+  /** Phone Shell (t076): replaces the sidebar toggle with a back-to-Inbox button. */
+  onBackToInbox?: () => void
   onNavigate: (url: string) => void
   onBack: () => void
   onForward: () => void
@@ -56,6 +59,7 @@ interface ToolbarProps {
   onNotificationToggleRead: (entry: NotifEntry) => void
   onMarkAllRead: () => void
   onMarkThreadRead: (entry: NotifEntry) => void
+  onClearThread: (entry: NotifEntry) => void
   onMuteChannel: (entry: NotifEntry) => void
   onClearNotifications: () => void
   notificationsEnabled: boolean
@@ -83,6 +87,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     url,
     sidebarCollapsed,
     onToggleSidebar,
+    onBackToInbox,
     onNavigate,
     onBack,
     onForward,
@@ -118,6 +123,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onNotificationToggleRead,
     onMarkAllRead,
     onMarkThreadRead,
+    onClearThread,
     onMuteChannel,
     onClearNotifications,
     notificationsEnabled,
@@ -184,25 +190,43 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
         {/* Sidebar collapse toggle — lives in the toolbar (not the sidebar) so it keeps a
-            fixed position regardless of collapsed state. Icon flips to hint direction. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              className="text-muted-foreground hover:text-foreground"
-              onClick={onToggleSidebar}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <HugeiconsIcon
-                className="size-3.5"
-                icon={sidebarCollapsed ? SidebarLeftIcon : SidebarLeft01Icon}
-              />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            {sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          </TooltipContent>
-        </Tooltip>
+            fixed position regardless of collapsed state. Icon flips to hint direction.
+            Phone Shell has no sidebar — the slot becomes the back-to-Inbox button. */}
+        {onBackToInbox ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Back to Inbox"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={onBackToInbox}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <HugeiconsIcon className="size-3.5" icon={InboxIcon} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Back to Inbox</TooltipContent>
+          </Tooltip>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                className="text-muted-foreground hover:text-foreground"
+                onClick={onToggleSidebar}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <HugeiconsIcon
+                  className="size-3.5"
+                  icon={sidebarCollapsed ? SidebarLeftIcon : SidebarLeft01Icon}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            </TooltipContent>
+          </Tooltip>
+        )}
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -296,40 +320,46 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           <TooltipContent side="bottom">{status}</TooltipContent>
         </Tooltip>
 
-        {/* Command palette — touch launcher (iPad has no ⌘K without a keyboard). Radix
-            Slot merges the child Button's data-slot/data-size through `asChild`, so the
-            coarse 44pt bump (keyed on data-slot="button") reaches it directly — same as
-            the find/pin/bell/settings siblings, no extra opt-in needed. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              aria-label="Open command palette"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={onOpenCommandPalette}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <HugeiconsIcon className="size-3.5" icon={CommandIcon} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Command palette (⌘K)</TooltipContent>
-        </Tooltip>
+        {/* Command palette + find — keyboard-centric surfaces, cut from the Phone Shell
+            (t081): their launchers hide when the back-to-Inbox slot is active. */}
+        {!onBackToInbox && (
+          <>
+            {/* Command palette — touch launcher (iPad has no ⌘K without a keyboard). Radix
+                Slot merges the child Button's data-slot/data-size through `asChild`, so the
+                coarse 44pt bump (keyed on data-slot="button") reaches it directly — same as
+                the find/pin/bell/settings siblings, no extra opt-in needed. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Open command palette"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={onOpenCommandPalette}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <HugeiconsIcon className="size-3.5" icon={CommandIcon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Command palette (⌘K)</TooltipContent>
+            </Tooltip>
 
-        {/* Find in page */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              aria-label="Find in page"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={onOpenFind}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <HugeiconsIcon className="size-3.5" icon={Search01Icon} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Find in page</TooltipContent>
-        </Tooltip>
+            {/* Find in page */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Find in page"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={onOpenFind}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <HugeiconsIcon className="size-3.5" icon={Search01Icon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Find in page</TooltipContent>
+            </Tooltip>
+          </>
+        )}
 
         {/* Pin */}
         <Tooltip>
@@ -383,6 +413,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         <NotificationBell
           notifications={notifications}
           onClearAll={onClearNotifications}
+          onClearThread={onClearThread}
           onClickItem={onNotificationClick}
           onMarkAllRead={onMarkAllRead}
           onMarkThreadRead={onMarkThreadRead}

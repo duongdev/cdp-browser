@@ -13,7 +13,7 @@
 // seam. Recorded for review.
 
 const { planFetches, reduceMessages } = require("./slack-sweep")
-const { renderBody, composeTitle } = require("./slack-render")
+const { renderBody, composeTitle, toReaderMessages } = require("./slack-render")
 
 // Errors that mean the web API will never work for this workspace (vs. a transient/auth
 // error worth retrying). The sweep gives up and lets the hijack handle these workspaces.
@@ -195,6 +195,7 @@ function createSlackSweeper(deps) {
           username: m.username,
           subtype: m.subtype,
           text: m.text,
+          thread_ts: m.thread_ts,
         })
       }
     }
@@ -260,6 +261,32 @@ function createSlackSweeper(deps) {
     return { users, channels }
   }
 
+  // On-demand history for the Conversation Reader (t077, ADR-0012): one conversations.history
+  // page rendered through the same name-resolution caches the sweep uses. Read-only — never
+  // touches the watermark or ingests entries, so a reader open can't disturb sweep state.
+  // Typed errors mirror the sweep's: invalid_auth (creds marked stale) and rate_limited.
+  async function fetchConversation(cred, channelId, opts) {
+    const team = cred.teamId
+    const api = deps.makeApi(cred)
+    const hist = await api.conversationsHistory(channelId, {
+      oldest: "0",
+      limit: (opts && opts.limit) || 30,
+    })
+    if (!hist || hist.error || !hist.ok) {
+      const error = hist && hist.error ? hist.error : "bad_response"
+      if (error === "invalid_auth") deps.markStale(team, "invalid_auth")
+      return { error }
+    }
+    const messages = hist.messages || []
+    // Reuse the sweep's lazy name resolver — senders + in-body tokens, cached per team.
+    const names = await resolveNames(
+      api,
+      team,
+      messages.map((m) => ({ user: m.user, channelId: null, kind: "im", text: m.text })),
+    )
+    return { messages: toReaderMessages(messages, names, deps.getSelfUserId(team) || "") }
+  }
+
   // Sweep every workspace with fresh creds (skips stale). The server calls this on a timer.
   async function runOnce() {
     const creds = (deps.listCreds ? deps.listCreds() : []).filter((c) => c && c.fresh !== false)
@@ -272,7 +299,7 @@ function createSlackSweeper(deps) {
     }
   }
 
-  return { sweepWorkspace, runOnce }
+  return { sweepWorkspace, runOnce, fetchConversation }
 }
 
 // A user's best display name: display_name (what Slack shows) → real_name → handle.
@@ -290,6 +317,9 @@ function decorate(entry, cred, names) {
     (entry.user && names.users[entry.user]) || entry.username || (entry.botId ? "Bot" : "")
   const channelName = entry.kind === "im" ? null : names.channels[entry.channelId] || null
   const title = composeTitle({ senderName, channelName, kind: entry.kind, workspace: cred.name })
+  // The conversation's display name for the clean group label (t090): the channel/group
+  // name, or the DM partner's name for a 1:1.
+  const slackConvo = entry.kind === "im" ? senderName || null : channelName
   return {
     id: entry.id,
     adapter: "slack",
@@ -301,12 +331,15 @@ function decorate(entry, cred, names) {
     targetUrl: cred.url || "",
     // Deep-link to the channel via the same spa-link intent the hijack used.
     activate: { type: "spa-link", url: `/client/${entry.team}/${entry.channelId}` },
-    icon: "https://a.slack-edge.com/80588/marketing/img/icons/favicon-32-electron.png",
+    icon: "/icons/slack.svg",
     ts: tsMs,
     // Carried through for read-sync + rendering (t073).
     channelId: entry.channelId,
     slackTs: entry.ts, // original Slack ts (string) — read-sync compares this vs last_read
+    slackThreadTs: entry.threadTs || null, // parent thread ts when a thread reply (t078)
     slackKind: entry.kind,
+    slackConvo, // resolved conversation name → clean group label (t090)
+    slackMention: !!entry.mention, // @-mention highlight (t090)
     slackUser: entry.user,
     slackBotId: entry.botId,
   }

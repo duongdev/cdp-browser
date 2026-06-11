@@ -74,4 +74,40 @@ function composeTitle({ senderName, channelName, kind, workspace }) {
   return `${senderName} in ${ch}`
 }
 
-module.exports = { renderBody, composeTitle, replaceTokens, stripFormatting }
+// Subtypes that are channel noise, not conversation content. bot_message stays.
+const NOISE_SUBTYPES = new Set([
+  "channel_join",
+  "channel_leave",
+  "group_join",
+  "group_leave",
+  "channel_topic",
+  "channel_purpose",
+  "channel_name",
+])
+
+// Shape a conversations.history page (newest-first, as Slack returns it) into the
+// Conversation Reader's oldest-first message list (t077, ADR-0012): sender resolved
+// via the `names` maps (fallback: history `username`, then the raw id), body rendered
+// through renderBody, `self` flagged against the viewer's user id. Pure.
+function toReaderMessages(messages, names, selfUserId) {
+  const users = (names && names.users) || {}
+  const out = []
+  for (const m of messages || []) {
+    if (!m || !m.ts) continue
+    if (m.subtype && NOISE_SUBTYPES.has(m.subtype)) continue
+    const senderName =
+      (m.user && users[m.user]) || m.username || (m.bot_id ? "Bot" : m.user || "Unknown")
+    out.push({
+      ts: m.ts,
+      tsMs: Math.round(Number(m.ts) * 1000) || 0,
+      senderName,
+      body: renderBody(m.text, names),
+      self: !!selfUserId && m.user === selfUserId,
+      threadTs: m.thread_ts || null,
+    })
+  }
+  out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+  return out
+}
+
+module.exports = { renderBody, composeTitle, replaceTokens, stripFormatting, toReaderMessages }

@@ -574,6 +574,11 @@ ipcMain.handle("cdp:clear-notifications", () => {
   updateBadge()
   return list
 })
+ipcMain.handle("cdp:remove-notifications", (_, ids) => {
+  const list = notificationCenter.removeMany(ids)
+  updateBadge()
+  return list
+})
 
 // ---------------------------------------------------------------------------
 // Local tabs: native WebContentsViews on a shared persistent session, layered

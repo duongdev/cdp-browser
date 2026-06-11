@@ -331,3 +331,66 @@ describe("restricted workspace falls back to users.counts (t075)", () => {
     expect(h.unsweepable).toEqual([{ team: "T1", reason: "team_is_restricted" }])
   })
 })
+
+describe("fetchConversation (t077 reader history)", () => {
+  it("returns oldest-first rendered messages with resolved names", async () => {
+    const api = fakeApi({
+      history: {
+        C1: {
+          ok: true,
+          messages: [
+            { ts: "2.0", user: "U_B", text: "later <@U_A>" },
+            { ts: "1.0", user: "U_A", text: "first" },
+          ],
+        },
+      },
+    })
+    const { sweeper } = harness(api)
+    const out: any = await sweeper.fetchConversation(cred, "C1")
+    expect(out.error).toBeUndefined()
+    expect(out.messages.map((m: any) => m.ts)).toEqual(["1.0", "2.0"])
+    expect(out.messages[0].senderName).toBe("name-U_A")
+    expect(out.messages[1].body).toBe("later @name-U_A")
+  })
+
+  it("surfaces a typed auth error and marks creds stale", async () => {
+    const api = fakeApi({})
+    api.conversationsHistory = vi.fn(async () => ({ error: "invalid_auth" }))
+    const { sweeper, stale } = harness(api)
+    const out: any = await sweeper.fetchConversation(cred, "C1")
+    expect(out.error).toBe("invalid_auth")
+    expect(stale).toEqual(["T1"])
+  })
+
+  it("surfaces rate limiting as a typed error", async () => {
+    const api = fakeApi({})
+    api.conversationsHistory = vi.fn(async () => ({ error: "rate_limited" }))
+    const { sweeper } = harness(api)
+    const out: any = await sweeper.fetchConversation(cred, "C1")
+    expect(out.error).toBe("rate_limited")
+  })
+})
+
+describe("entries carry thread identity (t078)", () => {
+  it("stamps slackThreadTs on ingested entries", async () => {
+    const api = fakeApi({
+      clientCounts: {
+        ok: true,
+        channels: [],
+        mpims: [],
+        ims: [{ id: "D1", has_unreads: true, mention_count: 1, last_read: "0", latest: "9.0" }],
+      },
+      history: {
+        D1: {
+          ok: true,
+          messages: [{ ts: "9.0", user: "U_A", text: "in thread", thread_ts: "8.0" }],
+        },
+      },
+    })
+    const { sweeper, ingested, seeded } = harness(api)
+    seeded.add("T1")
+    await sweeper.sweepWorkspace(cred)
+    expect(ingested).toHaveLength(1)
+    expect(ingested[0].slackThreadTs).toBe("8.0")
+  })
+})

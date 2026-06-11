@@ -81,4 +81,19 @@ Known risks, limitations, and areas to watch. Update as the project evolves — 
 
 ---
 
+## R-006 — Reader history + reply writes add new load on extracted Slack creds 🔴
+
+**Status:** 🔴 Open
+
+**Risk:** ADR-0012 adds two new traffic patterns on the sweep's extracted creds: on-demand `conversations.history` fetches when the Conversation Reader opens (t077) and `chat.postMessage` writes (t078) — the first **writes** through `xoxc`/`d`-cookie creds. Risks: eating into the sweep's 429 budget (a burst of reader opens could degrade notification capture), stale-cred failures becoming user-facing on a phone where the user can't fix them directly, and enterprise visibility of write traffic from a non-browser client pattern.
+
+**Mitigation:**
+- Reader/reply calls go through the same `slack-api.js` client (429-aware, typed 401) — no parallel client.
+- Send failures are synchronous + honest (draft retained, retry); no outbox that could post stale messages (ADR-0012).
+- Stale creds self-heal via the parked-tab keeper re-extract; error copy says "retry in a minute".
+
+**Trigger to escalate:** sweep capture gaps correlated with reader usage (429s in server logs), or a cred-stale loop that doesn't self-heal within one parked-tab cycle.
+
+---
+
 _Add new entries at the bottom. Update status in-place. Never delete entries — mark them 🟢 Closed instead._

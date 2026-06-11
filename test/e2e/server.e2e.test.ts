@@ -701,3 +701,93 @@ describe("E2E crypto", () => {
     expect(updated.port).toBe(9999)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("conversation reader history endpoint (t077)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS, frameCadenceMs: 100 })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("returns 400 without team/channel", async () => {
+    const res = await server.fetch("/api/slack/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it("returns a typed 401 when no creds exist for the workspace", async () => {
+    const res = await server.fetch("/api/slack/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team: "T_NOPE", channel: "C1" }),
+    })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "invalid_auth" })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("reader reply endpoint (t078)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS, frameCadenceMs: 100 })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("returns 400 on missing fields and 401 without creds", async () => {
+    const post = (b: unknown) =>
+      server.fetch("/api/slack/reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(b),
+      })
+    expect((await post({ team: "T1", channel: "C1", text: "  " })).status).toBe(400)
+    const res = await post({ team: "T1", channel: "C1", text: "hi" })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: "invalid_auth" })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("group clear — remove notifications by id (t085)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS, frameCadenceMs: 100 })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("removes only the posted ids and leaves the rest", async () => {
+    // The fresh store is empty; this asserts the endpoint shape + idempotence (no throw,
+    // returns the remaining list). A populated-store assertion needs captured entries,
+    // covered by the unit test on removeMany.
+    const res = await server.fetch("/api/notifications/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ["does-not-exist"] }),
+    })
+    expect(res.status).toBe(200)
+    expect(Array.isArray(await res.json())).toBe(true)
+  })
+})

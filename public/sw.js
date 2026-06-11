@@ -79,9 +79,26 @@ self.addEventListener("push", (e) => {
       adapter: data.adapter,
       groupKey: data.groupKey,
       activate: data.activate,
+      ts: data.ts,
+      // Conversation identity for the reader deep-route + composer (t080).
+      channelId: data.channelId,
+      slackKind: data.slackKind,
+      slackTs: data.slackTs,
+      slackThreadTs: data.slackThreadTs,
     },
   }
-  e.waitUntil(self.registration.showNotification(title, options))
+  const work = [self.registration.showNotification(title, options)]
+  // Home-screen badge mirror (t080): the server stamps the unread count on every push,
+  // so the icon is glanceable without opening the app. Feature-detected (iOS 16.4+).
+  if (typeof data.unread === "number" && navigator.setAppBadge) {
+    work.push(
+      (data.unread > 0
+        ? navigator.setAppBadge(data.unread)
+        : (navigator.clearAppBadge?.() ?? Promise.resolve())
+      ).catch(() => {}),
+    )
+  }
+  e.waitUntil(Promise.all(work))
 })
 
 // Click handler — focus an existing window or open the app; pass the notification id
@@ -97,7 +114,12 @@ self.addEventListener("notificationclick", (e) => {
           return client.focus()
         }
       }
-      if (self.clients.openWindow) return self.clients.openWindow("/")
+      // Cold start (t080): no window exists, so postMessage has no receiver. Carry the
+      // entry id in the URL; the app consumes `?notif=` on boot and opens the reader.
+      if (self.clients.openWindow)
+        return self.clients.openWindow(
+          notifData.id ? `/?notif=${encodeURIComponent(notifData.id)}` : "/",
+        )
     }),
   )
 })

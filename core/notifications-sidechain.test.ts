@@ -515,6 +515,20 @@ describe("store mutations + persistence", () => {
     expect(center.unreadCount()).toBe(0)
     expect(saved.length).toBeGreaterThan(before)
   })
+
+  it("removeMany drops only the listed ids and persists (t085)", async () => {
+    const { center, saved } = await seeded()
+    const before = saved.length
+    center.removeMany(["a"])
+    expect(center.list().map((e: any) => e.id)).toEqual(["b"])
+    expect(saved.length).toBeGreaterThan(before)
+  })
+
+  it("removeMany with no matches is a no-op list", async () => {
+    const { center } = await seeded()
+    center.removeMany(["nope"])
+    expect(center.list().map((e: any) => e.id)).toEqual(["b", "a"])
+  })
 })
 
 describe("onEntry firing", () => {

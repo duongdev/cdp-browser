@@ -469,7 +469,7 @@ export function SettingsDialog({
         )}
         <SheetContent
           aria-describedby={undefined}
-          className="flex w-[380px] flex-col gap-0 p-0 sm:max-w-[380px]"
+          className="flex w-[380px] max-sm:w-full! max-sm:max-w-full! flex-col gap-0 p-0 sm:max-w-[380px]"
           // Keep the non-modal drawer open when interacting with a Select
           // popover it spawned (those portal outside the panel's DOM bounds).
           onInteractOutside={(e) => {

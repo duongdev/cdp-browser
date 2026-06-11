@@ -34,20 +34,21 @@ const ADAPTERS = [
     name: "teams",
     script: "teams-notify.js",
     match: (h) => /(^|\.)teams\.(microsoft|cloud\.microsoft)\.com$/.test(h),
-    iconUrl:
-      "https://statics.teams.cdn.office.net/evergreen-assets/icons/microsoft_teams_logo_refresh.ico",
+    // Served from the app's own origin (t086): external favicon CDNs are blocked by the
+    // corporate proxy (Zscaler) / need auth, so they silently failed to load on the phone.
+    iconUrl: "/icons/teams.svg",
   },
   {
     name: "outlook",
     script: "outlook-notify.js",
     match: (h) => /(^|\.)outlook\.(office\.com|live\.com|cloud\.microsoft)$/.test(h),
-    iconUrl: "https://outlook.office365.com/owa/favicon.ico",
+    iconUrl: "/icons/outlook.svg",
   },
   {
     name: "slack",
     script: "slack-notify.js",
     match: (h) => /(^|\.)slack\.com$/.test(h),
-    iconUrl: "https://a.slack-edge.com/80588/marketing/img/icons/favicon-32-electron.png",
+    iconUrl: "/icons/slack.svg",
     // Slack runs every workspace under one origin (app.slack.com), so the default
     // per-origin grouping would merge all workspaces into one badge. Derive the group
     // key from the Tab's URL team id instead — one Tab per workspace, so the URL is the
@@ -280,6 +281,15 @@ function createNotificationCenter(deps) {
     },
     clear: () => {
       notifications = []
+      persist()
+      return notifications
+    },
+    // Remove a specific set of entries by id — backs the group-level "clear conversation"
+    // action (t085). The renderer collects every id in a conversation group (including the
+    // collapsed ones) and posts them, so one tap dismisses the whole channel/thread.
+    removeMany: (ids) => {
+      const drop = new Set(ids || [])
+      if (drop.size) notifications = notifications.filter((n) => !drop.has(n.id))
       persist()
       return notifications
     },

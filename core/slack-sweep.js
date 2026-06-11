@@ -136,6 +136,11 @@ function reduceMessages({
       // the renderer's sender resolution (t073).
       username: m.username || null,
       text: m.text || "",
+      // The parent thread ts when this message is a thread reply (t078 reply targeting).
+      threadTs: m.thread_ts || null,
+      // Whether the message @-mentions the viewer (t090 highlight). Always true for the
+      // channel messages that survive parity; computed literally for DMs/threads.
+      mention: isMention(m.text, selfUserId, selfSubteamIds),
     })
     // Advance the per-channel watermark to the newest ts seen.
     if (!nextWatermark[ch] || tsCmp(m.ts, nextWatermark[ch]) > 0) nextWatermark[ch] = m.ts

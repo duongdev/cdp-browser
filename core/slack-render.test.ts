@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { composeTitle, renderBody } from "./slack-render"
+import { composeTitle, renderBody, toReaderMessages } from "./slack-render"
 
 const names = {
   users: { U_ME: "Me", U_ALICE: "Alice", U_BOB: "Bob" },
@@ -82,5 +82,48 @@ describe("composeTitle", () => {
     expect(
       composeTitle({ senderName: "", channelName: "general", kind: "channel", workspace: "Acme" }),
     ).toBe("Acme")
+  })
+})
+
+describe("toReaderMessages", () => {
+  const raw = [
+    { ts: "300.000200", user: "U_BOB", text: "see <#C_GEN>" },
+    { ts: "200.000100", user: "U_ALICE", text: "*hi* <@U_ME>" },
+    { ts: "100.000050", user: "U_OLD", subtype: "channel_join", text: "joined" },
+  ]
+
+  it("returns oldest-first rendered messages with sender names", () => {
+    const out = toReaderMessages(raw, names, "U_ME")
+    expect(out.map((m) => m.ts)).toEqual(["200.000100", "300.000200"])
+    expect(out[0]).toMatchObject({
+      senderName: "Alice",
+      body: "hi @Me",
+      self: false,
+      tsMs: 200000,
+    })
+    expect(out[1].body).toBe("see #general")
+  })
+
+  it("drops subtype noise (joins/leaves) but keeps bot messages", () => {
+    const out = toReaderMessages(
+      [
+        { ts: "2.0", bot_id: "B1", subtype: "bot_message", username: "Deploy Bot", text: "done" },
+        { ts: "1.0", user: "U_X", subtype: "channel_leave", text: "left" },
+      ],
+      names,
+      "U_ME",
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].senderName).toBe("Deploy Bot")
+  })
+
+  it("flags the viewer's own messages", () => {
+    const out = toReaderMessages([{ ts: "1.0", user: "U_ME", text: "mine" }], names, "U_ME")
+    expect(out[0].self).toBe(true)
+  })
+
+  it("falls back to a placeholder sender for unknown users", () => {
+    const out = toReaderMessages([{ ts: "1.0", user: "U_NOPE", text: "x" }], names, "U_ME")
+    expect(out[0].senderName).toBe("U_NOPE")
   })
 })

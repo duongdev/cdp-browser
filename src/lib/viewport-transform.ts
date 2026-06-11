@@ -96,6 +96,13 @@ export function modifiers(e: ModifierKeys): number {
  * previous behavior, correct whenever the frame isn't downscaled). `offsetTop` is the
  * metadata's vertical DIP offset of the captured area (0 on desktop).
  */
+/** The local pinch-zoom transform (t079) — see canvas-zoom.ts. CSS-px space. */
+export interface LocalZoom {
+  scale: number
+  x: number
+  y: number
+}
+
 export function toRemoteCoords(
   client: { x: number; y: number },
   rect: Rect,
@@ -103,11 +110,21 @@ export function toRemoteCoords(
   frame: Size,
   device?: Size,
   offsetTop = 0,
+  zoom?: LocalZoom,
 ): { x: number; y: number } {
+  // Undo the local pinch-zoom first (t079): the zoom magnifies the already-letterboxed
+  // render in CSS px, so a screen point maps back to fit space before the letterbox math.
+  // Identity zoom (or none) leaves the point untouched.
+  let cx = client.x - rect.left
+  let cy = client.y - rect.top
+  if (zoom && zoom.scale !== 1) {
+    cx = (cx - zoom.x) / zoom.scale
+    cy = (cy - zoom.y) / zoom.scale
+  }
   const canvas = { w: rect.width * dpr, h: rect.height * dpr }
   const { scale, dx, dy } = letterbox(frame, canvas)
-  const ix = ((client.x - rect.left) * dpr - dx) / scale
-  const iy = ((client.y - rect.top) * dpr - dy) / scale
+  const ix = (cx * dpr - dx) / scale
+  const iy = (cy * dpr - dy) / scale
   const k = device ? device.w / frame.w : 1
   return {
     x: Math.round(ix * k),

@@ -132,3 +132,19 @@ describe("usersInfo", () => {
     expect(res).toMatchObject({ ok: true })
   })
 })
+
+describe("chatPostMessage (t078)", () => {
+  it("posts channel + text, including thread_ts only when given", async () => {
+    const { fn, calls } = fakeFetch([{ json: { ok: true, ts: "1.0" } }])
+    const api = createSlackApi({ ...creds, fetch: fn })
+    await api.chatPostMessage("C1", "on it", "9.0")
+    await api.chatPostMessage("D1", "hi")
+    const body0 = calls[0].init.body as URLSearchParams
+    expect(calls[0].url).toBe("https://acme.slack.com/api/chat.postMessage")
+    expect(body0.get("channel")).toBe("C1")
+    expect(body0.get("text")).toBe("on it")
+    expect(body0.get("thread_ts")).toBe("9.0")
+    const body1 = calls[1].init.body as URLSearchParams
+    expect(body1.get("thread_ts")).toBeNull()
+  })
+})

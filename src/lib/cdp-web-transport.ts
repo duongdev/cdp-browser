@@ -785,6 +785,11 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
         activate: msg.data.activate,
         ts: msg.data.ts ?? Date.now(),
         read: false,
+        // Conversation identity for the reader deep-route (t080) — see push-route.ts.
+        channelId: msg.data.channelId,
+        slackKind: msg.data.slackKind,
+        slackTs: msg.data.slackTs,
+        slackThreadTs: msg.data.slackThreadTs,
       }
       dispatcher.dispatch("notification-activate", entry)
     })
@@ -1243,6 +1248,11 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     markNotificationUnread: (id) => rest.postJson("/api/notifications/mark-unread", { id }),
     markNotificationsRead: () => rest.postJson("/api/notifications/mark-all-read"),
     clearNotifications: () => rest.postJson("/api/notifications/clear"),
+    removeNotifications: (ids) => rest.postJson("/api/notifications/remove", { ids }),
+    // Conversation Reader history (t077) — web-only; Electron's preload omits it, which
+    // is what routes Slack entries to the stub detail there (see src/lib/reader.ts).
+    getSlackHistory: (q) => rest.postJson("/api/slack/history", q),
+    sendSlackReply: (q) => rest.postJson("/api/slack/reply", q),
     onNotification: (cb) => {
       dispatcher.onNotification(cb)
     },

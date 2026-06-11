@@ -28,6 +28,23 @@ interface CdpNotification {
   icon?: string | null
   ts: number
   read: boolean
+  // Slack conversation identity on swept entries (t077/t078/t080) — drives the
+  // Conversation Reader route and the reply-target selector.
+  channelId?: string
+  slackKind?: string
+  slackTs?: string
+  slackThreadTs?: string | null
+}
+
+// One rendered message in the Conversation Reader (t077) — shaped server-side by
+// core/slack-render.js toReaderMessages (oldest-first, names resolved, mrkdwn stripped).
+interface ReaderMessage {
+  ts: string
+  tsMs: number
+  senderName: string
+  body: string
+  self: boolean
+  threadTs: string | null
 }
 
 interface CdpBridge {
@@ -114,8 +131,25 @@ interface CdpBridge {
   markNotificationUnread: (id: string) => Promise<CdpNotification[]>
   markNotificationsRead: () => Promise<CdpNotification[]>
   clearNotifications: () => Promise<CdpNotification[]>
+  /** Remove a set of entries by id (group-level "clear conversation", t085). */
+  removeNotifications: (ids: string[]) => Promise<CdpNotification[]>
   onNotification: (cb: (entry: CdpNotification) => void) => void
   onNotificationActivate: (cb: (entry: CdpNotification) => void) => void
+  // Conversation Reader history (t077, web build only — Electron has no sweep creds).
+  // One rendered conversations.history page for the entry's channel; typed errors
+  // (invalid_auth / rate_limited) come back as { error } with the matching HTTP status.
+  getSlackHistory?: (q: {
+    team: string
+    channel: string
+  }) => Promise<{ messages?: ReaderMessage[]; error?: string }>
+  // Reader composer reply (t078, web build only). Text-only chat.postMessage; the
+  // target was chosen by selectReplyTarget. Resolves { ok } or a typed { error }.
+  sendSlackReply?: (q: {
+    team: string
+    channel: string
+    thread_ts?: string
+    text: string
+  }) => Promise<{ ok?: boolean; ts?: string; error?: string }>
   // Web Push (web build only — Electron has its own Notification API).
   // `getPushVapidKey` returns the server's VAPID public key for pushManager.subscribe.
   // `subscribePush`/`unsubscribePush` POST the browser-issued subscription to the server.

@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest"
-import { flattenRows, GROUP_ITEM_CAP, groupByConversation, threadKey } from "./notifications-view"
+import {
+  flattenRows,
+  GROUP_ITEM_CAP,
+  groupByConversation,
+  iconFallbackForEntry,
+  iconForEntry,
+  relativeTime,
+  slackGroupLabel,
+  slackGroupMeta,
+  slackIsMention,
+  threadKey,
+} from "./notifications-view"
 
 const e = (over: Record<string, unknown>) => ({
   id: "x",
@@ -170,5 +181,114 @@ describe("flattenRows", () => {
 
   it("returns [] for an empty group list", () => {
     expect(flattenRows([])).toEqual([])
+  })
+})
+
+describe("relativeTime", () => {
+  const now = 1_000_000_000
+  it("shows now under a minute", () => {
+    expect(relativeTime(now - 30_000, now)).toBe("now")
+  })
+  it("shows minutes, hours, days", () => {
+    expect(relativeTime(now - 5 * 60_000, now)).toBe("5m")
+    expect(relativeTime(now - 3 * 3_600_000, now)).toBe("3h")
+    expect(relativeTime(now - 2 * 86_400_000, now)).toBe("2d")
+  })
+})
+
+describe("slackGroupMeta (t082)", () => {
+  it("derives workspace + kind from a slack group's entries", () => {
+    const items = [e({ adapter: "slack", source: "FWD Group", slackKind: "im" })] as Parameters<
+      typeof slackGroupMeta
+    >[0]
+    expect(slackGroupMeta(items)).toEqual({ workspace: "FWD Group", kind: "dm" })
+  })
+
+  it("maps mpim to group-dm and everything else to channel", () => {
+    const mk = (slackKind?: string) =>
+      slackGroupMeta([e({ adapter: "slack", source: "W", slackKind })] as Parameters<
+        typeof slackGroupMeta
+      >[0])
+    expect(mk("mpim")?.kind).toBe("group-dm")
+    expect(mk("channel")?.kind).toBe("channel")
+    expect(mk(undefined)?.kind).toBe("channel")
+  })
+
+  it("returns null for non-slack groups and empty groups", () => {
+    expect(slackGroupMeta([e({ adapter: "teams" })] as Parameters<typeof slackGroupMeta>[0])).toBe(
+      null,
+    )
+    expect(slackGroupMeta([])).toBe(null)
+  })
+})
+
+describe("iconForEntry (t088/t089)", () => {
+  it("resolves known adapters to the real favicon, ignoring a stale stored URL", () => {
+    expect(iconForEntry(e({ adapter: "slack", icon: "https://a.slack-edge.com/x.png" }))).toContain(
+      "domain=slack.com",
+    )
+    expect(iconForEntry(e({ adapter: "teams" }))).toContain("domain=teams.microsoft.com")
+    expect(iconForEntry(e({ adapter: "outlook" }))).toContain("domain=outlook.com")
+  })
+  it("falls back to the stored icon for unknown adapters", () => {
+    expect(iconForEntry(e({ adapter: "other", icon: "x.png" }))).toBe("x.png")
+    expect(iconForEntry(e({ adapter: null, icon: undefined }))).toBeUndefined()
+  })
+  it("provides a same-origin tile fallback for known adapters only", () => {
+    expect(iconFallbackForEntry(e({ adapter: "slack" }))).toBe("/icons/slack.svg")
+    expect(iconFallbackForEntry(e({ adapter: "other" }))).toBeUndefined()
+  })
+})
+
+describe("slackGroupLabel (t090)", () => {
+  it("swept: # for channel/thread, @ for DM, @names for group DM", () => {
+    expect(
+      slackGroupLabel(e({ adapter: "slack", slackKind: "channel", slackConvo: "release" })),
+    ).toBe("#release")
+    expect(
+      slackGroupLabel(e({ adapter: "slack", slackKind: "thread", slackConvo: "release" })),
+    ).toBe("#release")
+    expect(
+      slackGroupLabel(e({ adapter: "slack", slackKind: "im", slackConvo: "Careen Tan" })),
+    ).toBe("@Careen Tan")
+    expect(
+      slackGroupLabel(e({ adapter: "slack", slackKind: "mpim", slackConvo: "mpdm-al--bo--ca-1" })),
+    ).toBe("@al, bo, ca")
+  })
+
+  it("hijack fallback: parses Slack's own title, dropping the prefix", () => {
+    expect(slackGroupLabel(e({ adapter: "slack", title: "New message in eliteguru-prs" }))).toBe(
+      "#eliteguru-prs",
+    )
+    expect(slackGroupLabel(e({ adapter: "slack", title: "New message from Careen Tan" }))).toBe(
+      "@Careen Tan",
+    )
+    expect(
+      slackGroupLabel(e({ adapter: "slack", title: "New message from Steve in releases" })),
+    ).toBe("#releases")
+  })
+
+  it("returns null for non-slack", () => {
+    expect(slackGroupLabel(e({ adapter: "teams", title: "x" }))).toBeNull()
+  })
+})
+
+describe("slackIsMention (t090)", () => {
+  it("uses the authoritative swept flag", () => {
+    expect(slackIsMention(e({ adapter: "slack", slackMention: true }))).toBe(true)
+    expect(slackIsMention(e({ adapter: "slack", slackMention: false }))).toBe(false)
+  })
+  it("treats DMs and group DMs as directed-at-you (t091)", () => {
+    expect(slackIsMention(e({ adapter: "slack", slackKind: "im", slackMention: false }))).toBe(true)
+    expect(slackIsMention(e({ adapter: "slack", slackKind: "mpim", slackMention: false }))).toBe(
+      true,
+    )
+  })
+  it("hijack: channel notification and DM both highlight, non-slack never", () => {
+    expect(slackIsMention(e({ adapter: "slack", title: "New message in chan" }))).toBe(true)
+    expect(slackIsMention(e({ adapter: "slack", title: "New message from Bob" }))).toBe(true)
+  })
+  it("never highlights non-slack", () => {
+    expect(slackIsMention(e({ adapter: "teams", slackMention: true as never }))).toBe(false)
   })
 })

@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { CommandPalette } from "@/components/command-palette"
+import { ConversationReader } from "@/components/conversation-reader"
 import { EditPinDialog } from "@/components/edit-pin-dialog"
 import { FindBar, type FindBarHandle } from "@/components/find-bar"
+import { Inbox } from "@/components/inbox"
 import { LatencyHud } from "@/components/latency-hud"
 import { type LocalApi, LocalWebviews } from "@/components/local-webviews"
 import { NewTabDialog, type NewTabKind } from "@/components/new-tab-dialog"
 import type { NotifEntry } from "@/components/notification-bell"
+import { PhoneSwitcher } from "@/components/phone-switcher"
+import { ScreencastKeyboard } from "@/components/screencast-keyboard"
 import type { SwitchEffect } from "@/components/settings-dialog"
 import { ShortcutOverlay } from "@/components/shortcut-overlay"
 import { Sidebar } from "@/components/sidebar"
@@ -16,7 +20,9 @@ import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Viewport } from "@/components/viewport"
 import { type ActiveKind, useLocalTabs } from "@/hooks/use-local-tabs"
+import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { useRemotePage } from "@/hooks/use-remote-page"
+import { useShellMode } from "@/hooks/use-shell-mode"
 import { type ActiveRef, dropActive } from "@/lib/active-order"
 import { getCaps } from "@/lib/caps"
 import { createClosedStack } from "@/lib/closed-tabs"
@@ -29,6 +35,8 @@ import {
 } from "@/lib/notification-activation"
 import { threadKey } from "@/lib/notifications-view"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
+import { notifIdFromSearch, resolvePushEntry, stripNotifParam } from "@/lib/push-route"
+import { shouldApplyAdaptive } from "@/lib/shell-mode"
 import { addExclude, excludeTargetFromEntry, type SlackExclude } from "@/lib/slack-excludes"
 import { startUpdateWatcher } from "@/lib/sw-update"
 import { planClose, planSwitch } from "@/lib/tab-lifecycle"
@@ -157,6 +165,23 @@ export default function App() {
   const pinsRef = useRef<Pin[]>([])
   const page = useRemotePage()
   const caps = getCaps()
+  // Phone Shell (t076, ADR-0012): below the width breakpoint the Inbox is the root
+  // view and the browser column is a destination. Width-gated only — never pointer.
+  const shellMode = useShellMode()
+  const isCoarsePointer = usePointerCoarse()
+  const [phoneView, setPhoneView] = useState<"inbox" | "reader" | "tabs" | "browser">("inbox")
+  // The entry the Conversation Reader is showing (phone shell only, t077).
+  const [readerEntry, setReaderEntry] = useState<NotifEntry | null>(null)
+  const shellModeRef = useRef(shellMode)
+  useEffect(() => {
+    shellModeRef.current = shellMode
+  }, [shellMode])
+  // Cold-start push deep-route (t080): the SW carries the tapped entry's id in ?notif=
+  // when no window existed; consumed once the notification store has loaded.
+  const pendingNotifRef = useRef<string | null>(
+    typeof window === "undefined" ? null : notifIdFromSearch(window.location.search),
+  )
+  const notifsLoadedRef = useRef(false)
 
   const [autoGrantLocalMedia, setAutoGrantLocalMedia] = useState(true)
   const [localExtensions, setLocalExtensions] = useState<LocalExtensionInfo[]>([])
@@ -251,7 +276,10 @@ export default function App() {
       }
     })
     window.local.getExtensions().then(setLocalExtensions)
-    window.cdp.getNotifications().then(setNotifications)
+    window.cdp.getNotifications().then((list) => {
+      notifsLoadedRef.current = true
+      setNotifications(list)
+    })
     window.cdp.onNotification((entry) => {
       setNotifications((prev) => (prev.some((n) => n.id === entry.id) ? prev : [entry, ...prev]))
     })
@@ -434,6 +462,18 @@ export default function App() {
     for (const n of siblings) window.cdp.markNotificationRead(n.id)
   }, [])
 
+  // Phone tap default (t077, ADR-0012): open the Conversation Reader — read without
+  // activating the remote tab. Marks the thread read locally only (the desktop unread
+  // survives as a to-do trail); "Open in browser" escalates to the screencast path.
+  const openReader = useCallback(
+    (entry: NotifEntry) => {
+      markThreadRead(entry)
+      setReaderEntry(entry)
+      setPhoneView("reader")
+    },
+    [markThreadRead],
+  )
+
   // Clicking a notification (toolbar popover or OS toast) activates the tab that
   // captured it, then dispatches its `activate` intent through the activation registry
   // (keyed by `activate.type`) — no per-adapter branching. The registry maps each
@@ -444,6 +484,8 @@ export default function App() {
   const handleNotificationClick = useCallback(
     async (entry: NotifEntry) => {
       setBellOpen(false)
+      // Phone Shell: opening a notification lands on the browser view (no-op on wide).
+      setPhoneView("browser")
       markThreadRead(entry)
       // A push clicked after the PWA slept can carry a stale targetId (the remote tab was
       // reordered or reopened). Fall back to a live tab sharing the notification's origin.
@@ -483,6 +525,17 @@ export default function App() {
 
   // Mark the selected row's whole thread read (the in-box `r` key) without opening it.
   const handleMarkThreadRead = markThreadRead
+
+  // Clear a whole conversation (t085): remove every entry sharing the group's threadKey —
+  // including the collapsed ones not shown in the capped group — in one tap. The renderer
+  // computes the id set from the live store and posts it.
+  const handleClearThread = useCallback((entry: NotifEntry) => {
+    const key = threadKey(entry)
+    const ids = notificationsRef.current.filter((n) => threadKey(n) === key).map((n) => n.id)
+    if (!ids.length) return
+    setNotifications((prev) => prev.filter((n) => !ids.includes(n.id)))
+    window.cdp.removeNotifications(ids)
+  }, [])
 
   // "Mute this channel" (t072): add the entry's {team, channelId} to the server-stored
   // Channel Exclude list so the sweep stops notifying it. Reads the current list from
@@ -591,9 +644,48 @@ export default function App() {
   useEffect(() => {
     handleNotificationClickRef.current = handleNotificationClick
   }, [handleNotificationClick])
+  const openReaderRef = useRef(openReader)
   useEffect(() => {
-    window.cdp.onNotificationActivate((entry) => handleNotificationClickRef.current(entry))
+    openReaderRef.current = openReader
+  }, [openReader])
+  // A push/OS-toast tap deep-routes into the Conversation Reader on the phone shell
+  // (t080) — the store entry wins over the (possibly slimmer) push payload. The wide
+  // shell keeps today's behavior: activate the tab + replay the deep-open intent.
+  useEffect(() => {
+    window.cdp.onNotificationActivate((entry) => {
+      if (shellModeRef.current === "phone") {
+        const resolved = resolvePushEntry(entry.id, notificationsRef.current, entry)
+        openReaderRef.current(resolved ?? entry)
+      } else {
+        handleNotificationClickRef.current(entry)
+      }
+    })
   }, [])
+
+  // Consume the one-shot cold-start ?notif= param (t080) once the store has loaded:
+  // found → reader (phone) / activation (wide); gone from the store → the Inbox is home.
+  useEffect(() => {
+    const id = pendingNotifRef.current
+    if (!id || !notifsLoadedRef.current) return
+    pendingNotifRef.current = null
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + stripNotifParam(window.location.search) + window.location.hash,
+    )
+    const entry = resolvePushEntry(id, notifications)
+    if (!entry) return
+    if (shellModeRef.current === "phone") openReaderRef.current(entry)
+    else handleNotificationClickRef.current(entry)
+  }, [notifications])
+
+  // Home-screen badge mirror (t080): the icon badge tracks the unread count live while
+  // the app runs (the SW keeps it fresh from push payloads while the app is closed).
+  useEffect(() => {
+    const unread = notifications.filter((n) => !n.read).length
+    if (unread > 0) navigator.setAppBadge?.(unread).catch(() => {})
+    else navigator.clearAppBadge?.().catch(() => {})
+  }, [notifications])
 
   // Web PWA auto-update: when a new build's worker finishes installing, surface a
   // dismissible toast; tapping Reload skips waiting and reloads once. No-op under
@@ -1014,7 +1106,7 @@ export default function App() {
         !e.ctrlKey &&
         !e.altKey &&
         !inInput &&
-        !isTypingSurface(activeKind)
+        !isTypingSurface(activeKindRef.current)
       ) {
         e.preventDefault()
         e.stopPropagation()
@@ -1246,6 +1338,7 @@ export default function App() {
   // blocked, so we read from the native `paste` event instead — gesture-bound,
   // permission-free, and it carries images too. The Cmd+V keydown is left un-prevented on
   // web (see the "v" case + viewport's isPasteCombo skip) so the browser fires this event.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: caps is a stable build-time constant
   useEffect(() => {
     if (!caps.web) return
     const onPaste = (e: ClipboardEvent) => {
@@ -1527,46 +1620,107 @@ export default function App() {
           sidebar header are identical-height (min-h-11) bars that align — applying the inset
           per-bar grew the content-bearing toolbar past the empty sidebar header. */}
       <div className="flex h-full pt-[max(0px,env(safe-area-inset-top))]">
-        <Sidebar
-          activeTabId={activeKind === "cdp" ? activeTabId : null}
-          collapsed={sidebarCollapsed}
-          linkedTabByPin={linkedTabByPin}
-          localActiveId={activeKind === "local" ? localActiveId : null}
-          localTabs={localTabs}
-          onActivatePin={activatePin}
-          onBackToPinnedUrl={backToPinnedUrl}
-          onCloseLocalTab={closeLocalTab}
-          onClosePin={(p) => p.targetId && closeTab(p.targetId)}
-          onCloseTab={closeTab}
-          onCloseTabs={closeTabs}
-          onEditLocalTab={setEditingLocalId}
-          onEditPin={setEditingPin}
-          onNewLocalTab={() => openNewTab("local")}
-          onNewTab={() => openNewTab("cdp")}
-          onOpenPinInNewTab={openPinInNewTab}
-          onPinnedToggle={() => setPinnedOpen((prev) => !prev)}
-          onPinTab={pinTab}
-          onReorderLocalTabs={reorderLocalTabs}
-          onReorderPins={persistPins}
-          onReorderTabs={reorderTabs}
-          onResize={setSidebarWidth}
-          onResizeEnd={(w) => window.cdp.setSidebarWidth(w)}
-          onSwitchLocalTab={switchLocalTab}
-          onSwitchTab={switchTab}
-          onToggleLocalPin={toggleLocalPin}
-          onUnpinPin={unpinPin}
-          pinnedOpen={pinnedOpen}
-          pins={pins}
-          showNumbers={cmdHeld}
-          tabs={visibleTabs}
-          unreadByPin={unreadByPin}
-          unreadByTab={unreadByTab}
-          width={sidebarWidth}
-        />
+        {/* Phone Shell root view (t076): the Inbox. The browser column below stays
+            mounted (hidden) so the canvas, FindBar, and the Toolbar-hosted settings
+            sheet keep working; only the Sidebar is truly absent on phone. */}
+        {shellMode === "phone" && phoneView === "inbox" && (
+          <Inbox
+            notifications={notifications}
+            onClearThread={handleClearThread}
+            onClickItem={openReader}
+            onMarkAllRead={handleMarkAllRead}
+            onMarkThreadRead={handleMarkThreadRead}
+            onMuteChannel={handleMuteChannel}
+            onOpenBrowser={() => setPhoneView("tabs")}
+            onOpenSettings={handleSettingsRequestOpenMouse}
+            onToggleRead={handleToggleRead}
+          />
+        )}
+        {/* Flat tab/pin switcher (t081): read-and-go — tap opens the screencast view. */}
+        {shellMode === "phone" && phoneView === "tabs" && (
+          <PhoneSwitcher
+            activeKind={activeKind}
+            activeTabId={activeTabId}
+            linkedTabByPin={linkedTabByPin}
+            localActiveId={localActiveId}
+            localTabs={localTabs}
+            onActivatePin={(p) => {
+              setPhoneView("browser")
+              activatePin(p)
+            }}
+            onBack={() => setPhoneView("inbox")}
+            onSwitchLocalTab={(id) => {
+              setPhoneView("browser")
+              switchLocalTab(id)
+            }}
+            onSwitchTab={(id) => {
+              setPhoneView("browser")
+              switchTab(id)
+            }}
+            pins={pins}
+            tabs={visibleTabs}
+            unreadByPin={unreadByPin}
+            unreadByTab={unreadByTab}
+          />
+        )}
+        {/* Conversation Reader (t077): the phone tap target. Rendered from captured
+            content (sweep history or stub) — never Screencast Frames. */}
+        {shellMode === "phone" && phoneView === "reader" && readerEntry && (
+          <ConversationReader
+            entry={readerEntry}
+            fetchHistory={window.cdp.getSlackHistory}
+            onBack={() => setPhoneView("inbox")}
+            onOpenInBrowser={handleNotificationClick}
+            sendReply={window.cdp.sendSlackReply}
+          />
+        )}
+        {shellMode === "wide" && (
+          <Sidebar
+            activeTabId={activeKind === "cdp" ? activeTabId : null}
+            collapsed={sidebarCollapsed}
+            linkedTabByPin={linkedTabByPin}
+            localActiveId={activeKind === "local" ? localActiveId : null}
+            localTabs={localTabs}
+            onActivatePin={activatePin}
+            onBackToPinnedUrl={backToPinnedUrl}
+            onCloseLocalTab={closeLocalTab}
+            onClosePin={(p) => p.targetId && closeTab(p.targetId)}
+            onCloseTab={closeTab}
+            onCloseTabs={closeTabs}
+            onEditLocalTab={setEditingLocalId}
+            onEditPin={setEditingPin}
+            onNewLocalTab={() => openNewTab("local")}
+            onNewTab={() => openNewTab("cdp")}
+            onOpenPinInNewTab={openPinInNewTab}
+            onPinnedToggle={() => setPinnedOpen((prev) => !prev)}
+            onPinTab={pinTab}
+            onReorderLocalTabs={reorderLocalTabs}
+            onReorderPins={persistPins}
+            onReorderTabs={reorderTabs}
+            onResize={setSidebarWidth}
+            onResizeEnd={(w) => window.cdp.setSidebarWidth(w)}
+            onSwitchLocalTab={switchLocalTab}
+            onSwitchTab={switchTab}
+            onToggleLocalPin={toggleLocalPin}
+            onUnpinPin={unpinPin}
+            pinnedOpen={pinnedOpen}
+            pins={pins}
+            showNumbers={cmdHeld}
+            tabs={visibleTabs}
+            unreadByPin={unreadByPin}
+            unreadByTab={unreadByTab}
+            width={sidebarWidth}
+          />
+        )}
         {/* `relative` so the floating StatusBar pins to the bottom edge without reserving
             layout height. No bottom inset reservation: the content runs full-bleed to the
             physical bottom (under the home indicator) — no reserved strip. */}
-        <div className="relative flex flex-1 flex-col min-w-0">
+        <div
+          className={cn(
+            "relative flex flex-1 flex-col min-w-0",
+            shellMode === "phone" && phoneView !== "browser" && "hidden",
+          )}
+        >
           <Toolbar
             adaptiveViewport={adaptiveViewport}
             autoGrantLocalMedia={autoGrantLocalMedia}
@@ -1585,8 +1739,10 @@ export default function App() {
             onAddLocalExtension={handleAddLocalExtension}
             onAutoGrantLocalMediaChange={handleAutoGrantLocalMediaChange}
             onBack={goBack}
+            onBackToInbox={shellMode === "phone" ? () => setPhoneView("inbox") : undefined}
             onBellOpenChange={setBellOpen}
             onClearNotifications={handleClearNotifications}
+            onClearThread={handleClearThread}
             onConfigSaved={handleConfigSaved}
             onForceOnClientChange={handleForceOnClientChange}
             onForward={goForward}
@@ -1627,7 +1783,7 @@ export default function App() {
             {/* CDP screencast canvas (hidden when a local tab is active). */}
             <div className={cn("relative z-0 flex flex-1 min-w-0", isLocal && "hidden")}>
               <Viewport
-                adaptiveEnabled={adaptiveViewport}
+                adaptiveEnabled={shouldApplyAdaptive(adaptiveViewport, shellMode)}
                 connectEpoch={connectEpoch}
                 forceOnClient={forceOnClient}
                 onAdaptivePaused={handleAdaptivePaused}
@@ -1639,8 +1795,13 @@ export default function App() {
                 switchSignal={switchSignal}
               />
               {/* In-page find overlay — stacks above the screencast canvas via z-index
-                  (ADR-0005). CDP page only; local tabs have native find. */}
-              <FindBar page={page} ref={findBarRef} />
+                  (ADR-0005). CDP page only; local tabs have native find. Cut on the
+                  Phone Shell (t081). */}
+              {shellMode === "wide" && <FindBar page={page} ref={findBarRef} />}
+              {/* On-screen keyboard for the screencast (t084) — the canvas has no
+                  focusable field, so iOS won't raise a keyboard on its own. Web + touch
+                  only; a trackpad/hardware-keyboard user never sees the affordance. */}
+              {caps.web && isCoarsePointer && <ScreencastKeyboard page={page} />}
             </div>
             {/* Local tabs as live <webview>s — React overlays stack above via
                 z-index, so no freeze/snapshot is needed. Electron only: the web
@@ -1693,12 +1854,21 @@ export default function App() {
             return t ? { id: t.id, title: t.title, url: t.url, favicon: t.favicon } : null
           })()}
         />
-        <CommandPalette actions={paletteActions} onOpenChange={setPaletteOpen} open={paletteOpen} />
-        <ShortcutOverlay
-          actions={paletteActions}
-          onOpenChange={setShortcutsOpen}
-          open={shortcutsOpen}
-        />
+        {/* Keyboard-centric overlays are cut from the Phone Shell (t081). */}
+        {shellMode === "wide" && (
+          <CommandPalette
+            actions={paletteActions}
+            onOpenChange={setPaletteOpen}
+            open={paletteOpen}
+          />
+        )}
+        {shellMode === "wide" && (
+          <ShortcutOverlay
+            actions={paletteActions}
+            onOpenChange={setShortcutsOpen}
+            open={shortcutsOpen}
+          />
+        )}
         <Toaster position="bottom-right" richColors />
       </div>
     </TooltipProvider>

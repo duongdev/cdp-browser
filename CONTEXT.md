@@ -68,6 +68,18 @@ _Avoid_: account list, team store, tenant table.
 A user-configured per-channel mute for the **Slack Content Sweep**, stored in server ui-state (survives the iPad PWA's localStorage wipe). Each entry is `{ team, channelId, label }` keyed by the stable channel id. Added via a "Mute this channel" action on a notification or the Settings list. Applied on top of Slack's own muted-channel flag (which the sweep already honors). Distinct from a **Pin** or a muted **Local Tab**.
 _Avoid_: mute list, blocklist, filter.
 
+**Phone Shell**:
+A distinct layout mode for narrow viewports (reactive `matchMedia` width gate — not pointer-coarseness, not a `caps` flag) where the **Inbox** is the root view and the screencast canvas is a destination reached from a notification or the tab list, not home. The wide layout (sidebar + toolbar + canvas) is untouched above the breakpoint.
+_Avoid_: mobile mode, responsive layout, compact view.
+
+**Inbox**:
+The Phone Shell's root view — the full-screen notification list grouped by conversation (the same `groupByConversation` read model the bell popover renders). Tapping an entry opens the **Conversation Reader**.
+_Avoid_: feed, notification center, home screen.
+
+**Conversation Reader**:
+A phone-native notification detail view rendered from captured content — never from Screencast Frames. On the phone surface it is the default tap target for a notification; the screencast drill-in remains an explicit "open in browser" escape hatch. Richness varies by adapter capability: Slack renders a real message view from Slack Content Sweep data (`conversations.history` + `slack-render.js`); adapters without a content backend (Teams, Outlook) show a stub detail built from the captured toast text. Reader availability is a per-adapter capability flag checked by tap routing, not a hardcoded Slack branch. The Slack reader includes a text-only composer (`chat.postMessage` through the same sweep creds); rich content (uploads, emoji pickers, threads UI) stays in the real client. Opening the reader marks the entry read **locally only** — it never writes `conversations.mark`, so Slack's own unread state (and the desktop badge) survives as a to-do trail.
+_Avoid_: preview, mini-client, mobile Slack.
+
 **Local Tab**:
 A locally-rendered web page displayed as an in-DOM Electron `<webview>` element inside the chrome view. Unlike a **Tab** (which renders a remote page as a JPEG screencast), a Local Tab has full device access: real OS notifications, audio, mic, camera, screen-share, and loadable MV3 extensions. The renderer holds `LocalTab` metadata (`{ id, url, title, favicon?, pinned, loading, canGoBack, canGoForward, audible, muted }`); the main process owns the `persist:local` session and extension loading. Local Tabs occupy the LOCAL TABS sidebar section; a `pinned` flag (distinct from CDP Pins) keeps them atop that section and restores them on relaunch. See `docs/adr/0005-local-tabs-base-window.md`.
 _Avoid_: native tab, page view, webview tab.

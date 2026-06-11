@@ -171,3 +171,40 @@ describe("modifiers", () => {
     expect(modifiers({ altKey: true, ctrlKey: false, metaKey: true, shiftKey: true })).toBe(13)
   })
 })
+
+describe("toRemoteCoords with a local zoom (t079)", () => {
+  // 800x600 CSS canvas at dpr 1, frame exactly canvas-sized (no letterbox) so the
+  // zoom contribution is isolated: fit-space == frame px == DIP.
+  const rect = { left: 0, top: 0, width: 800, height: 600 }
+  const frame = { w: 800, h: 600 }
+
+  it("is unchanged when the zoom is identity", () => {
+    const zoom = { scale: 1, x: 0, y: 0 }
+    expect(toRemoteCoords({ x: 200, y: 150 }, rect, 1, frame, undefined, 0, zoom)).toEqual({
+      x: 200,
+      y: 150,
+    })
+  })
+
+  it("maps a screen point through the inverse zoom before the letterbox math", () => {
+    // 2x zoom anchored at the origin shifted by (-100, -50): screen 300,250 → fit 200,150.
+    const zoom = { scale: 2, x: -100, y: -50 }
+    expect(toRemoteCoords({ x: 300, y: 250 }, rect, 1, frame, undefined, 0, zoom)).toEqual({
+      x: 200,
+      y: 150,
+    })
+  })
+
+  it("composes with the letterbox + downscale map (round-trip invariant)", () => {
+    // Frame 400x300 letterboxed into 800x600 (scale 2, no bars), device 1600x1200 (k=4).
+    const f = { w: 400, h: 300 }
+    const device = { w: 1600, h: 1200 }
+    const zoom = { scale: 2, x: -200, y: -100 }
+    // DIP point (800, 600): fit-canvas px = 800/4*2 = 400, 600/4*2 = 300.
+    // Screen = fit*2 + offset = (600, 500).
+    expect(toRemoteCoords({ x: 600, y: 500 }, rect, 1, f, device, 0, zoom)).toEqual({
+      x: 800,
+      y: 600,
+    })
+  })
+})

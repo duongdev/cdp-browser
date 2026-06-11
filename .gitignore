@@ -13,3 +13,10 @@ web-notifications.json
 test-results/
 test/e2e/playwright-results.json
 playwright-report/
+
+# Visual-review scratch (screenshots)
+.scratch/
+
+# Web build runtime state (Slack workspace registry + push subscriptions)
+slack-workspaces.json
+web-push-subs.json

@@ -3,6 +3,13 @@ import type { SwitchEffect } from "@/components/settings-dialog"
 import { useAnyPointerFine } from "@/hooks/use-pointer-coarse"
 import { type Event as AdaptiveEvent, type Bounds, initial, reduce } from "@/lib/adaptive-viewport"
 import {
+  applyPinch,
+  clampToViewport,
+  IDENTITY,
+  type Point as ZoomPoint,
+  type ZoomState,
+} from "@/lib/canvas-zoom"
+import {
   type EchoCursor,
   type EchoEvent,
   type EchoState,
@@ -143,6 +150,23 @@ export function Viewport({
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const touchPointerIdRef = useRef<number | null>(null)
 
+  // Local pinch-zoom/pan (t079, ADR-0012 §5): a pure client-side magnifier over the
+  // letterboxed render — zero CDP traffic. Two fingers zoom/pan; the draw path applies
+  // the transform, the coord resolver inverts it. All live touch points are tracked;
+  // a second finger cancels the single-finger gesture and enters pinch mode, and the
+  // remnant finger after a pinch is ignored until all fingers lift (no accidental taps).
+  const zoomRef = useRef<ZoomState>(IDENTITY)
+  const touchPointsRef = useRef(new Map<number, ZoomPoint>())
+  const pinchingRef = useRef(false)
+  // The first two touch points by pointer id — the stable pinch pair.
+  const pinchPair = useCallback((): [ZoomPoint, ZoomPoint] | null => {
+    const pts = [...touchPointsRef.current.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .slice(0, 2)
+      .map(([, p]) => p)
+    return pts.length === 2 ? [pts[0], pts[1]] : null
+  }, [])
+
   // Echo cursor (t052): a local overlay drawing the pointer/press the user just expressed,
   // ahead of the remote frame that confirms it a beat later. The pure model owns all
   // show/hide/expiry decisions; this component only feeds it the same client coordinates
@@ -209,10 +233,8 @@ export function Viewport({
     // biome-ignore lint/style/noNonNullAssertion: 2d context is always available on an HTMLCanvasElement
     const ctx = canvas.getContext("2d")!
 
-    const layout = drawFrame(
-      { w: vp.clientWidth * window.devicePixelRatio, h: vp.clientHeight * window.devicePixelRatio },
-      frame,
-    )
+    const dpr = window.devicePixelRatio
+    const layout = drawFrame({ w: vp.clientWidth * dpr, h: vp.clientHeight * dpr }, frame)
     canvas.width = layout.canvas.w
     canvas.height = layout.canvas.h
     canvas.style.width = `${vp.clientWidth}px`
@@ -220,7 +242,12 @@ export function Viewport({
 
     ctx.fillStyle = "#000"
     ctx.fillRect(layout.fill.left, layout.fill.top, layout.fill.width, layout.fill.height)
+    // Local pinch-zoom (t079): magnify the fit-space render. Zoom offsets are CSS px;
+    // the context works in device px, so they scale by dpr. Identity at 1× (no cost).
+    const zoom = zoomRef.current
+    if (zoom.scale !== 1) ctx.setTransform(zoom.scale, 0, 0, zoom.scale, zoom.x * dpr, zoom.y * dpr)
     ctx.drawImage(source, layout.dest.x, layout.dest.y, layout.dest.w, layout.dest.h)
+    if (zoom.scale !== 1) ctx.setTransform(1, 0, 0, 1, 0, 0)
   }, [])
 
   // Re-letterbox the current frame into the canvas at the container's live size, reading
@@ -500,6 +527,7 @@ export function Viewport({
         view.frame,
         view.device,
         view.offsetTop,
+        zoomRef.current, // undo the local pinch-zoom (t079) before the letterbox math
       )
     })
   }, [page])
@@ -512,6 +540,11 @@ export function Viewport({
     if (!vp) return
     let timer: ReturnType<typeof setTimeout>
     const observer = new ResizeObserver(() => {
+      // A resized viewport can leave a zoomed pan out of bounds — re-clamp (t079).
+      zoomRef.current = clampToViewport(zoomRef.current, {
+        w: vp.clientWidth,
+        h: vp.clientHeight,
+      })
       paint()
       clearTimeout(timer)
       timer = setTimeout(async () => {
@@ -581,6 +614,8 @@ export function Viewport({
   // once the new tab is ready — see the frame loop — with this cap as a backstop.
   useEffect(() => {
     if (switchSignal === 0) return
+    // A new tab at a stale zoom is disorienting — every switch lands at fit (t079).
+    zoomRef.current = IDENTITY
     const effect = switchEffectRef.current
     if (!adaptiveEnabledRef.current && effect === "none") return
     settlingRef.current = true
@@ -690,7 +725,13 @@ export function Viewport({
           })
         }
         onPointerCancel={(e) => {
-          if (e.pointerType !== "touch" || e.pointerId !== touchPointerIdRef.current) return
+          if (e.pointerType !== "touch") return
+          touchPointsRef.current.delete(e.pointerId)
+          if (pinchingRef.current) {
+            if (touchPointsRef.current.size === 0) pinchingRef.current = false
+            return
+          }
+          if (e.pointerId !== touchPointerIdRef.current) return
           clearTimeout(longPressTimerRef.current)
           gestureRef.current?.cancel()
           gestureRef.current = null
@@ -700,11 +741,24 @@ export function Viewport({
         onPointerDown={(e) => {
           // Touch only. Mouse/trackpad pointers stay on the onMouse* path untouched.
           if (e.pointerType !== "touch") return
-          // Ignore extra fingers — this slice is single-finger (ADR-0009).
-          if (touchPointerIdRef.current !== null) return
           // Consume so iPad Safari doesn't synthesize a parallel mouse click from this touch.
           e.preventDefault()
           maybeRearm()
+          touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          // A second finger turns the gesture into a pinch (t079): cancel the in-flight
+          // single-finger gesture so no tap/scroll fires from what is now a zoom.
+          if (touchPointsRef.current.size === 2) {
+            clearTimeout(longPressTimerRef.current)
+            gestureRef.current?.cancel()
+            gestureRef.current = null
+            touchPointerIdRef.current = null
+            dispatchEcho({ type: "leave" })
+            pinchingRef.current = true
+            return
+          }
+          // While pinching (or 3+ fingers), no new single-finger gesture starts — the
+          // remnant finger after a pinch must not click. Lift all fingers to reset.
+          if (pinchingRef.current || touchPointsRef.current.size > 1) return
           touchPointerIdRef.current = e.pointerId
           // Show the echo under the finger immediately (it's the only visible pointer there).
           dispatchEcho({ type: "enter" })
@@ -718,8 +772,30 @@ export function Viewport({
           }, LONGPRESS_MS)
         }}
         onPointerMove={(e) => {
-          if (e.pointerType !== "touch" || e.pointerId !== touchPointerIdRef.current) return
+          if (e.pointerType !== "touch" || !touchPointsRef.current.has(e.pointerId)) return
           e.preventDefault()
+          if (pinchingRef.current) {
+            // Fold the two-finger update into the zoom: capture the pair before and
+            // after this pointer's sample, in container-relative CSS px.
+            const vp = containerRef.current
+            const prev = pinchPair()
+            touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+            const cur = pinchPair()
+            if (vp && prev && cur) {
+              const rect = vp.getBoundingClientRect()
+              const rel = (p: ZoomPoint): ZoomPoint => ({ x: p.x - rect.left, y: p.y - rect.top })
+              zoomRef.current = applyPinch(
+                zoomRef.current,
+                [rel(prev[0]), rel(prev[1])],
+                [rel(cur[0]), rel(cur[1])],
+                { w: rect.width, h: rect.height },
+              )
+              paint()
+            }
+            return
+          }
+          touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          if (e.pointerId !== touchPointerIdRef.current) return
           const g = gestureRef.current
           if (!g) return
           dispatchEcho({ type: "move", pos: echoPoint(e.clientX, e.clientY) })
@@ -728,8 +804,15 @@ export function Viewport({
           for (const ev of events) applyGesture(ev)
         }}
         onPointerUp={(e) => {
-          if (e.pointerType !== "touch" || e.pointerId !== touchPointerIdRef.current) return
+          if (e.pointerType !== "touch") return
           e.preventDefault()
+          touchPointsRef.current.delete(e.pointerId)
+          if (pinchingRef.current) {
+            // Pinch ends only when every finger lifts; the remnant finger stays inert.
+            if (touchPointsRef.current.size === 0) pinchingRef.current = false
+            return
+          }
+          if (e.pointerId !== touchPointerIdRef.current) return
           clearTimeout(longPressTimerRef.current)
           const g = gestureRef.current
           if (g)
