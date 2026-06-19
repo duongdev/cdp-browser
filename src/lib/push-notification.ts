@@ -1,8 +1,10 @@
 export const NOTIFICATION_FALLBACK_TAG = "cdp-fallback"
 
+export type PushNotificationOptions = NotificationOptions & { data?: unknown; timestamp?: number }
+
 export interface PushNotificationContent {
   title: string
-  options: NotificationOptions
+  options: PushNotificationOptions
 }
 
 export function buildNotificationContent(data: any): PushNotificationContent {
@@ -14,12 +16,12 @@ export function buildNotificationContent(data: any): PushNotificationContent {
         badge: "/icons/icon-192.png",
         tag: NOTIFICATION_FALLBACK_TAG,
         data: {},
-      } as any,
+      },
     }
   }
 
   const title = data.title || "CDP Browser"
-  const options: NotificationOptions & { timestamp?: number } = {
+  const options: PushNotificationOptions = {
     body: data.body || "",
     icon: data.icon || "/icons/icon-192.png",
     badge: "/icons/icon-192.png",

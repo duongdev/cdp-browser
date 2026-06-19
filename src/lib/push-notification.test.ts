@@ -23,7 +23,7 @@ describe("buildNotificationContent", () => {
     expect(result.options.tag).toBe("slack:team1:channel1:ts123")
     expect(result.options.icon).toBe("/icons/slack.png")
     expect(result.options.badge).toBe("/icons/icon-192.png")
-    expect((result.options as any).timestamp).toBe(1718000000000)
+    expect(result.options.timestamp).toBe(1718000000000)
     expect(result.options.data).toEqual(data)
   })
 
@@ -91,8 +91,8 @@ describe("buildNotificationContent", () => {
     }
     const result = buildNotificationContent(data as any)
     const after = Date.now()
-    expect((result.options as any).timestamp).toBeGreaterThanOrEqual(before)
-    expect((result.options as any).timestamp).toBeLessThanOrEqual(after)
+    expect(result.options.timestamp).toBeGreaterThanOrEqual(before)
+    expect(result.options.timestamp).toBeLessThanOrEqual(after)
   })
 
   it("always includes badge for consistency across platforms", () => {

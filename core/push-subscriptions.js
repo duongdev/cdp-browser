@@ -4,7 +4,6 @@
 import { randomUUID } from "crypto"
 
 export function reconcileDeviceId(existingSubs, incoming) {
-  // Find if endpoint already exists
   const existing = existingSubs.find((sub) => sub.endpoint === incoming.endpoint)
 
   if (existing && existing.deviceId) {
@@ -12,7 +11,5 @@ export function reconcileDeviceId(existingSubs, incoming) {
     return { deviceId: existing.deviceId, isNew: false }
   }
 
-  // New endpoint — generate a fresh UUID v4
-  const deviceId = randomUUID()
-  return { deviceId, isNew: true }
+  return { deviceId: randomUUID(), isNew: true }
 }
