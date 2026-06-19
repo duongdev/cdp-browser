@@ -379,14 +379,27 @@ export function SettingsDialog({
         setPort(p)
         setSaved({ host: config.host, port: p })
       })
-      // Virtual-pointer mode + scroll offset come from ui-state on every build (not web-gated).
-      // Restore scroll in a rAF so the content has laid out before we set scrollTop.
+      // One ui-state load for the whole dialog (t096, A3): virtual-pointer + scroll offset
+      // unconditionally, plus the web-only push + excludes fields under the same read — was
+      // two separate getUiState() calls in this effect.
       window.cdp.getUiState().then((s) => {
         setVirtualPointer(parseMode(s[VIRTUAL_POINTER_MODE_KEY]))
         const top = Number(s.settingsScrollTop) || 0
         requestAnimationFrame(() => {
           if (scrollRef.current) scrollRef.current.scrollTop = top
         })
+        if (!caps.web) return
+        const granted = typeof Notification !== "undefined" && Notification.permission === "granted"
+        setWebPush(!!s.webPush && granted)
+        setPushPermBlocked(
+          typeof Notification !== "undefined" && Notification.permission === "denied",
+        )
+        // Re-validate the push subscription on open when push is enabled. This catches
+        // subscription rotation/expiry and re-subscribes if needed (idempotent).
+        if (s.webPush && granted) {
+          reValidateSubscription()
+        }
+        setSlackExcludes(Array.isArray(s.slackExcludes) ? s.slackExcludes : [])
       })
       if (caps.web) {
         setIsStandalone((navigator as unknown as { standalone?: boolean }).standalone === true)
@@ -400,20 +413,6 @@ export function SettingsDialog({
             })
             .catch(() => {})
         }
-        window.cdp.getUiState().then((s) => {
-          const granted =
-            typeof Notification !== "undefined" && Notification.permission === "granted"
-          setWebPush(!!s.webPush && granted)
-          setPushPermBlocked(
-            typeof Notification !== "undefined" && Notification.permission === "denied",
-          )
-          // Re-validate the push subscription on open when push is enabled. This catches
-          // subscription rotation/expiry and re-subscribes if needed (idempotent).
-          if (s.webPush && granted) {
-            reValidateSubscription()
-          }
-          setSlackExcludes(Array.isArray(s.slackExcludes) ? s.slackExcludes : [])
-        })
         fetch("/api/notifications/health")
           .then((r) => r.json())
           // t092: the payload is now `{ rows, groups }` (rows merged per Enterprise Grid org;

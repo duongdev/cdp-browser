@@ -33,17 +33,29 @@ reasoning in ADR-0015 so it stops recurring.
 
 Grouped by area. Each is checkable true/false.
 
-### A — Settings ui-state single owner (was A3, Med)
+### A — Settings ui-state single owner (was A3, Med) — SCOPED DOWN
 
-- [ ] A single `useSettings` hook (`src/hooks/use-settings.ts`) owns the one
-      `getUiState` load and **all** `setUiState` writes.
-- [ ] `settings-dialog.tsx` no longer runs its own `getUiState`/`getConfig`
-      load (the duplicate load is gone).
-- [ ] `slackExcludes` is written from exactly one site (was 3: `app.tsx` ×2 +
-      `settings-dialog.tsx`).
-- [ ] Writes still partial-merge server-side (no save-queue / offline machinery
-      added — see Out of scope).
-- [ ] No behavior change to any setting; verified visually across the dialog.
+Investigation finding sharpened during implementation: `app.tsx` and
+`settings-dialog.tsx` own **mostly-disjoint** settings (app.tsx: sidebar / theme
+/ adaptiveViewport / mutes / etc.; settings-dialog: virtualPointer / webPush /
+scroll). The only cross-file overlap is `slackExcludes`, and app.tsx reads it
+**on-demand** (not cached) while the dialog reloads it on every open — so the
+"divergence" self-heals and there is no live cache-staleness bug. A full
+`useSettings` hook absorbing all 15 settings would **de-localize** settings from
+their UI (the opposite of the locality win) for no correctness gain — exactly the
+over-engineering ADR-0015 warns against. The real, bounded defect the verifier
+named was **the dual load**.
+
+- [x] **Dual load removed** — `settings-dialog.tsx` called `getUiState()` **twice**
+      in its open effect (virtual-pointer/scroll, then web push/excludes); merged
+      into **one** load, web fields gated inside it. Behavior preserved.
+- [x] Writes still partial-merge server-side (unchanged); no save-queue / offline
+      machinery added.
+- [ ] Full single-owner `useSettings` hook + the ~28-prop `app→Toolbar→dialog`
+      drill-through — **DEFERRED** (see Notes / spillover task). De-localizing
+      risk + needs Layer-3 visual review unavailable in this AFK run.
+- [ ] Visual review of the settings dialog (all cards persist correctly) —
+      **HITL pending**.
 
 ### B — Web-transport factory extraction + tests (was A5, Med)
 
