@@ -93,9 +93,11 @@ Grouped by area. Each is checkable true/false.
 - [ ] **P11** — `page.find()` has a `.catch` (no unhandled rejection on socket drop).
 - [ ] **P19** — the command-palette `action.run()` is wrapped in try-catch with a
       failure toast.
-- [ ] **P2** — the paint-ack watchdog is adaptive (derived from measured
+- [x] **P2** — the paint-ack watchdog is adaptive (derived from measured
       RTT/paint latency) instead of a fixed 1000 ms, so a legitimately-slow device
-      can't trip it early.
+      can't trip it early. Done: pure `core/paint-ack-pacer.js` (EWMA, floor 1s,
+      cap 5s, ×3); server records markSent→ack latency and arms the timer from it;
+      6 unit tests.
 - [x] **P3** — side-channel `reconcile` also closes+reattaches a socket stuck in
       CONNECTING/CLOSING (not OPEN), covering the hung-connect edge. Done:
       `SIDECHANNEL_STALE_MS=15_000` stale reap; 3 tests (reap/no-reap-fresh/no-reap-open).
@@ -129,8 +131,8 @@ Grouped by area. Each is checkable true/false.
       injected connect at the expected steps (B).
 - [ ] `createWsChannel` — frame/ack/input routing over an injected socket; paint-
       ack defer path (B).
-- [ ] paint-ack watchdog timeout derivation — given an RTT/paint sample, the
-      watchdog window is ≥ a floor and tracks the sample (P2).
+- [x] paint-ack watchdog timeout derivation — given an RTT/paint sample, the
+      watchdog window is ≥ a floor and tracks the sample (P2). ✓ green
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 

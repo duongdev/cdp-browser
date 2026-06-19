@@ -22,6 +22,7 @@ import { createLineSplitter } from "../core/line-splitter.js"
 import { muteKey, unreadExcluding } from "../core/notif-mutes.js"
 import { buildHealth, shouldAlert } from "../core/notification-health.js"
 import sidechain from "../core/notifications-sidechain.js"
+import { createPaintAckPacer } from "../core/paint-ack-pacer.js"
 import { pushSendOptions } from "../core/push-send-options.js"
 import { reconcileDeviceId } from "../core/push-subscriptions.js"
 import connector from "../core/remote-page-connector.js"
@@ -397,10 +398,13 @@ const frameThrottle = createFrameThrottle({ targetFps: SCREENCAST_TARGET_FPS })
 // arriving while one is outstanding is dropped (never queued) so the freshest always wins.
 const frameAckGate = createAckGate()
 // Stranded-paint watchdog: if a supporting client never acks (decode error, tab hidden, a
-// connection drop that didn't surface as a close), free the slot and ack the remote anyway
-// so a single lost paint can't wedge the stream forever. Generous vs. the frame interval so
-// a healthy slow link is never tripped; the ack arriving first cancels it.
-const PAINT_ACK_WATCHDOG_MS = 1000
+// connection drop that didn't surface as a close), free the slot and ack the remote anyway so a
+// single lost paint can't wedge the stream forever. The window is ADAPTIVE (t096, P2): an EWMA
+// of observed paint-ack latency sizes it to a multiple of normal, never below a 1s floor — so a
+// device that legitimately paints slower than a fixed 1s isn't tripped early. The ack arriving
+// first cancels it.
+const paintAckPacer = createPaintAckPacer()
+let paintSentAt = 0
 let paintAckWatchdog = null
 function clearPaintAckWatchdog() {
   if (paintAckWatchdog !== null) {
@@ -420,13 +424,14 @@ function admitFrame(sessionId) {
   }
   if (!frameAckGate.mayProceed()) return false
   frameAckGate.markSent(sessionId)
+  paintSentAt = Date.now()
   clearPaintAckWatchdog()
   paintAckWatchdog = setTimeout(() => {
     const stranded = frameAckGate.outstanding()
     frameAckGate.reset()
     paintAckWatchdog = null
     if (stranded !== null) remotePage.ackFrame(stranded) // release the remote despite no paint
-  }, PAINT_ACK_WATCHDOG_MS)
+  }, paintAckPacer.windowMs())
   return true
 }
 // A supporting client painted + acked the outstanding frame: clear the slot, cancel the
@@ -436,6 +441,7 @@ function onClientPaintAck(sessionId) {
   if (frameAckGate.outstanding() === null) return
   frameAckGate.ackReceived(sessionId)
   if (frameAckGate.outstanding() === null) {
+    paintAckPacer.record(Date.now() - paintSentAt) // feed the adaptive window (t096, P2)
     clearPaintAckWatchdog()
     remotePage.ackFrame(sessionId)
   }
