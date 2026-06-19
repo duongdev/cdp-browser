@@ -1358,7 +1358,12 @@ function promptPassphrase(showError: boolean): Promise<string> {
 // If the server has E2E on, establish the key before anything connects: derive from the
 // passphrase (stored or prompted) + served salt, and confirm by decrypting the verifier.
 async function bootstrapE2E(): Promise<void> {
-  const params = await fetch("/api/crypto-params")
+  // Timeout the only network call on the mount-critical path: a hung fetch (seen on an
+  // http://localhost standalone PWA, where the context isn't fully secure) otherwise leaves
+  // this promise pending forever and the app never mounts — a blank screen. On timeout we
+  // fall through as plaintext; if E2E is actually on, later requests surface honest errors
+  // instead of a blank page.
+  const params = await fetch("/api/crypto-params", { signal: AbortSignal.timeout(4000) })
     .then((r) => r.json())
     .catch(() => ({ e2e: false }))
   if (!params.e2e) return
@@ -1383,7 +1388,14 @@ async function bootstrapE2E(): Promise<void> {
 /** Install the web runtime if we're not running under Electron's preload. */
 export async function installWebRuntimeIfNeeded() {
   if (typeof window === "undefined" || window.cdp) return
-  await bootstrapE2E()
+  // A failed E2E bootstrap must never block the mount — set up the transport (plaintext)
+  // regardless, so the app renders and shows real connection state instead of a blank
+  // screen. The timeout inside bootstrapE2E keeps this from hanging.
+  try {
+    await bootstrapE2E()
+  } catch (e) {
+    console.error("[boot] E2E bootstrap failed; continuing without it:", e)
+  }
   window.webCaps = DEFAULT_CAPS
   window.cdp = createWebCdp()
   window.local = createNoopLocal()

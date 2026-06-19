@@ -191,6 +191,10 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         // sidebar header's — a coarse-pointer 44px button + border-b would otherwise push
         // a min-h-11 bar to 45px while the empty header stays 44.
         "flex items-center gap-1.5 h-11 px-3 bg-card border-b border-border",
+        // Phone Shell (onBackToInbox present) has no sidebar to absorb the LEFT safe-area
+        // inset, so the toolbar is the leftmost element — in landscape its back/forward
+        // buttons would fall under the notch. Wide layout keeps the sidebar's inset (unchanged).
+        onBackToInbox && "pl-[max(0.75rem,env(safe-area-inset-left))]",
       )}
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >

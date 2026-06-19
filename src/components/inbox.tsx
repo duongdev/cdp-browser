@@ -4,6 +4,7 @@ import {
   GlobalIcon,
   Notification03Icon,
   NotificationOff03Icon,
+  ReloadIcon,
   Settings01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -11,6 +12,7 @@ import { useState } from "react"
 import { AdapterIcon } from "@/components/adapter-icon"
 import type { NotifEntry } from "@/components/notification-bell"
 import { Button } from "@/components/ui/button"
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh"
 import { muteKey } from "@/lib/notif-mutes"
 import {
   groupByConversation,
@@ -40,6 +42,8 @@ interface Props {
   /** Device-aware unread badge (t093): excludes this device's muted sources + goes to 0
    *  when the master is off. Undefined → the own unfiltered unread count. */
   unreadBadge?: number
+  /** Pull-to-refresh action — re-fetch the notification list (phone shell). */
+  onRefresh?: () => void | Promise<void>
 }
 
 /**
@@ -60,8 +64,10 @@ export function Inbox({
   onOpenSettings,
   mutes,
   unreadBadge,
+  onRefresh,
 }: Props) {
   const [unreadOnly, setUnreadOnly] = useState(false)
+  const ptr = usePullToRefresh(onRefresh ?? (() => {}))
   // The badge honors this device's mutes/master (t093) when provided; the LIST stays
   // unfiltered (muted entries shown, dimmed) so nothing is silently lost.
   const unread = unreadBadge ?? notifications.filter((n) => !n.read).length
@@ -81,7 +87,7 @@ export function Inbox({
           <button
             aria-pressed={unreadOnly}
             className={cn(
-              "touch-slop-y px-1 text-[11px]",
+              "touch-slop-y px-2.5 text-[11px]",
               unreadOnly ? "font-medium text-primary" : "text-muted-foreground",
             )}
             onClick={() => setUnreadOnly((v) => !v)}
@@ -90,7 +96,7 @@ export function Inbox({
             Unread
           </button>
           <button
-            className="touch-slop-y px-1 text-[11px] text-muted-foreground disabled:opacity-40"
+            className="touch-slop-y px-2.5 text-[11px] text-muted-foreground disabled:opacity-40"
             disabled={unread === 0}
             onClick={onMarkAllRead}
             type="button"
@@ -128,7 +134,26 @@ export function Inbox({
           </Button>
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+          ref={ptr.ref}
+          {...(onRefresh ? ptr.handlers : {})}
+        >
+          {onRefresh && (ptr.pull > 0 || ptr.refreshing) && (
+            <div
+              className="flex items-center justify-center overflow-hidden text-muted-foreground"
+              style={{ height: ptr.pull }}
+            >
+              <HugeiconsIcon
+                className={cn(
+                  "size-4 transition-transform",
+                  ptr.refreshing && "animate-spin",
+                  ptr.armed && !ptr.refreshing && "rotate-180",
+                )}
+                icon={ReloadIcon}
+              />
+            </div>
+          )}
           {groups.map((g) => {
             // Where this conversation lives (t082): workspace + DM/group-DM kind for
             // Slack groups — multi-workspace users can't tell same-named channels apart
@@ -158,7 +183,7 @@ export function Inbox({
                     {g.unread > 0 && (
                       <button
                         aria-label="Mark conversation read"
-                        className="-m-1 shrink-0 p-1 text-muted-foreground/60 active:text-foreground"
+                        className="touch-slop -m-1 shrink-0 p-1 text-muted-foreground/60 active:text-foreground"
                         onClick={() => onMarkThreadRead(g.items[0])}
                         type="button"
                       >
@@ -168,7 +193,7 @@ export function Inbox({
                     {excludeTargetFromEntry(g.items[0]) && (
                       <button
                         aria-label="Mute this channel"
-                        className="-m-1 shrink-0 p-1 text-muted-foreground/60 active:text-foreground"
+                        className="touch-slop -m-1 shrink-0 p-1 text-muted-foreground/60 active:text-foreground"
                         onClick={() => onMuteChannel(g.items[0])}
                         type="button"
                       >
@@ -233,7 +258,7 @@ export function Inbox({
                           {excludeTargetFromEntry(n) && (
                             <button
                               aria-label="Mute this channel"
-                              className="pointer-events-auto -m-1 p-1 text-muted-foreground/50"
+                              className="touch-slop pointer-events-auto -m-1 p-1 text-muted-foreground/50"
                               onClick={(e) => {
                                 e.stopPropagation()
                                 onMuteChannel(n)
@@ -245,7 +270,7 @@ export function Inbox({
                           )}
                           <button
                             aria-label={n.read ? "Mark as unread" : "Mark as read"}
-                            className="pointer-events-auto -m-1 p-1"
+                            className="touch-slop pointer-events-auto -m-1 p-1"
                             onClick={(e) => {
                               e.stopPropagation()
                               onToggleRead(n)

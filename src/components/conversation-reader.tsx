@@ -178,7 +178,7 @@ export function ConversationReader({
 
       {route.kind === "stub" ? (
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <p className="text-sm leading-relaxed break-words [overflow-wrap:anywhere]">
+          <p className="select-text text-sm leading-relaxed break-words [overflow-wrap:anywhere]">
             {entry.body || entry.title}
           </p>
           <p className="text-xs text-muted-foreground">
@@ -194,8 +194,19 @@ export function ConversationReader({
           </Button>
         </div>
       ) : state.phase === "loading" ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          Loading conversation…
+        <div
+          aria-busy="true"
+          aria-label="Loading conversation"
+          className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-4 py-4"
+          role="status"
+        >
+          {[0, 1, 2, 3].map((i) => (
+            <div className="flex flex-col gap-1.5" key={i}>
+              <div className="h-3 w-20 animate-pulse rounded bg-muted" />
+              <div className="h-3.5 w-3/4 animate-pulse rounded bg-muted" />
+              {i % 2 === 0 && <div className="h-3.5 w-1/2 animate-pulse rounded bg-muted" />}
+            </div>
+          ))}
         </div>
       ) : state.phase === "error" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
@@ -221,7 +232,9 @@ export function ConversationReader({
                   {timeLabel(m.tsMs)}
                 </span>
               </div>
-              <p className="text-sm leading-snug break-words [overflow-wrap:anywhere]">{m.body}</p>
+              <p className="select-text text-sm leading-snug break-words [overflow-wrap:anywhere]">
+                {m.body}
+              </p>
             </div>
           ))}
         </div>
@@ -229,13 +242,13 @@ export function ConversationReader({
 
       {/* Composer (t078): text-only; failure keeps the draft in the box (no outbox). */}
       {canReply && (
-        <div className="shrink-0 border-t border-border px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="shrink-0 border-t border-border px-3 pt-2 pb-[max(0.5rem,calc(env(safe-area-inset-bottom)-var(--vv-top,0px)))]">
           {send.phase === "failed" && (
             <p className="pb-1.5 text-xs text-destructive">{sendErrorCopy(send.code)}</p>
           )}
           <div className="flex items-end gap-2">
             <textarea
-              className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+              className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
               disabled={send.phase === "sending"}
               onChange={(e) => setSend(reduceSend(send, { type: "edit", draft: e.target.value }))}
               placeholder="Reply…"

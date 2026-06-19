@@ -191,6 +191,73 @@ export default function App() {
   useEffect(() => {
     shellModeRef.current = shellMode
   }, [shellMode])
+
+  // Phone nav as a history-backed stack (UX, ADR-0012): pushing a `history` entry per
+  // forward navigation makes the iOS standalone back-swipe and the OS back gesture POP a
+  // view instead of exiting the PWA. Each entry records its `depth` so the "Back to Inbox"
+  // affordance pops straight to the root (history.go(-depth)) while a per-view Back is a
+  // single history.back(). The reader entry is restored by id from the live store on pop —
+  // a value snapshot could crash on a non-cloneable field and would drift from the store.
+  // Wide layout ignores phoneView and has no back gesture, so it pushes nothing.
+  // (notificationsRef is the app-wide ref synced to the live notifications list.)
+  const navPhone = useCallback(
+    (view: "reader" | "tabs" | "browser", entry: NotifEntry | null = null) => {
+      setReaderEntry(entry)
+      setPhoneView(view)
+      if (shellModeRef.current !== "phone") return
+      const cur = window.history.state as {
+        phoneView?: string
+        entryId?: string
+        depth?: number
+      } | null
+      // Dedup re-navigation to the same destination (e.g. tapping several tabs in the switcher).
+      if (cur?.phoneView === view && (cur?.entryId ?? null) === (entry?.id ?? null)) return
+      window.history.pushState(
+        { phoneView: view, entryId: entry?.id ?? null, depth: (cur?.depth ?? 0) + 1 },
+        "",
+      )
+    },
+    [],
+  )
+  const backPhone = useCallback(() => window.history.back(), [])
+  const inboxPhone = useCallback(() => {
+    const depth = (window.history.state as { depth?: number } | null)?.depth ?? 0
+    if (depth > 0) window.history.go(-depth)
+    else {
+      setReaderEntry(null)
+      setPhoneView("inbox")
+    }
+  }, [])
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const st = e.state as { phoneView?: "reader" | "tabs" | "browser"; entryId?: string } | null
+      const view = st?.phoneView ?? "inbox"
+      if (view === "reader") {
+        const entry = st?.entryId
+          ? (notificationsRef.current.find((n) => n.id === st.entryId) ?? null)
+          : null
+        // The conversation vanished from the store (read + filtered) → fall back to the Inbox.
+        setReaderEntry(entry)
+        setPhoneView(entry ? "reader" : "inbox")
+        return
+      }
+      setReaderEntry(null)
+      setPhoneView(view)
+    }
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
+  }, [])
+  // Pull-to-refresh action for the phone Inbox (UX): re-fetch the swept notification list.
+  // A yank-to-refresh is exactly when the link may be down — fail quietly (the hook's
+  // `finally` still clears the spinner) rather than throw an unhandled rejection.
+  const refreshNotifications = useCallback(
+    () =>
+      window.cdp.getNotifications().then(
+        (list) => setNotifications(list),
+        () => {},
+      ),
+    [],
+  )
   // Cold-start push deep-route (t080): the SW carries the tapped entry's id in ?notif=
   // when no window existed; consumed once the notification store has loaded.
   const pendingNotifRef = useRef<string | null>(
@@ -506,10 +573,9 @@ export default function App() {
   const openReader = useCallback(
     (entry: NotifEntry) => {
       markThreadRead(entry)
-      setReaderEntry(entry)
-      setPhoneView("reader")
+      navPhone("reader", entry)
     },
-    [markThreadRead],
+    [markThreadRead, navPhone],
   )
 
   // Clicking a notification (toolbar popover or OS toast) activates the tab that
@@ -523,7 +589,7 @@ export default function App() {
     async (entry: NotifEntry) => {
       setBellOpen(false)
       // Phone Shell: opening a notification lands on the browser view (no-op on wide).
-      setPhoneView("browser")
+      navPhone("browser")
       markThreadRead(entry)
       // A push clicked after the PWA slept can carry a stale targetId (the remote tab was
       // reordered or reopened). Fall back to a live tab sharing the notification's origin.
@@ -546,7 +612,7 @@ export default function App() {
       const intention = resolveActivation(activationRegistry, activate)
       if (intention) page[intention.method](intention.arg)
     },
-    [switchTab, page, markThreadRead],
+    [switchTab, page, markThreadRead, navPhone],
   )
 
   // Opening the popover does NOT mark read — unread clears only via a row click or
@@ -1718,8 +1784,9 @@ export default function App() {
             onMarkAllRead={handleMarkAllRead}
             onMarkThreadRead={handleMarkThreadRead}
             onMuteChannel={handleMuteChannel}
-            onOpenBrowser={() => setPhoneView("tabs")}
+            onOpenBrowser={() => navPhone("tabs")}
             onOpenSettings={handleSettingsRequestOpenMouse}
+            onRefresh={refreshNotifications}
             onToggleRead={handleToggleRead}
             unreadBadge={deviceUnread}
           />
@@ -1733,16 +1800,16 @@ export default function App() {
             localActiveId={localActiveId}
             localTabs={localTabs}
             onActivatePin={(p) => {
-              setPhoneView("browser")
+              navPhone("browser")
               activatePin(p)
             }}
-            onBack={() => setPhoneView("inbox")}
+            onBack={backPhone}
             onSwitchLocalTab={(id) => {
-              setPhoneView("browser")
+              navPhone("browser")
               switchLocalTab(id)
             }}
             onSwitchTab={(id) => {
-              setPhoneView("browser")
+              navPhone("browser")
               switchTab(id)
             }}
             pins={pins}
@@ -1757,7 +1824,7 @@ export default function App() {
           <ConversationReader
             entry={readerEntry}
             fetchHistory={window.cdp.getSlackHistory}
-            onBack={() => setPhoneView("inbox")}
+            onBack={backPhone}
             onOpenInBrowser={handleNotificationClick}
             sendReply={window.cdp.sendSlackReply}
           />
@@ -1829,7 +1896,7 @@ export default function App() {
             onAddLocalExtension={handleAddLocalExtension}
             onAutoGrantLocalMediaChange={handleAutoGrantLocalMediaChange}
             onBack={goBack}
-            onBackToInbox={shellMode === "phone" ? () => setPhoneView("inbox") : undefined}
+            onBackToInbox={shellMode === "phone" ? inboxPhone : undefined}
             onBellOpenChange={setBellOpen}
             onClearNotifications={handleClearNotifications}
             onClearThread={handleClearThread}

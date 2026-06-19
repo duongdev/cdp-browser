@@ -556,7 +556,10 @@ export function SettingsDialog({
             </Button>
           </SheetHeader>
 
-          <div className="flex flex-col gap-3 overflow-y-auto px-5 pt-2 pb-6" ref={scrollRef}>
+          <div
+            className="flex flex-col gap-3 overflow-y-auto px-5 pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+            ref={scrollRef}
+          >
             {/* Remote (CDP) vs Local tabs — the Local toggle is Electron-only */}
             {caps.localTabs && (
               <div className="flex gap-1 rounded-lg bg-foreground/[0.06] p-0.5 text-xs">

@@ -146,6 +146,71 @@
   #root {
     height: 100%;
   }
+  /* Keyboard-follow (src/lib/app-height.ts): when the iOS software keyboard shifts the
+     visual viewport up, translate the app root down by the same offset so a bottom-anchored
+     composer tracks the keyboard top instead of floating to the screen top with a blank gap
+     below. Gated on `html.kb-open` so a closed keyboard leaves NO transform (translateY(0)
+     would still create a containing block and break the few in-#root fixed children). Radix
+     overlays portal to <body> (outside #root), so they are unaffected. */
+  html.kb-open #root {
+    transform: translateY(var(--vv-top, 0px));
+  }
+  /* 16px-minimum on focusable fields kills iOS's focus-zoom WITHOUT a viewport no-zoom lock
+     (which would disable pinch-zoom app-wide — a WCAG 1.4.4 regression). Lets index.html drop
+     maximum-scale=1 / user-scalable=no. `max(16px, …)` never shrinks a field that's already
+     larger. */
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* iOS standalone shell hardening — make the PWA feel native, not like a web page in a frame.
+   No grey tap-flash on any control, and no document rubber-band / scroll-chaining past a list
+   end. Both are safe app-wide (the tap-highlight is touch-only; overscroll-behavior is inert
+   on a mouse). */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+html,
+body {
+  overscroll-behavior: none;
+}
+/* Suppress the long-press callout + accidental text selection on app chrome — but ONLY on a
+   coarse (touch) pointer, so the desktop/trackpad build keeps normal mouse selection of
+   titles, channel names, etc. Mirrors the runtime `html.coarse-input` gate the touch-target
+   sizing uses (so an iPad PWA with a trackpad keeps selection too). The canvas
+   long-press-to-right-click (ADR-0009) and a clean triage feel both need this on touch. Text
+   is opted back in on the surfaces that read/edit it (inputs + `.select-text`, on the reader
+   message bodies). */
+html.coarse-input {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+html.coarse-input :is(input, textarea, [contenteditable="true"], .select-text) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+/* Honor the OS Reduce Motion setting: the tap echo-ping, the loading-bar sweep, and the
+   tab-switch filter transitions all animate unconditionally otherwise. !important is the
+   standard reduced-motion reset — it has to beat Tailwind's `.animate-*` utilities (a class
+   selector outranks the `*` reset without it). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion reset must override .animate-* utilities */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion reset must override .animate-* utilities */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion reset must override transition utilities */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion reset must override scroll-behavior utilities */
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Touch hit targets (ADR-0009 / t048). On a coarse pointer (iPad finger) every
