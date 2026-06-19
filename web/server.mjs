@@ -35,6 +35,7 @@ import {
   teamIdOf as slackTeamIdOf,
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
+import { createSweepScheduler } from "../core/sweep-scheduler.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
@@ -543,14 +544,14 @@ const notificationCenter = createNotificationCenter({
   // newly-attached workspace is caught up without waiting for the next interval.
   onCreds: (rec) => {
     console.log(`[web] slack creds ready: ${rec.teamId} (${rec.name})`)
-    if (slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
+    sweepScheduler.request(rec.teamId, rec)
   },
   // The Slack hijack (t064) is demoted to a "sweep now" trigger (ADR-0011): a fired
   // notification means something happened, so sweep that workspace immediately for the
   // authoritative, message-anchored entry — sub-second delivery, no double-notify.
   onSlackSignal: (teamId) => {
     const rec = notificationCenter.getCreds(teamId)
-    if (rec && rec.fresh !== false && slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
+    if (rec && rec.fresh !== false) sweepScheduler.request(teamId, rec)
   },
   onEntry: (entry) => {
     // Verbose prod log (greppable [notif]) — proves the entry's keying: a Grid workspace's
@@ -730,6 +731,13 @@ const slackSweeper = createSlackSweeper({
   markUnsweepable: (t, reason) => notificationCenter.disableSweep(t, reason),
   now: Date.now,
   log: (m) => console.log(m),
+})
+// Debounced per-workspace sweep trigger (t096, A6): onCreds + onSlackSignal can fire for the
+// same workspace within milliseconds — coalesce them into one leading + one trailing sweep so a
+// cred-extraction immediately followed by a hijack signal can't double-sweep. The 15s
+// all-workspaces backstop (runOnce) has no per-workspace key and stays out of this path.
+const sweepScheduler = createSweepScheduler({
+  run: (rec) => slackSweeper.sweepWorkspace(rec).catch(() => {}),
 })
 // Compute the Slack capture health report from cred records + sweep metadata (t074, t092).
 // Rows are merged per Enterprise Grid group (one row per org); `groups` is the teamId →

@@ -22,7 +22,7 @@ Domain modules that form the renderer's logic layer, plus a React hook that wire
 
 **`local-tabs.ts`** — Local tab list logic (a local tab renders as an in-DOM `<webview>`; see `docs/adr/0005`). `LocalTab` is the renderer-held metadata shape. `sortPinnedFirst(tabs)` keeps pinned tabs atop the LOCAL TABS section (stable, returns same ref when already ordered). `toPersisted`/`fromPersisted` are the persistence split — all open local tabs are saved (carrying the `pinned` flag; live-only fields like loading/audio dropped) and rehydrated on launch. Pure; the `<webview>` elements + their event wiring live in `src/components/local-webviews.tsx`.
 
-**`closed-tabs.ts`** — `createClosedStack()` is the unified close-ordered reopen stack. Entries are `{ kind: 'cdp' | 'local', url }`; `pop()` returns the most recently closed of either kind, so Cmd+Shift+T reopens it in its original kind. Pure.
+**`closed-tabs.ts`** — `createClosedStack(cap = CLOSED_STACK_CAP)` is the unified close-ordered reopen stack. Entries are `{ kind: 'cdp' | 'local', url }`; `pop()` returns the most recently closed of either kind, so Cmd+Shift+T reopens it in its original kind. Bounded at `CLOSED_STACK_CAP` (50) — the oldest entry drops when the cap is exceeded, so a long session can't grow it without bound (t096). Pure.
 
 **`active-order.ts`** — MRU (most-recently-used) activation order across both CDP and local tabs. `touchActive(order, entry)` moves an `ActiveRef` (`{ kind, id }`) to the tail (most-recent); `dropActive(order, entry)` removes it; `mostRecent(order, isOpen)` returns the newest entry still open — drives "which tab to activate when the current one closes" across kinds. Pure; no side effects.
 
