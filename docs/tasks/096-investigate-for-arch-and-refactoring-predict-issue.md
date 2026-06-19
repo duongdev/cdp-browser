@@ -229,6 +229,34 @@ Behavioral contracts, not file paths. Full file:line evidence is in **Notes**.
 
 Free-form scratchpad — the investigation receipts.
 
+### Implementation summary (AFK session)
+
+All 15 flagged items implemented across 9 commits on `refactor/t096-arch-refactor-sweep`:
+
+| Commit | Items |
+|---|---|
+| `52c0ece` | investigation + ADR-0015 + P18 (closed-tab cap) + A6 (sweep debounce) |
+| `efcbe25` | P4 + P3 (side-channel timeout + hung-socket reap) |
+| `33094a4` | P15 + P7 (settings persist guard + per-send push badge) |
+| `32b31d5` | P2 (adaptive paint-ack watchdog) |
+| `8220609` | A5 (extract ws/input/reconnect channels + ws-channel tests) |
+| `dab5bae` | P6 + P11 + P19 (swipe unsubscribe + find/palette guards) |
+| `f6ad10e` | A1 + A7 + A2 (close-tail dedupe + reader union + notif revert) |
+| `46075ef` | A3 (settings dialog dual-load merge; full hook → t097) |
+
+**Automated gates all green:** `pnpm typecheck`, `pnpm test` (936), `pnpm test:e2e`
+(43), `pnpm build`, `node --check` on all 3 backends, `pnpm check:changed` (0 errors;
+pre-existing `noConsole` warnings only). New tests added: closed-tabs cap, sweep-scheduler,
+paint-ack-pacer, sidechain reap/timeout, ws-channel, input-channel.
+
+**HITL-pending (could not run AFK — needs the iPad / live Remote Browser / Electron app):**
+- Layer-2 smoke: P6 (swipe×reconnect), P15 (unwritable settings), P4 (stalled cred socket),
+  P3 (hung side-channel reap), P7 (push-while-marking badge).
+- Layer-3 visual: A7 (phone shell reader nav), A3 (settings cards persist), P19 (palette toast).
+- App-boot check (main.js / preload.js touched by P6, P15).
+
+This is why the task stays **in-progress** — do the smoke + visual passes, then close.
+
 ### Method
 
 `/predict-issues` + `/improve-codebase-architecture` ran as two Explore agents
