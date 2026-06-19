@@ -71,11 +71,12 @@ Grouped by area. Each is checkable true/false.
 
 ### D — Notification optimistic-write revert (was A2 real defect, S)
 
-- [ ] The 6 dual-write handlers (`markThreadRead`, `handleMarkAllRead`,
+- [x] The 6 dual-write handlers (`markThreadRead`, `handleMarkAllRead`,
       `handleClearNotifications`, `handleClearThread`, `handleMuteChannel`,
-      `handleToggleRead`) route through one optimistic-mutate helper that
-      applies the local patch and **reverts if the POST rejects**.
-- [ ] No reducer / event-bus introduced (ADR-0015).
+      `handleToggleRead`) route through one optimistic-mutate helper
+      (`optimisticNotif`) that applies the local patch and **reverts to the
+      pre-patch snapshot if the POST rejects**.
+- [x] No reducer / event-bus introduced (ADR-0015).
 
 ### E — Hardening nits (all S)
 
@@ -91,7 +92,7 @@ Grouped by area. Each is checkable true/false.
 - [x] **P4** — `cdpCall` (side-channel) races a timeout and rejects pending on
       ws close/error, so a stalled socket frees its ~2 promises. Done:
       `CDP_CALL_TIMEOUT_MS=10_000`, drop rejects+clears pending; test covers close.
-- [ ] **A1** — a 2-line `applyCloseDirective` helper dedupes the `nextActive`
+- [x] **A1** — an `applyNextActive` helper dedupes the `nextActive`
       switch tail shared by `closeTab` and `closeTabs`.
 - [x] **P11** — `page.find()` has a `.catch` (no unhandled rejection on socket drop).
 - [x] **P19** — the command-palette `action.run()` is wrapped in try-catch with a
@@ -109,8 +110,9 @@ Grouped by area. Each is checkable true/false.
       (leading + trailing, per workspace key) — not an event-driven orchestrator.
       The 15s all-workspaces `runOnce` backstop stays separate (no per-key). The
       verifier's "4 trigger sites" overcounted — only these two double-fire.
-- [ ] **A7** — `readerEntry` is folded into the phone-view union
-      (`{ view: "reader", entry }`), removing the parallel state.
+- [x] **A7** — `readerEntry` is folded into the phone-view union
+      (`{ view: "reader", entry }`), removing the parallel state. Visual review
+      of the phone shell remains **HITL pending**.
 
 ### Docs
 
