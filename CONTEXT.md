@@ -76,6 +76,14 @@ _Avoid_: mute list, blocklist, filter.
 A per-device, per-source suppression of notification *interruptions* (push, foreground toast, badge bump) without removing entries from the Inbox or bell list — muted entries still appear, dimmed. Stored in server ui-state under `notifMutes_<deviceId>` (a set of mute keys, survives the iPad PWA's localStorage wipe). The **mute key** (`muteKey`, `core/notif-mutes.js` / `src/lib/notif-mutes.ts`) unifies both axes: a Slack entry keys by its merged `groupKey` (`slack:{groupId}`, per workspace), every other adapter by `adapter` name (per service). Complementary to but distinct from **Channel Exclude** (which removes Slack channels from capture globally, not per-device, and hides them everywhere). See ADR-0013.
 _Avoid_: global mute, notification filter, blocklist.
 
+**Web Push Subscription**:
+A per-device push registration (endpoint URL + `auth`/`p256dh` keys) the browser issues via `pushManager.subscribe` and the server fans out to in `sendPushToAll`. Persisted in `web-push-subs.json`; each record carries a `deviceId` (t093) for per-device gating. The **endpoint** is the only identity that survives an iOS script-storage wipe (which clears localStorage, IndexedDB, cookies, and Cache *together*), so the server treats it as the stable key and reconciles a wiped device's `deviceId` by endpoint on (re)subscribe (t095). iOS 16.4+ standalone-PWA only.
+_Avoid_: push token, device token, registration.
+
+**userVisibleOnly revocation**:
+The WebKit rule that every `push` event on an iOS PWA *must* end in a visible notification (`showNotification`); a handler that finishes without one violates the `userVisibleOnly` promise and WebKit revokes the **Web Push Subscription** — with no documented grace count and, on iOS, no recovery (`pushsubscriptionchange` never fires there). The service worker therefore always shows something (the real notification or a generic fallback) and the app re-validates the subscription on foreground (t095).
+_Avoid_: silent push (iOS forbids it for PWAs).
+
 **Phone Shell**:
 A distinct layout mode for narrow viewports (reactive `matchMedia` width gate — not pointer-coarseness, not a `caps` flag) where the **Inbox** is the root view and the screencast canvas is a destination reached from a notification or the tab list, not home. The wide layout (sidebar + toolbar + canvas) is untouched above the breakpoint.
 _Avoid_: mobile mode, responsive layout, compact view.

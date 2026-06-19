@@ -791,3 +791,85 @@ describe("group clear — remove notifications by id (t085)", () => {
     expect(Array.isArray(await res.json())).toBe(true)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("push subscription reconcile (E0 — endpoint-keyed deviceId)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("mints a new deviceId for a new subscription endpoint", async () => {
+    const res = await server.fetch("/api/notifications/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        endpoint: "https://push.example.com/api/v1/sub1",
+        keys: { p256dh: "key1", auth: "auth1" },
+      }),
+    })
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json.deviceId).toBeTruthy()
+    expect(typeof json.deviceId).toBe("string")
+    // UUIDv4 pattern
+    expect(json.deviceId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+  })
+
+  it("re-subscribes the same endpoint and returns the same deviceId", async () => {
+    const endpoint1 = "https://push.example.com/api/v1/sub1"
+    const sub1 = { endpoint: endpoint1, keys: { p256dh: "key1", auth: "auth1" } }
+    const res1 = await server.post("/api/notifications/subscribe", sub1)
+    const id1 = res1.deviceId
+
+    // Re-subscribe with the same endpoint; should return the same deviceId
+    const res2 = await server.post("/api/notifications/subscribe", sub1)
+    const id2 = res2.deviceId
+
+    expect(id2).toBe(id1)
+  })
+
+  it("mints a different deviceId for a second endpoint (no duplicate per endpoint)", async () => {
+    const endpoint1 = "https://push.example.com/api/v1/sub1"
+    const endpoint2 = "https://push.example.com/api/v1/sub2"
+    const sub1 = { endpoint: endpoint1, keys: { p256dh: "key1", auth: "auth1" } }
+    const sub2 = { endpoint: endpoint2, keys: { p256dh: "key2", auth: "auth2" } }
+
+    const res1 = await server.post("/api/notifications/subscribe", sub1)
+    const id1 = res1.deviceId
+
+    const res2 = await server.post("/api/notifications/subscribe", sub2)
+    const id2 = res2.deviceId
+
+    expect(id2).not.toBe(id1)
+    expect(id2).toBeTruthy()
+  })
+
+  it("reconciles by endpoint, ignoring the client's cached deviceId", async () => {
+    const endpoint = "https://push.example.com/api/v1/sub1"
+    const sub1 = { endpoint, keys: { p256dh: "key1", auth: "auth1" } }
+
+    // First subscription gets id1
+    const res1 = await server.post("/api/notifications/subscribe", sub1)
+    const id1 = res1.deviceId
+
+    // Client sends a different cached id; server ignores it and returns id1 (endpoint match wins)
+    const sub2WithCachedId = {
+      ...sub1,
+      deviceId: "different-cached-id",
+    }
+    const res2 = await server.post("/api/notifications/subscribe", sub2WithCachedId)
+    const id2 = res2.deviceId
+
+    expect(id2).toBe(id1)
+  })
+})

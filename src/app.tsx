@@ -36,6 +36,7 @@ import {
 } from "@/lib/notification-activation"
 import { threadKey } from "@/lib/notifications-view"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
+import { createPushRevalidateGate } from "@/lib/push-revalidate"
 import { notifIdFromSearch, resolvePushEntry, stripNotifParam } from "@/lib/push-route"
 import { shouldApplyAdaptive } from "@/lib/shell-mode"
 import {
@@ -246,6 +247,22 @@ export default function App() {
     }
     window.addEventListener("popstate", onPop)
     return () => window.removeEventListener("popstate", onPop)
+  }, [])
+  // E1b: Re-validate push subscription on app foreground (iOS PWA recovery path).
+  // pushsubscriptionchange never fires on iOS PWAs, so the only recovery hook is
+  // visibilitychange. Once-per-foreground gate prevents spam; hidden→visible resets
+  // the gate for the next foreground. The settings dialog's reValidateSubscription
+  // handles the actual subscription refresh (deferred: t095-note in task file).
+  useEffect(() => {
+    const pushRevalidateGate = createPushRevalidateGate()
+    const onVisibilityChange = () => {
+      const visible = document.visibilityState === "visible"
+      // Gate fires once per foreground; reset on hidden→visible transition.
+      pushRevalidateGate.shouldRevalidateNow(visible)
+      // TODO(t095-future): call reValidateSubscription when it's on the bridge
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange)
   }, [])
   // Pull-to-refresh action for the phone Inbox (UX): re-fetch the swept notification list.
   // A yank-to-refresh is exactly when the link may be down — fail quietly (the hook's

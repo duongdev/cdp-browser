@@ -157,9 +157,10 @@ interface CdpBridge {
   }) => Promise<{ ok?: boolean; ts?: string; error?: string }>
   // Web Push (web build only — Electron has its own Notification API).
   // `getPushVapidKey` returns the server's VAPID public key for pushManager.subscribe.
-  // `subscribePush`/`unsubscribePush` POST the browser-issued subscription to the server.
+  // `subscribePush` POSTs the browser-issued subscription to the server and returns
+  // the server-reconciled deviceId (E0); `unsubscribePush` removes a subscription.
   getPushVapidKey?: () => Promise<string>
-  subscribePush?: (subscription: PushSubscriptionJSON) => Promise<void>
+  subscribePush?: (subscription: PushSubscriptionJSON) => Promise<{ deviceId: string }>
   unsubscribePush?: (endpoint: string) => Promise<void>
   // Input transport picker (web build only — Electron uses IPC, no transport choice).
   // The settings UI calls reconfigureInputTransport() after writing the pref to

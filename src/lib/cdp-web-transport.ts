@@ -803,14 +803,26 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   // The three device-keyed prefs (`<base>_<deviceId>`) are the per-device delivery seam; the
   // server reads the same keys for the push gate. Clicking re-focuses and routes through the
   // same notification-activate listeners the renderer registers.
-  const deviceId = getOrCreateDeviceId()
-  const webPushKey = `webPush_${deviceId}`
-  const masterKey = `notificationsEnabled_${deviceId}`
-  const mutesKey = `notifMutes_${deviceId}`
+  // E0: deviceId is mutable; on subscription the server returns its reconciled id (by endpoint)
+  // and the renderer adopts it, updating localStorage + ui-state keys as needed.
+  let deviceId = getOrCreateDeviceId()
+  let webPushKey = `webPush_${deviceId}`
+  let masterKey = `notificationsEnabled_${deviceId}`
+  let mutesKey = `notifMutes_${deviceId}`
   let webPush = false
   // Per-device master defaults on (opt-out — a new device gets everything, t093).
   let notifMaster = true
   let notifMutes: string[] = []
+  const setDeviceId = (newId: string) => {
+    if (newId === deviceId) return
+    deviceId = newId
+    webPushKey = `webPush_${deviceId}`
+    masterKey = `notificationsEnabled_${deviceId}`
+    mutesKey = `notifMutes_${deviceId}`
+    try {
+      localStorage?.setItem("cdp_device_id", deviceId)
+    } catch {}
+  }
 
   function maybeToast(entry: CdpNotification) {
     if (!notifMaster) return // device master off — no foreground toast
@@ -1296,10 +1308,15 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       const r = await rest.getJson("/api/notifications/vapid-public-key")
       return r.key as string
     },
-    // Stamp this device's id on the subscription so the server can read its per-device
-    // master + mutes from ui-state and gate/stamp each push per device (t093).
-    subscribePush: (sub) =>
-      rest.postJson("/api/notifications/subscribe", { ...(sub as object), deviceId }),
+    // E0: Subscribe without local deviceId; server reconciles by endpoint and returns the
+    // authoritative id. Renderer adopts it, updating localStorage + ui-state keys.
+    subscribePush: async (sub) => {
+      const result = (await rest.postJson("/api/notifications/subscribe", sub as object)) as {
+        deviceId: string
+      }
+      setDeviceId(result.deviceId)
+      return result
+    },
     unsubscribePush: (endpoint) => rest.postJson("/api/notifications/unsubscribe", { endpoint }),
     // Transport-picker hooks (t019). The settings UI calls reconfigureInputTransport()
     // when the user toggles a mode; the badge reads getActiveTransport() and subscribes
