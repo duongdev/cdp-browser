@@ -487,13 +487,17 @@ remotePage.onEvent((data) => {
   } catch {}
 })
 remotePage.onClose(() => {
+  console.log("[cdp] remote socket closed -> broadcasting disconnected")
   // A remote drop strands any frame awaiting a paint-ack — free the slot so the next
   // connect's first frame is immediately eligible (no wedge from a pending ack). (t056)
   resetPaintAckGate()
   broadcast("disconnected", {})
 })
 
-const connect = (tabId) => remotePage.connect({ tabId })
+const connect = (tabId) => {
+  console.log(`[cdp] connect tab=${tabId}`)
+  return remotePage.connect({ tabId })
+}
 const invoke = (method, params) => remotePage.invoke(method, params)
 const send = (method, params) => remotePage.send(method, params)
 const applyThemeEmulation = () => remotePage.applyTheme()
@@ -821,10 +825,25 @@ function serveStatic(req, res, pathname) {
   createReadStream(file).pipe(res)
 }
 
+// Verbose request log (greppable [req]/[err]) for prod issue-detection. The hot input +
+// long-poll paths are suppressed unless they error, so per-frame/per-input traffic never
+// floods the log (and never degrades the prod we're watching); every other request logs
+// method+path+status+duration when it finishes.
+const HOT_PATHS = new Set(["/api/cdp-batch", "/api/send", "/api/input-stream", "/api/events"])
+function reqLog(req, res, p) {
+  const t0 = Date.now()
+  res.on("finish", () => {
+    if (HOT_PATHS.has(p) && res.statusCode < 400) return
+    const tag = res.statusCode >= 500 ? "[err]" : "[req]"
+    console.log(`${tag} ${req.method} ${p} ${res.statusCode} ${Date.now() - t0}ms`)
+  })
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x")
   const p = url.pathname
   const POST = req.method === "POST"
+  reqLog(req, res, p)
 
   if (p === "/api/events") {
     res.writeHead(200, {
@@ -835,7 +854,11 @@ const server = http.createServer(async (req, res) => {
     })
     res.write("retry: 2000\n\n")
     sseClients.add(res)
-    req.on("close", () => sseClients.delete(res))
+    console.log(`[client] sse +1 (now ${sseClients.size})`)
+    req.on("close", () => {
+      sseClients.delete(res)
+      console.log(`[client] sse -1 (now ${sseClients.size})`)
+    })
     return
   }
 
@@ -1052,6 +1075,7 @@ server.on("upgrade", (req, socket, head) => {
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     wsClients.add(ws)
+    console.log(`[client] ws +1 (now ${wsClients.size})`)
     ws.send(JSON.stringify({ t: "ready" }))
     ws.on("message", async (raw) => {
       const text = raw.toString()
@@ -1122,6 +1146,7 @@ server.on("upgrade", (req, socket, head) => {
     })
     const onWsGone = () => {
       wsClients.delete(ws)
+      console.log(`[client] ws -1 (now ${wsClients.size})`)
       // If this was the last supporting client, free the in-flight slot so the next stream
       // (a non-supporting reconnect, or before a new opt-in) isn't blocked by a stale ack.
       if (paintAckClients.delete(ws) && paintAckClients.size === 0) resetPaintAckGate()
@@ -1129,6 +1154,11 @@ server.on("upgrade", (req, socket, head) => {
     ws.on("close", onWsGone)
     ws.on("error", onWsGone)
   })
+})
+
+// Surface otherwise-silent async failures in prod logs (greppable [err]) for issue-detection.
+process.on("unhandledRejection", (reason) => {
+  console.error("[err] unhandledRejection:", reason?.stack || reason)
 })
 
 server.listen(PORT, "0.0.0.0", () =>
