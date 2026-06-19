@@ -1103,6 +1103,34 @@ export default function App() {
         }
       }
 
+      // Punctuation shortcuts stay on e.key, not e.code. e.code is Shift-blind, so
+      // Cmd+Shift+[ / Cmd+Shift+] (the browser prev/next-tab combo) must fall through to
+      // the remote page — e.key is "{"/"}" there and naturally won't match. e.code is also
+      // layout-fragile (a non-US layout's comma sits on a different physical key, e.g.
+      // Dvorak's comma is the QWERTY-W key — matching e.code would close the tab). And
+      // punctuation isn't a Telex tone-rewrite vector, so the synthetic-injection risk
+      // that drives the e.code switch below doesn't apply here.
+      if (e.key === ",") {
+        e.preventDefault()
+        e.stopPropagation()
+        const next = !settingsOpenRef.current
+        setSettingsOpen(next)
+        setSettingsCommitted(next) // keyboard-opened drawers start committed
+        return
+      }
+      if (e.key === "[") {
+        e.preventDefault()
+        e.stopPropagation()
+        goBack()
+        return
+      }
+      if (e.key === "]") {
+        e.preventDefault()
+        e.stopPropagation()
+        goForward()
+        return
+      }
+
       // Match on the physical e.code, not e.key. Two reasons: iPadOS WebKit can report
       // Cmd+letter as the uppercase letter (which e.key matching would miss, letting the
       // browser's reserved Cmd+R/Cmd+W fire); and a Vietnamese input engine (EVKey,
@@ -1138,28 +1166,10 @@ export default function App() {
           e.stopPropagation()
           setSidebarCollapsed((prev) => !prev)
           break
-        case "Comma": {
-          e.preventDefault()
-          e.stopPropagation()
-          const next = !settingsOpenRef.current
-          setSettingsOpen(next)
-          setSettingsCommitted(next) // keyboard-opened drawers start committed
-          break
-        }
         case "KeyR":
           e.preventDefault()
           e.stopPropagation()
           reload()
-          break
-        case "BracketLeft":
-          e.preventDefault()
-          e.stopPropagation()
-          goBack()
-          break
-        case "BracketRight":
-          e.preventDefault()
-          e.stopPropagation()
-          goForward()
           break
         case "KeyF":
           e.preventDefault()
