@@ -60,6 +60,12 @@ const APP_VERSION =
 // resolved once at boot. Keep "unknown" if git is unavailable (e.g. a tarball deploy).
 function resolveGitSha() {
   if (process.env.GIT_SHA) return process.env.GIT_SHA
+  // Baked into the image by the Docker builder (.gitsha); .git itself isn't shipped to runtime.
+  try {
+    const baked = readFileSync(join(HERE, "..", ".gitsha"), "utf8").trim()
+    if (baked) return baked
+  } catch {}
+  // Dev / non-Docker: read it live from the checkout.
   try {
     return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
       cwd: join(HERE, ".."),

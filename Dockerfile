@@ -6,12 +6,16 @@
 # ---- build the renderer (needs devDependencies: vite, etc.) ----------------
 FROM node:24-alpine AS builder
 WORKDIR /app
-RUN corepack enable
+RUN corepack enable && apk add --no-cache git
 # Install with the lockfile first for layer caching. --ignore-scripts skips the
-# husky `prepare` hook (no .git in the image).
+# husky `prepare` hook (it would try to wire git hooks during the build).
 COPY .npmrc package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY . .
+# Bake the commit SHA for /api/version + the About panel's Build field. .git is in the
+# build context (no longer .dockerignored); degrade to "unknown" if it's ever absent so
+# the build never fails. Only this tiny file ships to runtime, never .git itself.
+RUN git rev-parse --short HEAD > .gitsha 2>/dev/null || echo unknown > .gitsha
 RUN pnpm build
 
 # ---- runtime: only `ws` + the server + built assets ------------------------
@@ -26,6 +30,7 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts && pnpm store prune
 # core/*.js covers every module web/server.mjs imports via `../core/*.js` — a missing one
 # fails at boot with ERR_MODULE_NOT_FOUND. (*.test.ts files are not matched.)
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/.gitsha ./.gitsha
 COPY web ./web
 COPY core/*.js ./core/
 COPY inject ./inject

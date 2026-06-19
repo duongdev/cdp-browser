@@ -6,6 +6,9 @@ release
 web-settings.json
 web-notifications.json
 
+# Baked build identity (Docker builder writes it; never committed)
+.gitsha
+
 # Agent worktrees (transient, never commit)
 .claude/worktrees/
 
