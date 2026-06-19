@@ -83,8 +83,9 @@ Grouped by area. Each is checkable true/false.
       in-flight push can't stamp a stale per-device badge.
 - [x] **P18** — `createClosedStack` caps entries (shift oldest beyond ~50).
       Done: `CLOSED_STACK_CAP = 50`, FIFO drop; `closed-tabs.test.ts` covers it.
-- [ ] **P4** — `cdpCall` (side-channel) races a timeout and rejects pending on
-      ws close/error, so a stalled socket frees its ~2 promises.
+- [x] **P4** — `cdpCall` (side-channel) races a timeout and rejects pending on
+      ws close/error, so a stalled socket frees its ~2 promises. Done:
+      `CDP_CALL_TIMEOUT_MS=10_000`, drop rejects+clears pending; test covers close.
 - [ ] **A1** — a 2-line `applyCloseDirective` helper dedupes the `nextActive`
       switch tail shared by `closeTab` and `closeTabs`.
 - [ ] **P11** — `page.find()` has a `.catch` (no unhandled rejection on socket drop).
@@ -93,8 +94,9 @@ Grouped by area. Each is checkable true/false.
 - [ ] **P2** — the paint-ack watchdog is adaptive (derived from measured
       RTT/paint latency) instead of a fixed 1000 ms, so a legitimately-slow device
       can't trip it early.
-- [ ] **P3** — side-channel `reconcile` also closes+reattaches a socket stuck in
-      CONNECTING/CLOSING (not OPEN), covering the hung-connect edge.
+- [x] **P3** — side-channel `reconcile` also closes+reattaches a socket stuck in
+      CONNECTING/CLOSING (not OPEN), covering the hung-connect edge. Done:
+      `SIDECHANNEL_STALE_MS=15_000` stale reap; 3 tests (reap/no-reap-fresh/no-reap-open).
 - [x] **A6** — the two per-workspace sweep triggers (`onCreds` + `onSlackSignal`,
       which both call `sweepWorkspace`) share one debounced `core/sweep-scheduler.js`
       (leading + trailing, per workspace key) — not an event-driven orchestrator.

@@ -65,7 +65,7 @@ cdp-browser/
 ├── preload.js           # IPC bridge (contextBridge)
 ├── core/                # Backend-agnostic shared CommonJS modules (consumed by main.js + web/server.mjs)
 │   ├── notifications.js           # Pure notification logic (dedup, cap, OS-toast gating, Slack workspace key: parseSlackContext/slackGroupKey)
-│   ├── notifications-sidechain.js # Notification Side-Channel state machine (createNotificationCenter, DI); Slack-only cred extraction (xoxc+d-cookie, carries enterpriseId for Grid grouping t092) via onCreds dep + listCreds/getCreds/markCredsStale/setSelfUserId accessors (t069)
+│   ├── notifications-sidechain.js # Notification Side-Channel state machine (createNotificationCenter, DI); Slack-only cred extraction (xoxc+d-cookie, carries enterpriseId for Grid grouping t092) via onCreds dep + listCreds/getCreds/markCredsStale/setSelfUserId accessors (t069). Side-channel cdpCall has a timeout + rejects pending on close, and reconcile reaps a hung non-OPEN socket on a still-live target (t096)
 │   ├── remote-page-connector.js   # Remote Page connect choreography (createRemotePageConnector, DI) + screencast rate ceiling (SCREENCAST_TARGET_FPS/EVERY_NTH_FRAME)
 │   ├── theme-emulation.js         # Pure theme-sync logic (emulatedMediaParams)
 │   ├── cdp-endpoints.js           # Pure /json URL builders
