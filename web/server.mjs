@@ -168,17 +168,33 @@ async function sendPushToAll(payload) {
   const list = notificationCenter.list()
   const ui = settings.getUiState()
   const dead = []
+  // Verbose, greppable per-device delivery log (t093) so the mute gating can be verified from
+  // prod logs: one [push] line per subscription (sent + its per-device unread, or skip+reason)
+  // plus a summary. Device id is truncated; no secret in the line.
+  let sent = 0
+  let mutedN = 0
+  let masterOffN = 0
   await Promise.all(
     pushSubs.map(async (sub) => {
+      const dev = (sub.deviceId || "nodev").slice(0, 6)
       const { master, mutes } = devicePrefs(ui, sub.deviceId)
-      if (!master) return // device master off — no push, no badge bump
-      if (mutes.includes(key)) return // this source muted on this device
-      const data = JSON.stringify(
-        trimPushPayload({ ...payload, unread: unreadExcluding(list, mutes, master) }),
-      )
+      if (!master) {
+        masterOffN++
+        console.log(`[push]   dev=${dev} skip:master-off`)
+        return // device master off — no push, no badge bump
+      }
+      if (mutes.includes(key)) {
+        mutedN++
+        console.log(`[push]   dev=${dev} skip:muted(${key})`)
+        return // this source muted on this device
+      }
+      const unread = unreadExcluding(list, mutes, master)
+      const data = JSON.stringify(trimPushPayload({ ...payload, unread }))
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           await webpush.sendNotification(sub, data)
+          sent++
+          console.log(`[push]   dev=${dev} sent unread=${unread}`)
           return // success
         } catch (e) {
           if (e.statusCode === 404 || e.statusCode === 410) {
@@ -192,6 +208,9 @@ async function sendPushToAll(payload) {
         }
       }
     }),
+  )
+  console.log(
+    `[push] ${key} adapter=${payload.adapter || "-"} -> sent=${sent} muted=${mutedN} masterOff=${masterOffN} dead=${dead.length} of ${pushSubs.length}`,
   )
   if (dead.length > 0) {
     pushSubs = pushSubs.filter((s) => !dead.includes(s.endpoint))
@@ -522,6 +541,11 @@ const notificationCenter = createNotificationCenter({
     if (rec && rec.fresh !== false && slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
   },
   onEntry: (entry) => {
+    // Verbose prod log (greppable [notif]) — proves the entry's keying: a Grid workspace's
+    // entries carry the merged `slack:{groupId}` groupKey (t092) while keeping a concrete team.
+    console.log(
+      `[notif] +entry id=${entry.id} adapter=${entry.adapter || "-"} groupKey=${entry.groupKey || "-"} team=${entry.team || "-"}`,
+    )
     broadcast("notification", entry)
     // Fire-and-forget push to all subscribers; backgrounded PWAs only get the event
     // when delivered via Web Push (the SSE broadcast is foreground-only on iOS).
@@ -669,7 +693,16 @@ const slackSweeper = createSlackSweeper({
   ingestEntry: (entry) => {
     if (!slackSweepState.meta[entry.team]) slackSweepState.meta[entry.team] = {}
     slackSweepState.meta[entry.team].lastEntryTs = entry.ts
-    return notificationCenter.ingestSlackEntry(entry)
+    const ingested = notificationCenter.ingestSlackEntry(entry)
+    // Grid dedup evidence (t092): a null result means an entry with this id (keyed by the
+    // merged slack:{groupId}) already exists — i.e. the org pseudo-team + a member workspace
+    // produced the same message and it collapsed at ingest. Greppable [dedup].
+    if (!ingested) {
+      console.log(
+        `[dedup] dropped groupKey=${entry.groupKey} ch=${entry.channelId} ts=${entry.ts} (swept via team=${entry.team})`,
+      )
+    }
+    return ingested
   },
   markSwept: (t) => {
     if (!slackSweepState.meta[t]) slackSweepState.meta[t] = {}
@@ -1099,5 +1132,7 @@ server.on("upgrade", (req, socket, head) => {
 })
 
 server.listen(PORT, "0.0.0.0", () =>
-  console.log(`[web] http://0.0.0.0:${PORT}  ->  cdp ${host()}:${port()}`),
+  console.log(
+    `[web] v${APP_VERSION} ${GIT_SHA} http://0.0.0.0:${PORT}  ->  cdp ${host()}:${port()}`,
+  ),
 )
