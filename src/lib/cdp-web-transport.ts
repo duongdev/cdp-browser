@@ -22,6 +22,7 @@ import {
 } from "./downlink-dispatcher"
 import { type Batch, createBatcher, createHoverGate, createSingleFlight } from "./input-coalesce"
 import { noteFrameAge, notePing, notePong, resetLatencyMetrics } from "./latency-metrics"
+import { isMuted } from "./notif-mutes"
 import { perfMark } from "./perf-mark"
 import {
   type BackoffConfig,
@@ -796,16 +797,25 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   }
 
   // OS toast via the web Notification API — the browser-side stand-in for the Electron
-  // Notification main fired. Opt-in: gated by the device-specific `webPush` setting (t066)
-  // (the "Push notifications" toggle handles the permission grant), only when the tab isn't
-  // visible, and only with permission granted. Clicking re-focuses and routes through
-  // the same notification-activate listeners the renderer registers.
-  let webPush = false
+  // Notification main fired. Opt-in: gated by this device's master (`notificationsEnabled`,
+  // t093) + push opt-in (`webPush`, t066), suppressed for a muted source on this device
+  // (`notifMutes`, t093), only when the tab isn't visible, and only with permission granted.
+  // The three device-keyed prefs (`<base>_<deviceId>`) are the per-device delivery seam; the
+  // server reads the same keys for the push gate. Clicking re-focuses and routes through the
+  // same notification-activate listeners the renderer registers.
   const deviceId = getOrCreateDeviceId()
   const webPushKey = `webPush_${deviceId}`
+  const masterKey = `notificationsEnabled_${deviceId}`
+  const mutesKey = `notifMutes_${deviceId}`
+  let webPush = false
+  // Per-device master defaults on (opt-out — a new device gets everything, t093).
+  let notifMaster = true
+  let notifMutes: string[] = []
 
   function maybeToast(entry: CdpNotification) {
+    if (!notifMaster) return // device master off — no foreground toast
     if (!webPush) return
+    if (isMuted(notifMutes, entry)) return // this source muted on this device
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return
     if (typeof document !== "undefined" && document.visibilityState === "visible") return
     const n = new Notification(entry.title || entry.source, {
@@ -1193,16 +1203,39 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     setSidebarWidth: (width) => rest.postJson("/api/sidebar-width", { width }),
     getUiState: async () => {
       const ui = await rest.getJson("/api/ui-state")
+      // The server returns device-keyed slots (`<base>_<deviceId>`); surface this device's
+      // back under the plain names the renderer reads, and sync the module vars the toast
+      // gate consults. Defaults are opt-out: master on, push off, nothing muted (t066/t093).
       webPush = !!ui[webPushKey]
-      return ui
+      notifMaster = ui[masterKey] === undefined ? true : !!ui[masterKey]
+      notifMutes = Array.isArray(ui[mutesKey]) ? (ui[mutesKey] as string[]) : []
+      return {
+        ...ui,
+        webPush,
+        notificationsEnabled: notifMaster,
+        notifMutes,
+      }
     },
     setUiState: (partial) => {
-      // Remap webPush to the device-keyed key before sending to server (t066).
+      // Remap the per-device prefs to their device-keyed slots before POST (t066/t093). The
+      // plain global `notificationsEnabled` is repurposed on web as this device's master, so
+      // it writes the device key (Electron keeps the global — it never installs this shim).
       const toSend: Record<string, unknown> = { ...partial }
+      const p = partial as Record<string, unknown>
       if ("webPush" in partial) {
-        toSend[webPushKey] = (partial as Record<string, unknown>).webPush
+        toSend[webPushKey] = p.webPush
         delete toSend.webPush
-        webPush = !!(partial as Record<string, unknown>).webPush
+        webPush = !!p.webPush
+      }
+      if ("notificationsEnabled" in partial) {
+        toSend[masterKey] = p.notificationsEnabled
+        delete toSend.notificationsEnabled
+        notifMaster = !!p.notificationsEnabled
+      }
+      if ("notifMutes" in partial) {
+        toSend[mutesKey] = p.notifMutes
+        delete toSend.notifMutes
+        notifMutes = Array.isArray(p.notifMutes) ? (p.notifMutes as string[]) : []
       }
       return rest.postJson("/api/ui-state", toSend)
     },
@@ -1263,7 +1296,10 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       const r = await rest.getJson("/api/notifications/vapid-public-key")
       return r.key as string
     },
-    subscribePush: (sub) => rest.postJson("/api/notifications/subscribe", sub),
+    // Stamp this device's id on the subscription so the server can read its per-device
+    // master + mutes from ui-state and gate/stamp each push per device (t093).
+    subscribePush: (sub) =>
+      rest.postJson("/api/notifications/subscribe", { ...(sub as object), deviceId }),
     unsubscribePush: (endpoint) => rest.postJson("/api/notifications/unsubscribe", { endpoint }),
     // Transport-picker hooks (t019). The settings UI calls reconfigureInputTransport()
     // when the user toggles a mode; the badge reads getActiveTransport() and subscribes

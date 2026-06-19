@@ -255,4 +255,138 @@ describe("aggregateUnread", () => {
       expect(byTab.w1).toBe(1)
     })
   })
+
+  describe("per-device mutes (t093)", () => {
+    it("is byte-unchanged when no mutes option is passed", () => {
+      const notifications = [
+        notif({ adapter: "teams", targetUrl: "https://teams.microsoft.com/v2/" }),
+        notif({ adapter: "outlook", targetUrl: "https://outlook.office.com/mail/" }),
+      ]
+      const tabs = [
+        { id: "teams", url: "https://teams.microsoft.com/v2/" },
+        { id: "owa", url: "https://outlook.office.com/mail/inbox" },
+      ]
+
+      const { byTab } = aggregateUnread(notifications, tabs, [], {}, {})
+
+      expect(byTab.teams).toBe(1)
+      expect(byTab.owa).toBe(1)
+    })
+
+    it("excludes a muted adapter (Teams) from byGroup and byTab", () => {
+      const notifications = [
+        notif({ adapter: "teams", targetUrl: "https://teams.microsoft.com/v2/" }),
+        notif({ adapter: "outlook", targetUrl: "https://outlook.office.com/mail/" }),
+      ]
+      const tabs = [
+        { id: "teams", url: "https://teams.microsoft.com/v2/" },
+        { id: "owa", url: "https://outlook.office.com/mail/inbox" },
+      ]
+
+      const { byTab, byGroup } = aggregateUnread(
+        notifications,
+        tabs,
+        [],
+        {},
+        {},
+        {
+          mutes: ["teams"],
+          master: true,
+        },
+      )
+
+      expect(byTab.teams).toBe(0)
+      expect(byTab.owa).toBe(1)
+      expect(byGroup["https://teams.microsoft.com"]).toBeUndefined()
+    })
+
+    it("excludes a muted Slack workspace by its groupKey", () => {
+      // Both notifications carry the merged groupKey (E1/E2); the tab URLs carry the
+      // concrete teamId (T1/T2), resolved to the merged bucket via the teamGroupMap (t092).
+      const teamGroupMap = { T1: "E1", T2: "E2" }
+      const notifications = [
+        notif({
+          adapter: "slack",
+          groupKey: "slack:E1",
+          targetUrl: "https://app.slack.com/client/T1/C1",
+        }),
+        notif({
+          adapter: "slack",
+          groupKey: "slack:E2",
+          targetUrl: "https://app.slack.com/client/T2/C1",
+        }),
+      ]
+      const tabs = [
+        { id: "w1", url: "https://app.slack.com/client/T1/C9" },
+        { id: "w2", url: "https://app.slack.com/client/T2/C9" },
+      ]
+
+      const { byTab } = aggregateUnread(notifications, tabs, [], {}, teamGroupMap, {
+        mutes: ["slack:E1"],
+        master: true,
+      })
+
+      expect(byTab.w1).toBe(0)
+      expect(byTab.w2).toBe(1)
+    })
+
+    it("zeroes every count when the device master is off", () => {
+      const notifications = [
+        notif({ adapter: "teams", targetUrl: "https://teams.microsoft.com/v2/" }),
+        notif({ adapter: "outlook", targetUrl: "https://outlook.office.com/mail/" }),
+      ]
+      const tabs = [
+        { id: "teams", url: "https://teams.microsoft.com/v2/" },
+        { id: "owa", url: "https://outlook.office.com/mail/inbox" },
+      ]
+
+      const { byTab, byGroup } = aggregateUnread(
+        notifications,
+        tabs,
+        [],
+        {},
+        {},
+        {
+          mutes: [],
+          master: false,
+        },
+      )
+
+      expect(byTab.teams).toBe(0)
+      expect(byTab.owa).toBe(0)
+      expect(Object.keys(byGroup)).toHaveLength(0)
+    })
+
+    it("excludes a muted Slack workspace's notifications from the badge count", () => {
+      // A swept Slack entry always carries adapter:'slack' + the merged groupKey
+      // (core/slack-sweep-runner.js). The tab maps to the same group via teamGroupMap
+      // (T1 → E1), so byTab would be 1 if unmuted — proving the 0 below is the mute, not
+      // a team-key mismatch.
+      const notifications = [
+        notif({
+          adapter: "slack",
+          groupKey: "slack:E1",
+          targetUrl: "https://app.slack.com/client/T1/C1",
+        }),
+      ]
+      const tabs = [{ id: "w1", url: "https://app.slack.com/client/T1/C9" }]
+      const teamGroupMap = { T1: "E1" }
+
+      // Control: unmuted, the workspace tab badges 1.
+      const unmuted = aggregateUnread(notifications, tabs, [], {}, teamGroupMap, {
+        mutes: [],
+        master: true,
+      })
+      expect(unmuted.byTab.w1).toBe(1)
+      expect(unmuted.byGroup["slack:E1"]).toBe(1)
+
+      // Muted: the notification is dropped from byGroup, so the tab badge is 0.
+      const muted = aggregateUnread(notifications, tabs, [], {}, teamGroupMap, {
+        mutes: ["slack:E1"],
+        master: true,
+      })
+      expect(muted.byTab.w1).toBe(0)
+      expect(muted.byGroup["slack:E1"]).toBeUndefined()
+    })
+  })
 })

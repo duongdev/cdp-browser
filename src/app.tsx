@@ -28,6 +28,7 @@ import { getCaps } from "@/lib/caps"
 import { createClosedStack } from "@/lib/closed-tabs"
 import { type Action, buildActions } from "@/lib/hotkey-registry"
 import type { LocalTab } from "@/lib/local-tabs"
+import { toggleMute, unreadExcluding } from "@/lib/notif-mutes"
 import {
   createActivationRegistry,
   deriveLegacyActivate,
@@ -143,7 +144,11 @@ export default function App() {
   // Fetched from /api/notifications/health on load (web only; empty on Electron). Also used
   // once to re-key persisted Channel Excludes from the old per-team key to the merged one.
   const [teamGroupMap, setTeamGroupMap] = useState<Record<string, string>>({})
+  // Per-device notification master (t093). On web `notificationsEnabled` is repurposed as
+  // this device's master (the transport remaps it to `notificationsEnabled_<deviceId>`);
+  // on Electron it stays the global toggle. `notifMutes` is this device's muted sources.
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
+  const [notifMutes, setNotifMutes] = useState<string[]>([])
   const [syncTheme, setSyncTheme] = useState(true)
   const [bellOpen, setBellOpen] = useState(false)
   const [newTabOpen, setNewTabOpen] = useState(false)
@@ -274,6 +279,7 @@ export default function App() {
       setForceOnClient(s.forceOnClient ?? false)
       setSwitchEffect(s.switchEffect ?? "blur")
       setNotificationsEnabled(s.notificationsEnabled ?? true)
+      setNotifMutes(Array.isArray(s.notifMutes) ? s.notifMutes : [])
       setSyncTheme(s.syncTheme ?? true)
       setAutoGrantLocalMedia(s.autoGrantLocalMedia ?? true)
       restoreLocalPinsRef.current = s.restoreLocalPins ?? true
@@ -606,16 +612,44 @@ export default function App() {
     return m
   }, [pins, tabs])
 
-  // Per-tab and per-pin unread badge counts, grouped so every tab/pin of the same
-  // app shares one count and a dormant pin badges by its saved URL's origin.
+  // Per-device delivery prefs applied to the badges (t093, web only). On Electron these are
+  // inert (no mutes, master not used for badges) so byTab/byPin + the bell/inbox badge stay
+  // byte-unchanged. The Inbox/bell *lists* always read the unfiltered `notifications`.
+  const muteOpts = useMemo(
+    () => (caps.web ? { mutes: notifMutes, master: notificationsEnabled } : undefined),
+    [caps.web, notifMutes, notificationsEnabled],
+  )
+
+  // Per-tab and per-pin unread badge counts, grouped so every tab/pin of the same app
+  // shares one count and a dormant pin badges by its saved URL's origin. Excludes this
+  // device's muted sources on web; byte-unchanged on Electron (muteOpts undefined).
   const { byTab: unreadByTab, byPin: unreadByPin } = useMemo(
-    () => aggregateUnread(notifications, tabs, pins, linkedTabByPin, teamGroupMap),
-    [notifications, tabs, pins, linkedTabByPin, teamGroupMap],
+    () => aggregateUnread(notifications, tabs, pins, linkedTabByPin, teamGroupMap, muteOpts),
+    [notifications, tabs, pins, linkedTabByPin, teamGroupMap, muteOpts],
+  )
+
+  // The bell/inbox/home-screen badge count — excludes this device's muted sources and goes
+  // to 0 when the device master is off (web only). Undefined on Electron, so the bell/inbox
+  // fall back to their own `notifications.filter(!read)` count (byte-unchanged).
+  const deviceUnread = useMemo(
+    () => (caps.web ? unreadExcluding(notifications, notifMutes, notificationsEnabled) : undefined),
+    [caps.web, notifications, notifMutes, notificationsEnabled],
   )
 
   const handleNotificationsEnabledChange = useCallback((enabled: boolean) => {
     setNotificationsEnabled(enabled)
     window.cdp.setUiState({ notificationsEnabled: enabled })
+  }, [])
+
+  // Toggle a source's mute on this device (t093, web only). The muteKey is a Slack
+  // workspace's `slack:{groupId}` or an adapter name; persists to the device-keyed
+  // `notifMutes_<deviceId>` ui-state slot via the transport remap.
+  const handleToggleMute = useCallback((key: string) => {
+    setNotifMutes((prev) => {
+      const next = toggleMute(prev, key)
+      if (next !== prev) window.cdp.setUiState({ notifMutes: next })
+      return next
+    })
   }, [])
 
   const handleSyncThemeChange = useCallback((enabled: boolean) => {
@@ -712,12 +746,14 @@ export default function App() {
   }, [notifications])
 
   // Home-screen badge mirror (t080): the icon badge tracks the unread count live while
-  // the app runs (the SW keeps it fresh from push payloads while the app is closed).
+  // the app runs (the SW keeps it fresh from push payloads while the app is closed). The
+  // count excludes this device's muted sources + goes to 0 when the master is off (t093),
+  // so it matches the per-device push badge the server stamps.
   useEffect(() => {
-    const unread = notifications.filter((n) => !n.read).length
+    const unread = deviceUnread ?? notifications.filter((n) => !n.read).length
     if (unread > 0) navigator.setAppBadge?.(unread).catch(() => {})
     else navigator.clearAppBadge?.().catch(() => {})
-  }, [notifications])
+  }, [deviceUnread, notifications])
 
   // Web PWA auto-update: when a new build's worker finishes installing, surface a
   // dismissible toast; tapping Reload skips waiting and reloads once. No-op under
@@ -1657,6 +1693,7 @@ export default function App() {
             sheet keep working; only the Sidebar is truly absent on phone. */}
         {shellMode === "phone" && phoneView === "inbox" && (
           <Inbox
+            mutes={notifMutes}
             notifications={notifications}
             onClearThread={handleClearThread}
             onClickItem={openReader}
@@ -1666,6 +1703,7 @@ export default function App() {
             onOpenBrowser={() => setPhoneView("tabs")}
             onOpenSettings={handleSettingsRequestOpenMouse}
             onToggleRead={handleToggleRead}
+            unreadBadge={deviceUnread}
           />
         )}
         {/* Flat tab/pin switcher (t081): read-and-go — tap opens the screencast view. */}
@@ -1767,6 +1805,8 @@ export default function App() {
             localExtensions={localExtensions}
             notifications={notifications}
             notificationsEnabled={notificationsEnabled}
+            notificationUnreadBadge={deviceUnread}
+            notifMutes={notifMutes}
             onAdaptiveViewportChange={handleAdaptiveViewportChange}
             onAddLocalExtension={handleAddLocalExtension}
             onAutoGrantLocalMediaChange={handleAutoGrantLocalMediaChange}
@@ -1798,6 +1838,7 @@ export default function App() {
             onSwitchEffectChange={handleSwitchEffectChange}
             onSyncThemeChange={handleSyncThemeChange}
             onThemeChange={handleThemeChange}
+            onToggleMute={handleToggleMute}
             onTogglePin={handleTogglePin}
             onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
             pageLoading={handlePageLoading}

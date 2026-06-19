@@ -11,6 +11,7 @@ import { useState } from "react"
 import { AdapterIcon } from "@/components/adapter-icon"
 import type { NotifEntry } from "@/components/notification-bell"
 import { Button } from "@/components/ui/button"
+import { muteKey } from "@/lib/notif-mutes"
 import {
   groupByConversation,
   relativeTime,
@@ -34,6 +35,11 @@ interface Props {
   /** Reach the screencast browser view without a notification (header + empty state). */
   onOpenBrowser: () => void
   onOpenSettings: () => void
+  /** This device's muted sources (muteKeys), t093 — muted groups render dimmed. */
+  mutes?: readonly string[]
+  /** Device-aware unread badge (t093): excludes this device's muted sources + goes to 0
+   *  when the master is off. Undefined → the own unfiltered unread count. */
+  unreadBadge?: number
 }
 
 /**
@@ -52,9 +58,13 @@ export function Inbox({
   onMuteChannel,
   onOpenBrowser,
   onOpenSettings,
+  mutes,
+  unreadBadge,
 }: Props) {
   const [unreadOnly, setUnreadOnly] = useState(false)
-  const unread = notifications.filter((n) => !n.read).length
+  // The badge honors this device's mutes/master (t093) when provided; the LIST stays
+  // unfiltered (muted entries shown, dimmed) so nothing is silently lost.
+  const unread = unreadBadge ?? notifications.filter((n) => !n.read).length
   const visible = unreadOnly ? notifications.filter((n) => !n.read) : notifications
   const groups = groupByConversation(visible)
 
@@ -126,8 +136,11 @@ export function Inbox({
             const meta = slackGroupMeta(g.items)
             // Clean Slack conversation label (#channel / @DM), else the entry title (t090).
             const label = slackGroupLabel(g.items[0]) ?? g.label
+            // Muted-on-this-device groups stay listed but dimmed (t093) — capture is
+            // global; the header badge already excludes them.
+            const groupMuted = !!mutes?.includes(muteKey(g.items[0]))
             return (
-              <section key={g.key}>
+              <section className={cn(groupMuted && "opacity-50")} key={g.key}>
                 {/* Two-line header (t083): workspace names can be long ("FWD GROUP
                     MANAGEMENT HOLDINGS LIMITED") — keeping them on their own line means a
                     long name can never push the unread count or the row controls off-screen. */}

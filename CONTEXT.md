@@ -69,8 +69,12 @@ The logical Slack workspace bucket used by the **Slack Content Sweep** when an E
 _Avoid_: org group, enterprise bucket, team merge.
 
 **Channel Exclude**:
-A user-configured per-channel mute for the **Slack Content Sweep**, stored in server ui-state (survives the iPad PWA's localStorage wipe). Each entry is `{ team, channelId, label }` keyed by the stable channel id. Added via a "Mute this channel" action on a notification or the Settings list. Applied on top of Slack's own muted-channel flag (which the sweep already honors). Distinct from a **Pin** or a muted **Local Tab**.
+A user-configured per-channel mute for the **Slack Content Sweep**, stored in server ui-state (survives the iPad PWA's localStorage wipe). Each entry is `{ team, channelId, label }` keyed by the stable channel id. Added via a "Mute this channel" action on a notification or the Settings list. Applied on top of Slack's own muted-channel flag (which the sweep already honors). Distinct from a **Delivery Mute** (which silences a source's *interruptions* on one device while leaving the entry visible) and a **Pin** or a muted **Local Tab**.
 _Avoid_: mute list, blocklist, filter.
+
+**Delivery Mute**:
+A per-device, per-source suppression of notification *interruptions* (push, foreground toast, badge bump) without removing entries from the Inbox or bell list — muted entries still appear, dimmed. Stored in server ui-state under `notifMutes_<deviceId>` (a set of mute keys, survives the iPad PWA's localStorage wipe). The **mute key** (`muteKey`, `core/notif-mutes.js` / `src/lib/notif-mutes.ts`) unifies both axes: a Slack entry keys by its merged `groupKey` (`slack:{groupId}`, per workspace), every other adapter by `adapter` name (per service). Complementary to but distinct from **Channel Exclude** (which removes Slack channels from capture globally, not per-device, and hides them everywhere). See ADR-0013.
+_Avoid_: global mute, notification filter, blocklist.
 
 **Phone Shell**:
 A distinct layout mode for narrow viewports (reactive `matchMedia` width gate — not pointer-coarseness, not a `caps` flag) where the **Inbox** is the root view and the screencast canvas is a destination reached from a notification or the tab list, not home. The wide layout (sidebar + toolbar + canvas) is untouched above the breakpoint.

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { muteKey } from "@/lib/notif-mutes"
 import {
   flattenRows,
   groupByConversation,
@@ -39,6 +40,11 @@ interface Props {
   onClearThread: (entry: ViewEntry) => void
   /** Mute the channel/DM behind a swept Slack notification (Channel Exclude, t072). */
   onMuteChannel: (entry: ViewEntry) => void
+  /** This device's muted sources (muteKeys), t093 — muted groups render dimmed. */
+  mutes?: readonly string[]
+  /** Device-aware unread badge (t093, web): excludes this device's muted sources + goes
+   *  to 0 when the master is off. Undefined → the own unfiltered unread count. */
+  unreadBadge?: number
 }
 
 export function NotificationBell({
@@ -52,9 +58,13 @@ export function NotificationBell({
   onMarkThreadRead,
   onClearThread,
   onMuteChannel,
+  mutes,
+  unreadBadge,
 }: Props) {
   const [unreadOnly, setUnreadOnly] = useState(false)
-  const unread = notifications.filter((n) => !n.read).length
+  // The badge honors this device's mutes/master (t093) when provided; the LIST below stays
+  // unfiltered (muted entries still shown, dimmed) so nothing is silently lost.
+  const unread = unreadBadge ?? notifications.filter((n) => !n.read).length
   const visible = unreadOnly ? notifications.filter((n) => !n.read) : notifications
   const groups = groupByConversation(visible)
   // Paint-ordered flat row list — the roving keyboard selection indexes this, so it
@@ -201,8 +211,11 @@ export function NotificationBell({
               // Workspace + DM/group-DM kind for Slack groups (t082) — see inbox.tsx.
               const meta = slackGroupMeta(g.items)
               const label = slackGroupLabel(g.items[0]) ?? g.label
+              // Muted-on-this-device groups stay listed but dimmed (t093) — capture is
+              // global, so nothing is hidden; the badge above already excludes them.
+              const groupMuted = !!mutes?.includes(muteKey(g.items[0]))
               return (
-                <div className="group/group" key={g.key}>
+                <div className={cn("group/group", groupMuted && "opacity-50")} key={g.key}>
                   {/* Two-line header (t083) — a long workspace name can't push the count off. */}
                   <div className="sticky top-0 z-10 flex flex-col gap-0.5 bg-popover px-3 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">
                     <div className="flex items-center gap-1.5">

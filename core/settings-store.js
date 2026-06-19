@@ -39,6 +39,14 @@ const UI_DEFAULTS = {
 // Keys settable via setUiState (localExtensionPaths is owned by extension flows).
 const UI_SETTABLE = Object.keys(UI_DEFAULTS).filter((k) => k !== "localExtensionPaths")
 
+// Per-device ui-state keys are dynamic (`<base>_<deviceId>`), so they can't live in the
+// fixed UI_DEFAULTS allowlist. They still must round-trip through the store to persist
+// across a PWA refresh (localStorage resets on the iPad). A key passes the device-key
+// gate when its base prefix is one of these — the renderer's per-device remap seam in
+// cdp-web-transport.ts owns the suffixing (t066 webPush, t093 mutes + per-device master).
+const DEVICE_KEY_PREFIXES = ["webPush_", "notifMutes_", "notificationsEnabled_"]
+const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
+
 // One-time migrations mirroring main.js: legacy boolean switchBlur -> switchEffect
 // enum, and legacy bookmarks -> pins (a pin is a superset of a bookmark).
 function migrate(s) {
@@ -76,10 +84,14 @@ function createSettingsStore({ initial, persist }) {
     getUiState: () => {
       const out = {}
       for (const k of Object.keys(UI_DEFAULTS)) out[k] = settings[k] ?? UI_DEFAULTS[k]
+      // Surface any persisted device-keyed prefs (t066/t093) so the renderer reads its
+      // own device's slot back; defaults stay implicit (absent key = device default).
+      for (const k of Object.keys(settings)) if (isDeviceKey(k)) out[k] = settings[k]
       return out
     },
     setUiState: (partial) => {
       for (const k of UI_SETTABLE) if (k in partial) settings[k] = partial[k]
+      for (const k of Object.keys(partial)) if (isDeviceKey(k)) settings[k] = partial[k]
       save()
     },
 

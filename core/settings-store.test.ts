@@ -37,6 +37,25 @@ describe("settings-store", () => {
     expect(persist).toHaveBeenCalled()
   })
 
+  it("round-trips device-suffixed ui-state keys (per-device notification prefs, t093)", () => {
+    const s = createSettingsStore({ initial: {}, persist })
+    s.setUiState({
+      webPush_dev1: true,
+      notifMutes_dev1: ["teams", "slack:E1"],
+      notificationsEnabled_dev1: false,
+    })
+    const ui = s.getUiState()
+    expect(ui.webPush_dev1).toBe(true)
+    expect(ui.notifMutes_dev1).toEqual(["teams", "slack:E1"])
+    expect(ui.notificationsEnabled_dev1).toBe(false)
+  })
+
+  it("still drops an unknown-prefix device-suffixed key", () => {
+    const s = createSettingsStore({ initial: {}, persist })
+    s.setUiState({ bogus_dev1: 1 })
+    expect(s.getUiState()).not.toHaveProperty("bogus_dev1")
+  })
+
   it("sidebar width defaults to 220 and round-trips", () => {
     const s = createSettingsStore({ initial: {}, persist })
     expect(s.getSidebarWidth()).toBe(220)

@@ -19,6 +19,7 @@ import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
 import { createFrameThrottle } from "../core/frame-throttle.js"
 import { createLineSplitter } from "../core/line-splitter.js"
+import { muteKey, unreadExcluding } from "../core/notif-mutes.js"
 import { buildHealth, shouldAlert } from "../core/notification-health.js"
 import sidechain from "../core/notifications-sidechain.js"
 import connector from "../core/remote-page-connector.js"
@@ -142,12 +143,39 @@ function trimPushPayload(payload) {
   return { ...rest, body: trimmed }
 }
 
+// The per-device delivery prefs for a push subscription (t093). Each device persists its
+// own master + mute set in device-keyed ui-state (the renderer's remap seam writes them);
+// defaults are opt-out — no stored master = on, no stored mutes = nothing muted. A sub
+// without a deviceId (legacy record) falls back to the defaults, so it keeps receiving.
+// `ui` is the ui-state snapshot, read once by the caller (one read per push, not per sub).
+function devicePrefs(ui, deviceId) {
+  if (!deviceId) return { master: true, mutes: [] }
+  const master = ui[`notificationsEnabled_${deviceId}`]
+  const mutes = ui[`notifMutes_${deviceId}`]
+  return {
+    master: master === undefined ? true : !!master,
+    mutes: Array.isArray(mutes) ? mutes : [],
+  }
+}
+
+// Push the entry to every subscription that wants it (t093). Per device: skip when the
+// device master is off OR the device muted this source; otherwise send with a per-device
+// `unread` that excludes that device's muted entries, so the home-screen badge stays
+// honest per device. Capture is global — the muting only suppresses *this device's* push.
 async function sendPushToAll(payload) {
   if (pushSubs.length === 0) return
-  const data = JSON.stringify(trimPushPayload(payload))
+  const key = muteKey(payload)
+  const list = notificationCenter.list()
+  const ui = settings.getUiState()
   const dead = []
   await Promise.all(
     pushSubs.map(async (sub) => {
+      const { master, mutes } = devicePrefs(ui, sub.deviceId)
+      if (!master) return // device master off — no push, no badge bump
+      if (mutes.includes(key)) return // this source muted on this device
+      const data = JSON.stringify(
+        trimPushPayload({ ...payload, unread: unreadExcluding(list, mutes, master) }),
+      )
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           await webpush.sendNotification(sub, data)
@@ -516,8 +544,9 @@ const notificationCenter = createNotificationCenter({
       slackKind: entry.slackKind,
       slackTs: entry.slackTs,
       slackThreadTs: entry.slackThreadTs,
-      // Home-screen badge mirror (t080): the SW calls setAppBadge with this.
-      unread: notificationCenter.list().filter((n) => !n.read).length,
+      // Home-screen badge mirror (t080): the SW calls setAppBadge with this. The count
+      // is stamped per-device inside sendPushToAll (t093) — excluding that device's muted
+      // sources — so it is intentionally not set here.
     })
   },
 })
@@ -682,6 +711,9 @@ function checkSlackHealthAlerts() {
         source: "CDP Browser",
         title: `Slack: ${row.name}`,
         body: why,
+        // Stamp the adapter so muteKey resolves to the workspace key (`slack:{groupId}`);
+        // without it the per-device Slack mute can't gate this alert (t093).
+        adapter: "slack",
         groupKey: `slack:${row.groupId}`,
         ts: Date.now(),
       })
@@ -948,6 +980,8 @@ const server = http.createServer(async (req, res) => {
       const sub = await body(req)
       if (!sub?.endpoint) return json(res, { error: "missing endpoint" }, 400)
       // Dedupe by endpoint URL so re-subscribing on the same device replaces in place.
+      // The record keeps `deviceId` (t093) so sendPushToAll can read that device's
+      // per-device master + mutes from ui-state and gate/stamp the push per device.
       pushSubs = pushSubs.filter((s) => s.endpoint !== sub.endpoint)
       pushSubs.push(sub)
       savePushSubs()

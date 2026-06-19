@@ -88,6 +88,9 @@ interface CdpBridge {
     restoreLocalPins: boolean
     localExtensionPaths: string[]
     webPush: boolean
+    /** Per-device muted sources — muteKeys (slack:{groupId} | adapter name), t093. The web
+     *  transport surfaces this device's `notifMutes_<deviceId>` slot under this plain name. */
+    notifMutes: string[]
     qualityTier: "sharp" | "balanced" | "snappy"
     virtualPointerMode: "off" | "on" | "auto"
     settingsScrollTop: number
@@ -105,6 +108,8 @@ interface CdpBridge {
       autoGrantLocalMedia: boolean
       restoreLocalPins: boolean
       webPush: boolean
+      /** Per-device muted sources (t093) — remapped to `notifMutes_<deviceId>` on web. */
+      notifMutes: string[]
       qualityTier: "sharp" | "balanced" | "snappy"
       virtualPointerMode: "off" | "on" | "auto"
       settingsScrollTop: number

@@ -64,6 +64,13 @@ interface ToolbarProps {
   onClearNotifications: () => void
   notificationsEnabled: boolean
   onNotificationsEnabledChange: (enabled: boolean) => void
+  /** Device-aware unread badge for the bell — excludes this device's muted sources +
+   *  goes to 0 when the master is off (t093, web). Undefined on Electron (own count). */
+  notificationUnreadBadge?: number
+  /** This device's muted sources (muteKeys), and the toggle to mute/un-mute one (t093,
+   *  web only — the per-device "Notifications (this device)" settings card drives them). */
+  notifMutes: string[]
+  onToggleMute: (key: string) => void
   syncTheme: boolean
   onSyncThemeChange: (enabled: boolean) => void
   autoGrantLocalMedia: boolean
@@ -128,6 +135,9 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onClearNotifications,
     notificationsEnabled,
     onNotificationsEnabledChange,
+    notificationUnreadBadge,
+    notifMutes,
+    onToggleMute,
     syncTheme,
     onSyncThemeChange,
     autoGrantLocalMedia,
@@ -411,6 +421,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
 
         {/* Notifications */}
         <NotificationBell
+          mutes={notifMutes}
           notifications={notifications}
           onClearAll={onClearNotifications}
           onClearThread={onClearThread}
@@ -421,6 +432,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onOpenChange={onBellOpenChange}
           onToggleRead={onNotificationToggleRead}
           open={bellOpen}
+          unreadBadge={notificationUnreadBadge}
         />
 
         {/* Settings */}
@@ -432,6 +444,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           forceOnClient={forceOnClient}
           localExtensions={localExtensions}
           notificationsEnabled={notificationsEnabled}
+          notifMutes={notifMutes}
           onAdaptiveViewportChange={onAdaptiveViewportChange}
           onAddLocalExtension={onAddLocalExtension}
           onAutoGrantLocalMediaChange={onAutoGrantLocalMediaChange}
@@ -447,6 +460,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onSwitchEffectChange={onSwitchEffectChange}
           onSyncThemeChange={onSyncThemeChange}
           onThemeChange={onThemeChange}
+          onToggleMute={onToggleMute}
           open={settingsOpen}
           switchEffect={switchEffect}
           syncTheme={syncTheme}

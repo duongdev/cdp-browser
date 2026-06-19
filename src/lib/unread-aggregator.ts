@@ -13,6 +13,8 @@
 // Pure: no React, no window, no DOM. Effects (building `linkedTabByPin`, wiring
 // the result into the sidebar/bell) live in app.tsx.
 
+import { isMuted, type Mutes } from "./notif-mutes"
+
 /** The notification fields the aggregator reads. */
 export interface UnreadNotification {
   read: boolean
@@ -20,6 +22,17 @@ export interface UnreadNotification {
   /** Stamped by the notification center: an adapter-derived key (e.g. `slack:{teamId}`),
    *  an explicit capture-script key, or the targetUrl origin fallback. */
   groupKey?: string
+  /** Matched Notification Adapter (`teams`/`outlook`/`slack`) — read only for per-device
+   *  mute matching (t093): Teams/Outlook mute by adapter, Slack by its `groupKey`. */
+  adapter?: string | null
+}
+
+/** Per-device delivery prefs the aggregator applies to the badge tally (t093). When passed,
+ *  a muted source's notifications are skipped in `byGroup` (so byTab/byPin inherit the
+ *  exclusion), and `master: false` zeroes every count. Omitted = no muting (byte-unchanged). */
+export interface UnreadMuteOpts {
+  mutes?: Mutes
+  master?: boolean
 }
 
 /** The Tab fields the aggregator reads. */
@@ -103,6 +116,11 @@ function notificationKey(n: UnreadNotification, teamGroupMap: TeamGroupMap): str
  * concrete teamId resolves to its `slack:{groupId}` bucket so an org tab and its member
  * workspace share one count. Notifications already carry the merged `groupKey` from the
  * server, so the map only affects Tab/Pin URL resolution. Omitted/empty = per-team.
+ *
+ * `muteOpts` (optional, t093) applies this device's delivery prefs: a notification whose
+ * source is muted is skipped in the tally, and `master: false` zeroes every count — so the
+ * sidebar tab/pin badges exclude muted sources on this device. The Inbox/bell *lists* read
+ * the unfiltered notifications; only these badge counts honor the mute. Omitted = no muting.
  */
 export function aggregateUnread(
   notifications: UnreadNotification[],
@@ -110,10 +128,15 @@ export function aggregateUnread(
   pins: UnreadPin[],
   linkedTabByPin: Record<string, UnreadTab>,
   teamGroupMap: TeamGroupMap = {},
+  muteOpts?: UnreadMuteOpts,
 ): UnreadResult {
+  const masterOff = muteOpts?.master === false
+  const mutes = muteOpts?.mutes
   const byGroup: Record<string, number> = {}
   for (const n of notifications) {
     if (n.read) continue
+    if (masterOff) continue
+    if (mutes !== undefined && isMuted(mutes, n)) continue
     const key = notificationKey(n, teamGroupMap)
     if (key) byGroup[key] = (byGroup[key] || 0) + 1
   }
