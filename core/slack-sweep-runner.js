@@ -13,6 +13,7 @@
 // seam. Recorded for review.
 
 const { planFetches, reduceMessages } = require("./slack-sweep")
+const { groupId } = require("./slack-creds")
 const { renderBody, composeTitle, toReaderMessages } = require("./slack-render")
 
 // Errors that mean the web API will never work for this workspace (vs. a transient/auth
@@ -128,6 +129,12 @@ function createSlackSweeper(deps) {
 
   async function sweepWorkspace(cred) {
     const team = cred.teamId
+    // The merged Enterprise Grid bucket the swept entries are keyed under (slack:{gid}, t092).
+    // Anything that addresses those entries by group — read-sync (the restricted unread-set
+    // path) and the Channel Exclude (mute) lookup — must key by `gid`, not the concrete
+    // teamId, or it never matches an entry the org+member sweep wrote. Standalone team: gid
+    // === team (byte-unchanged).
+    const gid = groupId(cred)
     const api = deps.makeApi(cred)
     const { counts, restricted, muted: countsMuted, error, permanent } = await fetchCounts(api)
     if (error) {
@@ -152,7 +159,8 @@ function createSlackSweeper(deps) {
       deps.setWatermark(team, seed)
       deps.markSeeded(team)
       // Read-sync: client.counts uses last_read; the restricted path uses the unread-set.
-      if (restricted) deps.applyReadByUnread?.(team, unreadChannelSet(counts))
+      // The unread-set path keys entries by group (slack:{gid}), so pass `gid`.
+      if (restricted) deps.applyReadByUnread?.(gid, unreadChannelSet(counts))
       else deps.applyReadUpdates(team, lastReadMap(counts))
       if (deps.markSwept) deps.markSwept(team)
       log(
@@ -177,7 +185,9 @@ function createSlackSweeper(deps) {
       if (selfUserId) deps.setSelfUserId(team, selfUserId)
     }
 
-    const excludes = deps.getExcludes(team) || []
+    // Channel Exclude (mute) list is stored keyed by the merged groupId (t092), so look it
+    // up by `gid` — a teamId query would miss a Grid member's groupId-keyed mute entirely.
+    const excludes = deps.getExcludes(gid) || []
     const watermark = deps.getWatermark(team) || {}
     const plans = planFetches(counts, { watermark, excludes, muted })
 
@@ -202,6 +212,10 @@ function createSlackSweeper(deps) {
 
     const { newEntries, nextWatermark } = reduceMessages({
       team,
+      // Collapse an Enterprise Grid org pseudo-team + its member workspaces into one
+      // logical bucket (t092) — the entry id + groupKey key by this, so a message in a
+      // channel reachable from both the org and the workspace dedups via ingest's id check.
+      groupId: gid,
       candidates,
       watermark,
       excludes,
@@ -215,8 +229,9 @@ function createSlackSweeper(deps) {
       for (const e of newEntries) deps.ingestEntry(decorate(e, cred, names))
     }
     // Read-sync: client.counts follows per-message last_read; the restricted path has none,
-    // so it marks read any entry whose channel is no longer in the unread-set.
-    if (restricted) deps.applyReadByUnread?.(team, unreadChannelSet(counts))
+    // so it marks read any entry whose channel is no longer in the unread-set. The unread-set
+    // path keys entries by group (slack:{gid}), so pass `gid`.
+    if (restricted) deps.applyReadByUnread?.(gid, unreadChannelSet(counts))
     else deps.applyReadUpdates(team, lastReadMap(counts))
     if (deps.markSwept) deps.markSwept(team)
     if (newEntries.length) log(`[slack-sweep] ${team}: +${newEntries.length} entries`)

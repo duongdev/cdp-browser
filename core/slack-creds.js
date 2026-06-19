@@ -51,6 +51,29 @@ function markStale(record, reason) {
   return { ...(record || {}), fresh: false, lastError: reason || "stale" }
 }
 
+// The logical workspace key for a cred (t092, ADR-0011 Grid grouping). In an Enterprise
+// Grid, Slack registers the org itself as a pseudo-team (an `E…`-prefixed team with no
+// `enterprise_id`) alongside its member workspaces (each carrying that `enterprise_id`),
+// and the org token surfaces the same channels the member workspace does — so the sweep
+// captures shared channels twice under different `teamId` prefixes. Grouping by
+// `enterpriseId || teamId` collapses the org + its workspaces to ONE bucket: same
+// message → same id → existing ingest dedup. A standalone team (no enterpriseId) keys by
+// its own teamId, so behavior is unchanged for it.
+function groupId(cred) {
+  return (cred && (cred.enterpriseId || cred.teamId)) || ""
+}
+
+// Build the teamId → groupId map from the cred list — the renderer needs it to resolve a
+// Slack Tab/Pin URL (which only carries a concrete teamId) to its merged group bucket.
+function buildSlackGroups(creds) {
+  const map = {}
+  for (const c of creds || []) {
+    if (!c || !c.teamId) continue
+    map[c.teamId] = groupId(c)
+  }
+  return map
+}
+
 // Short, length-tagged preview of a secret for logs — never the full value.
 function redact(secret) {
   if (!secret) return "(empty)"
@@ -58,4 +81,12 @@ function redact(secret) {
   return `${s.slice(0, 6)}…(${s.length} chars)`
 }
 
-module.exports = { parseLocalConfig, pickDCookie, markFresh, markStale, redact }
+module.exports = {
+  parseLocalConfig,
+  pickDCookie,
+  groupId,
+  buildSlackGroups,
+  markFresh,
+  markStale,
+  redact,
+}

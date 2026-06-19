@@ -20,7 +20,14 @@ const {
   markAllRead,
   unreadCount,
 } = require("./notifications")
-const { parseLocalConfig, pickDCookie, markFresh, markStale, redact } = require("./slack-creds")
+const {
+  parseLocalConfig,
+  pickDCookie,
+  groupId,
+  markFresh,
+  markStale,
+  redact,
+} = require("./slack-creds")
 const { tsCmp } = require("./slack-sweep")
 
 const NOTIFY_BINDING = "__cdpNotify"
@@ -106,6 +113,20 @@ function createNotificationCenter(deps) {
     if (deps.onCreds) deps.onCreds(rec)
   }
 
+  // The groupKey for an adapter's entry derived from the Tab URL. For Slack it resolves the
+  // URL teamId to its merged Enterprise Grid groupId (t092) via the extracted cred record
+  // (which carries enterpriseId) so a hijack-fallback entry buckets with the org's swept ones;
+  // a standalone team (no cred / no enterpriseId) keeps its own teamId. Non-Slack adapters
+  // fall through to their own groupKey hook (or null).
+  function slackFallbackGroupKey(adapter, url) {
+    if (!adapter || !adapter.groupKey) return null
+    if (adapter.name !== "slack") return adapter.groupKey(url)
+    const teamId = slackGroupKey(url)?.replace(/^slack:/, "")
+    if (!teamId) return adapter.groupKey(url)
+    const cred = credsByTeam.get(teamId)
+    return `slack:${groupId(cred) || teamId}`
+  }
+
   function handleToast(raw, target) {
     let n
     try {
@@ -122,7 +143,7 @@ function createNotificationCenter(deps) {
     // workspace whose sweep is unsupported (Enterprise Grid `team_is_restricted`) falls
     // through to storing the hijack entry directly, so it isn't lost.
     if (adapter && adapter.name === "slack" && deps.onSlackSignal) {
-      const teamId = slackGroupKey(target.url).replace(/^slack:/, "")
+      const teamId = slackGroupKey(target.url)?.replace(/^slack:/, "")
       if (teamId && !sweepDisabledTeams.has(teamId)) {
         deps.onSlackSignal(teamId)
         return
@@ -137,7 +158,10 @@ function createNotificationCenter(deps) {
         // Stable grouping key — an adapter's URL-derived key (e.g. Slack's per-workspace
         // `slack:{teamId}`) wins; else the capture script's explicit groupKey, else the
         // Tab's URL origin (today's per-origin grouping). Consumers key on this, never origin.
-        groupKey: adapter?.groupKey?.(target.url) || groupKeyFor(n, target.url),
+        // Slack hijack fallback: resolve the URL teamId to its merged Enterprise Grid groupId
+        // (slack:{groupId}, t092) so a fully-unsupported Grid member's entry buckets with its
+        // org pseudo-team's swept entries instead of reintroducing a duplicate.
+        groupKey: slackFallbackGroupKey(adapter, target.url) || groupKeyFor(n, target.url),
         source: n.source || "",
         title: n.title || "",
         body: n.body || "",
@@ -329,10 +353,13 @@ function createNotificationCenter(deps) {
       return entry
     },
     // Restricted-path read-sync (t075): users.counts gives no last_read, so mark read any
-    // swept entry (for this team) whose channel is no longer in the unread set. Coarser than
+    // swept entry (for this group) whose channel is no longer in the unread set. Coarser than
     // per-message last_read but correct: a conversation with zero unreads is fully read.
-    applySlackReadByUnread: (team, unreadChannelSet) => {
-      const groupKey = `slack:${team}`
+    // Keyed by the merged group id (slack:{groupId}, t092) — the runner passes the groupId so
+    // this matches the groupKey the sweep stamps on entries (an Enterprise Grid member's
+    // physical teamId would never match its org's groupId-keyed entries).
+    applySlackReadByUnread: (groupId, unreadChannelSet) => {
+      const groupKey = `slack:${groupId}`
       let changed = false
       const updated = notifications.map((e) => {
         if (e.read || e.groupKey !== groupKey || !e.channelId) return e

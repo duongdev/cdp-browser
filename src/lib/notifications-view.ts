@@ -26,6 +26,12 @@ export interface ViewEntry {
   // Slack content-sweep entries carry the source channel id (t071) — used by the
   // "Mute this channel" exclude action (t072). Absent on hijack/Teams/Outlook entries.
   channelId?: string
+  // The concrete workspace teamId a swept Slack entry was captured from (t092). Distinct
+  // from `groupKey` (`slack:{groupId}`), which merges an Enterprise Grid org + its member
+  // workspaces. Activation/deep-link and the Conversation Reader's history fetch use this
+  // physical teamId (the org token can't read a member-only channel); `groupKey` is only
+  // the unread/dedup/mute bucket. Absent on hijack/Teams/Outlook entries.
+  team?: string
   // Slack message identity carried by swept entries (t078): conversation kind, the
   // message's own ts, and its parent thread ts when it's a thread reply. The reply
   // target selector (slack-reply.ts) reads these; absent on non-swept entries.

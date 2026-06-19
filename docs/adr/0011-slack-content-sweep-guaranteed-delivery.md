@@ -119,3 +119,33 @@ Ship the failure-class fix in delivery order; each phase stands alone and is ind
 7. **Channel Exclude** — server ui-state list; "Mute this channel" entry action + Settings list.
 8. **Content render** — name resolution + best-effort mrkdwn, per-workspace cached user/channel map.
 9. **Health surface** — `/api/notifications/health` + Settings row (attached / armed / creds fresh / last sweep / last entry).
+
+## Note — Enterprise Grid org/workspace dedup by `enterprise_id` group (2026-06-19, t092)
+
+In an Enterprise Grid, Slack registers the **org itself** as a pseudo-team (an `E…`-prefixed
+team with `enterprise_id: null`) *alongside* its member workspaces (each carrying that
+`enterprise_id`), and the org token surfaces the same channels the member workspace does.
+The sweep treats every team in `localConfig_v2` as an independent capture target keyed
+`slack:{teamId}:{channel}:{ts}`, so a message in a channel reachable from both the org and a
+workspace was captured **twice** (different team prefix → different id → the `ingest` id-dedup
+couldn't catch it) — two notifications, two web-pushes, two health rows. Live evidence (FWD):
+org `E0761H36LHY` (27 channels via `client.counts`) ⊂ member workspace `TGFUQ89E1` (51 channels,
+`client.counts`→`team_is_restricted`→`users.counts`), overlap 27; standalone `T01CDUT3CBD` (22)
+genuinely separate.
+
+**Decision:** group all teams sharing an `enterprise_id` under ONE logical workspace key —
+`groupId = enterprise_id || teamId` (`core/slack-creds.js`). The sweep entry id + `groupKey`
+key by `slack:{groupId}` so the org+workspace duplicate collapses via the **existing** ingest
+id-dedup; the concrete `teamId` (the workspace it was swept from) stays on the entry for
+activation / the `/client/{teamId}/{channel}` SPA deep-link. `core/notification-health.js`
+`buildHealth` merges creds by `groupId` into one row per org (label = the friendlier member
+workspace name when present, else the org name; status = `healthy` if **any** member sweeps via
+`client.counts`, carrying `enterpriseId` + the constituent `teamIds`), and `/api/notifications/health`
+also returns a `teamId → groupId` map (`buildSlackGroups`) so the renderer can resolve a Slack
+Tab/Pin URL (which carries only a `teamId`) to its merged unread/health/mute bucket. The registry
+(`core/slack-workspaces.js`, `slack-workspaces.json`) persists `enterpriseId` so a cold start knows
+each workspace's org. A standalone team (no `enterprise_id`) is **byte-unchanged**: `groupId ===
+teamId` everywhere. `main.js` (Electron, no sweep/creds) keeps the per-`teamId` key — acceptable,
+since the Grid merge is a web-sweep concern. Chose merge-by-`enterprise_id` over
+cross-dedup-keeping-rows and over dropping a team (the latter is lossy — the member workspace is
+API-restricted and the org's `client.counts` watermarks are richer for its 27).

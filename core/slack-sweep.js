@@ -102,6 +102,12 @@ function isRealMessage(m) {
 // parity (channels need a mention), mute/exclude, system-subtype + watermark filtering.
 function reduceMessages({
   team,
+  // The logical workspace key (`enterprise_id || teamId`, t092). The entry id + groupKey
+  // derive from this so an Enterprise Grid org pseudo-team and its member workspaces (which
+  // surface the same shared channels) collapse to ONE id — existing ingest id-dedup then
+  // drops the duplicate. The concrete `team` is still stamped on the entry for activation /
+  // SPA deep-link. Defaults to `team` for standalone workspaces (byte-unchanged behavior).
+  groupId,
   candidates = [],
   watermark = {},
   excludes = [],
@@ -109,6 +115,7 @@ function reduceMessages({
   selfUserId = "",
   selfSubteamIds = [],
 }) {
+  const gid = groupId || team
   const ex = new Set(excludes)
   const mu = new Set(muted)
   const newEntries = []
@@ -124,8 +131,8 @@ function reduceMessages({
     // Channel parity: only @-mentions. DMs/group-DMs/threads always notify.
     if (m.kind === "channel" && !isMention(m.text, selfUserId, selfSubteamIds)) continue
     newEntries.push({
-      id: `slack:${team}:${ch}:${m.ts}`,
-      groupKey: `slack:${team}`,
+      id: `slack:${gid}:${ch}:${m.ts}`,
+      groupKey: `slack:${gid}`,
       team,
       channelId: ch,
       kind: m.kind,

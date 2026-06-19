@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
 // Pure helpers for Slack credential extraction (t069, ADR-0011).
-import { markFresh, markStale, parseLocalConfig, pickDCookie, redact } from "./slack-creds"
+import {
+  buildSlackGroups,
+  groupId,
+  markFresh,
+  markStale,
+  parseLocalConfig,
+  pickDCookie,
+  redact,
+} from "./slack-creds"
 
 describe("parseLocalConfig — read xoxc tokens from localConfig_v2", () => {
   const raw = JSON.stringify({
@@ -99,6 +107,42 @@ describe("cred state machine — fresh/stale transitions", () => {
       lastError: "invalid_auth",
       token: "xoxc-1", // retained so a later success can compare / re-use
     })
+  })
+})
+
+describe("groupId — collapse an Enterprise Grid org + its workspaces (t092)", () => {
+  it("returns enterpriseId when present (a Grid child workspace)", () => {
+    expect(groupId({ teamId: "TGFUQ89E1", enterpriseId: "E0761H36LHY" })).toBe("E0761H36LHY")
+  })
+
+  it("returns teamId when enterpriseId is absent/empty (standalone or the org pseudo-team)", () => {
+    expect(groupId({ teamId: "T01CDUT3CBD", enterpriseId: "" })).toBe("T01CDUT3CBD")
+    expect(groupId({ teamId: "E0761H36LHY", enterpriseId: null })).toBe("E0761H36LHY")
+    expect(groupId({ teamId: "T01CDUT3CBD" })).toBe("T01CDUT3CBD")
+  })
+})
+
+describe("buildSlackGroups — teamId → groupId map (t092)", () => {
+  it("maps every member workspace + the org pseudo-team to one groupId", () => {
+    const map = buildSlackGroups([
+      { teamId: "E0761H36LHY", enterpriseId: "" }, // the org pseudo-team
+      { teamId: "TGFUQ89E1", enterpriseId: "E0761H36LHY" }, // member workspace
+      { teamId: "T01CDUT3CBD", enterpriseId: "" }, // standalone
+    ])
+    expect(map).toEqual({
+      E0761H36LHY: "E0761H36LHY",
+      TGFUQ89E1: "E0761H36LHY",
+      T01CDUT3CBD: "T01CDUT3CBD",
+    })
+  })
+
+  it("returns an empty map for no creds", () => {
+    expect(buildSlackGroups([])).toEqual({})
+    expect(buildSlackGroups(undefined)).toEqual({})
+  })
+
+  it("ignores creds with no teamId", () => {
+    expect(buildSlackGroups([{ teamId: "", enterpriseId: "E1" }])).toEqual({})
   })
 })
 

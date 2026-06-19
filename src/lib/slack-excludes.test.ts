@@ -3,6 +3,7 @@ import {
   addExclude,
   excludedChannelIds,
   excludeTargetFromEntry,
+  migrateExcludes,
   removeExclude,
   type SlackExclude,
 } from "./slack-excludes"
@@ -64,5 +65,66 @@ describe("excludeTargetFromEntry", () => {
     ).toBeNull()
     expect(excludeTargetFromEntry({ groupKey: "slack:T1" })).toBeNull() // no channelId (hijack)
     expect(excludeTargetFromEntry({})).toBeNull()
+  })
+})
+
+describe("migrateExcludes — t092 Grid re-key", () => {
+  // After the Grid merge, swept entries carry `slack:{groupId}`, so new excludes key by
+  // groupId. Existing persisted excludes keyed by a member workspace's teamId must re-key
+  // to the org's groupId via the teamId → groupId map, or the mute stops matching.
+  const map = { TGFUQ89E1: "E0761H36LHY", E0761H36LHY: "E0761H36LHY" }
+
+  it("re-keys a member-workspace exclude to its org groupId", () => {
+    const list: SlackExclude[] = [{ team: "TGFUQ89E1", channelId: "C1", label: "#general" }]
+
+    const out = migrateExcludes(list, map)
+
+    expect(out).toEqual([{ team: "E0761H36LHY", channelId: "C1", label: "#general" }])
+  })
+
+  it("leaves a standalone (no-map-entry) exclude unchanged", () => {
+    const list: SlackExclude[] = [{ team: "T01CDUT3CBD", channelId: "C2", label: "#dcp" }]
+
+    const out = migrateExcludes(list, map)
+
+    expect(out).toBe(list)
+  })
+
+  it("returns the same ref when nothing needs re-keying (no-op)", () => {
+    // Already keyed by groupId — idempotent.
+    const list: SlackExclude[] = [{ team: "E0761H36LHY", channelId: "C1", label: "#general" }]
+
+    const out = migrateExcludes(list, map)
+
+    expect(out).toBe(list)
+  })
+
+  it("is idempotent on re-run", () => {
+    const list: SlackExclude[] = [{ team: "TGFUQ89E1", channelId: "C1", label: "#general" }]
+
+    const once = migrateExcludes(list, map)
+    const twice = migrateExcludes(once, map)
+
+    expect(twice).toBe(once)
+    expect(once).toEqual([{ team: "E0761H36LHY", channelId: "C1", label: "#general" }])
+  })
+
+  it("de-dupes when org and member excludes of the same channel collapse to one key", () => {
+    // Both the org pseudo-team and the member workspace had the same channel muted; after
+    // re-keying both land on groupId E0 / C1 — keep one.
+    const list: SlackExclude[] = [
+      { team: "TGFUQ89E1", channelId: "C1", label: "#general (ws)" },
+      { team: "E0761H36LHY", channelId: "C1", label: "#general (org)" },
+    ]
+
+    const out = migrateExcludes(list, map)
+
+    expect(out).toEqual([{ team: "E0761H36LHY", channelId: "C1", label: "#general (ws)" }])
+  })
+
+  it("returns the same ref for an empty map", () => {
+    const list: SlackExclude[] = [{ team: "TGFUQ89E1", channelId: "C1", label: "#general" }]
+
+    expect(migrateExcludes(list, {})).toBe(list)
   })
 })

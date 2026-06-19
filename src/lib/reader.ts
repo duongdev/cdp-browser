@@ -18,9 +18,14 @@ const READER_CAPABILITY: Record<string, "history"> = {
 export function readerRoute(entry: ViewEntry, hasHistoryBridge: boolean): ReaderRoute {
   if (!hasHistoryBridge) return { kind: "stub" }
   if (READER_CAPABILITY[entry.adapter ?? ""] !== "history") return { kind: "stub" }
-  // The same {team, channelId} derivation the Channel Exclude action uses — null for
-  // entries that don't carry a stable channel identity (pre-sweep hijack backlog).
+  // The channel id derivation the Channel Exclude action uses — null for entries that don't
+  // carry a stable channel identity (pre-sweep hijack backlog).
   const target = excludeTargetFromEntry(entry)
   if (!target) return { kind: "stub" }
-  return { kind: "history", team: target.team, channel: target.channelId }
+  // History must fetch from the concrete workspace the message was swept from (t092): the
+  // entry's `team` (physical teamId), NOT the `groupKey`-derived groupId. In an Enterprise
+  // Grid the org token can't read a member-only channel, and the deep-link needs the real
+  // workspace. A swept entry with a channel but no concrete team can't fetch — stub.
+  if (!entry.team) return { kind: "stub" }
+  return { kind: "history", team: entry.team, channel: target.channelId }
 }

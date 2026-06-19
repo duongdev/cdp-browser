@@ -7,7 +7,27 @@ const CLIENT = (team: string, ch = "C1") => `https://app.slack.com/client/${team
 describe("upsertWorkspace — register a workspace seen as its own tab", () => {
   it("adds a new workspace keyed by teamId with lastSeen", () => {
     const reg = upsertWorkspace({}, { teamId: "T1", url: CLIENT("T1"), name: "Acme" }, 1000)
-    expect(reg.T1).toEqual({ teamId: "T1", url: CLIENT("T1"), name: "Acme", lastSeen: 1000 })
+    expect(reg.T1).toEqual({
+      teamId: "T1",
+      url: CLIENT("T1"),
+      name: "Acme",
+      enterpriseId: "",
+      lastSeen: 1000,
+    })
+  })
+
+  it("persists enterpriseId for an Enterprise Grid child (t092)", () => {
+    const reg = upsertWorkspace(
+      {},
+      {
+        teamId: "TGFUQ89E1",
+        url: CLIENT("TGFUQ89E1"),
+        name: "FWD Group",
+        enterpriseId: "E0761H36LHY",
+      },
+      1000,
+    )
+    expect(reg.TGFUQ89E1.enterpriseId).toBe("E0761H36LHY")
   })
 
   it("updates url + lastSeen on a repeat sighting, preserving identity", () => {

@@ -34,6 +34,11 @@ export function excludedChannelIds(list: SlackExclude[], team: string): string[]
 // `slack:{team}` groupKey, channelId from the carried field. Returns null when the entry
 // isn't a swept Slack message (no channelId / non-slack groupKey) so the UI can hide the
 // action. Pure — the entry shape is the notification store's.
+//
+// Note: after the t092 Grid merge the groupKey is `slack:{groupId}`, so the extracted
+// `team` is actually the merged groupId. Callers use it as the exclude key as-is (the
+// sweep also keys excludes by groupId), so the mute matches; don't treat it as a physical
+// teamId for a teamId-keyed lookup.
 export function excludeTargetFromEntry(entry: {
   groupKey?: string
   channelId?: string
@@ -42,4 +47,32 @@ export function excludeTargetFromEntry(entry: {
   const m = /^slack:(.+)$/.exec(entry.groupKey)
   if (!m) return null
   return { team: m[1], channelId: entry.channelId }
+}
+
+// Re-key persisted excludes from a member workspace's teamId to its Enterprise Grid org
+// groupId (t092, ADR-0011). After the Grid merge the sweep stamps `slack:{groupId}`, so a
+// new exclude keys by groupId; an exclude saved before the merge (keyed by the member's
+// teamId) would stop matching. `teamGroupMap` is teamId → groupId; an entry with no map
+// hit (standalone team) is untouched. Idempotent — already-groupId entries re-map to
+// themselves. De-dupes when an org + member exclude of the same channel collapse to one
+// key (keeps the first). Returns the same reference when nothing changed (skip a write).
+export function migrateExcludes(
+  list: SlackExclude[],
+  teamGroupMap: Record<string, string>,
+): SlackExclude[] {
+  let changed = false
+  const seen = new Set<string>()
+  const next: SlackExclude[] = []
+  for (const e of list) {
+    const team = teamGroupMap[e.team] || e.team
+    if (team !== e.team) changed = true
+    const key = `${team}:${e.channelId}`
+    if (seen.has(key)) {
+      changed = true
+      continue
+    }
+    seen.add(key)
+    next.push(team === e.team ? e : { ...e, team })
+  }
+  return changed ? next : list
 }

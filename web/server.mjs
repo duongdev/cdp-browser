@@ -24,6 +24,7 @@ import sidechain from "../core/notifications-sidechain.js"
 import connector from "../core/remote-page-connector.js"
 import { createSettingsStore } from "../core/settings-store.js"
 import { createSlackApi } from "../core/slack-api.js"
+import { buildSlackGroups } from "../core/slack-creds.js"
 import { createSlackSweeper } from "../core/slack-sweep-runner.js"
 import {
   liveTeamIds as slackLiveTeamIds,
@@ -543,12 +544,16 @@ async function keepSlackTabsAlive(targets) {
     const teamId = slackTeamIdOf(t.url || "")
     if (!teamId) continue
     const before = slackRegistry[teamId]
+    // enterpriseId (t092) self-populates from the live cred record once extracted; until
+    // then keep any previously-persisted value so a cold start still knows the Grid org.
+    const enterpriseId =
+      notificationCenter.getCreds(teamId)?.enterpriseId ?? before?.enterpriseId ?? ""
     slackRegistry = slackUpsertWorkspace(
       slackRegistry,
-      { teamId, url: t.url, name: before?.name },
+      { teamId, url: t.url, name: before?.name, enterpriseId },
       Date.now(),
     )
-    if (!before) changed = true
+    if (!before || before.enterpriseId !== enterpriseId) changed = true
   }
   // Recreate a tab for any registered workspace that has no live tab.
   const live = slackLiveTeamIds(targets)
@@ -612,10 +617,13 @@ const slackSweeper = createSlackSweeper({
   markSeeded: (t) => slackSweepState.seeded.add(t),
   // Channel Exclude list (t072): the excluded channel ids for this workspace, read live
   // from ui-state (`slackExcludes: {team,channelId,label}[]`) so a mute applies next sweep.
-  getExcludes: (team) => {
+  // The runner passes the merged groupId (t092); excludes are stored keyed by that same
+  // groupId (migrateExcludes + excludeTargetFromEntry both key by groupKey), so the filter
+  // matches a Grid member's groupId-keyed mute that a teamId query would miss.
+  getExcludes: (groupId) => {
     const list = settings.getUiState().slackExcludes
     return Array.isArray(list)
-      ? list.filter((e) => e && e.team === team).map((e) => e.channelId)
+      ? list.filter((e) => e && e.team === groupId).map((e) => e.channelId)
       : []
   },
   getMuted: (t) => slackSweepState.muted[t],
@@ -640,36 +648,45 @@ const slackSweeper = createSlackSweeper({
     slackSweepState.meta[t].lastSweepOk = Date.now()
   },
   applyReadUpdates: (_team, lastRead) => notificationCenter.applySlackReadUpdates(lastRead),
-  applyReadByUnread: (team, unreadSet) =>
-    notificationCenter.applySlackReadByUnread(team, unreadSet),
+  // The runner passes the merged groupId (t092) so the read-sync matches the slack:{groupId}
+  // groupKey the sweep stamps on entries — not the concrete teamId.
+  applyReadByUnread: (groupId, unreadSet) =>
+    notificationCenter.applySlackReadByUnread(groupId, unreadSet),
   markStale: (t, reason) => notificationCenter.markCredsStale(t, reason),
   markUnsweepable: (t, reason) => notificationCenter.disableSweep(t, reason),
   now: Date.now,
   log: (m) => console.log(m),
 })
-// Compute the Slack capture health report from cred records + sweep metadata (t074).
-const slackHealth = () => buildHealth(notificationCenter.listCreds(), slackSweepState.meta)
+// Compute the Slack capture health report from cred records + sweep metadata (t074, t092).
+// Rows are merged per Enterprise Grid group (one row per org); `groups` is the teamId →
+// groupId map the renderer needs to resolve a Slack Tab/Pin URL (which carries only a
+// concrete teamId) to its merged unread/health/mute bucket.
+const slackHealthRows = () => buildHealth(notificationCenter.listCreds(), slackSweepState.meta)
+const slackHealth = () => ({
+  rows: slackHealthRows(),
+  groups: buildSlackGroups(notificationCenter.listCreds()),
+})
 
-// Fire a one-time "reconnect Slack" alert when a workspace first degrades (stale creds) or
-// is found unsupported (Grid-restricted). Gated by the last-seen status so it never repeats.
+// Fire a one-time "reconnect Slack" alert when a workspace group first degrades (stale creds)
+// or is found unsupported (Grid-restricted). Gated by the last-seen status so it never repeats.
 function checkSlackHealthAlerts() {
-  for (const row of slackHealth()) {
-    const prev = slackSweepState.alertStatus[row.teamId]
+  for (const row of slackHealthRows()) {
+    const prev = slackSweepState.alertStatus[row.groupId]
     if (shouldAlert(prev, row.status)) {
       const why =
         row.status === "unsupported"
           ? "can't read this workspace (restricted) — notifications limited"
           : "needs reconnecting — open this Slack workspace to refresh"
       sendPushToAll({
-        id: `slack-health:${row.teamId}:${row.status}`,
+        id: `slack-health:${row.groupId}:${row.status}`,
         source: "CDP Browser",
         title: `Slack: ${row.name}`,
         body: why,
-        groupKey: `slack:${row.teamId}`,
+        groupKey: `slack:${row.groupId}`,
         ts: Date.now(),
       })
     }
-    slackSweepState.alertStatus[row.teamId] = row.status
+    slackSweepState.alertStatus[row.groupId] = row.status
   }
 }
 

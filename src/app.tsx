@@ -37,7 +37,12 @@ import { threadKey } from "@/lib/notifications-view"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
 import { notifIdFromSearch, resolvePushEntry, stripNotifParam } from "@/lib/push-route"
 import { shouldApplyAdaptive } from "@/lib/shell-mode"
-import { addExclude, excludeTargetFromEntry, type SlackExclude } from "@/lib/slack-excludes"
+import {
+  addExclude,
+  excludeTargetFromEntry,
+  migrateExcludes,
+  type SlackExclude,
+} from "@/lib/slack-excludes"
 import { startUpdateWatcher } from "@/lib/sw-update"
 import { planClose, planSwitch } from "@/lib/tab-lifecycle"
 import { reconcile, stripTitleBadge, type Tab } from "@/lib/tabs"
@@ -133,6 +138,11 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeSource>("system")
   const [pins, setPins] = useState<Pin[]>([])
   const [notifications, setNotifications] = useState<NotifEntry[]>([])
+  // teamId → groupId for Enterprise Grid Slack merging (t092): a Slack Tab/Pin URL carries a
+  // concrete teamId, which this map resolves to its merged `slack:{groupId}` unread bucket.
+  // Fetched from /api/notifications/health on load (web only; empty on Electron). Also used
+  // once to re-key persisted Channel Excludes from the old per-team key to the merged one.
+  const [teamGroupMap, setTeamGroupMap] = useState<Record<string, string>>({})
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
   const [syncTheme, setSyncTheme] = useState(true)
   const [bellOpen, setBellOpen] = useState(false)
@@ -283,7 +293,29 @@ export default function App() {
     window.cdp.onNotification((entry) => {
       setNotifications((prev) => (prev.some((n) => n.id === entry.id) ? prev : [entry, ...prev]))
     })
-  }, [restoreLocalTabs])
+    // Enterprise Grid grouping (t092, web only — Electron has no sweep). Fetch the
+    // teamId → groupId map so a Slack Tab/Pin badge resolves to its merged bucket, and
+    // re-key any persisted Channel Excludes from the old per-team key to the merged one
+    // (idempotent — a no-op once migrated). Standalone teams have no map entry → unchanged.
+    if (caps.web) {
+      fetch("/api/notifications/health")
+        .then((r) => r.json())
+        .then((data) => {
+          const groups = data && typeof data === "object" ? data.groups : null
+          const map = groups && typeof groups === "object" ? (groups as Record<string, string>) : {}
+          setTeamGroupMap(map)
+          if (Object.keys(map).length === 0) return
+          window.cdp.getUiState().then((s) => {
+            const current = Array.isArray(s.slackExcludes)
+              ? (s.slackExcludes as SlackExclude[])
+              : []
+            const next = migrateExcludes(current, map)
+            if (next !== current) window.cdp.setUiState({ slackExcludes: next })
+          })
+        })
+        .catch(() => {})
+    }
+  }, [restoreLocalTabs, caps.web])
 
   // Persist UI state on change (guard avoids overwriting stored values with the
   // initial defaults before getUiState resolves).
@@ -577,8 +609,8 @@ export default function App() {
   // Per-tab and per-pin unread badge counts, grouped so every tab/pin of the same
   // app shares one count and a dormant pin badges by its saved URL's origin.
   const { byTab: unreadByTab, byPin: unreadByPin } = useMemo(
-    () => aggregateUnread(notifications, tabs, pins, linkedTabByPin),
-    [notifications, tabs, pins, linkedTabByPin],
+    () => aggregateUnread(notifications, tabs, pins, linkedTabByPin, teamGroupMap),
+    [notifications, tabs, pins, linkedTabByPin, teamGroupMap],
   )
 
   const handleNotificationsEnabledChange = useCallback((enabled: boolean) => {

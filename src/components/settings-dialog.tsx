@@ -381,7 +381,11 @@ export function SettingsDialog({
         })
         fetch("/api/notifications/health")
           .then((r) => r.json())
-          .then((rows: SlackHealthRow[]) => setSlackHealth(Array.isArray(rows) ? rows : []))
+          // t092: the payload is now `{ rows, groups }` (rows merged per Enterprise Grid org;
+          // `groups` is the teamId → groupId map consumed by app.tsx). The card reads `rows`.
+          .then((data: { rows?: SlackHealthRow[] }) =>
+            setSlackHealth(Array.isArray(data?.rows) ? data.rows : []),
+          )
           .catch(() => setSlackHealth([]))
       }
     }

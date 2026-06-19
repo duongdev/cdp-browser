@@ -22,12 +22,14 @@ function teamIdOf(url) {
 }
 
 // Register (or refresh) a workspace seen as its own tab. Returns a new registry object;
-// never mutates the input. Ignores entries with no resolvable teamId.
-function upsertWorkspace(registry, { teamId, url, name }, now) {
+// never mutates the input. Ignores entries with no resolvable teamId. `enterpriseId` (t092)
+// is persisted so a cold start (no live creds yet) still knows a workspace's Grid org and
+// can resolve its merged group bucket; "" for a standalone team (groupId falls to teamId).
+function upsertWorkspace(registry, { teamId, url, name, enterpriseId }, now) {
   if (!teamId) return registry
   return {
     ...registry,
-    [teamId]: { teamId, url, name: name || "", lastSeen: now },
+    [teamId]: { teamId, url, name: name || "", enterpriseId: enterpriseId || "", lastSeen: now },
   }
 }
 

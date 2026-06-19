@@ -219,6 +219,26 @@ describe("reduceMessages — entry synthesis + parity", () => {
     })
     expect(newEntries.map((e) => e.channelId).sort()).toEqual(["C9", "G1"])
   })
+
+  // Enterprise Grid (t092): a distinct groupId keys the id + groupKey by the merged group,
+  // while the concrete `team` is preserved on the entry for deep-link/activation. This is the
+  // dedup invariant — an org pseudo-team and its member workspace surface the same (channel,
+  // ts) and must collapse to the same id.
+  it("keys id + groupKey by groupId when given, keeping the concrete team", () => {
+    const { newEntries } = reduceMessages({
+      team: "TGFUQ89E1",
+      groupId: "E0761H36LHY",
+      candidates: [msg({ channelId: "D1", ts: "150.0" })],
+      watermark: {},
+      excludes: [],
+      muted: [],
+      ...self,
+    })
+    expect(newEntries).toHaveLength(1)
+    expect(newEntries[0].id).toBe("slack:E0761H36LHY:D1:150.0")
+    expect(newEntries[0].groupKey).toBe("slack:E0761H36LHY")
+    expect(newEntries[0].team).toBe("TGFUQ89E1")
+  })
 })
 
 describe("applyReadUpdates — follow Slack last_read", () => {

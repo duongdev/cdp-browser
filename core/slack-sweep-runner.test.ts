@@ -192,6 +192,169 @@ describe("read sync + auth + invalid_auth", () => {
   })
 })
 
+describe("Enterprise Grid grouping — org + workspace collapse (t092)", () => {
+  const gridApi = () =>
+    fakeApi({
+      auth: { ok: true, user_id: "U_ME" },
+      clientCounts: {
+        ok: true,
+        channels: [
+          { id: "C1", last_read: "100.0", latest: "160.0", mention_count: 1, has_unreads: true },
+        ],
+        ims: [],
+        mpims: [],
+      },
+      history: {
+        C1: { ok: true, messages: [{ type: "message", user: "U2", ts: "160.0", text: "<@U_ME>" }] },
+      },
+    })
+
+  it("keys a Grid child's entries by enterpriseId, keeping the concrete teamId", async () => {
+    const h = harness(gridApi())
+    h.seeded.add("TGFUQ89E1")
+    h.watermarks.TGFUQ89E1 = { C1: "100.0" }
+    await h.sweeper.sweepWorkspace({
+      teamId: "TGFUQ89E1",
+      enterpriseId: "E0761H36LHY",
+      token: "x",
+      cookie: "c",
+      name: "FWD Group",
+      url: "https://fwdgroup.slack.com/",
+    })
+    expect(h.ingested[0].id).toBe("slack:E0761H36LHY:C1:160.0")
+    expect(h.ingested[0].groupKey).toBe("slack:E0761H36LHY")
+    expect(h.ingested[0].team).toBe("TGFUQ89E1")
+    // Deep-link must use the concrete workspace, not the group id.
+    expect(h.ingested[0].activate).toEqual({
+      type: "spa-link",
+      url: "/client/TGFUQ89E1/C1",
+    })
+  })
+
+  it("the org pseudo-team yields the SAME id as its workspace for one (channel, ts)", async () => {
+    const ws = harness(gridApi())
+    ws.seeded.add("TGFUQ89E1")
+    ws.watermarks.TGFUQ89E1 = { C1: "100.0" }
+    await ws.sweeper.sweepWorkspace({
+      teamId: "TGFUQ89E1",
+      enterpriseId: "E0761H36LHY",
+      token: "x",
+      cookie: "c",
+    })
+    const org = harness(gridApi())
+    org.seeded.add("E0761H36LHY")
+    org.watermarks.E0761H36LHY = { C1: "100.0" }
+    await org.sweeper.sweepWorkspace({
+      teamId: "E0761H36LHY", // org pseudo-team: teamId === enterpriseId
+      enterpriseId: "",
+      token: "y",
+      cookie: "c",
+    })
+    expect(ws.ingested[0].id).toBe(org.ingested[0].id) // ingest dedups for free
+  })
+
+  it("a standalone team is byte-unchanged (groupId === teamId)", async () => {
+    const h = harness(gridApi())
+    h.seeded.add("T01CDUT3CBD")
+    h.watermarks.T01CDUT3CBD = { C1: "100.0" }
+    await h.sweeper.sweepWorkspace({
+      teamId: "T01CDUT3CBD",
+      enterpriseId: "",
+      token: "z",
+      cookie: "c",
+    })
+    expect(h.ingested[0].id).toBe("slack:T01CDUT3CBD:C1:160.0")
+    expect(h.ingested[0].groupKey).toBe("slack:T01CDUT3CBD")
+  })
+
+  // A Grid child's entries are keyed by groupId (slack:{groupId}); read-sync + exclude
+  // lookup must key the SAME way, or restricted-path read-sync can never match an entry and
+  // a stored mute keyed by groupId is never seen. The reader/lookup args therefore carry the
+  // groupId, not the concrete teamId (the entries do).
+  it("read-sync + getExcludes key by groupId, not the concrete teamId", async () => {
+    const excludesByKey: string[] = []
+    const readByUnread: Array<{ key: string; unread: string[] }> = []
+    const restrictedGrid = fakeApi({
+      clientCounts: { error: "team_is_restricted" },
+      usersCounts: {
+        ok: true,
+        channels: [{ id: "C1", mention_count_display: 0, unread_count_display: 0 }],
+        ims: [],
+      },
+    })
+    const sweeper = createSlackSweeper({
+      makeApi: () => restrictedGrid,
+      getWatermark: () => ({ C1: "1.0" }),
+      setWatermark: () => {},
+      isSeeded: () => true,
+      markSeeded: () => {},
+      getExcludes: (key: string) => {
+        excludesByKey.push(key)
+        return []
+      },
+      getMuted: () => [],
+      setMuted: () => {},
+      getSelfUserId: () => "U",
+      setSelfUserId: () => {},
+      ingestEntry: () => {},
+      applyReadUpdates: () => {},
+      applyReadByUnread: (key: string, unreadSet: Set<string>) =>
+        readByUnread.push({ key, unread: [...unreadSet].sort() }),
+      markStale: () => {},
+      now: () => 1_700_000_000_000,
+      log: () => {},
+    })
+    await sweeper.sweepWorkspace({
+      teamId: "TGFUQ89E1",
+      enterpriseId: "E0761H36LHY",
+      token: "x",
+      cookie: "c",
+    })
+    expect(excludesByKey).toEqual(["E0761H36LHY"])
+    expect(readByUnread).toEqual([{ key: "E0761H36LHY", unread: [] }])
+  })
+
+  // The first (seeding) sweep of a Grid child also read-syncs on the restricted path — and
+  // must key by groupId too, so the seed read-sync clears any existing groupId-keyed entries.
+  it("first-sweep restricted read-sync keys by groupId", async () => {
+    const readByUnread: Array<{ key: string; unread: string[] }> = []
+    const restrictedGrid = fakeApi({
+      clientCounts: { error: "team_is_restricted" },
+      usersCounts: {
+        ok: true,
+        channels: [{ id: "C1", mention_count_display: 0, unread_count_display: 0 }],
+        ims: [],
+      },
+    })
+    const sweeper = createSlackSweeper({
+      makeApi: () => restrictedGrid,
+      getWatermark: () => ({}),
+      setWatermark: () => {},
+      isSeeded: () => false,
+      markSeeded: () => {},
+      getExcludes: () => [],
+      getMuted: () => [],
+      setMuted: () => {},
+      getSelfUserId: () => "U",
+      setSelfUserId: () => {},
+      ingestEntry: () => {},
+      applyReadUpdates: () => {},
+      applyReadByUnread: (key: string, unreadSet: Set<string>) =>
+        readByUnread.push({ key, unread: [...unreadSet].sort() }),
+      markStale: () => {},
+      now: () => 1_700_000_000_000,
+      log: () => {},
+    })
+    await sweeper.sweepWorkspace({
+      teamId: "TGFUQ89E1",
+      enterpriseId: "E0761H36LHY",
+      token: "x",
+      cookie: "c",
+    })
+    expect(readByUnread).toEqual([{ key: "E0761H36LHY", unread: [] }])
+  })
+})
+
 describe("muted channels honored", () => {
   it("does not notify a muted channel even with a mention", async () => {
     const api = fakeApi({

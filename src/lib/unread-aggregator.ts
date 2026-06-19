@@ -52,12 +52,20 @@ function originOf(url: string | undefined): string | null {
   }
 }
 
+/** teamId → groupId, for Enterprise Grid merging (t092). A Grid org pseudo-team and its
+ *  member workspaces share one `groupId` (`enterprise_id || teamId`); the map collapses a
+ *  Slack Tab/Pin URL — which only carries the concrete teamId — to its merged bucket. Empty
+ *  for standalone teams (the URL teamId is already the bucket). */
+export type TeamGroupMap = Record<string, string>
+
 // Slack runs every workspace under one origin (app.slack.com), so resolving a Slack
 // tab/pin by origin would merge all workspaces into one badge. Key it by team id instead
 // — matching the `slack:{teamId}` group key the notification center stamps server-side
 // (mirrors core/notifications.js `slackGroupKey`; one tab per workspace, so the URL is
-// authoritative). `T…` standard / `E…` Enterprise Grid, legacy subdomain fallback.
-function slackGroupKey(url: string | undefined): string | null {
+// authoritative). With an Enterprise Grid `teamGroupMap`, the extracted teamId maps to its
+// merged `groupId` (`map[teamId] || teamId`), so an org tab and its member workspace bucket
+// together; no map entry → today's `slack:{teamId}`. `T…` standard / `E…` Grid, legacy fallback.
+function slackGroupKey(url: string | undefined, teamGroupMap: TeamGroupMap): string | null {
   if (!url) return null
   let u: URL
   try {
@@ -67,21 +75,22 @@ function slackGroupKey(url: string | undefined): string | null {
   }
   if (!/(^|\.)slack\.com$/.test(u.hostname)) return null
   const m = u.pathname.match(/\/client\/([TE][A-Z0-9]+)/)
-  if (m) return `slack:${m[1]}`
+  if (m) return `slack:${teamGroupMap[m[1]] || m[1]}`
   const sub = u.hostname.replace(/\.slack\.com$/, "")
-  return sub && sub !== "app" ? `slack:${sub}` : null
+  return sub && sub !== "app" ? `slack:${teamGroupMap[sub] || sub}` : null
 }
 
-/** A URL's unread bucket: Slack's per-workspace `slack:{teamId}`, else the URL origin.
- *  The single key derivation shared by notification keying and Tab/Pin resolution. */
-function groupKeyForUrl(url: string | undefined): string | null {
-  return slackGroupKey(url) ?? originOf(url)
+/** A URL's unread bucket: Slack's per-workspace (or per-Grid-group) `slack:{groupId}`, else
+ *  the URL origin. The single key derivation shared by notification keying and Tab/Pin
+ *  resolution. `teamGroupMap` merges Enterprise Grid teams; empty map = per-team. */
+function groupKeyForUrl(url: string | undefined, teamGroupMap: TeamGroupMap): string | null {
+  return slackGroupKey(url, teamGroupMap) ?? originOf(url)
 }
 
-/** A notification's group key: its explicit stamped `groupKey`, else derived from its
- *  targetUrl (Slack workspace key or origin) — the same derivation Tabs/Pins use. */
-function notificationKey(n: UnreadNotification): string | null {
-  return n.groupKey ?? groupKeyForUrl(n.targetUrl)
+/** A notification's group key: its explicit stamped `groupKey` (already merged server-side
+ *  for Grid), else derived from its targetUrl — the same derivation Tabs/Pins use. */
+function notificationKey(n: UnreadNotification, teamGroupMap: TeamGroupMap): string | null {
+  return n.groupKey ?? groupKeyForUrl(n.targetUrl, teamGroupMap)
 }
 
 /**
@@ -89,29 +98,35 @@ function notificationKey(n: UnreadNotification): string | null {
  * group's count. A Tab resolves through its own `url` origin; a Pin resolves
  * through its linked Tab's live `url` when linked (via `linkedTabByPin`), else
  * its saved `url`. Read notifications and inputs with no resolvable key get `0`.
+ *
+ * `teamGroupMap` (optional, t092) merges Enterprise Grid Slack teams: a Tab/Pin URL's
+ * concrete teamId resolves to its `slack:{groupId}` bucket so an org tab and its member
+ * workspace share one count. Notifications already carry the merged `groupKey` from the
+ * server, so the map only affects Tab/Pin URL resolution. Omitted/empty = per-team.
  */
 export function aggregateUnread(
   notifications: UnreadNotification[],
   tabs: UnreadTab[],
   pins: UnreadPin[],
   linkedTabByPin: Record<string, UnreadTab>,
+  teamGroupMap: TeamGroupMap = {},
 ): UnreadResult {
   const byGroup: Record<string, number> = {}
   for (const n of notifications) {
     if (n.read) continue
-    const key = notificationKey(n)
+    const key = notificationKey(n, teamGroupMap)
     if (key) byGroup[key] = (byGroup[key] || 0) + 1
   }
 
   const byTab: Record<string, number> = {}
   for (const t of tabs) {
-    const key = groupKeyForUrl(t.url)
+    const key = groupKeyForUrl(t.url, teamGroupMap)
     byTab[t.id] = key ? byGroup[key] || 0 : 0
   }
 
   const byPin: Record<string, number> = {}
   for (const pin of pins) {
-    const key = groupKeyForUrl(linkedTabByPin[pin.id]?.url ?? pin.url)
+    const key = groupKeyForUrl(linkedTabByPin[pin.id]?.url ?? pin.url, teamGroupMap)
     byPin[pin.id] = key ? byGroup[key] || 0 : 0
   }
 
