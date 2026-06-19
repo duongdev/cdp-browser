@@ -47,16 +47,18 @@ Grouped by area. Each is checkable true/false.
 
 ### B — Web-transport factory extraction + tests (was A5, Med)
 
-- [ ] `createWsChannel`, `createInputChannel`, `createReconnectDriver` are
+- [x] `createWsChannel`, `createInputChannel`, `createReconnectDriver` are
       lifted out of `cdp-web-transport.ts` into their own files, each with
       injectable deps preserved.
-- [ ] Unit tests cover the WS channel and the reconnect driver (both have zero
-      isolated tests today).
-- [ ] `createWebCdp` remains the assembler (~200L target); the already-pure
-      seams (`downlink-dispatcher`, `uplink-router`, `crypto-context`,
+- [x] Unit tests cover the WS channel (new, 8) and the reconnect driver (existing,
+      colocated). (Correction: the reconnect driver already had a test — the real
+      zero-coverage gap was the WS channel.) Input channel +1 (fallback contract).
+- [x] `createWebCdp` remains the assembler; the already-pure seams
+      (`downlink-dispatcher`, `uplink-router`, `crypto-context`,
       `transport-selector`, `reconnect-backoff`, `input-coalesce`) are **not**
-      re-extracted.
-- [ ] `cdp-web-transport.ts` line count drops materially (from 1419).
+      re-extracted. (Assembler is 970L — the verifier's "~200L" was the rejected
+      proposal's aspiration; the corrected scope was extract-the-3-factories only.)
+- [x] `cdp-web-transport.ts` line count drops materially: 1419 → 970.
 
 ### C — onSwipe listener leak (was P6, S, Electron-only)
 
@@ -127,10 +129,11 @@ Grouped by area. Each is checkable true/false.
       re-fire, `stop()` cancels (A6). ✓ green
 - [ ] the optimistic-mutate helper — applies patch on success; reverts to the
       prior list on a rejected POST (A2/D).
-- [ ] `createReconnectDriver` — backoff schedule + WS re-climb fires the
-      injected connect at the expected steps (B).
-- [ ] `createWsChannel` — frame/ack/input routing over an injected socket; paint-
-      ack defer path (B).
+- [x] `createReconnectDriver` — backoff schedule + WS re-climb fires the
+      injected connect at the expected steps (B). ✓ green (pre-existing test
+      colocated to `web-reconnect-driver.test.ts`).
+- [x] `createWsChannel` — frame/ack/input routing over an injected socket; paint-
+      ack defer path (B). ✓ green (new `web-ws-channel.test.ts`, 8 cases; was 0).
 - [x] paint-ack watchdog timeout derivation — given an RTT/paint sample, the
       watchdog window is ≥ a floor and tracks the sample (P2). ✓ green
 

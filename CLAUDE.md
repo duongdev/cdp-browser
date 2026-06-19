@@ -145,7 +145,10 @@ cdp-browser/
     │   ├── find-bar.ts           # Pure in-page find reducer: open/close/setQuery/setTotal/next-prev(wrap) + counterLabel (t001)
     │   ├── push-notification.ts  # Pure E1: revocation-proof SW push handler (t095). buildNotificationContent(data) → {title, options}; always renders (fallback on parse-fail)
     │   ├── push-revalidate.ts    # Pure E1b: once-per-foreground subscription re-validation gate (t095, ADR-0014). createPushRevalidateGate() → {shouldRevalidateNow(visible)}
-    │   ├── cdp-web-transport.ts  # Web build: thin assembler wiring Downlink + Uplink + REST bridge into window.cdp
+    │   ├── cdp-web-transport.ts  # Web build: thin assembler wiring Downlink + Uplink + REST bridge into window.cdp (3 DI'd factories extracted to web-*.ts, t096)
+    │   ├── web-ws-channel.ts     # Web build: createWsChannel — the optional full-duplex WS channel (extracted from cdp-web-transport, isolated tests; t096/A5)
+    │   ├── web-input-channel.ts  # Web build: createInputChannel — the streaming NDJSON input POST + probe/fallback (extracted; t096/A5)
+    │   ├── web-reconnect-driver.ts # Web build: createReconnectDriver — the effectful auto-reconnect backoff loop (extracted; t096/A5)
     │   ├── downlink-dispatcher.ts # Web build: Downlink seam (one WS/SSE source) + Dispatcher (decode→fan-out→toast-once)
     │   ├── uplink-router.ts      # Web build: Uplink seam (WS/stream/POST adapters) + ready-transport router
     │   ├── crypto-context.ts     # Web build: single E2E owner — sealText/openText, handshake gate, mode flag

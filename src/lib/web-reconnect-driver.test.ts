@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { createReconnectDriver } from "./cdp-web-transport"
+import { createReconnectDriver } from "./web-reconnect-driver"
 
 // A controllable timer + connect stub so the effectful driver runs without real waits or
 // sockets. `fireTimers` drains the queue (newest scheduled first matches the loop's single
