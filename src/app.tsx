@@ -1230,9 +1230,11 @@ export default function App() {
     }
   }, [page, refreshTabs, updateNavHistory])
 
-  // Trackpad swipe gestures
+  // Trackpad swipe gestures. onSwipe returns an unsubscribe — without it, every reconnect
+  // (goBack/goForward are keyed on `page`) would leak another cdp:swipe listener, so one
+  // swipe would eventually fire back/forward N times (t096, P6).
   useEffect(() => {
-    window.cdp.onSwipe((direction) => {
+    return window.cdp.onSwipe((direction) => {
       if (direction === "left") goBack()
       if (direction === "right") goForward()
     })

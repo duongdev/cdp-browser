@@ -62,11 +62,12 @@ Grouped by area. Each is checkable true/false.
 
 ### C — onSwipe listener leak (was P6, S, Electron-only)
 
-- [ ] `preload.js` `onSwipe` returns an unsubscribe
-      (`removeListener` of the wrapper).
-- [ ] The `app.tsx` swipe effect returns that unsubscribe as cleanup.
+- [x] `preload.js` `onSwipe` returns an unsubscribe
+      (`removeListener` of the named wrapper); web stub returns a no-op unsubscribe;
+      `CdpBridge` type updated to `=> () => void`.
+- [x] The `app.tsx` swipe effect returns that unsubscribe as cleanup.
 - [ ] After repeated reconnects, a single swipe fires `goBack`/`goForward`
-      exactly once (manual Electron smoke).
+      exactly once (manual Electron smoke). **HITL pending** — needs the Electron app.
 
 ### D — Notification optimistic-write revert (was A2 real defect, S)
 
@@ -92,9 +93,9 @@ Grouped by area. Each is checkable true/false.
       `CDP_CALL_TIMEOUT_MS=10_000`, drop rejects+clears pending; test covers close.
 - [ ] **A1** — a 2-line `applyCloseDirective` helper dedupes the `nextActive`
       switch tail shared by `closeTab` and `closeTabs`.
-- [ ] **P11** — `page.find()` has a `.catch` (no unhandled rejection on socket drop).
-- [ ] **P19** — the command-palette `action.run()` is wrapped in try-catch with a
-      failure toast.
+- [x] **P11** — `page.find()` has a `.catch` (no unhandled rejection on socket drop).
+- [x] **P19** — the command-palette `action.run()` is wrapped in try-catch with a
+      failure toast (`sonner`).
 - [x] **P2** — the paint-ack watchdog is adaptive (derived from measured
       RTT/paint latency) instead of a fixed 1000 ms, so a legitimately-slow device
       can't trip it early. Done: pure `core/paint-ack-pacer.js` (EWMA, floor 1s,

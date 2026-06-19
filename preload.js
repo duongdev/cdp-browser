@@ -23,7 +23,11 @@ contextBridge.exposeInMainWorld("cdp", {
   copyToClipboard: (text) => ipcRenderer.invoke("cdp:copy-to-clipboard", text),
   readClipboard: () => ipcRenderer.invoke("cdp:read-clipboard"),
   readClipboardImage: () => ipcRenderer.invoke("cdp:read-clipboard-image"),
-  onSwipe: (cb) => ipcRenderer.on("cdp:swipe", (_, direction) => cb(direction)),
+  onSwipe: (cb) => {
+    const handler = (_, direction) => cb(direction)
+    ipcRenderer.on("cdp:swipe", handler)
+    return () => ipcRenderer.removeListener("cdp:swipe", handler)
+  },
   // Pins
   getPins: () => ipcRenderer.invoke("cdp:get-pins"),
   addPin: (pin) => ipcRenderer.invoke("cdp:add-pin", pin),

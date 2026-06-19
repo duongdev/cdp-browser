@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { toast } from "sonner"
 import {
   CommandDialog,
   CommandEmpty,
@@ -41,7 +42,13 @@ export function CommandPalette({ open, onOpenChange, actions }: CommandPalettePr
   const run = (action: Action) => {
     onOpenChange(false)
     setQuery("")
-    action.run()
+    // State is already cleaned up above, so a throwing run-fn can't leave the palette in an
+    // odd state — surface it as a toast instead of an unhandled error (t096, P19).
+    try {
+      action.run()
+    } catch {
+      toast.error(`Couldn't run "${action.name}"`)
+    }
   }
 
   const handleOpenChange = (next: boolean) => {
