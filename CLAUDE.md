@@ -83,6 +83,8 @@ cdp-browser/
 │   ├── slack-render.js            # Pure content renderer: renderBody (mentions/channel-refs/links resolved, mrkdwn stripped, entities decoded) + composeTitle ("{sender} in #{channel}", DM: sender) (t073) + toReaderMessages (reader history shaping, t077). ADR-0011/0012
 │   ├── notification-health.js     # Pure capture-health aggregator: buildHealth (ONE row per Grid group keyed groupId — merged status/label/teamIds, t092; healthy/degraded/unsupported) + shouldAlert (one-time degrade gate); /api/notifications/health (t074, ADR-0011)
 │   ├── notif-mutes.js             # Pure per-device mute logic: muteKey(entry) (slack→groupKey, else adapter) + isMuted + unreadExcluding(list,mutes,masterOn) (per-device unread, 0 when master off). Mirrored in src/lib/notif-mutes.ts; gates per-device push in web/server.mjs (t093)
+│   ├── push-subscriptions.js       # Pure E0: endpoint-reconciled deviceId (t095, ADR-0014). reconcileDeviceId(existingSubs, {endpoint}) → {deviceId, isNew} — server-authoritative identity surviving storage wipe
+│   ├── push-send-options.js        # Pure E2: push notification send options (t095). pushSendOptions() → {urgency:"high", TTL:1800} for timely, non-stale delivery
 │   (Channel Exclude logic lives in src/lib/slack-excludes.ts — renderer edits ui-state, server sweep reads it, t072)
 │   └── crypto-envelope.js         # Server-side AES-256-GCM seal/open (E2E mode); mirrors src/lib/crypto-envelope.ts
 ├── web/
@@ -139,6 +141,8 @@ cdp-browser/
     │   ├── unread-aggregator.ts  # Pure aggregateUnread: byGroup/byTab/byPin counts from notification list
     │   ├── hotkey-registry.ts    # Pure action registry shared by ⌘K palette + ⌘/ overlay: buildActions/filterActions/groupForOverlay (effects injected by app.tsx). See docs/tasks/done/058
     │   ├── find-bar.ts           # Pure in-page find reducer: open/close/setQuery/setTotal/next-prev(wrap) + counterLabel (t001)
+    │   ├── push-notification.ts  # Pure E1: revocation-proof SW push handler (t095). buildNotificationContent(data) → {title, options}; always renders (fallback on parse-fail)
+    │   ├── push-revalidate.ts    # Pure E1b: once-per-foreground subscription re-validation gate (t095, ADR-0012). createPushRevalidateGate() → {shouldRevalidateNow(visible)}
     │   ├── cdp-web-transport.ts  # Web build: thin assembler wiring Downlink + Uplink + REST bridge into window.cdp
     │   ├── downlink-dispatcher.ts # Web build: Downlink seam (one WS/SSE source) + Dispatcher (decode→fan-out→toast-once)
     │   ├── uplink-router.ts      # Web build: Uplink seam (WS/stream/POST adapters) + ready-transport router

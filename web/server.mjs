@@ -22,6 +22,8 @@ import { createLineSplitter } from "../core/line-splitter.js"
 import { muteKey, unreadExcluding } from "../core/notif-mutes.js"
 import { buildHealth, shouldAlert } from "../core/notification-health.js"
 import sidechain from "../core/notifications-sidechain.js"
+import { pushSendOptions } from "../core/push-send-options.js"
+import { reconcileDeviceId } from "../core/push-subscriptions.js"
 import connector from "../core/remote-page-connector.js"
 import { createSettingsStore } from "../core/settings-store.js"
 import { createSlackApi } from "../core/slack-api.js"
@@ -198,7 +200,7 @@ async function sendPushToAll(payload) {
       const data = JSON.stringify(trimPushPayload({ ...payload, unread }))
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          await webpush.sendNotification(sub, data)
+          await webpush.sendNotification(sub, data, pushSendOptions())
           sent++
           console.log(`[push]   dev=${dev} sent unread=${unread}`)
           return // success
@@ -1041,13 +1043,15 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/notifications/subscribe" && POST) {
       const sub = await body(req)
       if (!sub?.endpoint) return json(res, { error: "missing endpoint" }, 400)
-      // Dedupe by endpoint URL so re-subscribing on the same device replaces in place.
-      // The record keeps `deviceId` (t093) so sendPushToAll can read that device's
-      // per-device master + mutes from ui-state and gate/stamp the push per device.
+      // E0: Reconcile by endpoint. A matching endpoint reuses its stored deviceId (so
+      // a storage wipe + re-subscribe on the same device recovers prior per-device prefs);
+      // a new endpoint gets a fresh UUID. The renderer adopts the returned id as the
+      // single source for device-keyed ui-state.
+      const { deviceId } = reconcileDeviceId(pushSubs, sub)
       pushSubs = pushSubs.filter((s) => s.endpoint !== sub.endpoint)
-      pushSubs.push(sub)
+      pushSubs.push({ ...sub, deviceId })
       savePushSubs()
-      return json(res, { ok: true })
+      return json(res, { deviceId })
     }
     if (p === "/api/notifications/unsubscribe" && POST) {
       const { endpoint } = await body(req)

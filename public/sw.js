@@ -50,47 +50,49 @@ self.addEventListener("fetch", (e) => {
   )
 })
 
-// Web Push handler — fires whenever the push service delivers a notification to this
-// device, including when the PWA is backgrounded or the screen is locked. iOS 16.4+
-// PWAs only; the payload mirrors what the server's `sendPushToAll` sends.
-self.addEventListener("push", (e) => {
-  if (!e.data) return
-  let data
-  try {
-    data = e.data.json()
-  } catch {
-    return
+// Build notification content: mirrors src/lib/push-notification.ts for static SW,
+// ensuring the fallback logic for parse errors is centralized and tested (E1).
+const NOTIFICATION_FALLBACK_TAG = "cdp-fallback"
+function buildNotificationContent(data) {
+  if (!data || typeof data !== "object") {
+    return {
+      title: "New message",
+      options: {
+        body: "",
+        badge: "/icons/icon-192.png",
+        tag: NOTIFICATION_FALLBACK_TAG,
+        data: {},
+      },
+    }
   }
   const title = data.title || "CDP Browser"
   const options = {
     body: data.body || "",
     icon: data.icon || "/icons/icon-192.png",
     badge: "/icons/icon-192.png",
-    tag: data.id || undefined, // collapses repeat notifications with same id
+    tag: data.id || undefined,
     timestamp: data.ts || Date.now(),
-    data: {
-      id: data.id,
-      source: data.source,
-      title: data.title,
-      body: data.body,
-      targetId: data.targetId,
-      targetUrl: data.targetUrl,
-      targetEntity: data.targetEntity,
-      adapter: data.adapter,
-      groupKey: data.groupKey,
-      activate: data.activate,
-      ts: data.ts,
-      // Conversation identity for the reader deep-route + composer (t080).
-      channelId: data.channelId,
-      slackKind: data.slackKind,
-      slackTs: data.slackTs,
-      slackThreadTs: data.slackThreadTs,
-    },
+    data: data,
   }
+  return { title, options }
+}
+
+// Web Push handler — fires whenever the push service delivers a notification to this
+// device, including when the PWA is backgrounded or the screen is locked. iOS 16.4+
+// PWAs only; the payload mirrors what the server's `sendPushToAll` sends. ALWAYS
+// calls showNotification to prevent userVisibleOnly revocation (E1).
+self.addEventListener("push", (e) => {
+  let data
+  try {
+    data = e.data?.json() || null
+  } catch {
+    data = null
+  }
+  const { title, options } = buildNotificationContent(data)
   const work = [self.registration.showNotification(title, options)]
   // Home-screen badge mirror (t080): the server stamps the unread count on every push,
   // so the icon is glanceable without opening the app. Feature-detected (iOS 16.4+).
-  if (typeof data.unread === "number" && navigator.setAppBadge) {
+  if (typeof data?.unread === "number" && navigator.setAppBadge) {
     work.push(
       (data.unread > 0
         ? navigator.setAppBadge(data.unread)
