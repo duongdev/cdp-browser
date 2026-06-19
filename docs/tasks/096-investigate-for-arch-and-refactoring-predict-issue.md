@@ -76,9 +76,11 @@ Grouped by area. Each is checkable true/false.
 
 ### E — Hardening nits (all S)
 
-- [ ] **P15** — settings `writeFileSync` is wrapped in try-catch + `console.error`
+- [x] **P15** — settings `writeFileSync` is wrapped in try-catch + `console.error`
       in both `main.js` and `web/server.mjs` (mirrors the existing `savePushSubs`).
-- [ ] **P7** — `sendPushToAll` recomputes `unreadExcluding` from a fresh
+      `core/settings-store.js` delegates to the injected persist, so guarding both
+      injection sites is the fix (no store change).
+- [x] **P7** — `sendPushToAll` recomputes `unreadExcluding` from a fresh
       `notificationCenter.list()` at each send (not the pre-await snapshot), so an
       in-flight push can't stamp a stale per-device badge.
 - [x] **P18** — `createClosedStack` caps entries (shift oldest beyond ~50).

@@ -121,7 +121,13 @@ const settings = createSettingsStore({
     host: process.env.CDP_HOST || "localhost",
     port: Number(process.env.CDP_PORT || 9222),
   }),
-  persist: (s) => writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2)),
+  persist: (s) => {
+    try {
+      writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2))
+    } catch (e) {
+      console.error("[web] settings persist failed:", e.message)
+    }
+  },
 })
 // Env wins on first boot so a fresh deploy points at the right host immediately.
 if (process.env.CDP_HOST)
@@ -174,7 +180,6 @@ function devicePrefs(ui, deviceId) {
 async function sendPushToAll(payload) {
   if (pushSubs.length === 0) return
   const key = muteKey(payload)
-  const list = notificationCenter.list()
   const ui = settings.getUiState()
   const dead = []
   // Verbose, greppable per-device delivery log (t093) so the mute gating can be verified from
@@ -197,7 +202,9 @@ async function sendPushToAll(payload) {
         console.log(`[push]   dev=${dev} skip:muted(${key})`)
         return // this source muted on this device
       }
-      const unread = unreadExcluding(list, mutes, master)
+      // Recompute from a fresh list at each send (t096, P7) so a mark-read that lands while a
+      // prior send is in flight can't leave this device's badge stamped from a stale snapshot.
+      const unread = unreadExcluding(notificationCenter.list(), mutes, master)
       const data = JSON.stringify(trimPushPayload({ ...payload, unread }))
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
