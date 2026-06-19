@@ -1192,7 +1192,8 @@ export default function App() {
       }
 
       // ⌘K / Ctrl+K: command palette. Reachable everywhere except an input owning the key.
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !inInput) {
+      // Match physical e.code so a Vietnamese engine's synthetic key re-post can't trip it.
+      if ((e.metaKey || e.ctrlKey) && e.code === "KeyK" && !inInput) {
         e.preventDefault()
         e.stopPropagation()
         setPaletteOpen((prev) => !prev)
@@ -1257,9 +1258,11 @@ export default function App() {
         }
       }
 
-      // Cmd+Shift+T: reopen closed tab. macOS reports e.key lowercase even with
-      // Shift while Cmd is held, so compare case-insensitively.
-      if (e.shiftKey && e.key.toLowerCase() === "t") {
+      // Cmd+Shift+T: reopen closed tab. Match on the physical e.code, not e.key —
+      // Shift+Cmd casing varies by platform, and a Vietnamese input engine (EVKey,
+      // OpenKey) re-posts characters as synthetic key events with a non-physical key
+      // while fixing a word, which e.key matching would misread (see the switch below).
+      if (e.shiftKey && e.code === "KeyT") {
         e.preventDefault()
         e.stopPropagation()
         reopenClosedTab()
@@ -1268,9 +1271,8 @@ export default function App() {
 
       // Cmd+Alt combos
       if (e.altKey) {
-        switch (e.key) {
-          case "l": // Cmd+Opt+L: copy URL
-          case "L":
+        switch (e.code) {
+          case "KeyL": // Cmd+Opt+L: copy URL
             e.preventDefault()
             e.stopPropagation()
             if (url) window.cdp.copyToClipboard(url)
@@ -1278,64 +1280,80 @@ export default function App() {
         }
       }
 
-      // Lowercase the key: iPadOS WebKit can report Cmd+letter as the uppercase letter
-      // (the Cmd+Shift+T branch above normalizes for the same reason), which would miss
-      // these cases and let the browser's reserved Cmd+R (reload) / Cmd+W (close) fire.
-      switch (e.key.toLowerCase()) {
-        case "t":
+      // Punctuation shortcuts stay on e.key, not e.code. e.code is Shift-blind, so
+      // Cmd+Shift+[ / Cmd+Shift+] (the browser prev/next-tab combo) must fall through to
+      // the remote page — e.key is "{"/"}" there and naturally won't match. e.code is also
+      // layout-fragile (a non-US layout's comma sits on a different physical key, e.g.
+      // Dvorak's comma is the QWERTY-W key — matching e.code would close the tab). And
+      // punctuation isn't a Telex tone-rewrite vector, so the synthetic-injection risk
+      // that drives the e.code switch below doesn't apply here.
+      if (e.key === ",") {
+        e.preventDefault()
+        e.stopPropagation()
+        const next = !settingsOpenRef.current
+        setSettingsOpen(next)
+        setSettingsCommitted(next) // keyboard-opened drawers start committed
+        return
+      }
+      if (e.key === "[") {
+        e.preventDefault()
+        e.stopPropagation()
+        goBack()
+        return
+      }
+      if (e.key === "]") {
+        e.preventDefault()
+        e.stopPropagation()
+        goForward()
+        return
+      }
+
+      // Match on the physical e.code, not e.key. Two reasons: iPadOS WebKit can report
+      // Cmd+letter as the uppercase letter (which e.key matching would miss, letting the
+      // browser's reserved Cmd+R/Cmd+W fire); and a Vietnamese input engine (EVKey,
+      // OpenKey) re-posts characters as synthetic key events while fixing a word
+      // mid-syllable (e.g. Telex "chajy" → "chạy"). Those injected events can carry a
+      // stray Cmd flag with a non-physical key — matching e.key would misread one as
+      // Cmd+L and yank focus to the URL bar mid-typing. A real shortcut always carries a
+      // physical e.code ("KeyL"); the synthetic injection does not, so it falls through
+      // here and is forwarded to the remote page untouched.
+      switch (e.code) {
+        case "KeyT":
           e.preventDefault()
           e.stopPropagation()
           openNewTab(activeKindRef.current)
           break
-        case "w":
+        case "KeyW":
           e.preventDefault()
           e.stopPropagation()
           closeActive()
           break
-        case "d":
+        case "KeyD":
           e.preventDefault()
           e.stopPropagation()
           togglePin()
           break
-        case "l":
+        case "KeyL":
           e.preventDefault()
           e.stopPropagation()
           toolbarRef.current?.focusUrlBar()
           break
-        case "s":
+        case "KeyS":
           e.preventDefault()
           e.stopPropagation()
           setSidebarCollapsed((prev) => !prev)
           break
-        case ",": {
-          e.preventDefault()
-          e.stopPropagation()
-          const next = !settingsOpenRef.current
-          setSettingsOpen(next)
-          setSettingsCommitted(next) // keyboard-opened drawers start committed
-          break
-        }
-        case "r":
+        case "KeyR":
           e.preventDefault()
           e.stopPropagation()
           reload()
           break
-        case "[":
-          e.preventDefault()
-          e.stopPropagation()
-          goBack()
-          break
-        case "]":
-          e.preventDefault()
-          e.stopPropagation()
-          goForward()
-          break
-        case "f":
+        case "KeyF":
           e.preventDefault()
           e.stopPropagation()
           findBarRef.current?.open()
           break
-        case "c": {
+        case "KeyC": {
           // Cmd+C: copy selected text from remote browser to local clipboard
           const target = e.target as HTMLElement
           if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break // let native copy work
@@ -1346,7 +1364,7 @@ export default function App() {
           })
           break
         }
-        case "v": {
+        case "KeyV": {
           // Cmd+V: paste from local clipboard into remote page
           const target = e.target as HTMLElement
           if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break // let native paste work
@@ -1373,7 +1391,7 @@ export default function App() {
             })
           break
         }
-        case "a": {
+        case "KeyA": {
           // Cmd+A: select all on remote page
           const target = e.target as HTMLElement
           if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") break
