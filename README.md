@@ -88,6 +88,30 @@ On first launch, configure the remote CDP address via `⌘,` (Settings):
 
 Settings are persisted in the Electron userData directory.
 
+## Deployment (web build → production)
+
+Production is the **web build**, run via **Dokploy** as the `cdp-browser` compose on the
+**`dokploy-dell01`** server — a Debian LXC on the home Proxmox box, registered as a remote
+deploy server of the Dokploy control plane at `dokploy.dustin.one`. Dokploy builds this repo's
+`Dockerfile` and runs `web/server.mjs` (port 7800) in the `cdp-browser-web` container, proxying
+CDP to the browser on `glkvm` (`100.85.206.8:9222`).
+
+- **Deploy = push to `main`.** Dokploy auto-deploys on push (GitHub App, `autoDeploy` on the
+  compose). Verify locally first — prod has no test gate:
+  ```bash
+  pnpm typecheck && pnpm test && node --check web/server.mjs
+  ```
+- **Live URL:** `https://dokploy-dell01.hinny-dory.ts.net:8443/` (Tailscale serve → container `:7800`).
+- **Manual deploy / rollback:** Dokploy UI → project **CDP Browser** → service **cdp-browser**
+  (Deploy / redeploy a prior deployment), or revert the bad commit on `main` and push.
+- **Env (set on the compose):** `CDP_HOST=100.85.206.8`, `CDP_PORT=9222`, `HOST_PORT=7800`,
+  `APP_TITLE`. `CDP_HOST` must be an IP or `localhost` — CDP rejects DNS Host headers.
+- **Health check:** `curl https://dokploy-dell01.hinny-dory.ts.net:8443/api/config` →
+  `{"host":"100.85.206.8","port":9222}`; on the node, `docker ps` shows `cdp-browser-web` healthy.
+
+The controlled browser (machine A) → `glkvm` reverse-tunnel chain is independent of this deploy —
+see `docs/guides/remote-cdp-over-tailscale.md`.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
