@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.2.1...cdp-browser-v0.3.0) (2026-06-19)
+
+
+### Features
+
+* **clipboard:** paste text and images local-to-remote, guard bare-key shortcuts (t065) ([0d74702](https://github.com/duongdev/cdp-browser/commit/0d747020d973089363d91a357af2b5798485f00a))
+* **notifications:** guaranteed-delivery slack content sweep with grid fallback ([024bfd1](https://github.com/duongdev/cdp-browser/commit/024bfd1bdf825991f37f032124cc8afa98df5675))
+* **notifications:** per-device per-service notification mutes (t093) ([ae2096a](https://github.com/duongdev/cdp-browser/commit/ae2096a265ad2c629d0a3acdea302f2821b6fbb9))
+* **phone:** phone triage surface - inbox, reader, reply, keyboard, notifications (t076-t091) ([6b31a98](https://github.com/duongdev/cdp-browser/commit/6b31a98146225de407137cca9cb82b70afd7771b))
+
+
+### Bug Fixes
+
+* **notifications:** dedup enterprise grid org against its member workspaces (t092) ([5b06055](https://github.com/duongdev/cdp-browser/commit/5b06055c05ccce21b6aedd3d0432930463bd4858))
+* **push:** trim oversized web-push payload to avoid 413 errors ([9b898a7](https://github.com/duongdev/cdp-browser/commit/9b898a7c8d3629042ce06454072b178389eb4152))
+* **web:** bake commit sha into image so about build field is not unknown ([c9e6424](https://github.com/duongdev/cdp-browser/commit/c9e6424f41a7891531714447e618a90fe10d51ea))
+
 ## [0.2.1](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.2.0...cdp-browser-v0.2.1) (2026-06-03)
 
 
