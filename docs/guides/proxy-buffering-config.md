@@ -1,7 +1,7 @@
 # Unlocking the fast input path behind a reverse proxy
 
 The web build runs the same renderer as a PWA behind a reverse proxy (the daily
-driver is Authentik + nginx at the portal). It has two low-latency input paths —
+driver is NPM + Traefik at `portal.dp.dustin.one`). It has two low-latency input paths —
 a **WebSocket** transport and a **streaming POST** channel — that both need a
 small amount of proxy config to work. Without it, the app **silently falls back**
 to a per-flush POST: input still works, just slower, and nothing tells you why.
@@ -124,10 +124,6 @@ lines are the only additions the fast paths need. The "Websockets Support"
 toggle in NPM covers the three upgrade lines on some versions — add
 `proxy_request_buffering off` regardless, since the toggle does not touch request
 buffering.
-
-> Authentik's outpost passes the session cookie through to the upstream, so a
-> logged-in browser's WS and streaming connections inherit the same auth context
-> as its REST calls — no extra auth config is needed.
 
 ## How to tell which path is live
 

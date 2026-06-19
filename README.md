@@ -90,24 +90,27 @@ Settings are persisted in the Electron userData directory.
 
 ## Deployment (web build → production)
 
-Production is the **web build**, run via **Dokploy** as the `cdp-browser` compose on the
-**`dokploy-dell01`** server — a Debian LXC on the home Proxmox box, registered as a remote
-deploy server of the Dokploy control plane at `dokploy.dustin.one`. Dokploy builds this repo's
-`Dockerfile` and runs `web/server.mjs` (port 7800) in the `cdp-browser-web` container, proxying
-CDP to the browser on `glkvm` (`100.85.206.8:9222`).
+Production is the **web build** running as a Dokploy **Application** on the **`dokploy-dell01`**
+deploy server (a Debian LXC on the home Proxmox box, registered under the Dokploy control plane at
+`dokploy.dustin.one`). Dokploy builds this repo's `Dockerfile` and runs `web/server.mjs` (port 7800),
+proxying CDP to the browser on `glkvm` (`100.85.206.8:9222`). Ingress: Cloudflare DNS-only A →
+nginx NPM (LXC 352, wildcard cert `*.dp.dustin.one`) → dell01 Traefik :80 (host-routed).
 
-- **Deploy = push to `main`.** Dokploy auto-deploys on push (GitHub App, `autoDeploy` on the
-  compose). Verify locally first — prod has no test gate:
+- **Deploy = push to `main`.** Dokploy auto-deploys on push (GitHub App, `autoDeploy`). Verify
+  locally first — prod has no test gate:
   ```bash
   pnpm typecheck && pnpm test && node --check web/server.mjs
   ```
-- **Live URL:** `https://dokploy-dell01.hinny-dory.ts.net:8443/` (Tailscale serve → container `:7800`).
-- **Manual deploy / rollback:** Dokploy UI → project **CDP Browser** → service **cdp-browser**
-  (Deploy / redeploy a prior deployment), or revert the bad commit on `main` and push.
-- **Env (set on the compose):** `CDP_HOST=100.85.206.8`, `CDP_PORT=9222`, `HOST_PORT=7800`,
+- **Live URL:** `https://portal.dp.dustin.one/` (tailnet-only — DNS resolves to `100.x`; Tailscale
+  required; no Authentik).
+- **Per-branch previews:** collaborator PRs get `https://cdp-<branch>-<id>.dp.dustin.one/`
+  automatically; teardown on PR close. Previews share the one glkvm browser (UI-review only).
+- **Manual deploy / rollback:** Dokploy UI → Application **cdp-browser-app** (Deploy / redeploy a
+  prior deployment), or revert the bad commit on `main` and push.
+- **Env (set on the Application):** `CDP_HOST=100.85.206.8`, `CDP_PORT=9222`, `PORT=7800`,
   `APP_TITLE`. `CDP_HOST` must be an IP or `localhost` — CDP rejects DNS Host headers.
-- **Health check:** `curl https://dokploy-dell01.hinny-dory.ts.net:8443/api/config` →
-  `{"host":"100.85.206.8","port":9222}`; on the node, `docker ps` shows `cdp-browser-web` healthy.
+- **Health check:** `curl https://portal.dp.dustin.one/api/config` →
+  `{"host":"100.85.206.8","port":9222}`; on the node, `docker ps` shows the service healthy.
 
 The controlled browser (machine A) → `glkvm` reverse-tunnel chain is independent of this deploy —
 see `docs/guides/remote-cdp-over-tailscale.md`.
@@ -117,10 +120,13 @@ see `docs/guides/remote-cdp-over-tailscale.md`.
 The server logs to stdout, captured by Docker. Read them over Tailscale SSH (no Dokploy UI needed):
 
 ```bash
-ssh root@dokploy-dell01 "docker logs --tail 100 cdp-browser-web"           # recent
-ssh root@dokploy-dell01 "docker logs -f cdp-browser-web"                   # follow live
-ssh root@dokploy-dell01 "docker logs cdp-browser-web 2>&1 | grep -aE '\[notif\]|\[push\]|\[dedup\]'"
+ssh root@dokploy-dell01 "docker logs --tail 100 <container>"           # recent
+ssh root@dokploy-dell01 "docker logs -f <container>"                   # follow live
+ssh root@dokploy-dell01 "docker logs <container> 2>&1 | grep -aE '\[notif\]|\[push\]|\[dedup\]'"
 ```
+
+Replace `<container>` with the running container name (`docker ps` on the node to find it — the
+Dokploy Application names differ from the old Compose service name `cdp-browser-web`).
 
 Greppable prefixes (all `console.log`):
 

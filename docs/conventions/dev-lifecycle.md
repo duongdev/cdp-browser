@@ -92,7 +92,7 @@ The one-session task cap means scope creep saturates context and forces compacti
 Before merging, the task's Definition of Done must be true:
 
 - [ ] All relevant testing layers green (see [tdd.md](tdd.md))
-- [ ] `pnpm check` clean (Biome — lint + format; matches CI)
+- [ ] `pnpm check:changed` clean (Biome scoped to your diff — the CI gate; `pnpm check` fails on pre-existing dirt in untouched files so it is not the gate)
 - [ ] `pnpm typecheck` clean (no `any`, no `@ts-ignore` without justification comment)
 - [ ] No new dependencies without an ADR or a one-liner in the task file justifying it
 - [ ] `CLAUDE.md` for any modified module reflects reality
