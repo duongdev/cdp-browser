@@ -112,6 +112,24 @@ CDP to the browser on `glkvm` (`100.85.206.8:9222`).
 The controlled browser (machine A) → `glkvm` reverse-tunnel chain is independent of this deploy —
 see `docs/guides/remote-cdp-over-tailscale.md`.
 
+### Production logs
+
+The server logs to stdout, captured by Docker. Read them over Tailscale SSH (no Dokploy UI needed):
+
+```bash
+ssh root@dokploy-dell01 "docker logs --tail 100 cdp-browser-web"           # recent
+ssh root@dokploy-dell01 "docker logs -f cdp-browser-web"                   # follow live
+ssh root@dokploy-dell01 "docker logs cdp-browser-web 2>&1 | grep -aE '\[notif\]|\[push\]|\[dedup\]'"
+```
+
+Greppable prefixes (all `console.log`):
+
+- `[web]` — boot line `v{version} {sha} http://… -> cdp …`; the `v…` form confirms which build is live (`sha` is `unknown` in the Docker image — it ships no `.git`).
+- `[slack-creds]` / `[slack-sweep]` — Slack cred extraction + sweep activity (`seeded`, `+N entries`, `unsweepable (rate_limited)`).
+- `[notif]` — every ingested notification: `id adapter groupKey team`. Proves Enterprise Grid entries key by the merged `slack:{groupId}` while keeping a concrete `team`.
+- `[dedup]` — a Grid duplicate dropped at ingest (the org pseudo-team + a member workspace produced the same message). This is the t092 dedup firing.
+- `[push]` — per-device Web Push fan-out (t093): one line per subscription (`sent unread=N`, or `skip:muted(<key>)` / `skip:master-off`) + a summary. Only appears once ≥1 device has push enabled.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
