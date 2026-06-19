@@ -39,6 +39,8 @@ Naming follows mainstream tools (Arc, Linear, Raycast) so muscle memory transfer
 | `⌘L` | Focus address bar |
 | `Esc` | Close modal / clear address bar focus / cancel action |
 | `⌘R` | Reload active Remote Page |
+| `⌘[` | Go back |
+| `⌘]` | Go forward |
 | `⌥N` | Toggle the notification box |
 
 ### Tab navigation

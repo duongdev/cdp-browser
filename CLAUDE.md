@@ -124,6 +124,7 @@ cdp-browser/
     │   ├── push-route.ts         # Pure push deep-route helpers: notifIdFromSearch/stripNotifParam/resolvePushEntry (t080, ADR-0012)
     │   ├── viewport-transform.ts # Letterbox math + coordinate mapping (optional local-zoom inversion, t079)
     │   ├── canvas-zoom.ts        # Pure local pinch-zoom/pan model: applyPinch/clampToViewport/toFitPoint (t079, ADR-0012)
+    │   ├── touch-gesture.ts      # Pure finger-gesture classifier: tap/drag/long-press → mouse/wheel mapping (ADR-0009)
     │   ├── adaptive-viewport.ts  # Adaptive Viewport: deviceMetrics + reduce state machine
     │   ├── notifications-view.ts # Presentation grouping (groupByConversation) for notification popover
     │   ├── notification-activation.ts # Activation registry keyed by activate.type → Remote Page intention

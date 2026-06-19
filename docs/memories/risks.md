@@ -53,7 +53,7 @@ Known risks, limitations, and areas to watch. Update as the project evolves — 
 
 **Mitigation path:** implement IME support as a new `InputIntent` variant (`{ kind: "composition", ... }`) in `remote-page.ts`. Main process translates to `Input.imeSetComposition` / `Input.insertText`. Non-trivial; estimate 1–2 days.
 
-**Workaround:** users can paste pre-composed text via `Cmd+V` (clipboard paste is forwarded as `Input.insertText`).
+**Workaround:** users can paste pre-composed text via `Cmd+V` (clipboard paste is forwarded as `Input.insertText`). On the web build's touch path, the on-screen keyboard (`src/components/screencast-keyboard.tsx`, t084) covers Vietnamese Telex plus predictive/autocorrect by diffing the field and forwarding `Input.insertText`, so iPad typing works without IME composition; hardware-keyboard CJK/Telex composition remains unsupported.
 
 ---
 
