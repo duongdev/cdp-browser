@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.3.0...cdp-browser-v0.4.0) (2026-06-20)
+
+
+### Features
+
+* **push:** harden web push delivery reliability (t095) ([#9](https://github.com/duongdev/cdp-browser/issues/9)) ([d018f3c](https://github.com/duongdev/cdp-browser/commit/d018f3c7b0a957d3232b475e9fdd6e5279c7d69e))
+
+
+### Bug Fixes
+
+* **phone:** keyboard-follow, safe-area, nav stack, pull-to-refresh ([83e6397](https://github.com/duongdev/cdp-browser/commit/83e6397f5b10c0e1e9a6eadbfebb4e450fe3fbe1))
+* **renderer:** gate cmd shortcuts on physical key code, not character ([#6](https://github.com/duongdev/cdp-browser/issues/6)) ([5b512ff](https://github.com/duongdev/cdp-browser/commit/5b512ffb1843ddfbd28ebc8f9c255a2ecc1d1ee7))
+
 ## [0.3.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.2.1...cdp-browser-v0.3.0) (2026-06-19)
 
 
