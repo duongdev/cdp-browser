@@ -572,9 +572,6 @@ export default function App() {
     switchTabRef.current = switchTab
   }, [switchTab])
 
-  // Mark the whole conversation thread read: compute the key, gather unread siblings,
-  // flip them all in state, then flush each id to the server. Shared by the click path
-  // and the in-box `r` key so the logic lives in exactly one place.
   // Apply an optimistic local patch to the notification list and revert it if the matching
   // server write rejects — so a failed POST can't leave the bell/inbox diverged from the store
   // (t096, A2). Deliberately a tiny helper, not a reducer/event-bus (ADR-0015): each handler
@@ -588,6 +585,9 @@ export default function App() {
     [],
   )
 
+  // Mark the whole conversation thread read: compute the key, gather unread siblings,
+  // flip them all in state, then flush each id to the server. Shared by the click path
+  // and the in-box `r` key so the logic lives in exactly one place.
   const markThreadRead = useCallback(
     (entry: NotifEntry) => {
       const key = threadKey(entry)
