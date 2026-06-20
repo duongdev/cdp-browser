@@ -50,7 +50,12 @@ export function FindBar({ page, ref }: FindBarProps) {
         page.clearFind()
         return
       }
-      page.find(query).then(({ total }) => dispatch({ type: "setTotal", total }))
+      // `setQuery` already reset total to 0; a rejected find (socket drop) just stays there
+      // instead of becoming an unhandled rejection (t096, P11).
+      page
+        .find(query)
+        .then(({ total }) => dispatch({ type: "setTotal", total }))
+        .catch(() => {})
     },
     [page],
   )

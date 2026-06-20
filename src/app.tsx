@@ -185,9 +185,14 @@ export default function App() {
   // view and the browser column is a destination. Width-gated only — never pointer.
   const shellMode = useShellMode()
   const isCoarsePointer = usePointerCoarse()
-  const [phoneView, setPhoneView] = useState<"inbox" | "reader" | "tabs" | "browser">("inbox")
-  // The entry the Conversation Reader is showing (phone shell only, t077).
-  const [readerEntry, setReaderEntry] = useState<NotifEntry | null>(null)
+  // Phone shell view (t077). A discriminated union so the reader's entry lives *on* the
+  // "reader" view instead of a parallel state that could drift out of sync (t096, A7).
+  type PhoneView =
+    | { view: "inbox" }
+    | { view: "tabs" }
+    | { view: "browser" }
+    | { view: "reader"; entry: NotifEntry }
+  const [phoneView, setPhoneView] = useState<PhoneView>({ view: "inbox" })
   const shellModeRef = useRef(shellMode)
   useEffect(() => {
     shellModeRef.current = shellMode
@@ -203,8 +208,9 @@ export default function App() {
   // (notificationsRef is the app-wide ref synced to the live notifications list.)
   const navPhone = useCallback(
     (view: "reader" | "tabs" | "browser", entry: NotifEntry | null = null) => {
-      setReaderEntry(entry)
-      setPhoneView(view)
+      setPhoneView(
+        view === "reader" ? (entry ? { view: "reader", entry } : { view: "inbox" }) : { view },
+      )
       if (shellModeRef.current !== "phone") return
       const cur = window.history.state as {
         phoneView?: string
@@ -224,10 +230,7 @@ export default function App() {
   const inboxPhone = useCallback(() => {
     const depth = (window.history.state as { depth?: number } | null)?.depth ?? 0
     if (depth > 0) window.history.go(-depth)
-    else {
-      setReaderEntry(null)
-      setPhoneView("inbox")
-    }
+    else setPhoneView({ view: "inbox" })
   }, [])
   useEffect(() => {
     const onPop = (e: PopStateEvent) => {
@@ -238,12 +241,10 @@ export default function App() {
           ? (notificationsRef.current.find((n) => n.id === st.entryId) ?? null)
           : null
         // The conversation vanished from the store (read + filtered) → fall back to the Inbox.
-        setReaderEntry(entry)
-        setPhoneView(entry ? "reader" : "inbox")
+        setPhoneView(entry ? { view: "reader", entry } : { view: "inbox" })
         return
       }
-      setReaderEntry(null)
-      setPhoneView(view)
+      setPhoneView({ view })
     }
     window.addEventListener("popstate", onPop)
     return () => window.removeEventListener("popstate", onPop)
@@ -571,18 +572,39 @@ export default function App() {
     switchTabRef.current = switchTab
   }, [switchTab])
 
+  // Apply an optimistic local patch to the notification list and revert it if the matching
+  // server write rejects — so a failed POST can't leave the bell/inbox diverged from the store
+  // (t096, A2). Deliberately a tiny helper, not a reducer/event-bus (ADR-0015): each handler
+  // keeps its own patch + write together.
+  const optimisticNotif = useCallback(
+    (patch: (prev: NotifEntry[]) => NotifEntry[], write: () => Promise<unknown> | void) => {
+      const snapshot = notificationsRef.current
+      setNotifications(patch)
+      Promise.resolve(write()).catch(() => setNotifications(snapshot))
+    },
+    [],
+  )
+
   // Mark the whole conversation thread read: compute the key, gather unread siblings,
   // flip them all in state, then flush each id to the server. Shared by the click path
   // and the in-box `r` key so the logic lives in exactly one place.
-  const markThreadRead = useCallback((entry: NotifEntry) => {
-    const key = threadKey(entry)
-    const siblings = notificationsRef.current.filter(
-      (n) => n.id !== entry.id && !n.read && threadKey(n) === key,
-    )
-    setNotifications((prev) => prev.map((n) => (threadKey(n) === key ? { ...n, read: true } : n)))
-    window.cdp.markNotificationRead(entry.id)
-    for (const n of siblings) window.cdp.markNotificationRead(n.id)
-  }, [])
+  const markThreadRead = useCallback(
+    (entry: NotifEntry) => {
+      const key = threadKey(entry)
+      const siblings = notificationsRef.current.filter(
+        (n) => n.id !== entry.id && !n.read && threadKey(n) === key,
+      )
+      optimisticNotif(
+        (prev) => prev.map((n) => (threadKey(n) === key ? { ...n, read: true } : n)),
+        () =>
+          Promise.all([
+            window.cdp.markNotificationRead(entry.id),
+            ...siblings.map((n) => window.cdp.markNotificationRead(n.id)),
+          ]),
+      )
+    },
+    [optimisticNotif],
+  )
 
   // Phone tap default (t077, ADR-0012): open the Conversation Reader — read without
   // activating the remote tab. Marks the thread read locally only (the desktop unread
@@ -635,14 +657,18 @@ export default function App() {
   // Opening the popover does NOT mark read — unread clears only via a row click or
   // the explicit "Mark all read", so the dock/tab badges stay meaningful.
   const handleMarkAllRead = useCallback(() => {
-    window.cdp.markNotificationsRead()
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
-  }, [])
+    optimisticNotif(
+      (prev) => prev.map((n) => ({ ...n, read: true })),
+      () => window.cdp.markNotificationsRead(),
+    )
+  }, [optimisticNotif])
 
   const handleClearNotifications = useCallback(() => {
-    window.cdp.clearNotifications()
-    setNotifications([])
-  }, [])
+    optimisticNotif(
+      () => [],
+      () => window.cdp.clearNotifications(),
+    )
+  }, [optimisticNotif])
 
   // Mark the selected row's whole thread read (the in-box `r` key) without opening it.
   const handleMarkThreadRead = markThreadRead
@@ -650,37 +676,54 @@ export default function App() {
   // Clear a whole conversation (t085): remove every entry sharing the group's threadKey —
   // including the collapsed ones not shown in the capped group — in one tap. The renderer
   // computes the id set from the live store and posts it.
-  const handleClearThread = useCallback((entry: NotifEntry) => {
-    const key = threadKey(entry)
-    const ids = notificationsRef.current.filter((n) => threadKey(n) === key).map((n) => n.id)
-    if (!ids.length) return
-    setNotifications((prev) => prev.filter((n) => !ids.includes(n.id)))
-    window.cdp.removeNotifications(ids)
-  }, [])
+  const handleClearThread = useCallback(
+    (entry: NotifEntry) => {
+      const key = threadKey(entry)
+      const ids = notificationsRef.current.filter((n) => threadKey(n) === key).map((n) => n.id)
+      if (!ids.length) return
+      optimisticNotif(
+        (prev) => prev.filter((n) => !ids.includes(n.id)),
+        () => window.cdp.removeNotifications(ids),
+      )
+    },
+    [optimisticNotif],
+  )
 
   // "Mute this channel" (t072): add the entry's {team, channelId} to the server-stored
   // Channel Exclude list so the sweep stops notifying it. Reads the current list from
   // ui-state, appends (deduped), and writes back. Also marks the entry read for instant feedback.
-  const handleMuteChannel = useCallback((entry: NotifEntry) => {
-    const target = excludeTargetFromEntry(entry)
-    if (!target) return
-    const label = entry.source || target.channelId
-    window.cdp.getUiState().then((s) => {
-      const current = Array.isArray(s.slackExcludes) ? (s.slackExcludes as SlackExclude[]) : []
-      const next = addExclude(current, { ...target, label })
-      if (next !== current) window.cdp.setUiState({ slackExcludes: next })
-    })
-    setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)))
-    window.cdp.markNotificationRead(entry.id)
-  }, [])
+  const handleMuteChannel = useCallback(
+    (entry: NotifEntry) => {
+      const target = excludeTargetFromEntry(entry)
+      if (!target) return
+      const label = entry.source || target.channelId
+      window.cdp.getUiState().then((s) => {
+        const current = Array.isArray(s.slackExcludes) ? (s.slackExcludes as SlackExclude[]) : []
+        const next = addExclude(current, { ...target, label })
+        if (next !== current) window.cdp.setUiState({ slackExcludes: next })
+      })
+      optimisticNotif(
+        (prev) => prev.map((n) => (n.id === entry.id ? { ...n, read: true } : n)),
+        () => window.cdp.markNotificationRead(entry.id),
+      )
+    },
+    [optimisticNotif],
+  )
 
   // Toggling the per-row indicator flips read state without opening the notification.
-  const handleToggleRead = useCallback((entry: NotifEntry) => {
-    const read = !entry.read
-    setNotifications((prev) => prev.map((n) => (n.id === entry.id ? { ...n, read } : n)))
-    if (read) window.cdp.markNotificationRead(entry.id)
-    else window.cdp.markNotificationUnread(entry.id)
-  }, [])
+  const handleToggleRead = useCallback(
+    (entry: NotifEntry) => {
+      const read = !entry.read
+      optimisticNotif(
+        (prev) => prev.map((n) => (n.id === entry.id ? { ...n, read } : n)),
+        () =>
+          read
+            ? window.cdp.markNotificationRead(entry.id)
+            : window.cdp.markNotificationUnread(entry.id),
+      )
+    },
+    [optimisticNotif],
+  )
 
   // Live tab info for each linked pin (title/favicon/url), so a pin reflects its
   // tab's current title and detects URL drift. Built from the full tab list since
@@ -919,6 +962,16 @@ export default function App() {
     if (tab) pinTab(tab)
   }, [pinTab, unpinPin])
 
+  // The one place a close/switch planner directive's chosen next surface is activated — maps a
+  // nextActive ref onto the right path. Shared by closeTab and closeTabs (t096, A1).
+  const applyNextActive = useCallback(
+    async (next: { kind: "cdp" | "local"; id: string } | null | undefined) => {
+      if (next?.kind === "cdp") await switchTab(next.id)
+      else if (next?.kind === "local") switchLocalTab(next.id)
+    },
+    [switchTab, switchLocalTab],
+  )
+
   const closeTab = useCallback(
     async (tabId: string) => {
       const tab = tabsRef.current.find((t) => t.id === tabId)
@@ -953,10 +1006,9 @@ export default function App() {
       })
       if (tab?.url) closedTabsRef.current.push(directive.closedEntry)
       activeOrderRef.current = dropActive(activeOrderRef.current, { kind: "cdp", id: tabId })
-      if (directive.nextActive?.kind === "cdp") await switchTab(directive.nextActive.id)
-      else if (directive.nextActive?.kind === "local") switchLocalTab(directive.nextActive.id)
+      await applyNextActive(directive.nextActive)
     },
-    [refreshTabs, switchTab, switchLocalTab],
+    [refreshTabs, applyNextActive],
   )
 
   // Changing the CDP address invalidates all tab IDs, so reconnect to the
@@ -1069,11 +1121,10 @@ export default function App() {
           locals: localTabsRef.current,
           pins: pinsRef.current,
         })
-        if (directive.nextActive?.kind === "cdp") await switchTab(directive.nextActive.id)
-        else if (directive.nextActive?.kind === "local") switchLocalTab(directive.nextActive.id)
+        await applyNextActive(directive.nextActive)
       }
     },
-    [refreshTabs, switchTab, switchLocalTab],
+    [refreshTabs, applyNextActive],
   )
 
   const goBack = useCallback(() => {
@@ -1230,9 +1281,11 @@ export default function App() {
     }
   }, [page, refreshTabs, updateNavHistory])
 
-  // Trackpad swipe gestures
+  // Trackpad swipe gestures. onSwipe returns an unsubscribe — without it, every reconnect
+  // (goBack/goForward are keyed on `page`) would leak another cdp:swipe listener, so one
+  // swipe would eventually fire back/forward N times (t096, P6).
   useEffect(() => {
-    window.cdp.onSwipe((direction) => {
+    return window.cdp.onSwipe((direction) => {
       if (direction === "left") goBack()
       if (direction === "right") goForward()
     })
@@ -1792,7 +1845,7 @@ export default function App() {
         {/* Phone Shell root view (t076): the Inbox. The browser column below stays
             mounted (hidden) so the canvas, FindBar, and the Toolbar-hosted settings
             sheet keep working; only the Sidebar is truly absent on phone. */}
-        {shellMode === "phone" && phoneView === "inbox" && (
+        {shellMode === "phone" && phoneView.view === "inbox" && (
           <Inbox
             mutes={notifMutes}
             notifications={notifications}
@@ -1809,7 +1862,7 @@ export default function App() {
           />
         )}
         {/* Flat tab/pin switcher (t081): read-and-go — tap opens the screencast view. */}
-        {shellMode === "phone" && phoneView === "tabs" && (
+        {shellMode === "phone" && phoneView.view === "tabs" && (
           <PhoneSwitcher
             activeKind={activeKind}
             activeTabId={activeTabId}
@@ -1837,9 +1890,9 @@ export default function App() {
         )}
         {/* Conversation Reader (t077): the phone tap target. Rendered from captured
             content (sweep history or stub) — never Screencast Frames. */}
-        {shellMode === "phone" && phoneView === "reader" && readerEntry && (
+        {shellMode === "phone" && phoneView.view === "reader" && (
           <ConversationReader
-            entry={readerEntry}
+            entry={phoneView.entry}
             fetchHistory={window.cdp.getSlackHistory}
             onBack={backPhone}
             onOpenInBrowser={handleNotificationClick}
@@ -1890,7 +1943,7 @@ export default function App() {
         <div
           className={cn(
             "relative flex flex-1 flex-col min-w-0",
-            shellMode === "phone" && phoneView !== "browser" && "hidden",
+            shellMode === "phone" && phoneView.view !== "browser" && "hidden",
           )}
         >
           <Toolbar

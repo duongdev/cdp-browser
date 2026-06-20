@@ -73,7 +73,13 @@ function readSettingsFile() {
   }
 }
 
-const persist = (s) => fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+const persist = (s) => {
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+  } catch (e) {
+    console.error("[main] settings persist failed:", e.message)
+  }
+}
 
 const initialSettings = readSettingsFile()
 const hadLegacyKeys =

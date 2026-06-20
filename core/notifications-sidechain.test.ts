@@ -672,3 +672,63 @@ describe("load + close", () => {
     expect(FakeWs.instances.every((w) => w.closed)).toBe(true)
   })
 })
+
+// A socket that never reaches OPEN — models a hung CONNECTING side-channel.
+class HungWs extends FakeWs {
+  readyState = 0
+}
+
+describe("reconcile — reap hung side-channel (t096, P3)", () => {
+  it("reaps a non-OPEN socket on a still-live target past the stale window and re-attaches", async () => {
+    const { center, setNow } = makeCenter({ WebSocketCtor: HungWs as any })
+    setNow(1_000)
+    await center.reconcile([teamsTarget()])
+    expect(FakeWs.instances).toHaveLength(1)
+    const hung = FakeWs.instances[0]
+
+    setNow(1_000 + 15_000 + 1) // past SIDECHANNEL_STALE_MS
+    await center.reconcile([teamsTarget()])
+
+    expect(hung.closed).toBe(true)
+    expect(FakeWs.instances).toHaveLength(2) // re-attached
+  })
+
+  it("does not reap a freshly-attached non-OPEN socket within the stale window", async () => {
+    const { center, setNow } = makeCenter({ WebSocketCtor: HungWs as any })
+    setNow(1_000)
+    await center.reconcile([teamsTarget()])
+
+    setNow(1_000 + 5_000) // before the stale threshold
+    await center.reconcile([teamsTarget()])
+
+    expect(FakeWs.instances).toHaveLength(1)
+    expect(FakeWs.instances[0].closed).toBe(false)
+  })
+
+  it("does not reap an OPEN socket on a live target", async () => {
+    const { center, setNow } = makeCenter() // default FakeWs is OPEN (readyState 1)
+    setNow(1_000)
+    await center.reconcile([teamsTarget()])
+    setNow(1_000 + 60_000)
+    await center.reconcile([teamsTarget()])
+    expect(FakeWs.instances).toHaveLength(1)
+    expect(FakeWs.instances[0].closed).toBe(false)
+  })
+})
+
+describe("side-channel cdpCall reject-on-close (t096, P4)", () => {
+  it("rejects an in-flight cred extraction when the socket closes — no creds, no hang", async () => {
+    const onCreds = vi.fn()
+    const { center } = makeCenter({ onCreds })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open() // fires extractSlackCreds → sends the localConfig read, awaits its reply
+
+    ws.close() // reply never comes — drop() must reject the pending call
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(center.listCreds()).toEqual([])
+    expect(onCreds).not.toHaveBeenCalled()
+  })
+})

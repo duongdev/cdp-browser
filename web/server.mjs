@@ -22,6 +22,7 @@ import { createLineSplitter } from "../core/line-splitter.js"
 import { muteKey, unreadExcluding } from "../core/notif-mutes.js"
 import { buildHealth, shouldAlert } from "../core/notification-health.js"
 import sidechain from "../core/notifications-sidechain.js"
+import { createPaintAckPacer } from "../core/paint-ack-pacer.js"
 import { pushSendOptions } from "../core/push-send-options.js"
 import { reconcileDeviceId } from "../core/push-subscriptions.js"
 import connector from "../core/remote-page-connector.js"
@@ -35,6 +36,7 @@ import {
   teamIdOf as slackTeamIdOf,
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
+import { createSweepScheduler } from "../core/sweep-scheduler.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
@@ -120,7 +122,13 @@ const settings = createSettingsStore({
     host: process.env.CDP_HOST || "localhost",
     port: Number(process.env.CDP_PORT || 9222),
   }),
-  persist: (s) => writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2)),
+  persist: (s) => {
+    try {
+      writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2))
+    } catch (e) {
+      console.error("[web] settings persist failed:", e.message)
+    }
+  },
 })
 // Env wins on first boot so a fresh deploy points at the right host immediately.
 if (process.env.CDP_HOST)
@@ -173,7 +181,6 @@ function devicePrefs(ui, deviceId) {
 async function sendPushToAll(payload) {
   if (pushSubs.length === 0) return
   const key = muteKey(payload)
-  const list = notificationCenter.list()
   const ui = settings.getUiState()
   const dead = []
   // Verbose, greppable per-device delivery log (t093) so the mute gating can be verified from
@@ -196,7 +203,9 @@ async function sendPushToAll(payload) {
         console.log(`[push]   dev=${dev} skip:muted(${key})`)
         return // this source muted on this device
       }
-      const unread = unreadExcluding(list, mutes, master)
+      // Recompute from a fresh list at each send (t096, P7) so a mark-read that lands while a
+      // prior send is in flight can't leave this device's badge stamped from a stale snapshot.
+      const unread = unreadExcluding(notificationCenter.list(), mutes, master)
       const data = JSON.stringify(trimPushPayload({ ...payload, unread }))
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -389,10 +398,13 @@ const frameThrottle = createFrameThrottle({ targetFps: SCREENCAST_TARGET_FPS })
 // arriving while one is outstanding is dropped (never queued) so the freshest always wins.
 const frameAckGate = createAckGate()
 // Stranded-paint watchdog: if a supporting client never acks (decode error, tab hidden, a
-// connection drop that didn't surface as a close), free the slot and ack the remote anyway
-// so a single lost paint can't wedge the stream forever. Generous vs. the frame interval so
-// a healthy slow link is never tripped; the ack arriving first cancels it.
-const PAINT_ACK_WATCHDOG_MS = 1000
+// connection drop that didn't surface as a close), free the slot and ack the remote anyway so a
+// single lost paint can't wedge the stream forever. The window is ADAPTIVE (t096, P2): an EWMA
+// of observed paint-ack latency sizes it to a multiple of normal, never below a 1s floor — so a
+// device that legitimately paints slower than a fixed 1s isn't tripped early. The ack arriving
+// first cancels it.
+const paintAckPacer = createPaintAckPacer()
+let paintSentAt = 0
 let paintAckWatchdog = null
 function clearPaintAckWatchdog() {
   if (paintAckWatchdog !== null) {
@@ -412,13 +424,14 @@ function admitFrame(sessionId) {
   }
   if (!frameAckGate.mayProceed()) return false
   frameAckGate.markSent(sessionId)
+  paintSentAt = Date.now()
   clearPaintAckWatchdog()
   paintAckWatchdog = setTimeout(() => {
     const stranded = frameAckGate.outstanding()
     frameAckGate.reset()
     paintAckWatchdog = null
     if (stranded !== null) remotePage.ackFrame(stranded) // release the remote despite no paint
-  }, PAINT_ACK_WATCHDOG_MS)
+  }, paintAckPacer.windowMs())
   return true
 }
 // A supporting client painted + acked the outstanding frame: clear the slot, cancel the
@@ -428,6 +441,7 @@ function onClientPaintAck(sessionId) {
   if (frameAckGate.outstanding() === null) return
   frameAckGate.ackReceived(sessionId)
   if (frameAckGate.outstanding() === null) {
+    paintAckPacer.record(Date.now() - paintSentAt) // feed the adaptive window (t096, P2)
     clearPaintAckWatchdog()
     remotePage.ackFrame(sessionId)
   }
@@ -543,14 +557,14 @@ const notificationCenter = createNotificationCenter({
   // newly-attached workspace is caught up without waiting for the next interval.
   onCreds: (rec) => {
     console.log(`[web] slack creds ready: ${rec.teamId} (${rec.name})`)
-    if (slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
+    sweepScheduler.request(rec.teamId, rec)
   },
   // The Slack hijack (t064) is demoted to a "sweep now" trigger (ADR-0011): a fired
   // notification means something happened, so sweep that workspace immediately for the
   // authoritative, message-anchored entry — sub-second delivery, no double-notify.
   onSlackSignal: (teamId) => {
     const rec = notificationCenter.getCreds(teamId)
-    if (rec && rec.fresh !== false && slackSweeper) slackSweeper.sweepWorkspace(rec).catch(() => {})
+    if (rec && rec.fresh !== false) sweepScheduler.request(teamId, rec)
   },
   onEntry: (entry) => {
     // Verbose prod log (greppable [notif]) — proves the entry's keying: a Grid workspace's
@@ -620,9 +634,17 @@ async function keepSlackTabsAlive(targets) {
     )
     if (!before || before.enterpriseId !== enterpriseId) changed = true
   }
-  // Recreate a tab for any registered workspace that has no live tab.
+  // Recreate a tab for any registered workspace that has no live tab — UNLESS the user has
+  // it pinned (t098): a pinned workspace is owned by its pin, so the keeper never spawns a
+  // stray duplicate for it. One live Slack tab refreshes every workspace's creds, so capture
+  // is unaffected; a cred lifeline (inside planParkedTabs) keeps one tab alive when none is.
   const live = slackLiveTeamIds(targets)
-  const plans = slackPlanParkedTabs(slackRegistry, live, slackCreatedAt, Date.now())
+  const pinUrlByTeam = {}
+  for (const pin of settings.getPins()) {
+    const tid = slackTeamIdOf(pin.url || "")
+    if (tid && !pinUrlByTeam[tid]) pinUrlByTeam[tid] = pin.url
+  }
+  const plans = slackPlanParkedTabs(slackRegistry, live, slackCreatedAt, Date.now(), pinUrlByTeam)
   for (const plan of plans) {
     slackCreatedAt[plan.teamId] = Date.now()
     try {
@@ -730,6 +752,13 @@ const slackSweeper = createSlackSweeper({
   markUnsweepable: (t, reason) => notificationCenter.disableSweep(t, reason),
   now: Date.now,
   log: (m) => console.log(m),
+})
+// Debounced per-workspace sweep trigger (t096, A6): onCreds + onSlackSignal can fire for the
+// same workspace within milliseconds — coalesce them into one leading + one trailing sweep so a
+// cred-extraction immediately followed by a hijack signal can't double-sweep. The 15s
+// all-workspaces backstop (runOnce) has no per-workspace key and stays out of this path.
+const sweepScheduler = createSweepScheduler({
+  run: (rec) => slackSweeper.sweepWorkspace(rec).catch(() => {}),
 })
 // Compute the Slack capture health report from cred records + sweep metadata (t074, t092).
 // Rows are merged per Enterprise Grid group (one row per org); `groups` is the teamId →

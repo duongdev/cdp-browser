@@ -8,14 +8,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-  collapseMoves,
-  createReconnectDriver,
-  createWebCdp,
-  type WebTransportDeps,
-} from "./cdp-web-transport"
+import { collapseMoves, createWebCdp, type WebTransportDeps } from "./cdp-web-transport"
 import { deriveKey, open as envOpen, seal as envSeal } from "./crypto-envelope"
 import type { BackoffConfig } from "./reconnect-backoff"
+import { createReconnectDriver } from "./web-reconnect-driver"
 
 // --- fakes ----------------------------------------------------------------------------
 

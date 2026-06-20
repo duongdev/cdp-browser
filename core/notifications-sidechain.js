@@ -32,6 +32,14 @@ const { tsCmp } = require("./slack-sweep")
 
 const NOTIFY_BINDING = "__cdpNotify"
 const DEFAULT_CAP = 200
+// An awaitable side-channel CDP call (cred extraction) gets a timeout so a stalled socket
+// frees its promise instead of hanging forever (t096, P4).
+const CDP_CALL_TIMEOUT_MS = 10_000
+// A side-channel whose target is still live but never reaches OPEN (hung CONNECTING — no open,
+// no close, no error) is reaped after this and re-attached on the next reconcile (t096, P3).
+// Reconcile runs every ~5s and a healthy local CDP socket opens in well under a second, so a
+// still-non-OPEN socket past this threshold is genuinely stuck.
+const SIDECHANNEL_STALE_MS = 15_000
 
 // Notification Adapters identify notification-capable sites by URL hostname. Each
 // names its capture script (loaded via the injected `readInject`) and the icon to
@@ -97,6 +105,8 @@ function createNotificationCenter(deps) {
   // since the sweep can't cover them.
   const sweepDisabledTeams = new Set()
   const log = deps.log || (() => {})
+  const now = deps.now || (() => Date.now())
+  const WS_OPEN = WebSocketCtor && WebSocketCtor.OPEN != null ? WebSocketCtor.OPEN : 1
 
   function recordCreds(team, cookie) {
     const prev = credsByTeam.get(team.teamId) || {}
@@ -187,18 +197,33 @@ function createNotificationCenter(deps) {
     const adapter = adapterFor(target.url)
     if (!adapter || !target.webSocketDebuggerUrl) return
     const ws = new WebSocketCtor(target.webSocketDebuggerUrl)
+    ws.__attachedAt = now()
     sideChannels.set(target.id, ws)
     let cmdId = 1
     // Fire-and-forget CDP send (capture-script injection doesn't need the reply).
     const cdp = (method, params) =>
       ws.send(JSON.stringify({ id: cmdId++, method, params: params || {} }))
     // Awaitable CDP call — cred extraction needs the evaluate/getCookies results, so it
-    // correlates the reply by command id through `pending`.
+    // correlates the reply by command id through `pending`. A timeout rejects a call whose
+    // reply never arrives (stalled socket), and `drop` rejects any in-flight call on
+    // close/error — so a dead socket never leaves a promise hanging (t096, P4).
     const pending = new Map()
     const cdpCall = (method, params) =>
-      new Promise((resolve) => {
+      new Promise((resolve, reject) => {
         const id = cmdId++
-        pending.set(id, resolve)
+        const timer = setTimeout(() => {
+          if (pending.delete(id)) reject(new Error(`cdp ${method} timed out`))
+        }, CDP_CALL_TIMEOUT_MS)
+        pending.set(id, {
+          resolve: (v) => {
+            clearTimeout(timer)
+            resolve(v)
+          },
+          reject: (e) => {
+            clearTimeout(timer)
+            reject(e)
+          },
+        })
         ws.send(JSON.stringify({ id, method, params: params || {} }))
       })
     ws.on("open", () => {
@@ -217,7 +242,7 @@ function createNotificationCenter(deps) {
       try {
         const msg = JSON.parse(data.toString())
         if (msg.id != null && pending.has(msg.id)) {
-          pending.get(msg.id)(msg)
+          pending.get(msg.id).resolve(msg)
           pending.delete(msg.id)
           return
         }
@@ -228,6 +253,9 @@ function createNotificationCenter(deps) {
     })
     const drop = () => {
       if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
+      // Free any in-flight awaitable call so a stalled socket can't leak its promise.
+      for (const p of pending.values()) p.reject(new Error("side-channel closed"))
+      pending.clear()
     }
     ws.on("close", drop)
     ws.on("error", drop)
@@ -274,7 +302,14 @@ function createNotificationCenter(deps) {
     const matched = list.filter((t) => t.type === "page" && adapterFor(t.url))
     const liveIds = new Set(matched.map((t) => t.id))
     for (const [id, ws] of sideChannels) {
-      if (!liveIds.has(id)) {
+      // Reap a vanished/changed target's socket, OR a socket on a still-live target that is
+      // stuck below OPEN past the stale threshold (hung CONNECTING — no open/close/error fires,
+      // so it would otherwise sit unreaped and unre-attached; t096, P3).
+      const stale =
+        liveIds.has(id) &&
+        ws.readyState !== WS_OPEN &&
+        now() - (ws.__attachedAt || 0) > SIDECHANNEL_STALE_MS
+      if (!liveIds.has(id) || stale) {
         try {
           ws.close()
         } catch {}

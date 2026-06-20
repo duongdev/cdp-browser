@@ -123,7 +123,8 @@ interface CdpBridge {
   readClipboard: () => Promise<string>
   /** Electron-only: the local clipboard's image as a data URL, or null if none. */
   readClipboardImage: () => Promise<string | null>
-  onSwipe: (cb: (direction: string) => void) => void
+  /** Subscribe to trackpad swipe gestures; returns an unsubscribe (t096). */
+  onSwipe: (cb: (direction: string) => void) => () => void
   // Pins
   getPins: () => Promise<Pin[]>
   addPin: (pin: Pin) => Promise<Pin[]>
