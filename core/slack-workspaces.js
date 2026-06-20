@@ -44,14 +44,36 @@ function liveTeamIds(targets) {
 }
 
 // Which registered workspaces need a parked tab created: those with no live tab and not
-// created within the cooldown. `createdAt` maps teamId → last create timestamp. Pure.
-function planParkedTabs(registry, live, createdAt, now) {
+// created within the cooldown. `createdAt` maps teamId → last create timestamp.
+//
+// `pinUrlByTeam` (t098) maps a pinned workspace's teamId → its pin URL. A pinned workspace
+// is considered OWNED BY ITS PIN: the keeper never spawns an anonymous duplicate for it
+// (closing its tab no longer resurrects a stray). Capture is unaffected because one live
+// Slack tab refreshes creds for ALL workspaces and the sweep polls each over the web API
+// regardless of which tab is live. So per-workspace tabs aren't needed — only one live tab
+// is. When NO Slack tab is live and nothing else would open one, a single cred lifeline
+// plan keeps one alive, preferring a pinned URL (so it adopts into the pin on next reload).
+// Omitting `pinUrlByTeam` preserves the prior per-workspace behavior. Pure.
+function planParkedTabs(registry, live, createdAt, now, pinUrlByTeam = {}) {
+  const offCooldown = (teamId) => {
+    const last = createdAt[teamId]
+    return !(last && now - last < CREATE_COOLDOWN_MS)
+  }
   const plans = []
   for (const teamId of Object.keys(registry)) {
     if (live.has(teamId)) continue
-    const last = createdAt[teamId]
-    if (last && now - last < CREATE_COOLDOWN_MS) continue
+    if (pinUrlByTeam[teamId]) continue // pin owns it — don't reopen
+    if (!offCooldown(teamId)) continue
     plans.push({ teamId, url: registry[teamId].url })
+  }
+  // Cred lifeline: nothing live and nothing else planned → keep exactly one Slack tab alive
+  // via a pinned workspace, so shared creds keep refreshing. Cooldown-gated; one is enough.
+  if (live.size === 0 && plans.length === 0) {
+    for (const teamId of Object.keys(pinUrlByTeam)) {
+      if (!offCooldown(teamId)) continue
+      plans.push({ teamId, url: pinUrlByTeam[teamId] })
+      break
+    }
   }
   return plans
 }

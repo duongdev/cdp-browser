@@ -634,9 +634,17 @@ async function keepSlackTabsAlive(targets) {
     )
     if (!before || before.enterpriseId !== enterpriseId) changed = true
   }
-  // Recreate a tab for any registered workspace that has no live tab.
+  // Recreate a tab for any registered workspace that has no live tab — UNLESS the user has
+  // it pinned (t098): a pinned workspace is owned by its pin, so the keeper never spawns a
+  // stray duplicate for it. One live Slack tab refreshes every workspace's creds, so capture
+  // is unaffected; a cred lifeline (inside planParkedTabs) keeps one tab alive when none is.
   const live = slackLiveTeamIds(targets)
-  const plans = slackPlanParkedTabs(slackRegistry, live, slackCreatedAt, Date.now())
+  const pinUrlByTeam = {}
+  for (const pin of settings.getPins()) {
+    const tid = slackTeamIdOf(pin.url || "")
+    if (tid && !pinUrlByTeam[tid]) pinUrlByTeam[tid] = pin.url
+  }
+  const plans = slackPlanParkedTabs(slackRegistry, live, slackCreatedAt, Date.now(), pinUrlByTeam)
   for (const plan of plans) {
     slackCreatedAt[plan.teamId] = Date.now()
     try {

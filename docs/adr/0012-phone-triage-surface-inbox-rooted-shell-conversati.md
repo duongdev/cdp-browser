@@ -1,6 +1,6 @@
 # ADR-0012: Phone triage surface: inbox-rooted shell + conversation reader
 
-- **Status:** Proposed
+- **Status:** Accepted (all phases shipped t076–t081)
 - **Date:** 2026-06-11
 
 ## Context
