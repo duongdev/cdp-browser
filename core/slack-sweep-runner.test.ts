@@ -211,41 +211,41 @@ describe("Enterprise Grid grouping — org + workspace collapse (t092)", () => {
 
   it("keys a Grid child's entries by enterpriseId, keeping the concrete teamId", async () => {
     const h = harness(gridApi())
-    h.seeded.add("TGFUQ89E1")
-    h.watermarks.TGFUQ89E1 = { C1: "100.0" }
+    h.seeded.add("T0EXAMPLE01")
+    h.watermarks.T0EXAMPLE01 = { C1: "100.0" }
     await h.sweeper.sweepWorkspace({
-      teamId: "TGFUQ89E1",
-      enterpriseId: "E0761H36LHY",
+      teamId: "T0EXAMPLE01",
+      enterpriseId: "E0EXAMPLE01",
       token: "x",
       cookie: "c",
-      name: "FWD Group",
-      url: "https://fwdgroup.slack.com/",
+      name: "Example Group",
+      url: "https://example.slack.com/",
     })
-    expect(h.ingested[0].id).toBe("slack:E0761H36LHY:C1:160.0")
-    expect(h.ingested[0].groupKey).toBe("slack:E0761H36LHY")
-    expect(h.ingested[0].team).toBe("TGFUQ89E1")
+    expect(h.ingested[0].id).toBe("slack:E0EXAMPLE01:C1:160.0")
+    expect(h.ingested[0].groupKey).toBe("slack:E0EXAMPLE01")
+    expect(h.ingested[0].team).toBe("T0EXAMPLE01")
     // Deep-link must use the concrete workspace, not the group id.
     expect(h.ingested[0].activate).toEqual({
       type: "spa-link",
-      url: "/client/TGFUQ89E1/C1",
+      url: "/client/T0EXAMPLE01/C1",
     })
   })
 
   it("the org pseudo-team yields the SAME id as its workspace for one (channel, ts)", async () => {
     const ws = harness(gridApi())
-    ws.seeded.add("TGFUQ89E1")
-    ws.watermarks.TGFUQ89E1 = { C1: "100.0" }
+    ws.seeded.add("T0EXAMPLE01")
+    ws.watermarks.T0EXAMPLE01 = { C1: "100.0" }
     await ws.sweeper.sweepWorkspace({
-      teamId: "TGFUQ89E1",
-      enterpriseId: "E0761H36LHY",
+      teamId: "T0EXAMPLE01",
+      enterpriseId: "E0EXAMPLE01",
       token: "x",
       cookie: "c",
     })
     const org = harness(gridApi())
-    org.seeded.add("E0761H36LHY")
-    org.watermarks.E0761H36LHY = { C1: "100.0" }
+    org.seeded.add("E0EXAMPLE01")
+    org.watermarks.E0EXAMPLE01 = { C1: "100.0" }
     await org.sweeper.sweepWorkspace({
-      teamId: "E0761H36LHY", // org pseudo-team: teamId === enterpriseId
+      teamId: "E0EXAMPLE01", // org pseudo-team: teamId === enterpriseId
       enterpriseId: "",
       token: "y",
       cookie: "c",
@@ -255,16 +255,16 @@ describe("Enterprise Grid grouping — org + workspace collapse (t092)", () => {
 
   it("a standalone team is byte-unchanged (groupId === teamId)", async () => {
     const h = harness(gridApi())
-    h.seeded.add("T01CDUT3CBD")
-    h.watermarks.T01CDUT3CBD = { C1: "100.0" }
+    h.seeded.add("T0EXAMPLE02")
+    h.watermarks.T0EXAMPLE02 = { C1: "100.0" }
     await h.sweeper.sweepWorkspace({
-      teamId: "T01CDUT3CBD",
+      teamId: "T0EXAMPLE02",
       enterpriseId: "",
       token: "z",
       cookie: "c",
     })
-    expect(h.ingested[0].id).toBe("slack:T01CDUT3CBD:C1:160.0")
-    expect(h.ingested[0].groupKey).toBe("slack:T01CDUT3CBD")
+    expect(h.ingested[0].id).toBe("slack:T0EXAMPLE02:C1:160.0")
+    expect(h.ingested[0].groupKey).toBe("slack:T0EXAMPLE02")
   })
 
   // A Grid child's entries are keyed by groupId (slack:{groupId}); read-sync + exclude
@@ -305,13 +305,13 @@ describe("Enterprise Grid grouping — org + workspace collapse (t092)", () => {
       log: () => {},
     })
     await sweeper.sweepWorkspace({
-      teamId: "TGFUQ89E1",
-      enterpriseId: "E0761H36LHY",
+      teamId: "T0EXAMPLE01",
+      enterpriseId: "E0EXAMPLE01",
       token: "x",
       cookie: "c",
     })
-    expect(excludesByKey).toEqual(["E0761H36LHY"])
-    expect(readByUnread).toEqual([{ key: "E0761H36LHY", unread: [] }])
+    expect(excludesByKey).toEqual(["E0EXAMPLE01"])
+    expect(readByUnread).toEqual([{ key: "E0EXAMPLE01", unread: [] }])
   })
 
   // The first (seeding) sweep of a Grid child also read-syncs on the restricted path — and
@@ -346,12 +346,12 @@ describe("Enterprise Grid grouping — org + workspace collapse (t092)", () => {
       log: () => {},
     })
     await sweeper.sweepWorkspace({
-      teamId: "TGFUQ89E1",
-      enterpriseId: "E0761H36LHY",
+      teamId: "T0EXAMPLE01",
+      enterpriseId: "E0EXAMPLE01",
       token: "x",
       cookie: "c",
     })
-    expect(readByUnread).toEqual([{ key: "E0761H36LHY", unread: [] }])
+    expect(readByUnread).toEqual([{ key: "E0EXAMPLE01", unread: [] }])
   })
 })
 

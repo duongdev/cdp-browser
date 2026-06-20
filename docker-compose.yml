@@ -12,7 +12,7 @@ services:
       CDP_HOST: ${CDP_HOST:-host.docker.internal}
       CDP_PORT: ${CDP_PORT:-9222}
       PORT: "7800"
-      APP_TITLE: ${APP_TITLE:-CDP Portal}
+      APP_TITLE: ${APP_TITLE:-CDP Browser}
       SETTINGS_PATH: /data/settings.json
       NOTIFS_PATH: /data/notifications.json
       # Optional E2E payload encryption. Set E2E_PASSPHRASE to turn it on (else plaintext).

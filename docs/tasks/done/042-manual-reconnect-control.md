@@ -90,7 +90,7 @@ no new pure logic."
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-HITL — needs a live Remote Browser via `pnpm web` (ideally through portal.dustin.one
+HITL — needs a live Remote Browser via `pnpm web` (ideally through the deployment
 to exercise the real proxy chain where idle-socket reaps happen).
 
 - [ ] Connect to the Host; confirm the Active Tab renders frames and accepts input.

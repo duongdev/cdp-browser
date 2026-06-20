@@ -49,8 +49,8 @@ const ADAPTERS = [
     name: "teams",
     script: "teams-notify.js",
     match: (h) => /(^|\.)teams\.(microsoft|cloud\.microsoft)\.com$/.test(h),
-    // Served from the app's own origin (t086): external favicon CDNs are blocked by the
-    // corporate proxy (Zscaler) / need auth, so they silently failed to load on the phone.
+    // Served from the app's own origin (t086): external favicon CDNs are blocked by a
+    // corporate TLS-intercepting proxy / need auth, so they silently failed to load on the phone.
     iconUrl: "/icons/teams.svg",
   },
   {

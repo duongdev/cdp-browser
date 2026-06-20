@@ -18,7 +18,7 @@ REMAINING here, DEFERRED to v0.2: the signed + notarized macOS electron-builder 
 
 ## Goal (DEFERRED v0.2)
 
-Set up GitHub Actions CI (check+typecheck+test+packaging smoke) and a signed/notarized macOS release workflow (workflow_dispatch, all 3 arches: arm64+x64+universal, dmg+zip artifacts). Wire up electron-builder publish to GitHub releases, upload latest-mac.yml for future auto-update, and port lure's three Claude workflows (@claude bot, PR review, daily docs-revise) with custom-provider→OAuth fallback.
+Set up GitHub Actions CI (check+typecheck+test+packaging smoke) and a signed/notarized macOS release workflow (workflow_dispatch, all 3 arches: arm64+x64+universal, dmg+zip artifacts). Wire up electron-builder publish to GitHub releases, upload latest-mac.yml for future auto-update, and port the upstream workflows' three Claude workflows (@claude bot, PR review, daily docs-revise) with custom-provider→OAuth fallback.
 
 ## Why now
 
@@ -31,9 +31,9 @@ Current state: no CI, manual unsigned builds. Needed to ship public OSS releases
 - [ ] `electron-builder` config updated: `publish: github` set, asar allowlist verified against `inject/`, `notifications.js`, `theme-emulation.js`
 - [ ] App passes code-signing: `codesign -vvv` verifies Developer ID signature on packaged .app; notarization passes (confirmed via `xcrun stapler validate`)
 - [ ] `.github/workflows/claude.yml` — @claude comment trigger, custom-provider→OAuth fallback, token usage reporting
-- [ ] `.github/workflows/claude-review.yml` — auto code-review on PRs (copy from lure), custom provider pattern
-- [ ] `.github/workflows/docs-revise.yml` — daily scheduled doc audit, single rolling PR on `docs-revise/auto`, load lure's prompt rules
-- [ ] `.github/scripts/claude-usage-quota.sh` + `.github/scripts/claude-usage-report.sh` ported from lure
+- [ ] `.github/workflows/claude-review.yml` — auto code-review on PRs (from the upstream workflows), custom provider pattern
+- [ ] `.github/workflows/docs-revise.yml` — daily scheduled doc audit, single rolling PR on `docs-revise/auto`, load the upstream workflows' prompt rules
+- [ ] `.github/scripts/claude-usage-quota.sh` + `.github/scripts/claude-usage-report.sh` ported from the upstream workflows
 - [ ] `.releaserc.cjs` (semantic-release config) — if using semantic versioning; else confirm manual semver bumping suffices (grill chose manual workflow_dispatch)
 - [ ] One test dispatch to a draft release with a canary version (e.g., `999.0.0-test`) confirms build pipeline succeeds and signing/notarization succeed
 - [ ] Documentation: CLAUDE.md updated with CI + release procedures, secrets required, architecture
@@ -78,7 +78,7 @@ N/a — no renderer changes.
 - universal2 is also shipped for future auto-update simplicity (electron-updater prefers universal on mac)
 
 **Claude workflows:**
-- Custom provider config (for Z.AI/GLM) with OAuth fallback (matching lure pattern)
+- Custom provider config (for an alternate LLM provider) with OAuth fallback (matching the upstream workflows pattern)
 - PR review, @claude bot, docs-revise all live; token usage tracked + reported
 
 **New modules/contracts:** None — configuration only.
@@ -98,12 +98,12 @@ All must be true before status → done.
 
 - [ ] Layer 2 smoke checklist (manual release test) completed, draft release created + signed/notarized
 - [ ] `.github/workflows/` contains ci.yml, release.yml, claude.yml, claude-review.yml, docs-revise.yml (or adapted names)
-- [ ] `.github/scripts/` contains claude-usage-quota.sh, claude-usage-report.sh ported from lure
+- [ ] `.github/scripts/` contains claude-usage-quota.sh, claude-usage-report.sh ported from the upstream workflows
 - [ ] `electron-builder` config in package.json: publish+asar allowlist updated
 - [ ] CI + release secrets added to repo settings (CSC_LINK, CSC_KEY_PASSWORD, APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER, CLAUDE_CODE_OAUTH_TOKEN or custom-provider equivalent)
 - [ ] Test dispatch to draft release succeeds; artifacts signed + notarized verified
 - [ ] CLAUDE.md updated: CI/release procedures, required secrets, troubleshooting
-- [ ] `.github/docs-revise-prompt.md` + `.github/REVIEW.md` ported from lure (if using claude review)
+- [ ] `.github/docs-revise-prompt.md` + `.github/REVIEW.md` ported from the upstream workflows (if using claude review)
 - [ ] One clean commit with message `chore(ci): add github actions + signed release pipeline (t003)` (no test/draft versions shipped to prod)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
 
@@ -120,9 +120,8 @@ All must be true before status → done.
 - Claude workflows: all three (bot, review, docs-revise), custom-provider→OAuth fallback
 
 **Key references:**
-- lure CI config: ~/../personal/lure/.github/workflows/ (ci.yml, release.yml, claude.yml, docs-revise.yml)
-- lure prompt + review docs: .github/docs-revise-prompt.md, REVIEW.md
-- lure token tracking: .github/scripts/claude-usage-*.sh
+- Upstream workflows prompt + review docs: .github/docs-revise-prompt.md, REVIEW.md
+- Upstream workflows token tracking: .github/scripts/claude-usage-*.sh
 - cdp-browser constraints: CLAUDE.md (architecture, no Windows support yet, asar allowlist fragile)
 
 **Subtasks (execution phases, but one atomic commit):**

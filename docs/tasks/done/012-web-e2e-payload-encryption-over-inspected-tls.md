@@ -9,23 +9,23 @@
 ## Goal
 
 Add an opt-in end-to-end encryption mode so the web build's content stays hidden
-even when a TLS-intercepting proxy (Zscaler) decrypts the HTTPS. Every `/api`
+even when a corporate TLS-intercepting proxy decrypts the HTTPS. Every `/api`
 request/response body and all SSE event data is wrapped in an AES-256-GCM envelope
 keyed by a PBKDF2 key the proxy never sees (passphrase entered in the browser,
-matched by an env passphrase on cloud01). After Zscaler strips TLS it's left with
+matched by an env passphrase on the server). After the proxy strips TLS it's left with
 ciphertext blobs. Transparent at the transport seam — the renderer, streaming
 channel, and notifications are unchanged.
 
 ## Why now
 
-The target device is managed, no-admin, Zscaler-inspected, and can't run a tunnel
-(no Tailscale/SSH egress). HTTPS to the portal is therefore readable by IT today.
+The target device is managed, no-admin, TLS-inspected by a corporate proxy, and can't run a tunnel
+(no Tailscale/SSH egress). HTTPS to the deployment is therefore readable by IT today.
 App-layer E2E is the only mechanism that keeps content (screencast frames, input,
 URLs, notification text) opaque to network content inspection on that device.
 
 ## Acceptance criteria
 
-- [ ] E2E is ON iff cloud01 has `E2E_PASSPHRASE` set; otherwise plaintext (unchanged).
+- [ ] E2E is ON iff the server has `E2E_PASSPHRASE` set; otherwise plaintext (unchanged).
 - [ ] `GET /api/crypto-params` returns `{ e2e, salt, iterations, verifier }` (salt public).
 - [ ] Browser prompts for the passphrase when `e2e` is on, derives a non-extractable
       AES-GCM key (PBKDF2-SHA256, served iters, served salt), and **verifies** it by
@@ -75,7 +75,7 @@ K = PBKDF2-SHA256(passphrase, salt(from /api/crypto-params), iters)   # passphra
 
 - Defeating endpoint screen/keystroke capture (EDR) — out of scope of any network crypto.
 - Hiding metadata (destination/volume/timing) — visible regardless.
-- Encrypting static assets / the Authentik login — app shell only, no content.
+- Encrypting static assets / the SSO login — app shell only, no content.
 - WebTransport/HTTP-3.
 
 ## Definition of Done
@@ -83,12 +83,12 @@ K = PBKDF2-SHA256(passphrase, salt(from /api/crypto-params), iters)   # passphra
 - [ ] Layer 1 tests green; Layer 2 + 3 verified locally (E2E on and off).
 - [ ] `pnpm test` / `pnpm typecheck` / `pnpm check` green.
 - [ ] No AI attribution; t012 in branch + commit.
-- [ ] Deploy note: set `E2E_PASSPHRASE` on cloud01 (dokploy) to enable; pick a long passphrase.
+- [ ] Deploy note: set `E2E_PASSPHRASE` on the server to enable; pick a long passphrase.
 - [ ] Task closed: status → done, moved to `done/`.
 
 ## Notes
 
 Honest bound: this defeats *content inspection/DLP logging* on a TLS-MITM device. It
-does not defeat endpoint screen capture, nor hide that you use the portal. The
+does not defeat endpoint screen capture, nor hide that you use the deployment. The
 verifier + known-format frames are offline-crack oracles → a strong passphrase is
 mandatory; PBKDF2 raises the per-guess cost.

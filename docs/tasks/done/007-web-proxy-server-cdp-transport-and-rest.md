@@ -12,7 +12,7 @@ Stand up a standalone Node HTTP server (`web/server.mjs`) that is the web port's
 backend — the browser-facing equivalent of Electron's `main.js`. It serves the
 built renderer and exposes the **entire `window.cdp` surface** over plain HTTP
 (POST for commands, SSE for server pushes) plus the `/json` REST the renderer
-needs, with no WebSocket on the browser hop and no auth (nginx + Authentik are
+needs, with no WebSocket on the browser hop and no auth (nginx + an SSO proxy are
 handled outside this repo). It owns one active CDP screencast socket, the
 notification side-channels, and `settings.json` persistence. After this task the
 backend is callable end-to-end by a browser; the renderer shim (t008) and parity

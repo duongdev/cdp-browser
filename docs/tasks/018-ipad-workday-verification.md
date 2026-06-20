@@ -28,7 +28,7 @@ This is the final gate before v1 is declared done. Tasks 015, 016, and 017 suppl
 - [ ] One session held entirely by FINGER (no Magic Keyboard, couch use): finger drag scrolls the remote page, a tap clicks at the correct coordinates, a long-press opens the context menu (via t051 touch-scroll-tap); the settings drawer is dismissable by touch (t049); all interactive targets are comfortably tappable at >=44pt (t048)
 - [ ] Settings persist across app close/reopen (theme, pins, sidebar width, notification toggle)
 - [ ] E2E mode, if enabled, passphrase entry works smoothly; encryption doesn't break push
-- [ ] Authentik session survives app close and PWA install (stay logged in)
+- [ ] The auth session survives app close and PWA install (stay logged in)
 - [ ] If any blocking issue emerges, capture as a follow-up task (don't block this task's closure)
 
 ## Test plan

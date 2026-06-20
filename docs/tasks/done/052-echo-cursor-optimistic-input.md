@@ -25,7 +25,7 @@ air before it.
 The v0.1.0 gate is "would I daily-drive this on the iPad PWA," and the synthesis
 called a local echo cursor the single biggest *felt*-latency win — it's
 independent of RTT, so it pays off worst exactly where the link is worst (couch
-Wi-Fi, portal/Authentik hop). It ships independently of the touch-scroll work
+Wi-Fi, reverse-proxy hop). It ships independently of the touch-scroll work
 (t051) and of the deferred codec work: it layers above the screencast and reuses
 the existing coordinate pipeline, so it carries no transport risk. With t051
 feeding finger gestures into the same mouse pipeline, the echo cursor is what

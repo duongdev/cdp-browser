@@ -41,7 +41,7 @@ This is an inner-ring item on the **1-never-stuck** slice: the v0.1.0 gate is "I
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-HITL — needs a live Remote Browser via `pnpm web`, ideally through portal.dustin.one to exercise the real proxy chain.
+HITL — needs a live Remote Browser via `pnpm web`, ideally through the deployment to exercise the real proxy chain.
 
 - [ ] Boot `web/server.mjs`, connect on **Auto** so WS is the active path; confirm frames + input ride WS (one socket in the network panel).
 - [ ] Drop the WS upstream mid-session (kill/restart the proxy WS hop, or pull/restore the network) while the page is **foregrounded** — within a few seconds the timer re-establishes WS and the fast path self-heals; input latency returns to the WS floor without a reload.
@@ -113,7 +113,7 @@ All must be true before status → done.
 - Hard constraint: do not introduce a second retry loop that competes with t040's backoff. The visible-tab timer must *compose with* the existing backoff state in `transport-selector.ts`, not duplicate the retry counter — otherwise two loops race and the cadence is unpredictable.
 - One socket, two seams: the restored WS feeds both the Downlink (frames + events) and the Uplink (input) on the same connection. Verify in the network panel that exactly one WS appears after a heal — a second socket means the re-attempt leaked the prior source.
 - Visibility gate must key off real `visibilitychange` (and `document.visibilityState`), not a synthesized/focus-only signal — backgrounding the PWA on iOS hides it; the timer must go quiet there to avoid draining battery / hammering the proxy.
-- Smoke should run through the real proxy chain (portal.dustin.one) where possible — an idle-WS reap by the proxy is exactly the blip this recovers from, and it only reproduces under the real chain.
+- Smoke should run through the real proxy chain (the deployment) where possible — an idle-WS reap by the proxy is exactly the blip this recovers from, and it only reproduces under the real chain.
 
 ---
 

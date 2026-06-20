@@ -53,7 +53,7 @@ already anticipates (`core/notifications.js` comment: "a future adapter can emit
       (the blocker the adversarial review caught: byTab/byPin keyed on origin while byGroup
       keyed `slack:{teamId}` → all Slack badges read 0). Fixed via shared `groupKeyForUrl`.
 
-### Layer 2 — Manual smoke (CDP/IPC) — HITL against 100.85.206.8:9222
+### Layer 2 — Manual smoke (CDP/IPC) — HITL against <remote-browser-host>:9222
 
 - [ ] Slack tab open → side-channel attaches (verify in logs / notification appears).
 - [ ] Send self a DM/mention in workspace A → entry appears with workspace-A label.
@@ -82,15 +82,15 @@ Mirrors the Teams/Outlook adapter pattern; only the capture mechanism differs.
 - **New ADR needed?** No — this is a new adapter inside the existing ADR-0003
   (notifications side-channel) seam, not a new architectural decision.
 
-### Validated live findings (spike against 100.85.206.8:9222, 2026-06-03)
+### Validated live findings (spike against <remote-browser-host>:9222, 2026-06-03)
 
-- URL shape: `app.slack.com/client/E0761H36LHY/C0AJ98M85A5`. teamId regex
+- URL shape: `app.slack.com/client/E0EXAMPLE01/C0EXAMPLE01`. teamId regex
   `/client/([TE][A-Z0-9]+)/` works (Enterprise Grid `E` prefix confirmed); channelId is
   the next `C…` path segment.
 - `Notification.permission` was `"default"` on the live tab → **permission override is
   mandatory** or Slack never calls `new Notification`.
 - Workspace name: DOM anchor `.p-ia4_home_header_menu__team_name` →
-  "FWD GROUP MANAGEMENT HOLDINGS LIMITED" (clean). Fallback: `document.title` split on
+  "Example Group Holdings Limited" (clean). Fallback: `document.title` split on
   " - " (workspace name is a middle segment), then hostname.
 - Capture must patch `window.Notification` at **document-start** (Slack caches the
   original ref at load), exactly like the existing adapters inject via
@@ -99,7 +99,7 @@ Mirrors the Teams/Outlook adapter pattern; only the capture mechanism differs.
 ```ts
 // pure context parser (shape, not path)
 parseSlackContext(url: string): { teamId: string | null; channelId: string | null }
-slackGroupKey(ctx: { teamId: string | null }): string   // "slack:E0761H36LHY" | ""
+slackGroupKey(ctx: { teamId: string | null }): string   // "slack:E0EXAMPLE01" | ""
 
 // capture payload shipped via __cdpNotify (matches existing adapters)
 {

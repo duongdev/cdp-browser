@@ -10,7 +10,7 @@
 
 ## Goal
 
-A web build deployed behind a buffering reverse proxy (the default nginx/Authentik
+A web build deployed behind a buffering reverse proxy (the default nginx + an SSO proxy
 setup) silently runs the slow input path: the streaming input channel can't activate
 without `proxy_request_buffering off`, and the WS transport silently falls back to
 SSE+POST without the three WS upgrade headers. The operator gets sluggish input and
@@ -22,7 +22,7 @@ a proxy to fix rather than assuming the app is just slow.
 ## Why now
 
 The web PWA is the v0.1.0 release surface and the daily driver behind a real proxy
-(Authentik at the portal). The latency cheap-wins in this slice (t054–t057) are
+(an SSO proxy at the deployment). The latency cheap-wins in this slice (t054–t057) are
 wasted if the operator is stuck on the buffered fallback and never knows it. This is
 the cheap, docs-heavy capstone of the latency slice: it turns an invisible
 mis-configuration into a visible, copy-paste-fixable one. **Outer ring** — not
@@ -65,7 +65,7 @@ add it as a one-line helper with a unit test; otherwise inline it.
 ### Layer 2 — Manual smoke (CDP/IPC)
 
 Needs a live Remote Browser **and** a buffering proxy in front of `web/server.mjs`
-(HITL — requires the deployed/portal setup or a local nginx without
+(HITL — requires the deployed setup or a local nginx without
 `proxy_request_buffering off`):
 
 - [ ] With a buffering proxy (no `proxy_request_buffering off`, no WS headers): load
@@ -74,7 +74,7 @@ Needs a live Remote Browser **and** a buffering proxy in front of `web/server.mj
 - [ ] Apply the guide's config (streaming + WS headers) and reload → the fast path
       activates and the indicator disappears.
 - [ ] On a direct connection (no proxy, e.g. Tailscale Serve to local `:7800` per the
-      `cloud01` / `m4-pro-mbp` setups) the fast path is active and the indicator is
+      remote-host setups) the fast path is active and the indicator is
       hidden from the first frame.
 
 ### Layer 3 — Visual review

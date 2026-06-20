@@ -112,27 +112,27 @@ describe("cred state machine — fresh/stale transitions", () => {
 
 describe("groupId — collapse an Enterprise Grid org + its workspaces (t092)", () => {
   it("returns enterpriseId when present (a Grid child workspace)", () => {
-    expect(groupId({ teamId: "TGFUQ89E1", enterpriseId: "E0761H36LHY" })).toBe("E0761H36LHY")
+    expect(groupId({ teamId: "T0EXAMPLE01", enterpriseId: "E0EXAMPLE01" })).toBe("E0EXAMPLE01")
   })
 
   it("returns teamId when enterpriseId is absent/empty (standalone or the org pseudo-team)", () => {
-    expect(groupId({ teamId: "T01CDUT3CBD", enterpriseId: "" })).toBe("T01CDUT3CBD")
-    expect(groupId({ teamId: "E0761H36LHY", enterpriseId: null })).toBe("E0761H36LHY")
-    expect(groupId({ teamId: "T01CDUT3CBD" })).toBe("T01CDUT3CBD")
+    expect(groupId({ teamId: "T0EXAMPLE02", enterpriseId: "" })).toBe("T0EXAMPLE02")
+    expect(groupId({ teamId: "E0EXAMPLE01", enterpriseId: null })).toBe("E0EXAMPLE01")
+    expect(groupId({ teamId: "T0EXAMPLE02" })).toBe("T0EXAMPLE02")
   })
 })
 
 describe("buildSlackGroups — teamId → groupId map (t092)", () => {
   it("maps every member workspace + the org pseudo-team to one groupId", () => {
     const map = buildSlackGroups([
-      { teamId: "E0761H36LHY", enterpriseId: "" }, // the org pseudo-team
-      { teamId: "TGFUQ89E1", enterpriseId: "E0761H36LHY" }, // member workspace
-      { teamId: "T01CDUT3CBD", enterpriseId: "" }, // standalone
+      { teamId: "E0EXAMPLE01", enterpriseId: "" }, // the org pseudo-team
+      { teamId: "T0EXAMPLE01", enterpriseId: "E0EXAMPLE01" }, // member workspace
+      { teamId: "T0EXAMPLE02", enterpriseId: "" }, // standalone
     ])
     expect(map).toEqual({
-      E0761H36LHY: "E0761H36LHY",
-      TGFUQ89E1: "E0761H36LHY",
-      T01CDUT3CBD: "T01CDUT3CBD",
+      E0EXAMPLE01: "E0EXAMPLE01",
+      T0EXAMPLE01: "E0EXAMPLE01",
+      T0EXAMPLE02: "T0EXAMPLE02",
     })
   })
 

@@ -1,5 +1,5 @@
 // Minimal service worker for the web build — enables PWA install and offline shell.
-// Navigations are network-first (so Authentik redirects + the live title work, with a
+// Navigations are network-first (so auth/SSO redirects + the live title work, with a
 // cached fallback offline); hashed static assets are cache-first. The API surface
 // (SSE event stream, streaming input upload, POSTs) and non-GET requests are NEVER
 // intercepted — they must always hit the network. See t011.

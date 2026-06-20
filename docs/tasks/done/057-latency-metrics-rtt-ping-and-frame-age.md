@@ -28,7 +28,7 @@ is **always-on** in v0.1.0, building on `src/lib/perf-mark.ts`. "Feels laggy" to
 number, a silent proxy demotion (WS → SSE) is invisible, and there is no signal to drive a
 HUD or any future adaptive pacing. This task is the data layer the toggleable latency HUD
 (t059, outer ring) renders — t059 is blocked until RTT/jitter/frame-age exist. The ping
-keepalive also hardens the never-stuck story (an idle WS behind nginx/Authentik can be
+keepalive also hardens the never-stuck story (an idle WS behind nginx + an SSO proxy can be
 reaped without traffic), which is squarely in the v0.1.0 gate.
 
 ## Acceptance criteria
@@ -83,7 +83,7 @@ Run `pnpm web` against a live CDP host (the server change is in `web/server.mjs`
 
 - [ ] Boot the server, open the web build with WS reachable. Confirm ping frames go out on the
       interval and pongs return; the RTT snapshot stabilizes to a plausible value (a few ms
-      tailnet-local, tens of ms over the public portal).
+      tailnet-local, tens of ms over the public reverse proxy).
 - [ ] Leave the tab idle (no mouse, no input) past the proxy idle timeout — the WS stays open
       (keepalive works), no spurious `disconnected`.
 - [ ] Confirm frame age computes against the live link: it tracks RTT/2 + decode/queue time and

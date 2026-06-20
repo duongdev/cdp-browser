@@ -40,7 +40,7 @@ This is the second structural step of the #3 web-transport split (the Downlink s
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-Steps to manually verify with a live Remote Browser via `pnpm web` (through portal.dustin.one to match the real proxy chain):
+Steps to manually verify with a live Remote Browser via `pnpm web` (through the deployment to match the real proxy chain):
 
 - [ ] Boot `web/server.mjs`, connect on Auto — clicks, scroll, and typing forward end-to-end with no perceptible latency change vs `main` before this task.
 - [ ] Force-pick **Fastest (WS)** — input rides the WS uplink; mouse/keyboard work; no duplicate sockets in the network panel.
@@ -113,7 +113,7 @@ All must be true before status → done.
 
 - Hard constraint: the 020 transport tests must pass untouched — they are the behavior-preserving oracle for this refactor. If a 020 test needs editing, the change is not behavior-preserving and the seam shape is wrong.
 - The WS adapter is shared with the Downlink seam from 021: one socket, two seams. Verify in the network panel that no second WS connection appears after this lands.
-- Smoke must run through the real proxy chain (portal.dustin.one) — latency parity is the whole point and only shows up under real RTT.
+- Smoke must run through the real proxy chain (the deployment) — latency parity is the whole point and only shows up under real RTT.
 - Keep `transport-selector.ts` honest: if the router starts needing to *ask* the selector about readiness, the seam has leaked — readiness belongs to the adapters, mode advice belongs to the selector.
 
 ---

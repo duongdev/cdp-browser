@@ -12,6 +12,9 @@ web-notifications.json
 # Agent worktrees (transient, never commit)
 .claude/worktrees/
 
+# Scheduled-task lock (transient, never commit)
+.claude/scheduled_tasks.lock
+
 # E2E run artifacts
 test-results/
 test/e2e/playwright-results.json

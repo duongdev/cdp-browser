@@ -13,7 +13,7 @@ with pnpm then runs `web/server.mjs` on a slim Node runtime carrying only the
 server, the built `dist/`, the pure CJS modules + inject scripts it reads, and
 the single runtime dep (`ws`). A `docker-compose.yml` wires the CDP host, port,
 persisted settings volume, and page title via env. After this task the web app
-deploys with `docker compose up` behind the operator's own nginx + Authentik.
+deploys with `docker compose up` behind the operator's own nginx + an SSO proxy.
 
 ## Why now
 
@@ -72,7 +72,7 @@ n/a — no new UI (favicon/title verified by served-HTML inspection).
 
 ## Out of scope
 
-- nginx/Authentik config, TLS certs — operator-owned.
+- nginx + SSO-proxy config, TLS certs — operator-owned.
 - Multi-arch image publishing / registry push.
 - Refactoring `main.js` onto the shared core — captured follow-up.
 

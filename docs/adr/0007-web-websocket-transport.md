@@ -6,7 +6,7 @@
 ## Context
 
 ADR-0006 ruled out WebSocket on the browser hop on two grounds: (1) the target
-deploy chain (nginx + Authentik in front of `web/server.mjs`) blocked WS, and
+deploy chain (nginx + an SSO proxy in front of `web/server.mjs`) blocked WS, and
 (2) browsers can't speak CDP WS directly anyway because Chrome/Edge reject
 `/json` upgrades carrying an `Origin` header. (2) is unchanged — a server-side
 proxy is still required regardless. (1) was the empirical claim, and on
@@ -19,10 +19,10 @@ proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection $http_connection;
 ```
 
-End-to-end through portal.dustin.one: `101 Switching Protocols` returned, full
+End-to-end through the deployment: `101 Switching Protocols` returned, full
 bidirectional frames, and 65 s idle with no proxy drop. Browsers automatically
 negotiate WS over HTTP/1.1 (HTTP/2 strips Upgrade per RFC 7540), so the
-HTTP/2-default proxy doesn't kill it in practice. Authentik's outpost passes
+HTTP/2-default proxy doesn't kill it in practice. The SSO proxy's outpost passes
 session cookies through to upstream, so a logged-in browser's WS connection
 inherits the same auth context as its REST calls.
 
@@ -78,7 +78,7 @@ WS-hostile chains.
 ## Alternatives
 
 - **Raw CDP tunnel (browser WS proxies to CDP WS via the server as a dumb
-  pipe).** Rejected — server-side dedup, E2E seal, Authentik integration, and
+  pipe).** Rejected — server-side dedup, E2E seal, SSO-proxy integration, and
   the REST surface (tabs/pins/push) would all have to move to the client.
   Performance gain over the envelope path is ~single-digit percent (both
   bottleneck on CDP frame production, per ADR-0006).
@@ -86,7 +86,7 @@ WS-hostile chains.
   even with `proxy_request_buffering off`, the streaming POST still pays a
   fresh request setup on disconnect; WS keep-alive is cheaper and more robust.
 - **WebTransport over HTTP/3.** Deferred. ADR-0006's t011 addendum already
-  notes HTTP/3-through-Authentik as uncertain; the WS path solves the same
+  notes HTTP/3-through-SSO-proxy as uncertain; the WS path solves the same
   latency problem with no new infrastructure dependencies.
 - **Drop the picker, auto-only.** Rejected — users on hostile proxies need a
   way to force `batch` and skip the WS probe wait. The picker is the safety

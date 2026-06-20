@@ -8,7 +8,7 @@
 
 ## Goal
 
-Two HITL bugs: (1) Slack and Outlook notification icons never loaded — they hotlinked external favicon CDNs (`a.slack-edge.com`, `outlook.office365.com`) that the corporate proxy (Zscaler) blocks or that need auth, so `onError` hid them (only Teams' public CDN survived). (2) The screencast on-screen keyboard could type but not delete — synthetic key events carried no `keyCode`, so the remote's `Input.dispatchKeyEvent` (which reads `windowsVirtualKeyCode: e.keyCode`) ignored Backspace/Enter/arrows.
+Two HITL bugs: (1) Slack and Outlook notification icons never loaded — they hotlinked external favicon CDNs (`a.slack-edge.com`, `outlook.office365.com`) that a corporate TLS-intercepting proxy blocks or that need auth, so `onError` hid them (only Teams' public CDN survived). (2) The screencast on-screen keyboard could type but not delete — synthetic key events carried no `keyCode`, so the remote's `Input.dispatchKeyEvent` (which reads `windowsVirtualKeyCode: e.keyCode`) ignored Backspace/Enter/arrows.
 
 ## Acceptance criteria
 

@@ -20,14 +20,14 @@ describe("upsertWorkspace — register a workspace seen as its own tab", () => {
     const reg = upsertWorkspace(
       {},
       {
-        teamId: "TGFUQ89E1",
-        url: CLIENT("TGFUQ89E1"),
-        name: "FWD Group",
-        enterpriseId: "E0761H36LHY",
+        teamId: "T0EXAMPLE01",
+        url: CLIENT("T0EXAMPLE01"),
+        name: "Example Group",
+        enterpriseId: "E0EXAMPLE01",
       },
       1000,
     )
-    expect(reg.TGFUQ89E1.enterpriseId).toBe("E0761H36LHY")
+    expect(reg.T0EXAMPLE01.enterpriseId).toBe("E0EXAMPLE01")
   })
 
   it("updates url + lastSeen on a repeat sighting, preserving identity", () => {

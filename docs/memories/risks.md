@@ -96,26 +96,4 @@ Known risks, limitations, and areas to watch. Update as the project evolves — 
 
 ---
 
-## R-007 — Dokploy API returns all stored secrets in cleartext 🔴 Open
-
-**Status:** 🔴 Open
-
-**Risk:** The Dokploy control plane API returns every stored secret in cleartext to any holder
-of the `x-api-key` token (`pass://Personal/dokploy/api_key`). Exposed material includes the
-Dokploy GitHub App private key, the dell01 SSH private key, and other projects' env secrets
-(live DB credentials, third-party tokens). The API key is effectively a homelab master
-credential and must be treated as such.
-
-**Mitigation in place:** key is stored in `pass`, not in any file or shell history.
-
-**Remaining gap:** the key is not rotated, not scoped to read-only, and not restricted by
-IP/ACL. Rotation + key scoping are operator-side tasks (Dokploy UI → API keys).
-
-**Trigger to escalate:** any indication the key has been exposed (CI logs, leaked env, etc.)
-— treat as a full homelab credential compromise.
-
-**Discovered:** 2026-06-19 (t094 recon).
-
----
-
 _Add new entries at the bottom. Update status in-place. Never delete entries — mark them 🟢 Closed instead._

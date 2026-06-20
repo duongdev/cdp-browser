@@ -34,11 +34,11 @@ describe("sortPinnedFirst", () => {
 describe("toPersisted", () => {
   it("keeps all open tabs (pinned or not) and strips live-only fields", () => {
     const tabs = [
-      tab({ id: "a", pinned: true, url: "https://glkvm.ts.net", title: "GLKVM", loading: true }),
+      tab({ id: "a", pinned: true, url: "https://example.com", title: "Example", loading: true }),
       tab({ id: "b", pinned: false, url: "https://x.com", title: "X" }),
     ]
     expect(toPersisted(tabs)).toEqual([
-      { id: "a", url: "https://glkvm.ts.net", title: "GLKVM", favicon: undefined, pinned: true },
+      { id: "a", url: "https://example.com", title: "Example", favicon: undefined, pinned: true },
       { id: "b", url: "https://x.com", title: "X", favicon: undefined, pinned: false },
     ])
   })
@@ -47,11 +47,11 @@ describe("toPersisted", () => {
 describe("fromPersisted", () => {
   it("hydrates saved tabs preserving the pinned flag, with inert live defaults", () => {
     const result = fromPersisted([
-      { id: "a", url: "https://glkvm.ts.net", title: "GLKVM", pinned: true },
+      { id: "a", url: "https://example.com", title: "Example", pinned: true },
       { id: "b", url: "https://x.com", title: "X", pinned: false },
     ])
     expect(result).toEqual([
-      tab({ id: "a", url: "https://glkvm.ts.net", title: "GLKVM", pinned: true }),
+      tab({ id: "a", url: "https://example.com", title: "Example", pinned: true }),
       tab({ id: "b", url: "https://x.com", title: "X", pinned: false }),
     ])
   })

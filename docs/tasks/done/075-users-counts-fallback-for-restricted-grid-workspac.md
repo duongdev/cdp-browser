@@ -12,7 +12,7 @@ Cover Enterprise Grid child workspaces that the sweep currently can't read. Live
 
 ## Why now
 
-The one known limitation from ADR-0011 (verified live against FWD's child workspace TGFUQ89E1). The fallback path is de-risked by live probes (`auth.test`, `conversations.list`, `users.counts` all OK on the restricted child).
+The one known limitation from ADR-0011 (verified live against Example's child workspace T0EXAMPLE01). The fallback path is de-risked by live probes (`auth.test`, `conversations.list`, `users.counts` all OK on the restricted child).
 
 ## Acceptance criteria
 
@@ -33,7 +33,7 @@ The one known limitation from ADR-0011 (verified live against FWD's child worksp
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-- [ ] Against the live restricted child (TGFUQ89E1), the sweep seeds via users.counts and a simulated unread produces an entry.
+- [ ] Against the live restricted child (T0EXAMPLE01), the sweep seeds via users.counts and a simulated unread produces an entry.
 
 ### Layer 3 — Visual review
 

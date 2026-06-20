@@ -226,8 +226,8 @@ describe("reduceMessages — entry synthesis + parity", () => {
   // ts) and must collapse to the same id.
   it("keys id + groupKey by groupId when given, keeping the concrete team", () => {
     const { newEntries } = reduceMessages({
-      team: "TGFUQ89E1",
-      groupId: "E0761H36LHY",
+      team: "T0EXAMPLE01",
+      groupId: "E0EXAMPLE01",
       candidates: [msg({ channelId: "D1", ts: "150.0" })],
       watermark: {},
       excludes: [],
@@ -235,9 +235,9 @@ describe("reduceMessages — entry synthesis + parity", () => {
       ...self,
     })
     expect(newEntries).toHaveLength(1)
-    expect(newEntries[0].id).toBe("slack:E0761H36LHY:D1:150.0")
-    expect(newEntries[0].groupKey).toBe("slack:E0761H36LHY")
-    expect(newEntries[0].team).toBe("TGFUQ89E1")
+    expect(newEntries[0].id).toBe("slack:E0EXAMPLE01:D1:150.0")
+    expect(newEntries[0].groupKey).toBe("slack:E0EXAMPLE01")
+    expect(newEntries[0].team).toBe("T0EXAMPLE01")
   })
 })
 

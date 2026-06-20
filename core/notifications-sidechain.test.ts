@@ -71,7 +71,7 @@ const outlookTarget = (over = {}) => ({
   webSocketDebuggerUrl: "ws://host/devtools/page/o1",
   ...over,
 })
-const SLACK_URL = "https://app.slack.com/client/T01CDUT3CBD/C07QUF1RKJ4"
+const SLACK_URL = "https://app.slack.com/client/T0EXAMPLE02/C0EXAMPLE02"
 const slackTarget = (over = {}) => ({
   id: "s1",
   type: "page",
@@ -80,16 +80,16 @@ const slackTarget = (over = {}) => ({
   ...over,
 })
 const LOCAL_CONFIG = JSON.stringify({
-  lastActiveTeamId: "T01CDUT3CBD",
+  lastActiveTeamId: "T0EXAMPLE02",
   teams: {
-    T01CDUT3CBD: { token: "xoxc-aaa", name: "Acme", url: "https://acme.slack.com/" },
-    E0761H36LHY: { token: "xoxc-bbb", name: "BigCo", url: "https://big.enterprise.slack.com/" },
+    T0EXAMPLE02: { token: "xoxc-aaa", name: "Acme", url: "https://acme.slack.com/" },
+    E0EXAMPLE01: { token: "xoxc-bbb", name: "BigCo", url: "https://big.enterprise.slack.com/" },
     // A Grid child carrying its org's enterprise_id (t092) — flows onto the cred record.
-    TGFUQ89E1: {
+    T0EXAMPLE01: {
       token: "xoxc-ccc",
       name: "BigCo WS",
       url: "https://bigws.slack.com/",
-      enterprise_id: "E0761H36LHY",
+      enterprise_id: "E0EXAMPLE01",
     },
   },
 })
@@ -378,11 +378,11 @@ describe("slack cred extraction (t069)", () => {
     await answerCredExtraction(ws)
     const creds = center.listCreds()
     expect(creds.map((c: any) => c.teamId).sort()).toEqual([
-      "E0761H36LHY",
-      "T01CDUT3CBD",
-      "TGFUQ89E1",
+      "E0EXAMPLE01",
+      "T0EXAMPLE01",
+      "T0EXAMPLE02",
     ])
-    const acme = center.getCreds("T01CDUT3CBD")
+    const acme = center.getCreds("T0EXAMPLE02")
     expect(acme).toMatchObject({ token: "xoxc-aaa", cookie: "xoxd-secret", fresh: true })
     expect(onCreds).toHaveBeenCalled()
   })
@@ -394,9 +394,9 @@ describe("slack cred extraction (t069)", () => {
     const ws = FakeWs.instances[0]
     ws.open()
     await answerCredExtraction(ws)
-    expect(center.getCreds("TGFUQ89E1")).toMatchObject({ enterpriseId: "E0761H36LHY" })
+    expect(center.getCreds("T0EXAMPLE01")).toMatchObject({ enterpriseId: "E0EXAMPLE01" })
     // A standalone team (no enterprise_id) keeps an empty string — groupId falls to teamId.
-    expect(center.getCreds("T01CDUT3CBD")?.enterpriseId).toBe("")
+    expect(center.getCreds("T0EXAMPLE02")?.enterpriseId).toBe("")
   })
 
   it("does not extract creds when onCreds is absent (Electron / no sweep)", async () => {
@@ -431,8 +431,8 @@ describe("slack cred extraction (t069)", () => {
     const ws = FakeWs.instances[0]
     ws.open()
     await answerCredExtraction(ws)
-    center.markCredsStale("T01CDUT3CBD", "invalid_auth")
-    const rec = center.getCreds("T01CDUT3CBD")
+    center.markCredsStale("T0EXAMPLE02", "invalid_auth")
+    const rec = center.getCreds("T0EXAMPLE02")
     expect(rec).toMatchObject({ fresh: false, lastError: "invalid_auth", token: "xoxc-aaa" })
   })
 
@@ -443,8 +443,8 @@ describe("slack cred extraction (t069)", () => {
     const ws = FakeWs.instances[0]
     ws.open()
     await answerCredExtraction(ws)
-    center.setSelfUserId("T01CDUT3CBD", "U_ME")
-    expect(center.getCreds("T01CDUT3CBD")?.selfUserId).toBe("U_ME")
+    center.setSelfUserId("T0EXAMPLE02", "U_ME")
+    expect(center.getCreds("T0EXAMPLE02")?.selfUserId).toBe("U_ME")
   })
 })
 
@@ -495,35 +495,35 @@ describe("slack hijack ↔ sweep handoff (t071)", () => {
   it("hijack fallback stamps the merged groupId groupKey for a Grid member", async () => {
     const onSlackSignal = vi.fn()
     const { center } = makeCenter({ onSlackSignal, onCreds: vi.fn() })
-    // A tab for the Grid member workspace (carries enterprise_id E0761H36LHY in localConfig).
+    // A tab for the Grid member workspace (carries enterprise_id E0EXAMPLE01 in localConfig).
     const gridTab = {
       id: "s-grid",
       type: "page" as const,
-      url: "https://app.slack.com/client/TGFUQ89E1/C001",
+      url: "https://app.slack.com/client/T0EXAMPLE01/C001",
       webSocketDebuggerUrl: "ws://host/devtools/page/grid",
     }
     await center.reconcile([gridTab])
     const ws = FakeWs.instances[0]
     ws.open()
-    await answerCredExtraction(ws) // populates creds incl. TGFUQ89E1 → enterpriseId
-    center.disableSweep("TGFUQ89E1", "team_is_restricted")
+    await answerCredExtraction(ws) // populates creds incl. T0EXAMPLE01 → enterpriseId
+    center.disableSweep("T0EXAMPLE01", "team_is_restricted")
     ws.notify({ id: "g1", title: "@bob: hey", source: "Grid WS" })
     expect(onSlackSignal).not.toHaveBeenCalled()
     const stored = center.list().find((e: any) => e.id === "g1")
-    expect(stored?.groupKey).toBe("slack:E0761H36LHY")
+    expect(stored?.groupKey).toBe("slack:E0EXAMPLE01")
   })
 
   it("hijack fallback for a standalone team keys by its own teamId (byte-unchanged)", async () => {
     const onSlackSignal = vi.fn()
     const { center } = makeCenter({ onSlackSignal, onCreds: vi.fn() })
-    await center.reconcile([slackTarget()]) // url team T01CDUT3CBD, no enterprise_id
+    await center.reconcile([slackTarget()]) // url team T0EXAMPLE02, no enterprise_id
     const ws = FakeWs.instances[0]
     ws.open()
     await answerCredExtraction(ws)
-    center.disableSweep("T01CDUT3CBD", "team_is_restricted")
+    center.disableSweep("T0EXAMPLE02", "team_is_restricted")
     ws.notify({ id: "g2", title: "@al: hi" })
     const stored = center.list().find((e: any) => e.id === "g2")
-    expect(stored?.groupKey).toBe("slack:T01CDUT3CBD")
+    expect(stored?.groupKey).toBe("slack:T0EXAMPLE02")
   })
 })
 
@@ -597,10 +597,10 @@ describe("applySlackReadByUnread — restricted-path read-sync (t075/t092)", () 
   // the concrete teamId for activation. Read-sync must match by the groupId the entries are
   // keyed with — otherwise an Enterprise Grid member workspace's badges never clear.
   const gridEntry = (over: Partial<any> = {}) => ({
-    id: `slack:E0761H36LHY:${(over as any).channelId || "C1"}:${(over as any).slackTs || "1.0"}`,
+    id: `slack:E0EXAMPLE01:${(over as any).channelId || "C1"}:${(over as any).slackTs || "1.0"}`,
     adapter: "slack",
-    groupKey: "slack:E0761H36LHY", // merged groupId, not the concrete team
-    team: "TGFUQ89E1",
+    groupKey: "slack:E0EXAMPLE01", // merged groupId, not the concrete team
+    team: "T0EXAMPLE01",
     title: "msg",
     channelId: "C1",
     slackTs: "1.0",
@@ -613,14 +613,14 @@ describe("applySlackReadByUnread — restricted-path read-sync (t075/t092)", () 
     center.ingestSlackEntry(gridEntry())
     expect(center.unreadCount()).toBe(1)
     // Called with the GROUP id (what the runner now passes), channel no longer unread.
-    center.applySlackReadByUnread("E0761H36LHY", new Set())
+    center.applySlackReadByUnread("E0EXAMPLE01", new Set())
     expect(center.unreadCount()).toBe(0)
   })
 
   it("keeps an entry unread while its channel is still in the unread-set", () => {
     const { center } = makeCenter()
     center.ingestSlackEntry(gridEntry())
-    center.applySlackReadByUnread("E0761H36LHY", new Set(["C1"]))
+    center.applySlackReadByUnread("E0EXAMPLE01", new Set(["C1"]))
     expect(center.unreadCount()).toBe(1)
   })
 

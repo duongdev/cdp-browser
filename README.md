@@ -90,43 +90,49 @@ Settings are persisted in the Electron userData directory.
 
 ## Deployment (web build → production)
 
-Production is the **web build** running as a Dokploy **Application** on the **`dokploy-dell01`**
-deploy server (a Debian LXC on the home Proxmox box, registered under the Dokploy control plane at
-`dokploy.dustin.one`). Dokploy builds this repo's `Dockerfile` and runs `web/server.mjs` (port 7800),
-proxying CDP to the browser on `glkvm` (`100.85.206.8:9222`). Ingress: Cloudflare DNS-only A →
-nginx NPM (LXC 352, wildcard cert `*.dp.dustin.one`) → dell01 Traefik :80 (host-routed).
+The same renderer runs as a plain web app — no Electron. `web/server.mjs` is a Node HTTP
+proxy that serves the built `dist/` and proxies CDP to the remote browser (default port
+`7800`). A `Dockerfile` is included, so you can run it either way:
 
-- **Deploy = push to `main`.** Dokploy auto-deploys on push (GitHub App, `autoDeploy`). Verify
-  locally first — prod has no test gate:
-  ```bash
-  pnpm typecheck && pnpm test && node --check web/server.mjs
-  ```
-- **Live URL:** `https://portal.dp.dustin.one/` (tailnet-only — DNS resolves to `100.x`; Tailscale
-  required; no Authentik).
-- **Per-branch previews:** collaborator PRs get `https://cdp-<branch>-<id>.dp.dustin.one/`
-  automatically; teardown on PR close. Previews share the one glkvm browser (UI-review only).
-- **Manual deploy / rollback:** Dokploy UI → Application **cdp-browser-app** (Deploy / redeploy a
-  prior deployment), or revert the bad commit on `main` and push.
-- **Env (set on the Application):** `CDP_HOST=100.85.206.8`, `CDP_PORT=9222`, `PORT=7800`,
-  `APP_TITLE`. `CDP_HOST` must be an IP or `localhost` — CDP rejects DNS Host headers.
-- **Health check:** `curl https://portal.dp.dustin.one/api/config` →
-  `{"host":"100.85.206.8","port":9222}`; on the node, `docker ps` shows the service healthy.
+```bash
+# from source
+pnpm install && pnpm build && pnpm web
 
-The controlled browser (machine A) → `glkvm` reverse-tunnel chain is independent of this deploy —
+# or as a container
+docker build -t cdp-browser .
+docker run -p 7800:7800 \
+  -e CDP_HOST=<remote-browser-host> -e CDP_PORT=9222 \
+  cdp-browser
+```
+
+Put it behind any reverse proxy (nginx, Caddy, Traefik, …) for TLS and auth. Verify
+locally before deploying — there is no test gate in production:
+
+```bash
+pnpm typecheck && pnpm test && node --check web/server.mjs
+```
+
+- **Env:** `CDP_HOST` (the remote browser host — an IP or `localhost`; CDP rejects DNS
+  `Host` headers), `CDP_PORT` (default `9222`), `PORT` (default `7800`), `APP_TITLE`
+  (app name), and `E2E_PASSPHRASE` (optional — enables the AES-256-GCM E2E envelope).
+- **Reverse-proxy notes:** the WebSocket transport needs three headers upstream —
+  `proxy_http_version 1.1`, `proxy_set_header Upgrade $http_upgrade`,
+  `proxy_set_header Connection $http_connection` — and the streaming input channel
+  needs `proxy_request_buffering off`. Without them the client silently falls back to
+  SSE+POST and batched input. See `docs/adr/0007-web-websocket-transport.md`.
+- **Health check:** `curl http://<host>:<port>/api/config` → `{"host":"…","port":9222}`.
+
+The controlled browser → remote-host reverse-tunnel chain is independent of this deploy —
 see `docs/guides/remote-cdp-over-tailscale.md`.
 
 ### Production logs
 
-The server logs to stdout, captured by Docker. Read them over Tailscale SSH (no Dokploy UI needed):
+The server logs to stdout. With Docker, follow them with:
 
 ```bash
-ssh root@dokploy-dell01 "docker logs --tail 100 <container>"           # recent
-ssh root@dokploy-dell01 "docker logs -f <container>"                   # follow live
-ssh root@dokploy-dell01 "docker logs <container> 2>&1 | grep -aE '\[notif\]|\[push\]|\[dedup\]'"
+docker logs -f <container>                                       # follow live
+docker logs <container> 2>&1 | grep -aE '\[notif\]|\[push\]|\[dedup\]'
 ```
-
-Replace `<container>` with the running container name (`docker ps` on the node to find it — the
-Dokploy Application names differ from the old Compose service name `cdp-browser-web`).
 
 Greppable prefixes (all `console.log`):
 

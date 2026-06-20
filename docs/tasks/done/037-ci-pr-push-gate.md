@@ -23,7 +23,7 @@ server's syntax is blocked at the PR before it can be merged and deployed.
 
 ## Why now
 
-The daily driver is the web PWA on iPad, deployed to the m4-pro-mbp prod target.
+The daily driver is the web PWA on iPad, deployed to the prod target.
 The current state is "verify by hand or 502 prod": there is no CI, and a single ESM
 import error has already 502'd prod and burned a deploy cycle (MEMORY:
 verify-locally-before-deploy). v0.1.0 is the first cut we actually tag and ship, and

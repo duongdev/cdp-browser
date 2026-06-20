@@ -41,7 +41,7 @@ Per [../conventions/tdd.md](../conventions/tdd.md): the backoff schedule is pure
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-HITL — needs a live Remote Browser via `pnpm web` (ideally through portal.dustin.one to exercise the real proxy chain, where idle-socket reaps actually happen).
+HITL — needs a live Remote Browser via `pnpm web` (ideally through the deployment to exercise the real proxy chain, where idle-socket reaps actually happen).
 
 - [ ] Connect to the Host; confirm the Active Tab renders frames and accepts input.
 - [ ] **Kill the CDP Host mid-session.** The status bar shows "Reconnecting…"; the network panel / server logs show retry attempts on a **growing-then-capped** cadence (not a tight loop, not a storm).
@@ -124,7 +124,7 @@ All must be true before status → done.
 - Reuse the connector's existing `connectId` race-guard verbatim — the bug class it kills (a slow reconnect from a just-abandoned state promoting its socket over the Tab the user landed on) is exactly what an automatic retry could resurrect. The retry path must flow through the same guard, not around it.
 - `disconnect()` (host-initiated) must cancel any pending backoff timer — a manual disconnect / intentional teardown stops the loop; it must not race a queued retry back to life.
 - "Reconnecting…" is **progress**, not an error — spinner + muted styling, not the red error path. Only the post-ceiling terminal state uses the error/Connection-settings affordance.
-- Smoke ideally runs through the real proxy chain (portal.dustin.one): a proxy idle-socket reap is a canonical real drop and only reproduces under the real chain.
+- Smoke ideally runs through the real proxy chain (the deployment): a proxy idle-socket reap is a canonical real drop and only reproduces under the real chain.
 
 ---
 

@@ -102,7 +102,7 @@ Add a **second, authoritative capture modality for Slack: a server-side content 
   shape. `users.counts` lacks `last_read`/`latest`, so the restricted path **seeds the watermark to
   "now"** (no history fetch, no cold-start spam) and **read-syncs via the unread-set** (an entry
   whose channel is no longer unread flips to read); mute comes from per-channel `is_muted`. Verified
-  live against FWD's child workspace TGFUQ89E1 — now reports **healthy**, seeds 51 convos, and
+  live against a restricted Grid child workspace (T0EXAMPLE01) — now reports **healthy**, seeds 51 convos, and
   produces rendered notifications. A workspace is only marked unsweepable (hijack fallback) if
   `users.counts` *also* fails. No creds file needed — extraction covers it.
 
@@ -128,9 +128,9 @@ team with `enterprise_id: null`) *alongside* its member workspaces (each carryin
 The sweep treats every team in `localConfig_v2` as an independent capture target keyed
 `slack:{teamId}:{channel}:{ts}`, so a message in a channel reachable from both the org and a
 workspace was captured **twice** (different team prefix → different id → the `ingest` id-dedup
-couldn't catch it) — two notifications, two web-pushes, two health rows. Live evidence (FWD):
-org `E0761H36LHY` (27 channels via `client.counts`) ⊂ member workspace `TGFUQ89E1` (51 channels,
-`client.counts`→`team_is_restricted`→`users.counts`), overlap 27; standalone `T01CDUT3CBD` (22)
+couldn't catch it) — two notifications, two web-pushes, two health rows. Live evidence (example Enterprise Grid):
+org `E0EXAMPLE01` (27 channels via `client.counts`) ⊂ member workspace `T0EXAMPLE01` (51 channels,
+`client.counts`→`team_is_restricted`→`users.counts`), overlap 27; standalone `T0EXAMPLE02` (22)
 genuinely separate.
 
 **Decision:** group all teams sharing an `enterprise_id` under ONE logical workspace key —

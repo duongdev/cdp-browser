@@ -19,7 +19,7 @@ established, so there is zero regression where streaming isn't viable.
 
 ## Why now
 
-The app is live behind Authentik at portal.dustin.one. Per-POST input through the
+The app is live behind an SSO proxy at the deployment. Per-POST input through the
 auth chain felt laggy; PWA install + a real push toggle were requested.
 
 ## Acceptance criteria
@@ -69,12 +69,12 @@ input flush → batcher (rAF coalesce) → inputChannel.send(line)
 probe frame → server echoes SSE `stream-ack` → client switches to streaming
 ```
 
-## Deploy notes (Dokploy + Authentik + openresty)
+## Deploy notes (the deploy platform + an SSO proxy + a reverse proxy)
 
 - **Streaming activation requires the request body to NOT be buffered** by any proxy
-  in front of the container. On the openresty/nginx layer, for the app location set
-  `proxy_request_buffering off;` (and HTTP/2 enabled, which portal.dustin.one already
-  negotiates). If Authentik's proxy buffers the body, the probe never arrives and the
+  in front of the container. On the reverse-proxy/nginx layer, for the app location set
+  `proxy_request_buffering off;` (and HTTP/2 enabled, which the deployment already
+  negotiates). If the SSO proxy buffers the body, the probe never arrives and the
   client stays on the POST fallback — correct + safe, just no speedup. Validate by
   watching for the `stream-ack` round-trip in devtools.
 - `APP_TITLE` env sets both the page title and the PWA install name.
@@ -83,7 +83,7 @@ probe frame → server echoes SSE `stream-ack` → client switches to streaming
 ## Out of scope
 
 - WebTransport / HTTP/3 path (noted as a future option in the zoom-out).
-- Tuning the Authentik/openresty buffering itself (operator-owned).
+- Tuning the SSO/reverse proxy buffering itself (operator-owned).
 
 ## Definition of Done
 

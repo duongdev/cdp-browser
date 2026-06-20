@@ -13,7 +13,7 @@ backend and the wire.
 Two constraints shaped it:
 
 1. **The target deploy environment blocks WebSocket on the browser-facing hop**
-   (corporate proxy / the nginx + Authentik chain the operator runs in front).
+   (a corporate TLS-intercepting proxy / the nginx + an SSO proxy chain the operator runs in front).
    The renderer therefore cannot hold a WS to the backend.
 2. The browser cannot speak CDP directly: Chrome/Edge reject a `/json` WS
    handshake that carries an `Origin` header (every browser sends one), and there
@@ -56,7 +56,7 @@ Three supporting decisions:
   to hide Electron-only surfaces (local tabs, extensions, the local settings tab); a
   no-op `window.local` keeps existing callers from crashing.
 
-No auth, TLS, or nginx lives in this repo — the operator runs nginx + Authentik in
+No auth, TLS, or nginx lives in this repo — the operator runs nginx + an SSO proxy in
 front and the app trusts the upstream.
 
 ## Consequences
@@ -86,17 +86,17 @@ front and the app trusts the upstream.
   stream; if it isn't (no HTTP/2, or a proxy buffers the request body) the client
   falls back to `/api/cdp-batch` and gives up after 2 attempts. Needs
   `proxy_request_buffering off` upstream to activate. WebTransport/HTTP-3 was the
-  lower-latency ideal but deferred (HTTP/3-through-Authentik uncertainty).
+  lower-latency ideal but deferred (HTTP/3-through-SSO-proxy uncertainty).
 - **PWA** install via `public/manifest.webmanifest` (name injected from `APP_TITLE`)
-  + `public/sw.js` (navigations network-first for Authentik redirects, assets
+  + `public/sw.js` (navigations network-first for SSO-proxy redirects, assets
   cache-first, `/api/*` never intercepted).
 - **Push toggle** (`webPush` ui-state, web only): opt-in, requests Notification
   permission on enable, gates the Notification-API toast.
 
 ## Addendum (t012): optional E2E payload encryption
 
-For a managed, no-admin, **Zscaler**-inspected device (no tunnel egress possible),
-HTTPS to the portal is readable by IT — Zscaler forges certs with a trusted root CA
+For a managed, no-admin device behind **a corporate TLS-intercepting proxy** (no tunnel egress possible),
+HTTPS to the deployment is readable by IT — the proxy forges certs with a trusted root CA
 and decrypts TLS. The only defence on the sole inspected channel is app-layer E2E:
 when `E2E_PASSPHRASE` is set on the server, every `/api` body + SSE frame is sealed
 in **AES-256-GCM** (`base64(iv‖ct‖tag)`) under a **PBKDF2-SHA256** key derived from a
@@ -112,7 +112,7 @@ the sealed-POST path (the streaming channel's probe/async-seal interplay isn't w
 
 ## Addendum (t013): event-driven input + backpressure on the POST fallback
 
-When the streaming channel can't activate (the default behind nginx/Authentik without
+When the streaming channel can't activate (the default behind nginx + an SSO proxy without
 `proxy_request_buffering off`), input rides the `/api/cdp-batch` fallback. Streaming a
 *continuous hover* — one `mouseMoved` per animation frame, ~60/sec — saturated the
 browser's ~6-connection-per-host limit through the proxy: POSTs serialized, backed up,

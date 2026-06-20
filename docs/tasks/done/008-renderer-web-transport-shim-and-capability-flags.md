@@ -49,7 +49,7 @@ n/a — no main.js/IPC change. Transport verified live as part of Layer 3.
 ### Layer 3 — Visual review (Chrome DevTools MCP against `pnpm web` + live host)
 
 - [x] Web app renders sidebar + toolbar + live screencast over SSE.
-- [x] Tab switch reconnects the screencast (verified FWD ↔ Teams).
+- [x] Tab switch reconnects the screencast (verified Example workspace ↔ Teams).
 - [x] Settings drawer shows no Local sections / no remote-local toggle; Connection
       "Test" returns the live browser string.
 - [x] Zero console errors.

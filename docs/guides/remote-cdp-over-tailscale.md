@@ -137,14 +137,14 @@ can launch the browser with `--remote-debugging-port=9222`.
 On macOS, launchd *is* the redialer: `KeepAlive` respawns `ssh` whenever it exits,
 and the keepalive options make `ssh` exit promptly on a dead link — so plain `ssh`
 (built in, nothing to install on a locked-down Mac) is enough. First set up key
-auth A → B, then drop this at `~/Library/LaunchAgents/dev.cdp.tunnel.plist`
+auth A → B, then drop this at `~/Library/LaunchAgents/com.example.cdp.tunnel.plist`
 (replace `B_USER`/`B_LAN_IP`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>dev.cdp.tunnel</string>
+  <key>Label</key><string>com.example.cdp.tunnel</string>
   <key>ProgramArguments</key><array>
     <string>/usr/bin/ssh</string>
     <string>-N</string>
@@ -165,7 +165,7 @@ auth A → B, then drop this at `~/Library/LaunchAgents/dev.cdp.tunnel.plist`
 ```
 
 ```bash
-launchctl load -w ~/Library/LaunchAgents/dev.cdp.tunnel.plist   # start + enable at login
+launchctl load -w ~/Library/LaunchAgents/com.example.cdp.tunnel.plist   # start + enable at login
 launchctl list | grep cdp.tunnel                                # 2nd column = last exit code
 tail -f /tmp/cdp-tunnel.log                                      # watch reconnects
 ```

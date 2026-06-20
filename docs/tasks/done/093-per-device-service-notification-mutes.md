@@ -12,7 +12,7 @@ Each client/device can silence chosen notification sources independently — **p
 
 ## Why now
 
-The web PWA is the daily-driver surface across multiple devices (phone + iPad + desktop) hitting one server; today every device gets every notification. This is the most-requested triage control and the reason the phone surface (ADR-0012) exists. t092 must land first so the Slack rows it lists are already deduped (one "FWD Group", not two).
+The web PWA is the daily-driver surface across multiple devices (phone + iPad + desktop) hitting one server; today every device gets every notification. This is the most-requested triage control and the reason the phone surface (ADR-0012) exists. t092 must land first so the Slack rows it lists are already deduped (one "Example Group", not two).
 
 ## Acceptance criteria
 
@@ -37,7 +37,7 @@ The web PWA is the daily-driver surface across multiple devices (phone + iPad + 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
 - [x] Device-keyed ui-state round-trip verified live: `POST {notifMutes_<id>:[...], notificationsEnabled_<id>:false}` → `GET` returns them; unknown-prefix key dropped. (The core persistence fix.)
-- [x] Server boots on the new code; `/api/notifications/health` still returns `{ rows, groups }` (FWD merged, FWD-DCP separate).
+- [x] Server boots on the new code; `/api/notifications/health` still returns `{ rows, groups }` (Example merged, Example-Team separate).
 - [ ] HITL: two real PWA installs with different mutes → push divergence + per-device badge (needs two devices + live messages — flagged for your return).
 
 ### Layer 3 — Visual review

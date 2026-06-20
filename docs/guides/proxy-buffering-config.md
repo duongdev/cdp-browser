@@ -1,7 +1,7 @@
 # Unlocking the fast input path behind a reverse proxy
 
 The web build runs the same renderer as a PWA behind a reverse proxy (the daily
-driver is NPM + Traefik at `portal.dp.dustin.one`). It has two low-latency input paths —
+driver is NPM + Traefik at the deployment). It has two low-latency input paths —
 a **WebSocket** transport and a **streaming POST** channel — that both need a
 small amount of proxy config to work. Without it, the app **silently falls back**
 to a per-flush POST: input still works, just slower, and nothing tells you why.
@@ -11,7 +11,7 @@ of each missing piece, and how to verify the fast path is actually live.
 
 ## When you need this
 
-- You reach the web build through nginx, Nginx Proxy Manager (NPM), Authentik, or
+- You reach the web build through nginx, Nginx Proxy Manager (NPM), an SSO proxy, or
   any reverse proxy — i.e. **not** a direct connection.
 - Input feels laggy (the cursor trails, clicks feel late) but the app works.
 - The latency HUD's transport segment reads **`Batch ⚠`** (see *How to tell*).
@@ -22,7 +22,7 @@ from the first frame and the HUD shows `WS` or `Stream`.
 
 ```
 [ PWA / browser ]  --HTTPS-->  [ reverse proxy ]  -->  [ web/server.mjs :7800 ]  --WS-->  [ CDP host ]
-                               nginx / NPM / Authentik
+                               nginx / NPM / an SSO proxy
                                (this is what you configure)
 ```
 
@@ -68,7 +68,7 @@ proxy_set_header Connection $http_connection;
 
 > Browsers negotiate WS over HTTP/1.1 (HTTP/2 strips `Upgrade` per RFC 7540), so
 > an HTTP/2-default proxy still works in practice once these three lines are
-> present. See ADR-0007 for the portal end-to-end test.
+> present. See ADR-0007 for the reverse-proxy end-to-end test.
 
 ## Copy-paste config
 
@@ -170,7 +170,7 @@ in NPM) and **hard-reload** the PWA (the transport is chosen once per load).
 | HUD shows `Batch ⚠` after the config | Proxy still buffering / not upgrading | Confirm the four lines are on the **right** `location` and the proxy was reloaded |
 | `/api/ws` returns `200`/`404`, not `101` | The three upgrade lines are missing or on the wrong host | Add `proxy_http_version 1.1` + the two `proxy_set_header` lines; reload |
 | WS works but input still lags | Streaming probe never acked | Add `proxy_request_buffering off`; it is **on** by default and a separate line from `proxy_buffering off` |
-| Fast on a direct connection, slow via the proxy | The proxy is the buffering hop | Compare the HUD via `tailscale serve`/`localhost` (fast) vs the portal (fallback) |
+| Fast on a direct connection, slow via the proxy | The proxy is the buffering hop | Compare the HUD via `tailscale serve`/`localhost` (fast) vs the reverse proxy (fallback) |
 | Segment never leaves `—` | The HUD has no metric yet (no pong / no frames) | Not a proxy issue — wait for the first frame, or check the CDP host is reachable |
 
 ## Related

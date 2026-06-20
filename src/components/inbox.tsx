@@ -166,8 +166,8 @@ export function Inbox({
             const groupMuted = !!mutes?.includes(muteKey(g.items[0]))
             return (
               <section className={cn(groupMuted && "opacity-50")} key={g.key}>
-                {/* Two-line header (t083): workspace names can be long ("FWD GROUP
-                    MANAGEMENT HOLDINGS LIMITED") — keeping them on their own line means a
+                {/* Two-line header (t083): workspace names can be long (a full legal
+                    company name) — keeping them on their own line means a
                     long name can never push the unread count or the row controls off-screen. */}
                 <div className="sticky top-0 z-10 flex flex-col gap-0.5 bg-background/95 px-4 pb-1 pt-3 text-[11px] font-medium text-muted-foreground backdrop-blur">
                   <div className="flex items-center gap-2">

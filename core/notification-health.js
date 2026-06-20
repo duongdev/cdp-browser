@@ -34,7 +34,7 @@ function bestStatus(statuses) {
 }
 
 // A friendlier merged-row label: prefer a member workspace's name (a cred carrying an
-// enterprise_id — e.g. "FWD Group") over the org pseudo-team's verbose name; fall back to
+// enterprise_id — e.g. "Example Group") over the org pseudo-team's verbose name; fall back to
 // the first member's name, then the group id.
 function groupLabel(members) {
   const rep = members.find((c) => c.enterpriseId) || members[0]

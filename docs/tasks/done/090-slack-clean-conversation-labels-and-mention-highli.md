@@ -23,7 +23,7 @@ Slack group headers read as the conversation itself — `#channel` for channels/
 - [x] `slackGroupLabel` — swept (#/@/group-DM) + hijack title parsing; `slackIsMention` — swept flag + hijack heuristic (`notifications-view.test.ts`).
 
 ### Layer 3 — Visual
-- [x] Harness: `#eliteguru-prs`, `@Careen Tan` headers; `@you` badge on the mention entry.
+- [x] Harness: `#team-prs`, `@Jordan Lee` headers; `@you` badge on the mention entry.
 
 ## Design notes
 

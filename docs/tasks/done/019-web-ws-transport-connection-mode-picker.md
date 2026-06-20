@@ -12,7 +12,7 @@ Add a real WebSocket transport to the web build (browser ↔ `web/server.mjs`) a
 
 ## Why now
 
-Web users report visibly slower input than Electron. The grilled root cause: input flushes pay per-RTT TLS/auth through the proxy chain. WS through portal.dustin.one (nginx + Authentik) was assumed unworkable per ADR-0006 — verification on 2026-05-28 proved otherwise once three `proxy_set_header` lines were added to the NPM custom config (see memory `ws-works-through-portal`). Unblocks parity with Electron's latency floor; the picker is the safety net for environments where WS still fails.
+Web users report visibly slower input than Electron. The grilled root cause: input flushes pay per-RTT TLS/auth through the proxy chain. WS through the deployment (nginx + an SSO proxy) was assumed unworkable per ADR-0006 — verification on 2026-05-28 proved otherwise once three `proxy_set_header` lines were added to the NPM custom config (see memory `ws-works-through-portal`). Unblocks parity with Electron's latency floor; the picker is the safety net for environments where WS still fails.
 
 ## Acceptance criteria
 
@@ -95,12 +95,12 @@ type State =
 All must be true before status → done.
 
 - [ ] Layer 1 tests written and green
-- [ ] Layer 2 smoke checklist completed against live portal.dustin.one
+- [ ] Layer 2 smoke checklist completed against the live deployment
 - [ ] Layer 3 screenshots captured and committed
 - [ ] `pnpm check` clean (Biome — lint + format)
 - [ ] `pnpm typecheck` clean
 - [ ] `pnpm test` green
-- [ ] `pnpm web` boots cleanly and WS works end-to-end through portal
+- [ ] `pnpm web` boots cleanly and WS works end-to-end through the reverse proxy
 - [ ] CLAUDE.md updated (web-build paragraph mentions WS option + picker; `src/lib/CLAUDE.md` documents `transport-selector.ts`)
 - [ ] ADR-0007 written
 - [ ] `/api/ws-probe` removed

@@ -198,10 +198,10 @@ describe("relativeTime", () => {
 
 describe("slackGroupMeta (t082)", () => {
   it("derives workspace + kind from a slack group's entries", () => {
-    const items = [e({ adapter: "slack", source: "FWD Group", slackKind: "im" })] as Parameters<
+    const items = [e({ adapter: "slack", source: "Example Group", slackKind: "im" })] as Parameters<
       typeof slackGroupMeta
     >[0]
-    expect(slackGroupMeta(items)).toEqual({ workspace: "FWD Group", kind: "dm" })
+    expect(slackGroupMeta(items)).toEqual({ workspace: "Example Group", kind: "dm" })
   })
 
   it("maps mpim to group-dm and everything else to channel", () => {
@@ -249,22 +249,22 @@ describe("slackGroupLabel (t090)", () => {
       slackGroupLabel(e({ adapter: "slack", slackKind: "thread", slackConvo: "release" })),
     ).toBe("#release")
     expect(
-      slackGroupLabel(e({ adapter: "slack", slackKind: "im", slackConvo: "Careen Tan" })),
-    ).toBe("@Careen Tan")
+      slackGroupLabel(e({ adapter: "slack", slackKind: "im", slackConvo: "Jordan Lee" })),
+    ).toBe("@Jordan Lee")
     expect(
       slackGroupLabel(e({ adapter: "slack", slackKind: "mpim", slackConvo: "mpdm-al--bo--ca-1" })),
     ).toBe("@al, bo, ca")
   })
 
   it("hijack fallback: parses Slack's own title, dropping the prefix", () => {
-    expect(slackGroupLabel(e({ adapter: "slack", title: "New message in eliteguru-prs" }))).toBe(
-      "#eliteguru-prs",
+    expect(slackGroupLabel(e({ adapter: "slack", title: "New message in team-prs" }))).toBe(
+      "#team-prs",
     )
-    expect(slackGroupLabel(e({ adapter: "slack", title: "New message from Careen Tan" }))).toBe(
-      "@Careen Tan",
+    expect(slackGroupLabel(e({ adapter: "slack", title: "New message from Jordan Lee" }))).toBe(
+      "@Jordan Lee",
     )
     expect(
-      slackGroupLabel(e({ adapter: "slack", title: "New message from Steve in releases" })),
+      slackGroupLabel(e({ adapter: "slack", title: "New message from Alex in releases" })),
     ).toBe("#releases")
   })
 

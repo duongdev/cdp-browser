@@ -9,7 +9,7 @@
 ## Goal
 
 When the streaming input channel (t011) can't activate — because a proxy in front
-of the container buffers the request body (the default for nginx/Authentik without
+of the container buffers the request body (the default for nginx/an SSO proxy without
 `proxy_request_buffering off`) — the web build falls back to one fire-and-forget
 `POST /api/cdp-batch` per `requestAnimationFrame`. Streaming a *continuous hover*
 (~60 `mouseMoved`/sec) floods the browser's ~6-connection-per-host limit; the POSTs
@@ -24,7 +24,7 @@ dropped — bounding the remaining drag burst to link RTT.
 
 ## Why now
 
-The app is live behind Authentik; the operator has not set `proxy_request_buffering
+The app is live behind an SSO proxy; the operator has not set `proxy_request_buffering
 off`, so the streaming path is permanently on the POST fallback (its designed-for
 safe state). The fallback was never meant to carry interactive input at this volume.
 This is the difference between "usable" and "unusable" on the deployed web build.

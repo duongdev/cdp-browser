@@ -6,7 +6,7 @@
  * so input flushes don't each pay a fresh request's TLS/auth/RTT through the proxy
  * chain. Pairs with the SSE down-channel — no WebSocket. See t011.
  *
- * Safety: a buffering proxy (Authentik/openresty without `proxy_request_buffering off`)
+ * Safety: a buffering reverse proxy (e.g. nginx/openresty without `proxy_request_buffering off`)
  * would accept the stream but never deliver the body — input would vanish. So on open we
  * send a `probe` frame and only switch real input onto the stream once the server echoes
  * a `stream-ack` over SSE. Until confirmed (and forever, if the probe is never acked) we

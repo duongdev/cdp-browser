@@ -1,5 +1,5 @@
 // Server-side AES-256-GCM payload envelope for the web build's optional E2E mode.
-// Keeps content opaque to a TLS-intercepting proxy (Zscaler): even after it strips
+// Keeps content opaque to a corporate TLS-intercepting proxy: even after it strips
 // TLS, every /api body + SSE frame is `base64(iv ‖ ciphertext ‖ tag)` under a key
 // derived from a passphrase the proxy never sees. CommonJS so web/server.mjs imports
 // it. Wire-compatible with the browser WebCrypto twin (src/lib/crypto-envelope.ts).

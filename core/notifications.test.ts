@@ -39,16 +39,16 @@ describe("groupKeyFor", () => {
 
 describe("parseSlackContext", () => {
   it("extracts teamId and channelId from the unified client URL", () => {
-    expect(parseSlackContext("https://app.slack.com/client/T04FTGB9SD3/C03K3382")).toEqual({
-      teamId: "T04FTGB9SD3",
-      channelId: "C03K3382",
+    expect(parseSlackContext("https://app.slack.com/client/T0EXAMPLE03/C0EXAMPLE03")).toEqual({
+      teamId: "T0EXAMPLE03",
+      channelId: "C0EXAMPLE03",
     })
   })
 
   it("parses an Enterprise Grid (E-prefixed) team id", () => {
-    expect(parseSlackContext("https://app.slack.com/client/E0761H36LHY/C0AJ98M85A5")).toEqual({
-      teamId: "E0761H36LHY",
-      channelId: "C0AJ98M85A5",
+    expect(parseSlackContext("https://app.slack.com/client/E0EXAMPLE01/C0EXAMPLE01")).toEqual({
+      teamId: "E0EXAMPLE01",
+      channelId: "C0EXAMPLE01",
     })
   })
 

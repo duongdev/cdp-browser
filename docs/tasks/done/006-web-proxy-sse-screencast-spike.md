@@ -19,7 +19,7 @@ know whether to commit to the SSE+POST architecture or rethink the transport.
 ## Why now
 
 The web port plan picked SSE+POST over WebSocket because the target deploy env
-(nginx + Authentik) blocks WS on the browser-facing hop. Every later task —
+(nginx + an SSO proxy) blocks WS on the browser-facing hop. Every later task —
 monorepo split, `packages/core` extraction, `cdp-web-transport.ts`, proxy
 feature parity — is wasted if SSE can't carry ~20–30fps of base64 JPEG through
 the proxy chain at acceptable latency, or if buffering stalls the stream. De-risk
@@ -44,7 +44,7 @@ Testable bullets, checkable true/false at the end of the spike.
       mean frame size, input round-trip feel. A clear go/no-go verdict.
 - [ ] Verified through an **nginx reverse proxy** in front (the deploy-shape
       hop), with SSE buffering disabled (`proxy_buffering off` +
-      `X-Accel-Buffering: no`) — stream does not stall or batch-deliver. (Authentik
+      `X-Accel-Buffering: no`) — stream does not stall or batch-deliver. (An SSO proxy
       not required for the spike; nginx is the buffering risk.)
 
 ## Test plan
@@ -115,7 +115,7 @@ budget.
 - React renderer, `Transport` seam, capability object — later tasks.
 - Monorepo split / `packages/core` extraction — later task.
 - Tabs, pins, settings, notifications over the proxy — later tasks.
-- Authentik auth, TLS — nginx alone is enough to surface the buffering risk.
+- SSO-proxy auth, TLS — nginx alone is enough to surface the buffering risk.
 - Reconnect/resume logic, multi-client SSE fan-out — note observations, don't build.
 - Adaptive viewport, theme sync — out.
 
@@ -174,7 +174,7 @@ WebSocket) carries the screencast cleanly. Commit to the architecture.
       coalescing logic verified by construction, but not eyes-on.
 - [ ] nginx-in-front buffering check (`nginx.conf` ready; nginx not installed on
       the dev box). Must confirm `proxy_buffering off` keeps the stream live
-      through Authentik's chain.
+      through the SSO proxy's chain.
 
 ### Recommendations carried to the real port tasks
 

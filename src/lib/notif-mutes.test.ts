@@ -3,7 +3,7 @@ import { isMuted, muteKey, toggleMute, unreadExcluding } from "./notif-mutes"
 
 describe("muteKey", () => {
   it("uses the groupKey for a Slack entry (per merged workspace)", () => {
-    expect(muteKey({ adapter: "slack", groupKey: "slack:E0761H36LHY" })).toBe("slack:E0761H36LHY")
+    expect(muteKey({ adapter: "slack", groupKey: "slack:E0EXAMPLE01" })).toBe("slack:E0EXAMPLE01")
   })
 
   it("uses the adapter name for Teams/Outlook (per service)", () => {

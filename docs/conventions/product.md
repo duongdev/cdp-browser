@@ -38,7 +38,7 @@ Every user action passes through Input Forwarding → CDP → Remote Browser →
 
 ## The never-stuck bar
 
-This is the CDP-Browser-specific analogue of Lure's "invisibility" rule. It is the product's reliability contract:
+This is the product's reliability contract:
 
 **The user must never be stuck in the app.** Every failure has a recovery path. Every stuck state has an escape hatch.
 

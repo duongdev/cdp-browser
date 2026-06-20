@@ -24,13 +24,13 @@ describe("readerRoute", () => {
     // member workspace the message was swept from (the org token can't read member channels).
     const entry = e({
       adapter: "slack",
-      groupKey: "slack:E0761H36LHY",
-      team: "TGFUQ89E1",
+      groupKey: "slack:E0EXAMPLE01",
+      team: "T0EXAMPLE01",
       channelId: "C9",
     })
     expect(readerRoute(entry, true)).toEqual({
       kind: "history",
-      team: "TGFUQ89E1",
+      team: "T0EXAMPLE01",
       channel: "C9",
     })
   })

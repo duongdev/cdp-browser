@@ -1,7 +1,7 @@
 // Web proxy server — the browser-facing backend for the web port, mirroring what
 // Electron's main.js does over IPC, but over plain HTTP: POST for commands, SSE
-// for server pushes, no WebSocket on the browser hop, no auth (nginx + Authentik
-// sit in front, outside this repo). Owns one active CDP screencast socket, the
+// for server pushes, no WebSocket on the browser hop, no auth (a reverse proxy +
+// auth layer sit in front, outside this repo). Owns one active CDP screencast socket, the
 // notification side-channels, and settings.json. See docs/tasks/007.
 //
 // Run:  CDP_HOST=<remote-ip> CDP_PORT=9222 PORT=7800 node web/server.mjs
@@ -50,7 +50,7 @@ const SLACK_WORKSPACES_PATH =
   process.env.SLACK_WORKSPACES_PATH || join(HERE, "..", "slack-workspaces.json")
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
-const APP_TITLE = process.env.APP_TITLE || "CDP Portal"
+const APP_TITLE = process.env.APP_TITLE || "CDP Browser"
 
 // Build identity, set at deploy time (mirrors APP_TITLE). GIT_SHA comes from the
 // build pipeline (Dockerfile ARG / deploy env) since the server can't see the Vite

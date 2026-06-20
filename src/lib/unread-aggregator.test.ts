@@ -193,35 +193,35 @@ describe("aggregateUnread", () => {
     it("buckets two Grid tabs of one org into the merged group via the map", () => {
       // Org pseudo-team E0 and member workspace TGF both map to groupId E0; one notification
       // arrives keyed at the merged bucket.
-      const teamGroupMap = { E0761H36LHY: "E0761H36LHY", TGFUQ89E1: "E0761H36LHY" }
+      const teamGroupMap = { E0EXAMPLE01: "E0EXAMPLE01", T0EXAMPLE01: "E0EXAMPLE01" }
       const notifications = [
         notif({
-          groupKey: "slack:E0761H36LHY",
-          targetUrl: "https://app.slack.com/client/TGFUQ89E1/C1",
+          groupKey: "slack:E0EXAMPLE01",
+          targetUrl: "https://app.slack.com/client/T0EXAMPLE01/C1",
         }),
       ]
       const tabs = [
-        { id: "org", url: "https://app.slack.com/client/E0761H36LHY/C9" },
-        { id: "ws", url: "https://app.slack.com/client/TGFUQ89E1/C9" },
+        { id: "org", url: "https://app.slack.com/client/E0EXAMPLE01/C9" },
+        { id: "ws", url: "https://app.slack.com/client/T0EXAMPLE01/C9" },
       ]
 
       const { byTab, byGroup } = aggregateUnread(notifications, tabs, [], {}, teamGroupMap)
 
-      expect(byGroup["slack:E0761H36LHY"]).toBe(1)
+      expect(byGroup["slack:E0EXAMPLE01"]).toBe(1)
       // Both the org tab and the member-workspace tab resolve to the merged bucket.
       expect(byTab.org).toBe(1)
       expect(byTab.ws).toBe(1)
     })
 
     it("resolves a dormant Grid pin through the map to the merged bucket", () => {
-      const teamGroupMap = { TGFUQ89E1: "E0761H36LHY" }
+      const teamGroupMap = { T0EXAMPLE01: "E0EXAMPLE01" }
       const notifications = [
         notif({
-          groupKey: "slack:E0761H36LHY",
-          targetUrl: "https://app.slack.com/client/E0761H36LHY/C1",
+          groupKey: "slack:E0EXAMPLE01",
+          targetUrl: "https://app.slack.com/client/E0EXAMPLE01/C1",
         }),
       ]
-      const pins = [{ id: "p1", url: "https://app.slack.com/client/TGFUQ89E1/C2" }]
+      const pins = [{ id: "p1", url: "https://app.slack.com/client/T0EXAMPLE01/C2" }]
 
       const { byPin } = aggregateUnread(notifications, [], pins, {}, teamGroupMap)
 
@@ -229,19 +229,19 @@ describe("aggregateUnread", () => {
     })
 
     it("falls back to slack:{teamId} with no map entry (today's behavior)", () => {
-      // FWD-DCP standalone: no map entry → groupId === teamId, byte-unchanged.
-      const teamGroupMap = { TGFUQ89E1: "E0761H36LHY" }
+      // standalone workspace: no map entry → groupId === teamId, byte-unchanged.
+      const teamGroupMap = { T0EXAMPLE01: "E0EXAMPLE01" }
       const notifications = [
         notif({
-          groupKey: "slack:T01CDUT3CBD",
-          targetUrl: "https://app.slack.com/client/T01CDUT3CBD/C1",
+          groupKey: "slack:T0EXAMPLE02",
+          targetUrl: "https://app.slack.com/client/T0EXAMPLE02/C1",
         }),
       ]
-      const tabs = [{ id: "dcp", url: "https://app.slack.com/client/T01CDUT3CBD/C9" }]
+      const tabs = [{ id: "ws2", url: "https://app.slack.com/client/T0EXAMPLE02/C9" }]
 
       const { byTab } = aggregateUnread(notifications, tabs, [], {}, teamGroupMap)
 
-      expect(byTab.dcp).toBe(1)
+      expect(byTab.ws2).toBe(1)
     })
 
     it("is byte-unchanged when no map is passed (omitted arg)", () => {

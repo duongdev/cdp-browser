@@ -12,18 +12,18 @@ In an Enterprise Grid, Slack registers the **org itself** as a pseudo-team (an `
 
 ## Why now
 
-This is a live bug on the daily-driver PWA: every message in 27 FWD channels currently fires two notifications and two web-pushes. It also simplifies t093's per-device mute list (one "FWD Group" row instead of two). It can't wait — the duplication is visible and annoying on every FWD message.
+This is a live bug on the daily-driver PWA: every message in 27 Example channels currently fires two notifications and two web-pushes. It also simplifies t093's per-device mute list (one "Example Group" row instead of two). It can't wait — the duplication is visible and annoying on every Example message.
 
-Evidence captured live against `100.85.206.8:9222` (the FWD remote browser):
+Evidence captured live against `<remote-browser-host>:9222` (the Example remote browser):
 
 ```
-team          name                                   src            convos
-E0761H36LHY   FWD GROUP MANAGEMENT HOLDINGS LIMITED   client.counts    27   (enterprise_id: null → IS the org)
-TGFUQ89E1     FWD Group                               users.counts     51   (enterprise_id: E0761H36LHY)
-T01CDUT3CBD   FWD-DCP                                 client.counts    22   (enterprise_id: null → standalone)
+team          name                            src            convos
+E0EXAMPLE01   Example Group Holdings Limited   client.counts    27   (enterprise_id: null → IS the org)
+T0EXAMPLE01   Example Group                    users.counts     51   (enterprise_id: E0EXAMPLE01)
+T0EXAMPLE02   Example-Team                     client.counts    22   (enterprise_id: null → standalone)
 
 OVERLAP org∩ws  = 27   ← all 27 org channels are also in the workspace
-OVERLAP org∩dcp = 0    ← FWD-DCP genuinely separate
+OVERLAP org∩dcp = 0    ← Example-Team genuinely separate
 OVERLAP ws∩dcp  = 0
 ```
 
@@ -34,11 +34,11 @@ The org pseudo-team is a 27-channel **subset** of the (API-restricted) workspace
 - [ ] `groupId(cred)` returns `enterprise_id` when present, else `teamId` (pure, tested).
 - [ ] A message present under both the org pseudo-team and a member workspace yields **exactly one** notification entry (dedup by `slack:{groupId}:{channel}:{ts}`).
 - [ ] Each entry retains a concrete `teamId` field so activation / SPA deep-link still opens the channel in a real workspace.
-- [ ] `/api/notifications/health` returns one row per `groupId`: FWD shows a single row, FWD-DCP a separate row.
+- [ ] `/api/notifications/health` returns one row per `groupId`: Example shows a single row, Example-Team a separate row.
 - [ ] `slack-workspaces.json` persists `enterpriseId` per workspace (was `{teamId,url,name,lastSeen}`).
 - [ ] A Slack tab/pin's unread badge resolves to the merged `slack:{groupId}` bucket (renderer aggregator fed a `teamId → groupId` map).
 - [ ] Existing `slackExcludes` entries keyed by the old `teamId` are migrated to `groupId` on load; channel mutes still apply after the merge.
-- [ ] FWD-DCP (`enterprise_id` null) is unchanged: `groupId === teamId`, one row, no behavior change.
+- [ ] Example-Team (`enterprise_id` null) is unchanged: `groupId === teamId`, one row, no behavior change.
 
 ## Test plan
 
@@ -52,14 +52,14 @@ The org pseudo-team is a 27-channel **subset** of the (API-restricted) workspace
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-- [x] `CDP_HOST=100.85.206.8 node web/server.mjs` → `/api/notifications/health` returns `{ rows, groups }` with **two** rows: one "FWD Group" (groupId `E0761H36LHY`, teams `[E0761H36LHY, TGFUQ89E1]`) + a separate "FWD-DCP" (was three rows). `groups` map: `TGFUQ89E1 → E0761H36LHY`. Verified live 2026-06-19.
+- [x] `CDP_HOST=<remote-browser-host> node web/server.mjs` → `/api/notifications/health` returns `{ rows, groups }` with **two** rows: one "Example Group" (groupId `E0EXAMPLE01`, teams `[E0EXAMPLE01, T0EXAMPLE01]`) + a separate "Example-Team" (was three rows). `groups` map: `T0EXAMPLE01 → E0EXAMPLE01`. Verified live 2026-06-19.
 - [x] Entry keying: org + member-workspace sweeps now stamp the same `slack:{groupId}` id for a shared `(channel, ts)` → `ingest` dedups → one entry (covered by `slack-sweep-runner.test.ts` + the live merged `groups` map).
 - [x] Deep-link preserved: entry keeps concrete `teamId` (`slack-sweep-runner.test.ts` asserts `/client/{teamId}/{channel}`).
-- [ ] HITL: observe a real message in a shared FWD channel fire exactly one push on a device (needs a live message; flagged for your return).
+- [ ] HITL: observe a real message in a shared Example channel fire exactly one push on a device (needs a live message; flagged for your return).
 
 ### Layer 3 — Visual review
 
-- [ ] Deferred to HITL — no debug Chrome in the AFK env. The endpoint is verified (`rows`/`groups`) and `settings-dialog.tsx` reads `data.rows`; the card will render one FWD row. Capture on next desktop session.
+- [ ] Deferred to HITL — no debug Chrome in the AFK env. The endpoint is verified (`rows`/`groups`) and `settings-dialog.tsx` reads `data.rows`; the card will render one Example row. Capture on next desktop session.
 
 ## Design notes
 
@@ -90,23 +90,23 @@ type SlackEntry = {
 
 - Per-device notification mutes — that's **t093** (this task only fixes the duplicate + collapses the rows it will list).
 - Optimizing the double-fetch of the 27 shared channels — both tokens still sweep; dedup makes it correct, not efficient. Accept for v1; optimize later if it costs.
-- UX for an enterprise with **multiple genuinely-distinct** member workspaces — the rule merges *all* teams of one `enterprise_id` into one row. FWD has one real member workspace + the org pseudo-team, so it's correct here; revisit if a user has 2+ distinct member workspaces they want listed separately.
-- Merged-row **label** rule is a small choice (friendlier member name "FWD Group" when present, else org name) — implement the recommendation; not a separate task.
+- UX for an enterprise with **multiple genuinely-distinct** member workspaces — the rule merges *all* teams of one `enterprise_id` into one row. Example has one real member workspace + the org pseudo-team, so it's correct here; revisit if a user has 2+ distinct member workspaces they want listed separately.
+- Merged-row **label** rule is a small choice (friendlier member name "Example Group" when present, else org name) — implement the recommendation; not a separate task.
 
 ## Definition of Done
 
 - [x] Layer 1 tests written and green (844 unit tests; new coverage for groupId/dedup/health-merge/aggregator-map/excludes-migration/read-sync)
-- [x] Layer 2 smoke completed against the live FWD remote browser (health endpoint merges to one FWD row)
+- [x] Layer 2 smoke completed against the live Example remote browser (health endpoint merges to one Example row)
 - [ ] Layer 3 health-card screenshot captured — deferred to HITL (no debug Chrome AFK)
 - [x] `pnpm typecheck` clean, `pnpm test` green, `pnpm test:e2e` green; Biome 0 errors on touched files (pre-existing warnings only)
-- [x] `node web/server.mjs` boots and the FWD rows collapse end-to-end
+- [x] `node web/server.mjs` boots and the Example rows collapse end-to-end
 - [x] CLAUDE.md + `src/lib/CLAUDE.md` + ADR-0011 note updated for the changed modules
 - [x] No debris, no AI attribution
 - [x] Task closed: status → done, moved to `docs/tasks/done/`, `t092` in branch + commit
 
 ## Notes
 
-Root cause + fix decided in a grilling session (2026-06-19). The user's "they're the same and duplicated" was correct: org `E0761H36LHY` ⊂ workspace `TGFUQ89E1` (27 shared channels). Chose merge-by-`enterprise_id` over cross-dedup-keeping-rows and over drop-a-team (latter is lossy because the member workspace is API-restricted).
+Root cause + fix decided in a grilling session (2026-06-19). The user's "they're the same and duplicated" was correct: org `E0EXAMPLE01` ⊂ workspace `T0EXAMPLE01` (27 shared channels). Chose merge-by-`enterprise_id` over cross-dedup-keeping-rows and over drop-a-team (latter is lossy because the member workspace is API-restricted).
 
 ---
 
