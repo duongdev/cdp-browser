@@ -461,8 +461,10 @@ export default function App() {
     // re-key any persisted Channel Excludes from the old per-team key to the merged one
     // (idempotent — a no-op once migrated). Standalone teams have no map entry → unchanged.
     if (caps.web) {
-      fetch("/api/notifications/health")
-        .then((r) => r.json())
+      // Route through the bridge, not a raw fetch — under E2E the response is sealed, so a raw
+      // fetch would get opaque bytes and silently break Grid grouping + the exclude migration (t099).
+      window.cdp
+        .getNotificationHealth?.()
         .then((data) => {
           const groups = data && typeof data === "object" ? data.groups : null
           const map = groups && typeof groups === "object" ? (groups as Record<string, string>) : {}

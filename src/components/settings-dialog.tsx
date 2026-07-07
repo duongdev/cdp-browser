@@ -376,12 +376,13 @@ export function SettingsDialog({
             })
             .catch(() => {})
         }
-        fetch("/api/notifications/health")
-          .then((r) => r.json())
-          // t092: the payload is now `{ rows, groups }` (rows merged per Enterprise Grid org;
-          // `groups` is the teamId → groupId map consumed by app.tsx). The card reads `rows`.
-          .then((data: { rows?: SlackHealthRow[] }) =>
-            setSlackHealth(Array.isArray(data?.rows) ? data.rows : []),
+        // Through the bridge (not a raw fetch) so E2E responses open correctly (t099).
+        // t092: the payload is `{ rows, groups }` (rows merged per Enterprise Grid org;
+        // `groups` is the teamId → groupId map consumed by app.tsx). The card reads `rows`.
+        window.cdp
+          .getNotificationHealth?.()
+          .then((data) =>
+            setSlackHealth(Array.isArray(data?.rows) ? (data.rows as SlackHealthRow[]) : []),
           )
           .catch(() => setSlackHealth([]))
       }

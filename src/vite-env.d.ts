@@ -160,6 +160,12 @@ interface CdpBridge {
   // `getPushVapidKey` returns the server's VAPID public key for pushManager.subscribe.
   // `subscribePush` POSTs the browser-issued subscription to the server and returns
   // the server-reconciled deviceId (E0); `unsubscribePush` removes a subscription.
+  // Slack capture health + Grid teamId→groupId map (web only; through the E2E-aware REST
+  // bridge). Absent under Electron (no sweep) — callers guard with `?.`.
+  getNotificationHealth?: () => Promise<{
+    rows?: unknown[]
+    groups?: Record<string, string>
+  }>
   getPushVapidKey?: () => Promise<string>
   subscribePush?: (subscription: PushSubscriptionJSON) => Promise<{ deviceId: string }>
   unsubscribePush?: (endpoint: string) => Promise<void>

@@ -68,7 +68,11 @@ export function createReconnectDriver(opts: {
     pending = setTimer(async () => {
       pending = null
       if (myGen !== generation || lastTabId === null) return
-      const result = await opts.connect(lastTabId)
+      // A rejected connect POST (network down mid-retry) must be a failed attempt, not an
+      // escaped rejection that wedges the loop on "reconnecting" forever (t099).
+      const result = await opts
+        .connect(lastTabId)
+        .catch((): { ok?: boolean; error?: string } => ({ error: "connect threw" }))
       if (myGen !== generation) return // a newer connect/stop superseded this retry
       if (result?.ok) {
         state = nextBackoff(state, "success", cfg).state
@@ -113,15 +117,18 @@ export function createReconnectDriver(opts: {
       const tabId = lastTabId
       const myGen = generation
       opts.emit("reconnecting")
-      void opts.connect(tabId).then((result) => {
-        if (myGen !== generation) return // a newer connect/tap/stop superseded this attempt
-        if (result?.ok) {
-          state = nextBackoff(state, "success", cfg).state
-          return
-        }
-        // Host still down → fall into the normal bounded-backoff climb (one loop, shared cfg).
-        if (result?.error !== "cancelled") scheduleNext()
-      })
+      void opts
+        .connect(tabId)
+        .catch(() => ({ error: "connect threw" }) as { ok?: boolean; error?: string })
+        .then((result) => {
+          if (myGen !== generation) return // a newer connect/tap/stop superseded this attempt
+          if (result?.ok) {
+            state = nextBackoff(state, "success", cfg).state
+            return
+          }
+          // Host still down → fall into the normal bounded-backoff climb (one loop, shared cfg).
+          if (result?.error !== "cancelled") scheduleNext()
+        })
     },
     /** Host-initiated teardown — stop retrying and forget the target. */
     stop() {

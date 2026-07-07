@@ -93,6 +93,36 @@ describe("createReconnectDriver.reconnectNow", () => {
     expect(connect).toHaveBeenCalledTimes(2) // exactly the two taps, no extra retry from the stale one
   })
 
+  it("treats a REJECTED connect POST as a failed attempt (schedules the retry, never wedges) — t099", async () => {
+    const connect = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down")) // the POST throws mid-retry
+      .mockResolvedValueOnce({ ok: true })
+    let queue: Array<() => void> = []
+    const driver = createReconnectDriver({
+      connect: connect as unknown as (tabId: string) => Promise<{ ok?: boolean; error?: string }>,
+      emit: () => {},
+      setTimer: (cb) => {
+        queue.push(cb)
+        return 1 as unknown as ReturnType<typeof setTimeout>
+      },
+      clearTimer: () => {
+        queue = []
+      },
+    })
+    driver.noteConnect("tab-1")
+    driver.reconnectNow() // immediate attempt rejects
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    // The rejection must have scheduled a backoff retry rather than escaping the loop.
+    expect(queue.length).toBeGreaterThan(0)
+    queue.shift()?.() // fire the retry → resolves ok, ends the loop
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(connect).toHaveBeenCalledTimes(2)
+  })
+
   it("resets the backoff schedule to base — a tap after the ceiling reconnects from scratch", async () => {
     const phases: Array<"reconnecting" | "lost"> = []
     const connect = vi.fn(async () => ({ ok: true }))

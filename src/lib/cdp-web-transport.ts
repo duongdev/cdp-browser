@@ -30,6 +30,7 @@ import {
   shouldReconnect,
 } from "./transport-selector"
 import { type AdvisedMode, createUplinkRouter, type Uplink } from "./uplink-router"
+import { shouldResyncOnWake } from "./wake-resync"
 import { createInputChannel } from "./web-input-channel"
 import { createReconnectDriver, RECONNECT_CONFIG } from "./web-reconnect-driver"
 import { createWsChannel } from "./web-ws-channel"
@@ -243,6 +244,10 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   })
   let wsReady = false
   let ws: ReturnType<typeof createWsChannel> | null = null
+  // Last time ANY server message arrived on the WS — the wake-resync probe (t099) watches it
+  // to distinguish a live socket from a half-open one after the PWA returns from suspend.
+  let lastServerActivityTs = 0
+  const WAKE_PROBE_MS = 1500 // probe window after foreground before declaring the socket dead
   // Visible-tab WS re-climb cadence (t041): reuses the t040 backoff schedule so re-attempts
   // are spaced on the same curve (no second competing counter), resetting when WS heals.
   const reclimbSchedule = createWsReclimbSchedule(RECONNECT_CONFIG)
@@ -290,7 +295,14 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       pumpDownlink(kind, JSON.parse(data))
       return
     }
-    sseChain = sseChain.then(async () => pumpDownlink(kind, await crypto.openText(data)))
+    // Isolate each link (t099): a rejected decode used to leave `sseChain` permanently rejected,
+    // so every subsequent message's `.then` short-circuited — the whole downlink died until a
+    // reload. Catching per-link keeps the chain resolved so one bad frame can't poison it.
+    sseChain = sseChain
+      .then(async () => pumpDownlink(kind, await crypto.openText(data)))
+      .catch((e) => {
+        console.error("[downlink] decode/dispatch failed (isolated):", e)
+      })
   }
   function attachSseListeners(src: EventSource) {
     src.addEventListener("cdp", (e) => {
@@ -399,6 +411,9 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     if (!deps.WebSocket) return
     if (ws) return // already attempting / open
     ws = createWsChannel(deps, crypto, {
+      onActivity: () => {
+        lastServerActivityTs = Date.now()
+      },
       onFrameBinary: (cdpMsg) => {
         // The WS binary-frame path: a forged Page.screencastFrame carrying the JPEG Blob.
         // Routes through the one Downlink like every other CDP event — the viewport reads
@@ -685,6 +700,32 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       const probe = selector.onFocus()
       if (probe === "ws" && !wsReady && !ws && shouldOpenWs(wantMode)) openWs()
       armReclimb() // foregrounded — heal the WS path if it's down
+
+      // Wake-resync (t099): the re-climb above only heals a WS we KNOW is down. A socket that
+      // went half-open while the PWA was suspended still reports ready, so the client sits on a
+      // frozen frame labelled "Connected". Ping now and, after a short window, if no server
+      // message arrived, treat the socket as dead — tear it down + reconnect the Remote Page.
+      if (wsReady && ws && deps.setTimer) {
+        const before = lastServerActivityTs
+        ws.pingNow()
+        deps.setTimer(() => {
+          const sawSignal = lastServerActivityTs !== before
+          if (
+            !shouldResyncOnWake({
+              visible: document.visibilityState === "visible",
+              wsUp: wsReady,
+              sawSignalDuringProbe: sawSignal,
+            })
+          )
+            return
+          ws?.close() // suppresses the channel onClose — replicate the teardown it would do
+          ws = null
+          wsReady = false
+          reopenSse() // bridge events over SSE until the fresh WS climbs back
+          openWs() // build a fresh WS socket
+          reconnect.reconnectNow() // and re-establish the Remote Page session (fresh frames)
+        }, WAKE_PROBE_MS)
+      }
     })
   }
 
@@ -840,6 +881,9 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     removePin: (id) => rest.postJson("/api/pins/remove", { id }),
     reorderPins: (pins) => rest.postJson("/api/pins/reorder", { pins }),
     getNotifications: () => rest.getJson("/api/notifications"),
+    // Slack capture health + the Grid teamId→groupId map. Through the REST bridge (not a raw
+    // fetch) so it opens the E2E envelope like every other /api call (t099).
+    getNotificationHealth: () => rest.getJson("/api/notifications/health"),
     markNotificationRead: (id) => rest.postJson("/api/notifications/mark-read", { id }),
     markNotificationUnread: (id) => rest.postJson("/api/notifications/mark-unread", { id }),
     markNotificationsRead: () => rest.postJson("/api/notifications/mark-all-read"),
