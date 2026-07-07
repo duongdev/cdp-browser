@@ -739,14 +739,14 @@ function PinnedZone({
 
 function RowShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-sidebar px-2.5 py-1.5 shadow-lg ring-1 ring-border">
+    <div className="flex items-start gap-2 rounded-lg bg-sidebar px-2.5 py-1.5 shadow-lg ring-1 ring-border">
       {children}
     </div>
   )
 }
 
 function RowLabel({ children }: { children: React.ReactNode }) {
-  return <span className="text-xs truncate text-foreground">{children}</span>
+  return <span className="min-h-[2lh] text-xs line-clamp-2 text-foreground">{children}</span>
 }
 
 function RowFavicon({ favicon }: { favicon?: string }) {
@@ -987,7 +987,7 @@ function SortableTabItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
+                  "group relative flex items-start gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1011,7 +1011,7 @@ function SortableTabItem({
                   <UnreadBadge count={unread} />
                   <NumberHint n={number} />
                 </span>
-                <span className="flex-1 truncate text-xs">{displayTitle}</span>
+                <span className="min-h-[2lh] flex-1 line-clamp-2 text-xs">{displayTitle}</span>
                 <div
                   className={cn(
                     "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100",
@@ -1106,7 +1106,7 @@ function SortableLocalItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
+                  "group relative flex items-start gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1135,7 +1135,7 @@ function SortableLocalItem({
                     <span className="absolute bottom-0.5 right-0.5 size-1.5 rounded-full bg-foreground/40 ring-1 ring-sidebar" />
                   )}
                 </span>
-                <span className="flex-1 truncate text-xs">{displayTitle}</span>
+                <span className="min-h-[2lh] flex-1 line-clamp-2 text-xs">{displayTitle}</span>
                 <div
                   className={cn(
                     "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100",
