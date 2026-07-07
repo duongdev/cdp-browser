@@ -2,13 +2,11 @@
 // (jpegQuality + everyNthFrame) live in the root CJS `quality-tier.js`, the single owner
 // read by both backends (remote-page-connector.js + main.js) per ADR-0008 — the renderer
 // never applies them, the server does. This module owns only what the web-only Settings
-// picker needs: the tier id type, the option list shown in the 2x2-style toggle, the
-// localStorage key, and a parse-with-fallback for reading the stored pref back on mount.
+// picker needs: the tier id type, the option list shown in the 2x2-style toggle, a
+// parse-with-fallback, and a live in-memory mirror of the active tier for the resize reissue.
 // Mirrors how transport-selector.ts owns the InputTransportMode ids for the t019 picker.
 
 export type QualityTier = "sharp" | "balanced" | "snappy"
-
-export const QUALITY_TIER_KEY = "qualityTier"
 
 export const DEFAULT_TIER: QualityTier = "balanced"
 
@@ -51,4 +49,20 @@ export function parseTier(raw: string | null | undefined): QualityTier {
   return typeof raw === "string" && VALID.has(raw as QualityTier)
     ? (raw as QualityTier)
     : DEFAULT_TIER
+}
+
+// Live in-memory mirror of this device's active tier (t100). The screencast resize reissue in
+// viewport.tsx needs the tier synchronously, but the durable value lives in server ui-state now
+// (not localStorage, which resets on the iPad PWA) — so app.tsx seeds this at boot from ui-state
+// and the Settings picker updates it on change. Same live-mirror shape as latency-hud.tsx's flag;
+// without it, a resize would read a now-empty localStorage and reset the tier to balanced (the
+// exact t099 regression). Not the source of truth — server ui-state is; this is a sync read cache.
+let currentTier: QualityTier = DEFAULT_TIER
+
+export function readCurrentTier(): QualityTier {
+  return currentTier
+}
+
+export function setCurrentTier(raw: string | null | undefined): void {
+  currentTier = parseTier(raw)
 }

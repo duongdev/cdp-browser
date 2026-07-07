@@ -4,21 +4,24 @@ import { useEffect, useState } from "react"
 import { getLatencySnapshot, type LatencySnapshot } from "@/lib/latency-metrics"
 import type { InputTransportMode } from "@/lib/transport-selector"
 
-/** localStorage key for the persisted on/off flag (web-only, off by default). */
-export const LATENCY_HUD_KEY = "latencyHud"
 /** Fired by the settings toggle so a mounted HUD flips on/off live without prop-drilling. */
 const LATENCY_HUD_EVENT = "latencyhud:change"
 
-/** Read the persisted flag. Off (false) by default — a fresh load shows no readout. */
+// t100: the enabled flag is durable per-device in server ui-state now, not localStorage (which
+// resets on the iPad PWA). This module holds only the live in-memory value + a change event so a
+// mounted HUD flips instantly; app.tsx seeds it from ui-state at boot, and the settings toggle
+// persists via setUiState. No storage here.
+let hudEnabled = false
+
+/** The live in-memory flag (seeded from ui-state at boot). Off until ui-state resolves. */
 export function readLatencyHudEnabled(): boolean {
-  return typeof localStorage !== "undefined" && localStorage.getItem(LATENCY_HUD_KEY) === "1"
+  return hudEnabled
 }
 
-/** Persist the flag and notify any mounted HUD to flip live. Used by the settings toggle. */
+/** Apply the flag live: update the in-memory value and flip any mounted HUD. Persistence is the
+ *  caller's ui-state write (setUiState({ latencyHud })) — this is display-apply only. */
 export function setLatencyHudEnabled(on: boolean): void {
-  if (typeof localStorage === "undefined") return
-  if (on) localStorage.setItem(LATENCY_HUD_KEY, "1")
-  else localStorage.removeItem(LATENCY_HUD_KEY)
+  hudEnabled = on
   window.dispatchEvent(new CustomEvent(LATENCY_HUD_EVENT, { detail: on }))
 }
 

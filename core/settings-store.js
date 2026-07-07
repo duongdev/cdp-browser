@@ -44,7 +44,15 @@ const UI_SETTABLE = Object.keys(UI_DEFAULTS).filter((k) => k !== "localExtension
 // across a PWA refresh (localStorage resets on the iPad). A key passes the device-key
 // gate when its base prefix is one of these — the renderer's per-device remap seam in
 // cdp-web-transport.ts owns the suffixing (t066 webPush, t093 mutes + per-device master).
-const DEVICE_KEY_PREFIXES = ["webPush_", "notifMutes_", "notificationsEnabled_"]
+const DEVICE_KEY_PREFIXES = [
+  "webPush_",
+  "notifMutes_",
+  "notificationsEnabled_",
+  // t100 durable per-device client prefs: quality tier / input transport / latency HUD.
+  "qualityTier_",
+  "inputTransport_",
+  "latencyHud_",
+]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 
 // One-time migrations mirroring main.js: legacy boolean switchBlur -> switchEffect

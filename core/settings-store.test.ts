@@ -50,6 +50,19 @@ describe("settings-store", () => {
     expect(ui.notificationsEnabled_dev1).toBe(false)
   })
 
+  it("round-trips the t100 per-device client prefs (quality tier / transport / HUD)", () => {
+    const s = createSettingsStore({ initial: {}, persist })
+    s.setUiState({
+      qualityTier_dev1: "snappy",
+      inputTransport_dev1: "batch",
+      latencyHud_dev1: true,
+    })
+    const ui = s.getUiState()
+    expect(ui.qualityTier_dev1).toBe("snappy")
+    expect(ui.inputTransport_dev1).toBe("batch")
+    expect(ui.latencyHud_dev1).toBe(true)
+  })
+
   it("still drops an unknown-prefix device-suffixed key", () => {
     const s = createSettingsStore({ initial: {}, persist })
     s.setUiState({ bogus_dev1: 1 })

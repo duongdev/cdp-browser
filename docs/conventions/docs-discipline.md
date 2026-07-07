@@ -87,7 +87,7 @@ Any non-trivial design decision gets an ADR. Examples of "non-trivial":
 
 ADRs are **append-only**. When a decision changes, write a new ADR that supersedes the old one. Update the old ADR's *Status* line to reference the superseder, but never edit its body. The history is the documentation.
 
-Current ADRs: `docs/adr/0001-single-remote-page.md`, `0002-adaptive-viewport.md`, `0003-notifications-side-channel.md`, `0004-pin-live-tab-model.md`, `0005-local-tabs-base-window.md`, `0006-web-proxy-sse-transport.md`, `0007-web-websocket-transport.md`, `0008-defer-monorepo-shared-cjs-core.md`, `0009-touch-first-co-primary-input-surface.md`, `0010-multiple-workspaces-deferred-design.md`, `0011-slack-content-sweep-guaranteed-delivery.md`, `0012-phone-triage-surface-inbox-rooted-shell-conversati.md`, `0013-per-device-notification-delivery.md`, `0014-endpoint-reconciled-per-device-push-identity.md`, `0015-prefer-thin-handlers-over-reducer-indirection.md`.
+Current ADRs: `docs/adr/0001-single-remote-page.md`, `0002-adaptive-viewport.md`, `0003-notifications-side-channel.md`, `0004-pin-live-tab-model.md`, `0005-local-tabs-base-window.md`, `0006-web-proxy-sse-transport.md`, `0007-web-websocket-transport.md`, `0008-defer-monorepo-shared-cjs-core.md`, `0009-touch-first-co-primary-input-surface.md`, `0010-multiple-workspaces-deferred-design.md`, `0011-slack-content-sweep-guaranteed-delivery.md`, `0012-phone-triage-surface-inbox-rooted-shell-conversati.md`, `0013-per-device-notification-delivery.md`, `0014-endpoint-reconciled-per-device-push-identity.md`, `0015-prefer-thin-handlers-over-reducer-indirection.md`, `0016-persist-slack-sweep-watermark.md`.
 
 ---
 
@@ -151,4 +151,4 @@ If a doc has rotted beyond repair, delete it and write a fresh one. A wrong doc 
 
 _Docs you don't maintain are a liability. Docs you maintain are a force multiplier._
 
-_Last revisited: 2026-06-20_
+_Last revisited: 2026-07-07_
