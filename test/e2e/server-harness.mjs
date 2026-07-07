@@ -1,13 +1,13 @@
 // Spawns web/server.mjs as a child process on an ephemeral port, pointed at a
 // fake CDP host. Returns a running handle with fetch/ws helpers and a stop().
 
+import { spawn } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import http from "node:http"
 import net from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { spawn } from "node:child_process"
 import WebSocket from "ws"
 
 const REPO_ROOT = join(fileURLToPath(import.meta.url), "..", "..", "..")
@@ -40,6 +40,11 @@ export async function startWebServer(fakeCdpHost, extraEnv = {}) {
   const settingsPath = join(tmpDir, "settings.json")
   const notifsPath = join(tmpDir, "notifications.json")
   const subsPath = join(tmpDir, "push-subs.json")
+  // Isolate the Slack registry + sweep-state files in the tmpDir too — the graceful-shutdown
+  // flush (t099) writes the sweep state on every proc.kill(), so an unset path would pollute
+  // the repo root on each test teardown.
+  const workspacesPath = join(tmpDir, "slack-workspaces.json")
+  const sweepStatePath = join(tmpDir, "slack-sweep-state.json")
 
   writeFileSync(settingsPath, "{}")
   writeFileSync(notifsPath, "[]")
@@ -55,6 +60,8 @@ export async function startWebServer(fakeCdpHost, extraEnv = {}) {
     SETTINGS_PATH: settingsPath,
     NOTIFS_PATH: notifsPath,
     SUBS_PATH: subsPath,
+    SLACK_WORKSPACES_PATH: workspacesPath,
+    SLACK_SWEEP_STATE_PATH: sweepStatePath,
     VAPID_SUBJECT: "mailto:test@example.com",
     ...extraEnv,
   }
@@ -97,6 +104,8 @@ export async function startWebServer(fakeCdpHost, extraEnv = {}) {
     tmpDir,
     settingsPath,
     notifsPath,
+    subsPath,
+    sweepStatePath,
 
     fetch(path, init = {}) {
       return fetch(`${base}${path}`, init)

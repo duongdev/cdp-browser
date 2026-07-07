@@ -23,6 +23,7 @@ playwright-report/
 # Visual-review scratch (screenshots)
 .scratch/
 
-# Web build runtime state (Slack workspace registry + push subscriptions)
+# Web build runtime state (Slack workspace registry + push subscriptions + sweep watermark)
 slack-workspaces.json
+slack-sweep-state.json
 web-push-subs.json
