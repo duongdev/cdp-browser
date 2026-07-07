@@ -36,8 +36,15 @@ import {
 } from "@/lib/notification-activation"
 import { threadKey } from "@/lib/notifications-view"
 import { dropDeadLinks, pinForTarget, resolvePinLink } from "@/lib/pins"
+import { planBootPush, planForegroundRevalidate, planPostReconcile } from "@/lib/push-lifecycle"
 import { createPushRevalidateGate } from "@/lib/push-revalidate"
 import { notifIdFromSearch, resolvePushEntry, stripNotifParam } from "@/lib/push-route"
+import {
+  createBrowserPushDeps,
+  ensurePushSubscription,
+  getExistingSubscription,
+  removePushSubscription,
+} from "@/lib/push-subscribe"
 import { shouldApplyAdaptive } from "@/lib/shell-mode"
 import {
   addExclude,
@@ -249,22 +256,87 @@ export default function App() {
     window.addEventListener("popstate", onPop)
     return () => window.removeEventListener("popstate", onPop)
   }, [])
-  // E1b: Re-validate push subscription on app foreground (iOS PWA recovery path).
-  // pushsubscriptionchange never fires on iOS PWAs, so the only recovery hook is
-  // visibilitychange. Once-per-foreground gate prevents spam; hidden→visible resets
-  // the gate for the next foreground. The settings dialog's reValidateSubscription
-  // handles the actual subscription refresh (deferred: t095-note in task file).
+  // E1b (t099): re-validate the push subscription on app foreground — the iOS PWA recovery
+  // path, since `pushsubscriptionchange` never fires there. A once-per-foreground gate
+  // prevents spam; intent is the durable server flag, read fresh each foreground.
   useEffect(() => {
-    const pushRevalidateGate = createPushRevalidateGate()
+    if (!caps.web) return
+    const gate = createPushRevalidateGate()
+    const deps = createBrowserPushDeps()
     const onVisibilityChange = () => {
-      const visible = document.visibilityState === "visible"
-      // Gate fires once per foreground; reset on hidden→visible transition.
-      pushRevalidateGate.shouldRevalidateNow(visible)
-      // TODO(t095-future): call reValidateSubscription when it's on the bridge
+      const gateFired = gate.shouldRevalidateNow(document.visibilityState === "visible")
+      if (!gateFired) return
+      window.cdp.getUiState().then((s) => {
+        if (planForegroundRevalidate({ gateFired, intentOn: !!s.webPush })) {
+          ensurePushSubscription(deps).catch((e) =>
+            console.error("[push] foreground revalidate failed:", e),
+          )
+        }
+      })
     }
     document.addEventListener("visibilitychange", onVisibilityChange)
     return () => document.removeEventListener("visibilitychange", onVisibilityChange)
-  }, [])
+  }, [caps.web])
+
+  // Boot deviceId reconcile (t099): after a localStorage wipe the client mints a fresh
+  // deviceId, but the push endpoint (SW/IndexedDB) survives — so re-registering a live
+  // subscription lets the server map endpoint→prior deviceId, which we adopt BEFORE reading
+  // any device-keyed ui-state (mutes/master/toggle). Intent = the durable server flag: keep
+  // the sub when it says on, drop it when it says the user had turned push off. With no live
+  // sub we only re-subscribe when a known device declared intent (fresh wipe stays OFF).
+  useEffect(() => {
+    if (!caps.web) return
+    let cancelled = false
+    const deps = createBrowserPushDeps()
+    ;(async () => {
+      try {
+        const sub = await getExistingSubscription(deps)
+        const before = await window.cdp.getUiState()
+        const plan = planBootPush({
+          hasSub: !!sub,
+          knownIntent: before.webPush ? "on" : "unknown",
+        })
+        if (cancelled || plan === "noop") return
+        const res = await ensurePushSubscription(deps) // adopts the reconciled deviceId
+        if (cancelled || !res) return
+        if (plan === "reconcile") {
+          const after = await window.cdp.getUiState()
+          if (cancelled) return
+          // Refresh the device-keyed React state under the reconciled id.
+          setNotificationsEnabled(after.notificationsEnabled ?? true)
+          setNotifMutes(Array.isArray(after.notifMutes) ? after.notifMutes : [])
+          if (planPostReconcile({ serverWebPush: !!after.webPush }) === "unsubscribe") {
+            await removePushSubscription(deps)
+          }
+        }
+      } catch (e) {
+        console.error("[push] boot reconcile failed:", e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [caps.web])
+
+  // SW push-subscription-change recovery (t099): fires on Android/desktop (dead on iOS, where
+  // the foreground gate above covers it). Bound to the container (`navigator.serviceWorker`),
+  // not `.controller` — messages arrive on the container. Re-validates when push intent is on.
+  useEffect(() => {
+    if (!caps.web) return
+    const deps = createBrowserPushDeps()
+    const onMessage = (event: Event) => {
+      if ((event as MessageEvent).data?.type !== "push-subscription-change") return
+      window.cdp.getUiState().then((s) => {
+        if (s.webPush) {
+          ensurePushSubscription(deps).catch((e) =>
+            console.error("[push] SW-change revalidate failed:", e),
+          )
+        }
+      })
+    }
+    navigator.serviceWorker?.addEventListener("message", onMessage)
+    return () => navigator.serviceWorker?.removeEventListener("message", onMessage)
+  }, [caps.web])
   // Pull-to-refresh action for the phone Inbox (UX): re-fetch the swept notification list.
   // A yank-to-refresh is exactly when the link may be down — fail quietly (the hook's
   // `finally` still clears the spinner) rather than throw an unhandled rejection.

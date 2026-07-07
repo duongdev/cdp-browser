@@ -862,7 +862,14 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     // E0: Subscribe without local deviceId; server reconciles by endpoint and returns the
     // authoritative id. Renderer adopts it, updating localStorage + ui-state keys.
     subscribePush: async (sub) => {
-      const result = (await rest.postJson("/api/notifications/subscribe", sub as object)) as {
+      // Send this device's current id alongside the subscription. On an endpoint match the
+      // server ignores it (endpoint wins — storage-wipe recovery); on a NEW endpoint (revocation
+      // / rotation) the server adopts it so the per-device prefs keyed by that id survive
+      // instead of orphaning (t099). Absent-id legacy path still mints server-side.
+      const result = (await rest.postJson("/api/notifications/subscribe", {
+        ...(sub as object),
+        deviceId,
+      })) as {
         deviceId: string
       }
       setDeviceId(result.deviceId)
