@@ -47,9 +47,8 @@ export function buildClipboardPermissionsLegacy(origin) {
  * @param {Object} focusDescriptor - Information about what element has focus on the remote.
  * @param {boolean} focusDescriptor.isContentEditable - True if focused element is contenteditable or a rich editor.
  * @param {boolean} focusDescriptor.isRichEditor - True if in a known rich-editor context (Gmail, Docs, etc).
- * @returns {Object} Paste route directive.
- * @returns {string} .route - Either 'insertText' (plain) or 'preseed' (rich).
- * @returns {string} .reason - Human-readable explanation.
+ * @returns {{route: string, reason: string}} Paste route directive — `route` is
+ *   'insertText' (plain) or 'preseed' (rich); `reason` is a human-readable explanation.
  */
 export function selectPasteRoute(focusDescriptor) {
   const { isContentEditable = false, isRichEditor = false } = focusDescriptor || {}
