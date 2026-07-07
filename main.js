@@ -458,6 +458,8 @@ ipcMain.handle("cdp:set-ui-state", (_, partial) => {
   settingsStore.setUiState(partial)
   // Theme emulation tracks the syncTheme toggle; re-apply on the live socket.
   if ("syncTheme" in partial) applyThemeEmulation(activeWs)
+  // A mute/master change alters the dock-badge count (t101) — refresh it now.
+  if ("notifMutes" in partial || "notificationsEnabled" in partial) updateBadge()
 })
 
 // Pins (live-tab holders). The renderer owns link state (`targetId`); main is the
@@ -485,6 +487,7 @@ ipcMain.handle("cdp:get-theme-source", () => settingsStore.getThemeSource())
 // injects only Electron effects (capture-script reads, /json target list, the
 // persisted store file, the OS Notification + dock badge gated by shouldNotifyOs).
 const { shouldNotifyOs } = require("./core/notifications")
+const { unreadExcluding } = require("./core/notif-mutes")
 const { createNotificationCenter } = require("./core/notifications-sidechain")
 
 // Persisted store (separate from settings.json to keep that file lean).
@@ -502,9 +505,17 @@ function saveNotifications(list) {
   } catch {}
 }
 
-// Dock badge mirrors total unread (macOS). 0 clears it.
+// Dock badge mirrors unread minus muted sources, and zeroes when the master is off (t101,
+// PWA parity). 0 clears it. macOS.
 function updateBadge() {
-  if (typeof app.setBadgeCount === "function") app.setBadgeCount(notificationCenter.unreadCount())
+  if (typeof app.setBadgeCount !== "function") return
+  app.setBadgeCount(
+    unreadExcluding(
+      notificationCenter.list(),
+      settings.notifMutes ?? [],
+      settings.notificationsEnabled ?? true,
+    ),
+  )
 }
 
 // Retain shown Notification objects: Electron/V8 garbage-collects a Notification with no
@@ -533,6 +544,7 @@ const notificationCenter = createNotificationCenter({
         activeTabId,
         enabled: settings.notificationsEnabled ?? true,
         windowFocused,
+        mutes: settings.notifMutes ?? [],
       }) &&
       Notification.isSupported()
     ) {

@@ -447,6 +447,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           emulatedSize={emulatedSize}
           forceOnClient={forceOnClient}
           localExtensions={localExtensions}
+          notifications={notifications}
           notificationsEnabled={notificationsEnabled}
           notifMutes={notifMutes}
           onAdaptiveViewportChange={onAdaptiveViewportChange}

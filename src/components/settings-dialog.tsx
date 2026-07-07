@@ -28,6 +28,7 @@ import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { isPointerFine, usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { getCaps } from "@/lib/caps"
+import { type MuteEntry, slackMuteRows } from "@/lib/notif-mutes"
 import {
   createBrowserPushDeps,
   ensurePushSubscription,
@@ -108,10 +109,14 @@ interface SettingsDialogProps {
   onSwitchEffectChange: (effect: SwitchEffect) => void
   notificationsEnabled: boolean
   onNotificationsEnabledChange: (enabled: boolean) => void
-  /** This device's muted sources (muteKeys) and the toggle (t093, web only — the
-   *  per-device "Notifications (this device)" card drives them). Inert on Electron. */
+  /** Muted sources (muteKeys) + the toggle. Per-device on web (t093), a single global list
+   *  on Electron (t101) — the shared Notifications card drives both. */
   notifMutes: string[]
   onToggleMute: (key: string) => void
+  /** Captured notifications — the source for Electron's per-workspace Slack mute rows (t101);
+   *  the web build lists workspaces from the sweep's capture health instead. Typed to the
+   *  minimal mute shape (only adapter/groupKey/source are read). */
+  notifications: MuteEntry[]
   syncTheme: boolean
   onSyncThemeChange: (enabled: boolean) => void
   autoGrantLocalMedia: boolean
@@ -206,6 +211,7 @@ export function SettingsDialog({
   onNotificationsEnabledChange,
   notifMutes,
   onToggleMute,
+  notifications,
   syncTheme,
   onSyncThemeChange,
   autoGrantLocalMedia,
@@ -695,30 +701,33 @@ export function SettingsDialog({
                   </div>
                 </Card>
 
-                {/* Notifications. Web (PWA across devices): a per-device card — master +
-                    push + per-source mutes, all scoped to THIS device (t093). Electron is
-                    single-device, so it keeps the one global toggle. */}
-                {caps.web ? (
-                  <Card title="Notifications (this device)">
-                    <div className="space-y-3">
-                      {/* Master — the per-device softer mute; off silences everything on this
-                          device without unsubscribing push (the push toggle owns the sub). */}
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="space-y-0.5">
-                          <Label className="text-[13px]">Notifications</Label>
-                          <p className="text-[11px] leading-snug text-muted-foreground">
-                            Master switch for this device. Off silences pushes, toasts, and the
-                            badge here — other devices are unaffected.
-                          </p>
-                        </div>
-                        <Switch
-                          checked={notificationsEnabled}
-                          className="mt-0.5"
-                          onCheckedChange={onNotificationsEnabledChange}
-                        />
+                {/* Notifications — one shared card for both builds (t101). Master + per-source
+                    mutes are identical; the push row is web-only (Electron uses native OS
+                    notifications), and the Slack mute rows come from the sweep's capture health
+                    on web vs captured entries (slackMuteRows) on Electron — both render as the
+                    same {key,label} rows. Mutes are per-device on web (t093), one global list on
+                    Electron. */}
+                <Card title={caps.web ? "Notifications (this device)" : "Notifications"}>
+                  <div className="space-y-3">
+                    {/* Master — off silences everything (and zeroes the badge) on this device. */}
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <Label className="text-[13px]">Notifications</Label>
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          {caps.web
+                            ? "Master switch for this device. Off silences pushes, toasts, and the badge here — other devices are unaffected."
+                            : "Master switch. Off silences system notifications and the dock badge."}
+                        </p>
                       </div>
+                      <Switch
+                        checked={notificationsEnabled}
+                        className="mt-0.5"
+                        onCheckedChange={onNotificationsEnabledChange}
+                      />
+                    </div>
 
-                      {/* Push — owns the subscription + permission grant. */}
+                    {/* Push — web only (owns the subscription + permission grant). */}
+                    {caps.web && (
                       <div className="flex items-start justify-between gap-4">
                         <div className="space-y-0.5">
                           <Label className={cn("text-[13px]", !isStandalone && "opacity-60")}>
@@ -746,58 +755,37 @@ export function SettingsDialog({
                           onCheckedChange={toggleWebPush}
                         />
                       </div>
+                    )}
 
-                      {/* Mute on this device — per-service (Teams/Outlook, always shown) +
-                          per-Slack-workspace (one row per merged Grid org, from health). */}
-                      <div className="space-y-1.5 border-t border-border pt-3">
-                        <Label className="text-[13px]">Mute on this device</Label>
-                        <p className="text-[11px] leading-snug text-muted-foreground">
-                          A muted source still appears in the Inbox (dimmed) — it just won't push,
-                          toast, or bump the badge here.
-                        </p>
-                        <ul className="space-y-0.5 pt-1">
-                          {ADAPTER_MUTE_ROWS.map((row) => (
-                            <MuteRow
-                              key={row.key}
-                              label={row.label}
-                              muted={notifMutes.includes(row.key)}
-                              onToggle={() => onToggleMute(row.key)}
-                            />
-                          ))}
-                          {slackHealth.map((w) => {
-                            // A Slack source's muteKey is its merged-workspace groupKey
-                            // (see notif-mutes.ts muteKey).
-                            const key = `slack:${w.groupId}`
-                            return (
-                              <MuteRow
-                                key={w.groupId}
-                                label={w.name}
-                                muted={notifMutes.includes(key)}
-                                onToggle={() => onToggleMute(key)}
-                              />
-                            )
-                          })}
-                        </ul>
-                      </div>
+                    {/* Mute — per-service (Teams/Outlook) + per-Slack-workspace rows. The Slack
+                        rows' source differs by build; the render is shared. */}
+                    <div className="space-y-1.5 border-t border-border pt-3">
+                      <Label className="text-[13px]">
+                        {caps.web ? "Mute on this device" : "Mute"}
+                      </Label>
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        {caps.web
+                          ? "A muted source still appears in the Inbox (dimmed) — it just won't push, toast, or bump the badge here."
+                          : "A muted source still appears in the Inbox (dimmed) — it just won't notify or bump the badge."}
+                      </p>
+                      <ul className="space-y-0.5 pt-1">
+                        {[
+                          ...ADAPTER_MUTE_ROWS,
+                          ...(caps.web
+                            ? slackHealth.map((w) => ({ key: `slack:${w.groupId}`, label: w.name }))
+                            : slackMuteRows(notifications)),
+                        ].map((row) => (
+                          <MuteRow
+                            key={row.key}
+                            label={row.label}
+                            muted={notifMutes.includes(row.key)}
+                            onToggle={() => onToggleMute(row.key)}
+                          />
+                        ))}
+                      </ul>
                     </div>
-                  </Card>
-                ) : (
-                  <Card title="Notifications">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="space-y-0.5">
-                        <Label className="text-[13px]">Desktop notifications</Label>
-                        <p className="text-[11px] leading-snug text-muted-foreground">
-                          Show a system notification for Teams messages when its tab isn't in view.
-                        </p>
-                      </div>
-                      <Switch
-                        checked={notificationsEnabled}
-                        className="mt-0.5"
-                        onCheckedChange={onNotificationsEnabledChange}
-                      />
-                    </div>
-                  </Card>
-                )}
+                  </div>
+                </Card>
 
                 {caps.web && slackHealth.length > 0 && (
                   <Card title="Slack capture">

@@ -73,7 +73,7 @@ A user-configured per-channel mute for the **Slack Content Sweep**, stored in se
 _Avoid_: mute list, blocklist, filter.
 
 **Delivery Mute**:
-A per-device, per-source suppression of notification *interruptions* (push, foreground toast, badge bump) without removing entries from the Inbox or bell list — muted entries still appear, dimmed. Stored in server ui-state under `notifMutes_<deviceId>` (a set of mute keys, survives the iPad PWA's localStorage wipe). The **mute key** (`muteKey`, `core/notif-mutes.js` / `src/lib/notif-mutes.ts`) unifies both axes: a Slack entry keys by its merged `groupKey` (`slack:{groupId}`, per workspace), every other adapter by `adapter` name (per service). Complementary to but distinct from **Channel Exclude** (which removes Slack channels from capture globally, not per-device, and hides them everywhere). See ADR-0013.
+A per-device, per-source suppression of notification *interruptions* (push, foreground toast, badge bump) without removing entries from the Inbox or bell list — muted entries still appear, dimmed. Stored in server ui-state under `notifMutes_<deviceId>` on the web build (a set of mute keys per device, survives the iPad PWA's localStorage wipe); Electron is single-device, so it stores a plain global `notifMutes` instead (t101). The **mute key** (`muteKey`, `core/notif-mutes.js` / `src/lib/notif-mutes.ts`) unifies both axes: a Slack entry keys by its merged `groupKey` (`slack:{groupId}`, per workspace), every other adapter by `adapter` name (per service). Complementary to but distinct from **Channel Exclude** (which removes Slack channels from capture globally, not per-device, and hides them everywhere). See ADR-0013.
 _Avoid_: global mute, notification filter, blocklist.
 
 **Web Push Subscription**:

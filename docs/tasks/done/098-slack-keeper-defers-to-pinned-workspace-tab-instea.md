@@ -1,10 +1,11 @@
 # 098 — slack keeper defers to pinned workspace tab instead of forcing reopen
 
-- **Status:** in-progress
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 0.5d
 - **Depends on:** none
 - **Blocks:** none
+- **Shipped:** PR #10 (`f0a456a`) — folded into the t096 sweep
 
 ## Goal
 
