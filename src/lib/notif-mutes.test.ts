@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { isMuted, muteKey, toggleMute, unreadExcluding } from "./notif-mutes"
+import { isMuted, muteKey, slackMuteRows, toggleMute, unreadExcluding } from "./notif-mutes"
 
 describe("muteKey", () => {
   it("uses the groupKey for a Slack entry (per merged workspace)", () => {
@@ -101,5 +101,48 @@ describe("unreadExcluding", () => {
 
   it("defaults undefined mutes to empty", () => {
     expect(unreadExcluding(list(), undefined, true)).toBe(4)
+  })
+})
+
+describe("slackMuteRows (t101 — Electron per-workspace mute list from captured entries)", () => {
+  it("returns one row per distinct Slack workspace, labelled by source", () => {
+    const rows = slackMuteRows([
+      { adapter: "slack", groupKey: "slack:T1", source: "Acme" },
+      { adapter: "slack", groupKey: "slack:T2", source: "Globex" },
+    ])
+    expect(rows).toEqual([
+      { key: "slack:T1", label: "Acme" },
+      { key: "slack:T2", label: "Globex" },
+    ])
+  })
+
+  it("de-dupes multiple entries of the same workspace, first-seen order", () => {
+    const rows = slackMuteRows([
+      { adapter: "slack", groupKey: "slack:T2", source: "Globex" },
+      { adapter: "slack", groupKey: "slack:T1", source: "Acme" },
+      { adapter: "slack", groupKey: "slack:T1", source: "Acme" },
+    ])
+    expect(rows).toEqual([
+      { key: "slack:T2", label: "Globex" },
+      { key: "slack:T1", label: "Acme" },
+    ])
+  })
+
+  it("takes the first non-empty source as the label", () => {
+    const rows = slackMuteRows([
+      { adapter: "slack", groupKey: "slack:T1", source: "" },
+      { adapter: "slack", groupKey: "slack:T1", source: "Acme" },
+    ])
+    expect(rows).toEqual([{ key: "slack:T1", label: "Acme" }])
+  })
+
+  it("falls back to the key as label when no source is present", () => {
+    const rows = slackMuteRows([{ adapter: "slack", groupKey: "slack:T9" }])
+    expect(rows).toEqual([{ key: "slack:T9", label: "slack:T9" }])
+  })
+
+  it("ignores non-Slack entries and returns [] for an empty list", () => {
+    expect(slackMuteRows([{ adapter: "teams" }, { adapter: "outlook" }])).toEqual([])
+    expect(slackMuteRows([])).toEqual([])
   })
 })

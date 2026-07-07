@@ -3,6 +3,8 @@
 // pattern of src/lib/adaptive-viewport.ts, but as CommonJS since the Electron main
 // process can't import the renderer's TS/ESM modules. Tested by notifications.test.ts.
 
+const { isMuted } = require("./notif-mutes")
+
 // Returns the first adapter whose `match(hostname)` accepts the URL's host, or null.
 function matchAdapter(url, adapters) {
   let host
@@ -77,8 +79,11 @@ function ingest(list, payload, cap) {
 // OS toast fires unless you can already see the site's own in-app toast — i.e. its
 // tab is the active one AND the app window is focused. If you've switched tabs or
 // alt-tabbed to another app, the in-app toast is out of view, so the OS toast fires.
-function shouldNotifyOs(entry, { activeTabId, enabled, windowFocused }) {
+function shouldNotifyOs(entry, { activeTabId, enabled, windowFocused, mutes }) {
   if (!enabled) return false
+  // Per-source mute (t093 model, wired to the Electron OS-notify path in t101). A muted
+  // source stays silent even when backgrounded; absent/empty `mutes` mutes nothing (opt-out).
+  if (isMuted(mutes, entry)) return false
   const inView = entry.targetId === activeTabId && windowFocused
   return !inView
 }

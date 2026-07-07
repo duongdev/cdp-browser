@@ -50,6 +50,13 @@ describe("settings-store", () => {
     expect(ui.notificationsEnabled_dev1).toBe(false)
   })
 
+  it("round-trips a plain global notifMutes (Electron single-device mutes, t101)", () => {
+    const s = createSettingsStore({ initial: {}, persist })
+    expect(s.getUiState().notifMutes).toEqual([]) // default: nothing muted
+    s.setUiState({ notifMutes: ["teams", "slack:T1"] })
+    expect(s.getUiState().notifMutes).toEqual(["teams", "slack:T1"])
+  })
+
   it("round-trips the t100 per-device client prefs (quality tier / transport / HUD)", () => {
     const s = createSettingsStore({ initial: {}, persist })
     s.setUiState({

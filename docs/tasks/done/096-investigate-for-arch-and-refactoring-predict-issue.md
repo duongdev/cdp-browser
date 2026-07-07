@@ -1,10 +1,11 @@
 # 096 — Arch + refactoring sweep: verified fixes from the predict-issues / improve-architecture investigation
 
-- **Status:** in-progress
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** multi-session (~2–3d; ships as one PR with internal commit boundaries by area)
 - **Depends on:** none
 - **Blocks:** none
+- **Shipped:** PR #10 (`f0a456a`)
 
 ## Goal
 

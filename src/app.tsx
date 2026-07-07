@@ -820,28 +820,28 @@ export default function App() {
     return m
   }, [pins, tabs])
 
-  // Per-device delivery prefs applied to the badges (t093, web only). On Electron these are
-  // inert (no mutes, master not used for badges) so byTab/byPin + the bell/inbox badge stay
-  // byte-unchanged. The Inbox/bell *lists* always read the unfiltered `notifications`.
+  // Delivery prefs applied to the badges — per-device on web (t093), one global list on Electron
+  // (t101). Both builds now honor mutes + the master in badge counts (full parity); the Inbox/bell
+  // *lists* always read the unfiltered `notifications`.
   const muteOpts = useMemo(
-    () => (caps.web ? { mutes: notifMutes, master: notificationsEnabled } : undefined),
-    [caps.web, notifMutes, notificationsEnabled],
+    () => ({ mutes: notifMutes, master: notificationsEnabled }),
+    [notifMutes, notificationsEnabled],
   )
 
   // Per-tab and per-pin unread badge counts, grouped so every tab/pin of the same app
   // shares one count and a dormant pin badges by its saved URL's origin. Excludes this
-  // device's muted sources on web; byte-unchanged on Electron (muteOpts undefined).
+  // device's muted sources on both builds (t101).
   const { byTab: unreadByTab, byPin: unreadByPin } = useMemo(
     () => aggregateUnread(notifications, tabs, pins, linkedTabByPin, teamGroupMap, muteOpts),
     [notifications, tabs, pins, linkedTabByPin, teamGroupMap, muteOpts],
   )
 
-  // The bell/inbox/home-screen badge count — excludes this device's muted sources and goes
-  // to 0 when the device master is off (web only). Undefined on Electron, so the bell/inbox
-  // fall back to their own `notifications.filter(!read)` count (byte-unchanged).
+  // The bell/inbox/home-screen badge count — excludes muted sources and goes to 0 when the
+  // master is off. Both builds now (t101); the web build also mirrors it to the home-screen icon
+  // via setAppBadge, Electron mirrors the dock badge in main.js.
   const deviceUnread = useMemo(
-    () => (caps.web ? unreadExcluding(notifications, notifMutes, notificationsEnabled) : undefined),
-    [caps.web, notifications, notifMutes, notificationsEnabled],
+    () => unreadExcluding(notifications, notifMutes, notificationsEnabled),
+    [notifications, notifMutes, notificationsEnabled],
   )
 
   const handleNotificationsEnabledChange = useCallback((enabled: boolean) => {
@@ -849,9 +849,9 @@ export default function App() {
     window.cdp.setUiState({ notificationsEnabled: enabled })
   }, [])
 
-  // Toggle a source's mute on this device (t093, web only). The muteKey is a Slack
-  // workspace's `slack:{groupId}` or an adapter name; persists to the device-keyed
-  // `notifMutes_<deviceId>` ui-state slot via the transport remap.
+  // Toggle a source's mute. The muteKey is a Slack workspace's groupKey or an adapter name;
+  // persists to the device-keyed `notifMutes_<deviceId>` slot on web (via the transport remap,
+  // t093) or the plain global `notifMutes` on Electron (t101). main.js refreshes the dock badge.
   const handleToggleMute = useCallback((key: string) => {
     setNotifMutes((prev) => {
       const next = toggleMute(prev, key)

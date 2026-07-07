@@ -200,4 +200,49 @@ describe("shouldNotifyOs", () => {
       shouldNotifyOs(entry, { activeTabId: "tab-B", enabled: false, windowFocused: false }),
     ).toBe(false)
   })
+
+  // t101 — per-source mutes gate the OS notification (Electron parity with the PWA).
+  it("stays silent when the entry's source is muted", () => {
+    const teams = { targetId: "tab-A", adapter: "teams" }
+    expect(
+      shouldNotifyOs(teams, {
+        activeTabId: "tab-B",
+        enabled: true,
+        windowFocused: true,
+        mutes: ["teams"],
+      }),
+    ).toBe(false)
+  })
+  it("mutes a Slack workspace by its groupKey while another workspace stays loud", () => {
+    const muted = { targetId: "tab-A", adapter: "slack", groupKey: "slack:T1" }
+    const loud = { targetId: "tab-A", adapter: "slack", groupKey: "slack:T2" }
+    const opts = { activeTabId: "tab-B", enabled: true, windowFocused: true, mutes: ["slack:T1"] }
+    expect(shouldNotifyOs(muted, opts)).toBe(false)
+    expect(shouldNotifyOs(loud, opts)).toBe(true)
+  })
+  it("mutes nothing when mutes is empty or omitted (opt-out default)", () => {
+    const teams = { targetId: "tab-A", adapter: "teams" }
+    expect(
+      shouldNotifyOs(teams, {
+        activeTabId: "tab-B",
+        enabled: true,
+        windowFocused: true,
+        mutes: [],
+      }),
+    ).toBe(true)
+    expect(
+      shouldNotifyOs(teams, { activeTabId: "tab-B", enabled: true, windowFocused: true }),
+    ).toBe(true)
+  })
+  it("master off still wins over an unmuted source", () => {
+    const teams = { targetId: "tab-A", adapter: "teams" }
+    expect(
+      shouldNotifyOs(teams, {
+        activeTabId: "tab-B",
+        enabled: false,
+        windowFocused: true,
+        mutes: [],
+      }),
+    ).toBe(false)
+  })
 })

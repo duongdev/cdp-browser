@@ -13,6 +13,10 @@ const UI_DEFAULTS = {
   forceOnClient: false,
   switchEffect: "blur",
   notificationsEnabled: true,
+  // Electron-only global per-source mutes (t101): muteKeys (slack:{teamId} | adapter name)
+  // silenced on this single-device desktop. The web build never writes this plain key — it
+  // remaps to the device-keyed `notifMutes_<deviceId>` slot (t093) and this global stays [].
+  notifMutes: [],
   syncTheme: true,
   autoGrantLocalMedia: true,
   restoreLocalPins: true,
