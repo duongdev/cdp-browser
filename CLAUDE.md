@@ -72,6 +72,8 @@ cdp-browser/
 │   ├── settings-store.js          # Pure settings/pins/ui-state store (device-suffixed ui-state keys pass by prefix allowlist, t093)
 │   ├── line-splitter.js           # Pure NDJSON frame reassembly for the streaming input channel
 │   ├── atomic-write.js            # Atomic write-temp-then-rename (crash-safe JSON persistence); shared by server + main (t099)
+│   ├── ws-backpressure.js         # Pure WS fan-out predicates: shouldSkipClient (over-buffer drop) + isClientDead (heartbeat reap) — half-open sleeping client can't buffer frames unbounded (t099)
+│   ├── request-guards.js          # Pure mutation-payload shape guards: isValidConfig/isValidPinsArray — a malformed body can't wipe config/pins (t099)
 │   ├── slack-sweep-state.js       # Persisted Slack sweep {watermark, seeded} — serialize/deserialize + DI debounced persister; restart resumes from watermark instead of re-seeding (t099, ADR-0016)
 │   ├── frame-throttle.js          # Pure screencast rate throttle (createFrameThrottle, DI clock; fresh-frame-wins)
 │   ├── frame-ack-gate.js          # Pure one-in-flight gate + watchdog for WS paint-ack backpressure (t056)

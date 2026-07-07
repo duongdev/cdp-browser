@@ -8,7 +8,7 @@
 
 import { execFileSync } from "node:child_process"
 import nodeCrypto from "node:crypto"
-import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { createReadStream, existsSync, readFileSync } from "node:fs"
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -27,6 +27,7 @@ import { createPaintAckPacer } from "../core/paint-ack-pacer.js"
 import { pushSendOptions } from "../core/push-send-options.js"
 import { reconcileDeviceId } from "../core/push-subscriptions.js"
 import connector from "../core/remote-page-connector.js"
+import { isValidConfig, isValidPinsArray } from "../core/request-guards.js"
 import { createSettingsStore } from "../core/settings-store.js"
 import { createSlackApi } from "../core/slack-api.js"
 import { buildSlackGroups } from "../core/slack-creds.js"
@@ -39,6 +40,7 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
@@ -130,7 +132,7 @@ const settings = createSettingsStore({
   }),
   persist: (s) => {
     try {
-      writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2))
+      atomicWriteFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2))
     } catch (e) {
       console.error("[web] settings persist failed:", e.message)
     }
@@ -144,7 +146,7 @@ if (process.env.CDP_HOST)
 pushSubs = loadJson(SUBS_PATH, [])
 const savePushSubs = () => {
   try {
-    writeFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
+    atomicWriteFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
   } catch (e) {
     console.error("[web] savePushSubs failed:", e.message)
   }
@@ -247,6 +249,13 @@ const port = () => settings.getConfig().port
 // ---- SSE fan-out ----------------------------------------------------------
 const sseClients = new Set()
 const wsClients = new Set() // WebSocket subscribers — receive same events SSE clients do (t019)
+// WS liveness + backpressure (t099). A half-open socket (suspended iPad) never throws on send,
+// so without a heartbeat it would buffer frames unboundedly. Ping every interval; reap a client
+// that hasn't ponged within the deadline; skip a frame for a client whose send buffer is over
+// the cap (fresh-frame-wins) instead of accreting a backlog.
+const WS_HEARTBEAT_INTERVAL_MS = 30_000
+const WS_PONG_DEADLINE_MS = 70_000 // ~2 missed heartbeats + margin
+const WS_FRAME_BUFFER_CAP = 8 * 1024 * 1024 // ~a few frames; over this, drop the frame for that client
 // WS clients that announced ack-after-paint support (t056): they ack each Screencast
 // Frame only after painting it, so the server defers its own remote-ack and gates the
 // next frame on their paint-ack — at most one frame in flight on the link instead of an
@@ -281,6 +290,9 @@ function broadcastFrameBinaryRaw(bytes, meta) {
     },
   })
   for (const ws of wsClients) {
+    // Skip a client whose send buffer is backed up (suspended/slow) — fresh-frame-wins; the
+    // heartbeat reaps a truly-dead one. Prevents a half-open socket buffering frames unbounded.
+    if (shouldSkipClient(ws.bufferedAmount, WS_FRAME_BUFFER_CAP)) continue
     try {
       ws.send(envelope)
       ws.send(bytes)
@@ -550,7 +562,7 @@ const notificationCenter = createNotificationCenter({
   load: () => loadJson(NOTIFS_PATH, []),
   save: (list) => {
     try {
-      writeFileSync(NOTIFS_PATH, JSON.stringify(list))
+      atomicWriteFileSync(NOTIFS_PATH, JSON.stringify(list))
     } catch (e) {
       console.error("[web] saveNotifs failed:", e.message)
     }
@@ -619,7 +631,7 @@ let slackRegistry = loadJson(SLACK_WORKSPACES_PATH, {})
 const slackCreatedAt = {} // teamId → last /json/new timestamp (create cooldown)
 const saveSlackRegistry = () => {
   try {
-    writeFileSync(SLACK_WORKSPACES_PATH, JSON.stringify(slackRegistry, null, 2))
+    atomicWriteFileSync(SLACK_WORKSPACES_PATH, JSON.stringify(slackRegistry, null, 2))
   } catch (e) {
     console.error("[web] saveSlackRegistry failed:", e.message)
   }
@@ -865,8 +877,19 @@ function checkSlackHealthAlerts() {
 // Periodic backstop sweep (every 15s) — the hijack trigger + cred-extraction trigger carry
 // real-time delivery; this guarantees completeness even if the hijack never fires (tab
 // asleep, native-app routing) or a signal was missed. Health alerts piggyback the cycle.
+// Single-flight guard (t099): a sweep that hits a 429 Retry-After sleeps past the 15s tick, so
+// without this a second (and third) runOnce would stack and pile duplicate load into the exact
+// rate-limit we're already backing off from.
+let sweepBackstopInFlight = false
 setInterval(() => {
-  slackSweeper.runOnce().catch(() => {})
+  if (sweepBackstopInFlight) return
+  sweepBackstopInFlight = true
+  slackSweeper
+    .runOnce()
+    .catch(() => {})
+    .finally(() => {
+      sweepBackstopInFlight = false
+    })
   checkSlackHealthAlerts()
 }, 15_000)
 
@@ -887,7 +910,10 @@ const body = (req) =>
         if (!b) return resolve({})
         resolve(e2eKey ? open(b.trim(), e2eKey) : JSON.parse(b))
       } catch {
-        resolve({})
+        // A malformed / undecryptable body used to resolve `{}`, which then persisted and could
+        // wipe pins/config. Reject with a tagged error so the handler answers 400 and nothing
+        // is written (t099). An empty body still resolves `{}` above (valid for bodyless POSTs).
+        reject(Object.assign(new Error("malformed request body"), { badBody: true }))
       }
     })
   })
@@ -1037,7 +1063,10 @@ const server = http.createServer(async (req, res) => {
     // config
     if (p === "/api/config" && !POST) return json(res, settings.getConfig())
     if (p === "/api/config" && POST) {
-      settings.setConfig(await body(req))
+      const cfg = await body(req)
+      // Shape-guard so a wrong/empty body can't wipe the CDP address (t099).
+      if (!isValidConfig(cfg)) return json(res, { error: "invalid config" }, 400)
+      settings.setConfig(cfg)
       return json(res, settings.getConfig())
     }
     if (p === "/api/config/test" && POST) {
@@ -1082,8 +1111,12 @@ const server = http.createServer(async (req, res) => {
       return json(res, settings.updatePin(id, patch))
     }
     if (p === "/api/pins/remove" && POST) return json(res, settings.removePin((await body(req)).id))
-    if (p === "/api/pins/reorder" && POST)
-      return json(res, settings.reorderPins((await body(req)).pins))
+    if (p === "/api/pins/reorder" && POST) {
+      const { pins } = await body(req)
+      // Shape-guard so a wrong/empty body can't blow away the pin list (t099).
+      if (!isValidPinsArray(pins)) return json(res, { error: "invalid pins" }, 400)
+      return json(res, settings.reorderPins(pins))
+    }
     // notifications
     if (p === "/api/notifications" && !POST) return json(res, notificationCenter.list())
     // Slack capture health per workspace (t074) — attached/creds/sweep state for the Settings row.
@@ -1156,6 +1189,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, { ok: true })
     }
   } catch (e) {
+    // A malformed/undecryptable body (t099) is a client error → 400, and no route ran, so
+    // nothing was persisted. Everything else stays a 500.
+    if (e && e.badBody) return json(res, { error: "malformed request body" }, 400)
     return json(res, { error: e.message }, 500)
   }
 
@@ -1180,9 +1216,17 @@ server.on("upgrade", (req, socket, head) => {
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     wsClients.add(ws)
+    // Liveness for the heartbeat reaper (t099): stamp on connect, on protocol pong, and on any
+    // inbound message (the client's 20s app-ping doubles as a liveness signal through proxies
+    // that swallow protocol pings).
+    ws.__lastPongAt = Date.now()
+    ws.on("pong", () => {
+      ws.__lastPongAt = Date.now()
+    })
     console.log(`[client] ws +1 (now ${wsClients.size})`)
     ws.send(JSON.stringify({ t: "ready" }))
     ws.on("message", async (raw) => {
+      ws.__lastPongAt = Date.now()
       const text = raw.toString()
       // Ping/pong is control traffic, never E2E-sealed (it carries only the client's own
       // monotonic stamp, no user content) — handle it before the envelope open so it works
@@ -1260,6 +1304,26 @@ server.on("upgrade", (req, socket, head) => {
     ws.on("error", onWsGone)
   })
 })
+
+// Heartbeat reaper (t099): ping every client each interval and terminate + evict one that
+// hasn't produced a liveness signal within the deadline — the only way a half-open socket
+// (never throws on send) gets cleaned up, freeing its buffered memory and the paint-ack slot.
+setInterval(() => {
+  for (const ws of wsClients) {
+    if (isClientDead(ws.__lastPongAt, Date.now(), WS_PONG_DEADLINE_MS)) {
+      try {
+        ws.terminate()
+      } catch {}
+      wsClients.delete(ws)
+      if (paintAckClients.delete(ws) && paintAckClients.size === 0) resetPaintAckGate()
+      console.log(`[client] ws reaped (dead >${WS_PONG_DEADLINE_MS}ms; now ${wsClients.size})`)
+      continue
+    }
+    try {
+      ws.ping()
+    } catch {}
+  }
+}, WS_HEARTBEAT_INTERVAL_MS)
 
 // Surface otherwise-silent async failures in prod logs (greppable [err]) for issue-detection.
 process.on("unhandledRejection", (reason) => {
