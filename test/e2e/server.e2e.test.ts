@@ -793,6 +793,42 @@ describe("group clear — remove notifications by id (t085)", () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe("per-device client prefs — ui-state round-trip (t100)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("persists the device-keyed quality tier / transport / HUD slots and the qualityTier shadow", async () => {
+    await server.post("/api/ui-state", {
+      qualityTier_dev1: "snappy",
+      qualityTier: "snappy", // the global shadow the screencast connector reads
+      inputTransport_dev1: "batch",
+      latencyHud_dev1: true,
+    })
+    const ui = await server.json("/api/ui-state")
+    expect(ui.qualityTier_dev1).toBe("snappy")
+    expect(ui.qualityTier).toBe("snappy")
+    expect(ui.inputTransport_dev1).toBe("batch")
+    expect(ui.latencyHud_dev1).toBe(true)
+  })
+
+  it("keeps a second device's transport slot independent of the first", async () => {
+    await server.post("/api/ui-state", { inputTransport_dev1: "ws" })
+    await server.post("/api/ui-state", { inputTransport_dev2: "batch" })
+    const ui = await server.json("/api/ui-state")
+    expect(ui.inputTransport_dev1).toBe("ws")
+    expect(ui.inputTransport_dev2).toBe("batch")
+  })
+})
+
 describe("push subscription reconcile (E0 — endpoint-keyed deviceId)", () => {
   let fake: any
   let server: any

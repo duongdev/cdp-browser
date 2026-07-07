@@ -576,15 +576,11 @@ describe("batch routing", () => {
 
   it("inputTransport=batch pins the single-flight POST fallback even after a stream ack", () => {
     const { fetchFn, calls } = makeFakeFetch()
-    const cdp = createWebCdp(
-      baseDeps({
-        fetch: fetchFn as unknown as typeof fetch,
-        localStorage: {
-          getItem: (k) => (k === "inputTransport" ? "batch" : null),
-          setItem: () => {},
-        },
-      }),
-    )
+    const cdp = createWebCdp(baseDeps({ fetch: fetchFn as unknown as typeof fetch }))
+    // The durable pref lives in server ui-state now (t100); the picker writes it and applies it —
+    // setUiState syncs storedTransport synchronously, reconfigureInputTransport() pins the mode.
+    cdp.setUiState({ inputTransport: "batch" })
+    cdp.reconfigureInputTransport?.()
     // Simulate the streaming channel acking (stream-ack over SSE) — in any other mode this
     // would route subsequent batches through the (already-open) stream instead of POST.
     FakeEventSource.instances[0].emit("stream-ack", "")
@@ -780,13 +776,9 @@ describe("visible-tab WS re-climb", () => {
     installDoc(fd)
     const timers = fakeTimers()
     const { fetchFn } = makeFakeFetch()
-    createWebCdp(
+    const cdp = createWebCdp(
       baseDeps({
         fetch: fetchFn as unknown as typeof fetch,
-        localStorage: {
-          getItem: (k) => (k === "inputTransport" ? "batch" : null),
-          setItem: () => {},
-        },
         setTimer: timers.setTimer as unknown as (
           cb: () => void,
           ms: number,
@@ -794,12 +786,14 @@ describe("visible-tab WS re-climb", () => {
         clearTimer: timers.clearTimer,
       }),
     )
-    // Basic never opens WS, so there's nothing to drop — but a foreground transition must not
-    // arm a re-climb against the manual non-WS pick.
+    // The durable pref lives in server ui-state now (t100), so the transport boots at auto and
+    // pins Basic once the picker applies it — setUiState + reconfigureInputTransport() tears down
+    // any boot WS and cancels the re-climb, exactly the settings-picker flow.
+    cdp.setUiState({ inputTransport: "batch" })
+    cdp.reconfigureInputTransport?.()
+    // A foreground transition must not arm a re-climb against the manual non-WS pick.
     fd.setVisibility("hidden")
     fd.setVisibility("visible")
     expect(timers.pendingCount()).toBe(0)
-    // And no WS socket was ever opened.
-    expect(FakeWebSocket.instances.length).toBe(0)
   })
 })

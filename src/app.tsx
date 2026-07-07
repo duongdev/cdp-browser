@@ -5,7 +5,7 @@ import { ConversationReader } from "@/components/conversation-reader"
 import { EditPinDialog } from "@/components/edit-pin-dialog"
 import { FindBar, type FindBarHandle } from "@/components/find-bar"
 import { Inbox } from "@/components/inbox"
-import { LatencyHud } from "@/components/latency-hud"
+import { LatencyHud, setLatencyHudEnabled } from "@/components/latency-hud"
 import { type LocalApi, LocalWebviews } from "@/components/local-webviews"
 import { NewTabDialog, type NewTabKind } from "@/components/new-tab-dialog"
 import type { NotifEntry } from "@/components/notification-bell"
@@ -45,6 +45,7 @@ import {
   getExistingSubscription,
   removePushSubscription,
 } from "@/lib/push-subscribe"
+import { setCurrentTier } from "@/lib/quality-tier"
 import { shouldApplyAdaptive } from "@/lib/shell-mode"
 import {
   addExclude,
@@ -437,6 +438,13 @@ export default function App() {
       setSwitchEffect(s.switchEffect ?? "blur")
       setNotificationsEnabled(s.notificationsEnabled ?? true)
       setNotifMutes(Array.isArray(s.notifMutes) ? s.notifMutes : [])
+      // t100: seed the durable per-device latency-HUD flag + quality-tier mirror from ui-state
+      // (was localStorage). The tier mirror feeds viewport.tsx's synchronous resize reissue; this
+      // getUiState also drives the transport's inputTransport reconfigure + qualityTier shadow.
+      if (caps.web) {
+        setLatencyHudEnabled(!!s.latencyHud)
+        setCurrentTier(s.qualityTier)
+      }
       setSyncTheme(s.syncTheme ?? true)
       setAutoGrantLocalMedia(s.autoGrantLocalMedia ?? true)
       restoreLocalPinsRef.current = s.restoreLocalPins ?? true

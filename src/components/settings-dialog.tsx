@@ -33,7 +33,13 @@ import {
   ensurePushSubscription,
   removePushSubscription,
 } from "@/lib/push-subscribe"
-import { parseTier, QUALITY_TIER_KEY, QUALITY_TIERS, type QualityTier } from "@/lib/quality-tier"
+import {
+  DEFAULT_TIER,
+  parseTier,
+  QUALITY_TIERS,
+  type QualityTier,
+  setCurrentTier,
+} from "@/lib/quality-tier"
 import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
 import { removeExclude, type SlackExclude } from "@/lib/slack-excludes"
 import type { InputTransportMode } from "@/lib/transport-selector"
@@ -244,15 +250,11 @@ export function SettingsDialog({
     version: buildVersion(),
     sha: defineSha(),
   }))
-  // Web-only connection mode picker (t019). The pref persists to localStorage; calling
-  // window.cdp.reconfigureInputTransport() re-opens/closes the WS to apply mid-session
-  // (no reload needed). The "active" badge mirrors what actually connected — under Auto
-  // this may differ from the picked mode if WS was unreachable and we fell to Stream.
-  const [inputTransport, setInputTransport] = useState<InputTransportMode>(() =>
-    typeof localStorage !== "undefined"
-      ? ((localStorage.getItem("inputTransport") as InputTransportMode | null) ?? "auto")
-      : "auto",
-  )
+  // Web-only connection mode picker (t019). The pref is durable per-device in server ui-state now
+  // (t100), seeded from getUiState on open below; calling window.cdp.reconfigureInputTransport()
+  // re-opens/closes the WS to apply mid-session (no reload needed). The "active" badge mirrors what
+  // actually connected — under Auto this may differ from the picked mode if WS was unreachable.
+  const [inputTransport, setInputTransport] = useState<InputTransportMode>("auto")
   const [activeTransport, setActiveTransport] = useState<InputTransportMode>(
     () => window.cdp?.getActiveTransport?.() ?? "batch",
   )
@@ -263,18 +265,13 @@ export function SettingsDialog({
     // settings dialog is a long-lived singleton in practice.
   }, [])
 
-  // Web-only quality-latency tier (t055). Persists to localStorage (read back on mount)
-  // and mirrors into ui-state so the server applies the tier's jpegQuality/everyNthFrame
-  // to Page.startScreencast on the next (re)connect. Same persistence shape as the t019
-  // transport picker above. The default (balanced) lives in quality-tier.js.
-  const [qualityTier, setQualityTier] = useState<QualityTier>(() =>
-    typeof localStorage !== "undefined"
-      ? parseTier(localStorage.getItem(QUALITY_TIER_KEY))
-      : "balanced",
-  )
+  // Web-only quality-latency tier (t055). Durable per-device in server ui-state (t100), seeded on
+  // open below; setUiState({ qualityTier }) remaps to this device's slot + the global shadow the
+  // connector reads, then reconnect() applies the tier's jpegQuality/everyNthFrame. Default balanced.
+  const [qualityTier, setQualityTier] = useState<QualityTier>(DEFAULT_TIER)
 
-  // Web-only latency HUD toggle (t059). Off by default; persists to localStorage and flips a
-  // mounted status-bar readout live via setLatencyHudEnabled. Display-only over t057 metrics.
+  // Web-only latency HUD toggle (t059). Off by default; durable per-device in ui-state (t100),
+  // seeded on open. setLatencyHudEnabled flips a mounted readout live. Display-only over t057.
   const [latencyHud, setLatencyHud] = useState(readLatencyHudEnabled)
 
   // Virtual-pointer (echo-cursor) visibility mode (t011). Persists server-side via ui-state
@@ -352,6 +349,11 @@ export function SettingsDialog({
           if (scrollRef.current) scrollRef.current.scrollTop = top
         })
         if (!caps.web) return
+        // t100: seed the three durable per-device client prefs from ui-state (was localStorage).
+        setInputTransport((s.inputTransport as InputTransportMode) ?? "auto")
+        setQualityTier(parseTier(s.qualityTier as string))
+        setCurrentTier(s.qualityTier) // keep viewport's resize-reissue mirror in sync
+        setLatencyHud(!!s.latencyHud)
         const granted = typeof Notification !== "undefined" && Notification.permission === "granted"
         setWebPush(!!s.webPush && granted)
         setPushPermBlocked(
@@ -976,9 +978,9 @@ export function SettingsDialog({
                                 )}
                                 onClick={() => {
                                   setInputTransport(v)
-                                  localStorage.setItem("inputTransport", v)
-                                  // Apply immediately — the bridge tears down WS or
-                                  // re-opens it to match the new pref, no reload needed.
+                                  // Durable per-device in ui-state (t100); the transport syncs the
+                                  // mode synchronously, then reconfigure tears down/opens WS to match.
+                                  window.cdp?.setUiState?.({ inputTransport: v })
                                   window.cdp?.reconfigureInputTransport?.()
                                 }}
                                 type="button"
@@ -1012,9 +1014,9 @@ export function SettingsDialog({
                                 )}
                                 onClick={() => {
                                   setQualityTier(id)
-                                  localStorage.setItem(QUALITY_TIER_KEY, id)
-                                  // Mirror into ui-state so the server reads the tier at
-                                  // connect, then reconnect to apply the new params.
+                                  setCurrentTier(id) // sync viewport's resize-reissue mirror at once
+                                  // Durable per-device (t100): setUiState writes this device's slot
+                                  // + the global shadow the connector reads; reconnect applies it.
                                   window.cdp?.setUiState?.({ qualityTier: id })
                                   window.cdp?.reconnect?.()
                                 }}
@@ -1043,7 +1045,8 @@ export function SettingsDialog({
                         className="mt-0.5"
                         onCheckedChange={(on) => {
                           setLatencyHud(on)
-                          setLatencyHudEnabled(on)
+                          setLatencyHudEnabled(on) // flip a mounted HUD live
+                          window.cdp?.setUiState?.({ latencyHud: on }) // durable per-device (t100)
                         }}
                       />
                     </div>

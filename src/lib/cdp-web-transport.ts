@@ -14,6 +14,7 @@
 import { DEFAULT_CAPS, getCaps, type WebCaps } from "./caps"
 import { type CryptoContext, createCryptoContext } from "./crypto-context"
 import { deriveKey as envDeriveKey, open as envOpen } from "./crypto-envelope"
+import { type DevicePrefs, readDevicePrefs, writeDevicePrefs } from "./device-prefs"
 import {
   createDownlink,
   createDownlinkDispatcher,
@@ -227,18 +228,13 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   // router (022) and the unit tests drive.
   createDownlink(dispatcher, downlinkSource)
 
-  // Mode selection (t019). User pref from localStorage controls what's attempted; the
-  // actual active mode is derived from runtime state (wsReady? streamReady? else batch).
-  // The picker writes the pref and triggers reconfigureMode() to apply mid-session.
-  const VALID_MODES: InputTransportMode[] = ["auto", "ws", "stream", "batch"]
-  function readMode(): InputTransportMode {
-    if (!deps.localStorage) return "auto"
-    const raw = deps.localStorage.getItem("inputTransport")
-    // Validate against the union — a stale or hand-edited value falls back to auto rather
-    // than silently shaping subsequent branches (e.g. wsAllowed) with garbage.
-    return raw && (VALID_MODES as string[]).includes(raw) ? (raw as InputTransportMode) : "auto"
-  }
-  let wantMode: InputTransportMode = readMode()
+  // Mode selection (t019/t100). The durable per-device transport pref lives in server ui-state
+  // now, not localStorage — `getUiState()` syncs it into `storedTransport` on first load and
+  // every picker write (`setUiState`) syncs it synchronously, so it survives an iPad-PWA storage
+  // wipe. Boots at the safe default (auto) until ui-state lands, then reconfigures once. The
+  // actual active mode is still derived from runtime state (wsReady? streamReady? else batch).
+  let storedTransport: InputTransportMode = "auto"
+  let wantMode: InputTransportMode = storedTransport
   const selector = createTransportSelector({
     cache: deps.localStorage ?? { getItem: () => null, setItem: () => {} },
   })
@@ -630,7 +626,7 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
   // closes WS to match, and pokes the active-mode signal. The streaming channel stays
   // alive across switches — cheap, and lets a flip back to auto/stream resume instantly.
   function reconfigureMode() {
-    wantMode = readMode()
+    wantMode = storedTransport
     if (wantMode === "auto" || wantMode === "ws") {
       selector.fallbackToAuto() // clears any manual error state from a prior pick
       if (wantMode === "ws") selector.setManualMode("ws")
@@ -813,11 +809,31 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
       webPush = !!ui[webPushKey]
       notifMaster = ui[masterKey] === undefined ? true : !!ui[masterKey]
       notifMutes = Array.isArray(ui[mutesKey]) ? (ui[mutesKey] as string[]) : []
+      // t100 durable per-device client prefs. Resolve this device's slots (with the qualityTier
+      // global-shadow fallback) and surface them under the plain names the pickers read.
+      const prefs = readDevicePrefs(ui as Record<string, unknown>, deviceId)
+      // Adopt the durable transport mode and reconfigure once if it differs from what we booted
+      // at (auto). Idempotent on later reads (same value → no-op), so opening Settings won't churn.
+      if (prefs.inputTransport !== storedTransport) {
+        storedTransport = prefs.inputTransport
+        reconfigureMode()
+      }
+      // qualityTier global shadow: the shared-screencast connector reads the plain global key at
+      // connect, so make it reflect THIS device's tier for its next (re)connect. Write only on a
+      // real divergence (another device set the global last) — a no-op in the single-device case.
+      // Writes the plain global only — this device's own `qualityTier_<deviceId>` slot (if any)
+      // is untouched, so a device still on the migration fallback stays on it.
+      if (ui.qualityTier !== prefs.qualityTier) {
+        void rest.postJson("/api/ui-state", { qualityTier: prefs.qualityTier })
+      }
       return {
         ...ui,
         webPush,
         notificationsEnabled: notifMaster,
         notifMutes,
+        qualityTier: prefs.qualityTier,
+        inputTransport: prefs.inputTransport,
+        latencyHud: prefs.latencyHud,
       }
     },
     setUiState: (partial) => {
@@ -841,6 +857,23 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
         delete toSend.notifMutes
         notifMutes = Array.isArray(p.notifMutes) ? (p.notifMutes as string[]) : []
       }
+      // t100: remap the three per-device client prefs to their `<base>_<deviceId>` slots (+ the
+      // qualityTier global shadow) via the pure device-prefs owner, and drop the client-only
+      // plain keys so they never leak into a global. storedTransport is synced synchronously so
+      // the picker's following reconfigureInputTransport() reads the new mode.
+      const devPartial: Partial<DevicePrefs> = {}
+      if ("qualityTier" in partial)
+        devPartial.qualityTier = p.qualityTier as DevicePrefs["qualityTier"]
+      if ("inputTransport" in partial)
+        devPartial.inputTransport = p.inputTransport as DevicePrefs["inputTransport"]
+      if ("latencyHud" in partial) devPartial.latencyHud = p.latencyHud as DevicePrefs["latencyHud"]
+      Object.assign(toSend, writeDevicePrefs(devPartial, deviceId))
+      if ("inputTransport" in partial) {
+        delete toSend.inputTransport // client-only: server never reads it, don't write a global
+        storedTransport = devPartial.inputTransport as InputTransportMode
+      }
+      if ("latencyHud" in partial) delete toSend.latencyHud // client-only; the slot carries it
+      // The plain `qualityTier` stays: writeDevicePrefs set it to the intended global shadow.
       return rest.postJson("/api/ui-state", toSend)
     },
     setThemeSource: async (source) => {

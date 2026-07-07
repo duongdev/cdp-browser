@@ -92,6 +92,10 @@ interface CdpBridge {
      *  transport surfaces this device's `notifMutes_<deviceId>` slot under this plain name. */
     notifMutes: string[]
     qualityTier: "sharp" | "balanced" | "snappy"
+    // Per-device durable client prefs (t100, web only) — surfaced under plain names for this
+    // device; persisted as `<base>_<deviceId>` in server ui-state.
+    inputTransport: "auto" | "ws" | "stream" | "batch"
+    latencyHud: boolean
     virtualPointerMode: "off" | "on" | "auto"
     settingsScrollTop: number
     slackExcludes: { team: string; channelId: string; label: string }[]
@@ -111,6 +115,10 @@ interface CdpBridge {
       /** Per-device muted sources (t093) — remapped to `notifMutes_<deviceId>` on web. */
       notifMutes: string[]
       qualityTier: "sharp" | "balanced" | "snappy"
+      // Per-device durable client prefs (t100, web only) — remapped to `<base>_<deviceId>` slots
+      // (+ the qualityTier global shadow) by the web transport before POST.
+      inputTransport: "auto" | "ws" | "stream" | "batch"
+      latencyHud: boolean
       virtualPointerMode: "off" | "on" | "auto"
       settingsScrollTop: number
       slackExcludes: { team: string; channelId: string; label: string }[]

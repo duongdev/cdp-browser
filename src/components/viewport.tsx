@@ -20,7 +20,7 @@ import {
 } from "@/lib/echo-cursor"
 import { isOsReservedKey } from "@/lib/key-routing"
 import { perfFrame, perfMark } from "@/lib/perf-mark"
-import { QUALITY_TIER_KEY, tierParams } from "@/lib/quality-tier"
+import { readCurrentTier, tierParams } from "@/lib/quality-tier"
 import type { RemotePage } from "@/lib/remote-page"
 import { createTouchGesture, type GestureEvent, LONGPRESS_MS } from "@/lib/touch-gesture"
 import { drawFrame, type Size, toRemoteCoords } from "@/lib/viewport-transform"
@@ -275,10 +275,9 @@ export function Viewport({
     const h = Math.min(Math.floor(vp.clientHeight * dpr), 1080)
     // Preserve the user's quality tier on reissue (t099): hardcoding quality:80 + omitting
     // everyNthFrame used to silently reset the tier and the t054 rate ceiling on every resize.
-    // Read the live tier and apply its params (params mirror core/quality-tier.js).
-    const { jpegQuality, everyNthFrame } = tierParams(
-      typeof localStorage !== "undefined" ? localStorage.getItem(QUALITY_TIER_KEY) : null,
-    )
+    // Read the live tier mirror (seeded from server ui-state, t100 — the pref no longer lives in
+    // localStorage) and apply its params (params mirror core/quality-tier.js).
+    const { jpegQuality, everyNthFrame } = tierParams(readCurrentTier())
     window.cdp.send("Page.startScreencast", {
       format: "jpeg",
       quality: jpegQuality,
