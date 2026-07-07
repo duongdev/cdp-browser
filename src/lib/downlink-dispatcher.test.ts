@@ -101,6 +101,35 @@ describe("createDownlinkDispatcher", () => {
     d.dispatch("cdp", { method: "X" })
     expect(seen).toEqual(["b"])
   })
+
+  it("isolates a throwing event listener so the others still receive (t099)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {})
+    const d = createDownlinkDispatcher({ toast: () => {} })
+    const seen: string[] = []
+    d.onEvent(() => {
+      throw new Error("boom")
+    })
+    d.onEvent(() => seen.push("b"))
+
+    expect(() => d.dispatch("cdp", { method: "X" })).not.toThrow()
+    expect(seen).toEqual(["b"])
+    err.mockRestore()
+  })
+
+  it("isolates a throwing toast so the notification still reaches listeners (t099)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {})
+    const seen: unknown[] = []
+    const d = createDownlinkDispatcher({
+      toast: () => {
+        throw new Error("Notification not allowed") // iOS/Android page-context throw
+      },
+    })
+    d.onNotification((e) => seen.push(e))
+
+    expect(() => d.dispatch("notification", { id: "n1" })).not.toThrow()
+    expect(seen).toEqual([{ id: "n1" }])
+    err.mockRestore()
+  })
 })
 
 // --- Downlink seam: one live source, decode-pump, close --------------------------------

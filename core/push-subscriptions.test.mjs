@@ -105,6 +105,37 @@ describe("reconcileDeviceId", () => {
     expect(result2.isNew).toBe(false)
   })
 
+  it("adopts a client-asserted deviceId on a new endpoint (endpoint rotation / revocation recovery)", () => {
+    // A revoked subscription re-subscribes with a NEW endpoint but the same device keeps its
+    // known deviceId (localStorage intact). The per-device prefs live in ui-state keyed by that
+    // id, so re-binding it to the new endpoint recovers them instead of orphaning.
+    const existingSubs = [
+      { endpoint: "https://push.example.com/api/v1/old", deviceId: "device-keep" },
+    ]
+    const incoming = {
+      endpoint: "https://push.example.com/api/v1/rotated",
+      deviceId: "device-keep",
+    }
+
+    const result = reconcileDeviceId(existingSubs, incoming)
+
+    expect(result.deviceId).toBe("device-keep")
+    expect(result.isNew).toBe(false)
+  })
+
+  it("adopts a client-asserted deviceId even when unknown to the store (first subscribe with a client-minted id)", () => {
+    const existingSubs = []
+    const incoming = {
+      endpoint: "https://push.example.com/api/v1/fresh",
+      deviceId: "device_local_abc",
+    }
+
+    const result = reconcileDeviceId(existingSubs, incoming)
+
+    expect(result.deviceId).toBe("device_local_abc")
+    expect(result.isNew).toBe(true)
+  })
+
   it("does not modify the input arrays", () => {
     const existingSubs = [
       { endpoint: "https://push.example.com/api/v1/sub1", deviceId: "device-1" },

@@ -29,6 +29,10 @@ export function createWsChannel(
     }) => void
     onReady: () => void
     onClose: () => void
+    /** Fired on ANY inbound server message (frame, event, pong, invoke-result) — the
+     *  liveness signal the wake-resync probe watches to tell a live socket from a half-open
+     *  one (t099). */
+    onActivity?: () => void
   },
 ) {
   let socket: WebSocket | null = null
@@ -99,6 +103,7 @@ export function createWsChannel(
     socket.binaryType = "blob"
     let pendingFrame: { method: string; params: Record<string, unknown> } | null = null
     socket.onmessage = async (ev) => {
+      opts.onActivity?.() // any server message = proof the socket is alive (wake-resync, t099)
       // Binary message → pair with the preceding "cdp-frame" envelope.
       if (ev.data instanceof Blob) {
         if (!pendingFrame) return // out-of-order binary, drop
@@ -197,6 +202,9 @@ export function createWsChannel(
       suppressClose = true
       socket?.close()
     },
+    // Send one ping immediately (outside the 20s pump) — the wake-resync probe uses it to
+    // elicit a pong within its window even when the remote page is producing no frames (t099).
+    pingNow: () => sendPing(),
     send: (method: string, params?: unknown) => rawSend({ t: "send", method, params }),
     paintAck: (sessionId: number) => sendControl({ t: "frame-ack", sessionId }),
     batch: (items: Cmd[]) => rawSend({ t: "batch", items }),

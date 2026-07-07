@@ -8,12 +8,13 @@
 
 import { execFileSync } from "node:child_process"
 import nodeCrypto from "node:crypto"
-import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { createReadStream, existsSync, readFileSync } from "node:fs"
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import webpush from "web-push"
 import WebSocket, { WebSocketServer } from "ws"
+import { atomicWriteFileSync } from "../core/atomic-write.js"
 import endpoints from "../core/cdp-endpoints.js"
 import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
@@ -26,10 +27,12 @@ import { createPaintAckPacer } from "../core/paint-ack-pacer.js"
 import { pushSendOptions } from "../core/push-send-options.js"
 import { reconcileDeviceId } from "../core/push-subscriptions.js"
 import connector from "../core/remote-page-connector.js"
+import { isValidConfig, isValidPinsArray } from "../core/request-guards.js"
 import { createSettingsStore } from "../core/settings-store.js"
 import { createSlackApi } from "../core/slack-api.js"
 import { buildSlackGroups } from "../core/slack-creds.js"
 import { createSlackSweeper } from "../core/slack-sweep-runner.js"
+import { createSweepStatePersister } from "../core/slack-sweep-state.js"
 import {
   liveTeamIds as slackLiveTeamIds,
   planParkedTabs as slackPlanParkedTabs,
@@ -37,6 +40,7 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
@@ -48,6 +52,10 @@ const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notificatio
 // the shared d cookie + all-team localConfig re-extract from any live Slack tab.
 const SLACK_WORKSPACES_PATH =
   process.env.SLACK_WORKSPACES_PATH || join(HERE, "..", "slack-workspaces.json")
+// Slack sweep read state (t099, ADR-0016) — non-secret {watermark, seeded}. Persisted so a
+// restart RESUMES from the watermark (backfilling the downtime gap) instead of re-seeding.
+const SLACK_SWEEP_STATE_PATH =
+  process.env.SLACK_SWEEP_STATE_PATH || join(HERE, "..", "slack-sweep-state.json")
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
 const APP_TITLE = process.env.APP_TITLE || "CDP Browser"
@@ -124,7 +132,7 @@ const settings = createSettingsStore({
   }),
   persist: (s) => {
     try {
-      writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2))
+      atomicWriteFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2))
     } catch (e) {
       console.error("[web] settings persist failed:", e.message)
     }
@@ -138,7 +146,7 @@ if (process.env.CDP_HOST)
 pushSubs = loadJson(SUBS_PATH, [])
 const savePushSubs = () => {
   try {
-    writeFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
+    atomicWriteFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
   } catch (e) {
     console.error("[web] savePushSubs failed:", e.message)
   }
@@ -241,6 +249,13 @@ const port = () => settings.getConfig().port
 // ---- SSE fan-out ----------------------------------------------------------
 const sseClients = new Set()
 const wsClients = new Set() // WebSocket subscribers — receive same events SSE clients do (t019)
+// WS liveness + backpressure (t099). A half-open socket (suspended iPad) never throws on send,
+// so without a heartbeat it would buffer frames unboundedly. Ping every interval; reap a client
+// that hasn't ponged within the deadline; skip a frame for a client whose send buffer is over
+// the cap (fresh-frame-wins) instead of accreting a backlog.
+const WS_HEARTBEAT_INTERVAL_MS = 30_000
+const WS_PONG_DEADLINE_MS = 70_000 // ~2 missed heartbeats + margin
+const WS_FRAME_BUFFER_CAP = 8 * 1024 * 1024 // ~a few frames; over this, drop the frame for that client
 // WS clients that announced ack-after-paint support (t056): they ack each Screencast
 // Frame only after painting it, so the server defers its own remote-ack and gates the
 // next frame on their paint-ack — at most one frame in flight on the link instead of an
@@ -275,6 +290,9 @@ function broadcastFrameBinaryRaw(bytes, meta) {
     },
   })
   for (const ws of wsClients) {
+    // Skip a client whose send buffer is backed up (suspended/slow) — fresh-frame-wins; the
+    // heartbeat reaps a truly-dead one. Prevents a half-open socket buffering frames unbounded.
+    if (shouldSkipClient(ws.bufferedAmount, WS_FRAME_BUFFER_CAP)) continue
     try {
       ws.send(envelope)
       ws.send(bytes)
@@ -544,7 +562,7 @@ const notificationCenter = createNotificationCenter({
   load: () => loadJson(NOTIFS_PATH, []),
   save: (list) => {
     try {
-      writeFileSync(NOTIFS_PATH, JSON.stringify(list))
+      atomicWriteFileSync(NOTIFS_PATH, JSON.stringify(list))
     } catch (e) {
       console.error("[web] saveNotifs failed:", e.message)
     }
@@ -566,6 +584,10 @@ const notificationCenter = createNotificationCenter({
     const rec = notificationCenter.getCreds(teamId)
     if (rec && rec.fresh !== false) sweepScheduler.request(teamId, rec)
   },
+  // A workspace still stale after re-extraction (t099): the live tab's localConfig token is
+  // itself stale, so re-extract can't fix it. Close the keeper-owned tab (never a pin) so the
+  // keeper recreates it with a fresh token on the next cycle.
+  onCredsStuck: (teamId) => reloadStuckSlackTab(teamId),
   onEntry: (entry) => {
     // Verbose prod log (greppable [notif]) — proves the entry's keying: a Grid workspace's
     // entries carry the merged `slack:{groupId}` groupKey (t092) while keeping a concrete team.
@@ -609,7 +631,7 @@ let slackRegistry = loadJson(SLACK_WORKSPACES_PATH, {})
 const slackCreatedAt = {} // teamId → last /json/new timestamp (create cooldown)
 const saveSlackRegistry = () => {
   try {
-    writeFileSync(SLACK_WORKSPACES_PATH, JSON.stringify(slackRegistry, null, 2))
+    atomicWriteFileSync(SLACK_WORKSPACES_PATH, JSON.stringify(slackRegistry, null, 2))
   } catch (e) {
     console.error("[web] saveSlackRegistry failed:", e.message)
   }
@@ -657,6 +679,38 @@ async function keepSlackTabsAlive(targets) {
   if (changed) saveSlackRegistry()
 }
 
+// Escalation when a Slack workspace stays stale after re-extraction (t099): close its live
+// tab so the keeper recreates it with a fresh token — but ONLY when the tab is keeper-owned.
+// A pinned workspace is owned by its pin (t098): closing it would disrupt the user, so we
+// leave it and let the health surface degrade. A per-team cooldown prevents a reload loop.
+const slackStuckReloadAt = {} // teamId → last stuck-reload timestamp
+const STUCK_RELOAD_COOLDOWN_MS = 5 * 60 * 1000
+async function reloadStuckSlackTab(teamId) {
+  if (Date.now() - (slackStuckReloadAt[teamId] || 0) < STUCK_RELOAD_COOLDOWN_MS) return
+  const pinned = settings.getPins().some((p) => slackTeamIdOf(p.url || "") === teamId)
+  if (pinned) {
+    console.log(`[web] slack ${teamId} stuck stale but pinned — leaving it (health degrades)`)
+    return
+  }
+  let targets
+  try {
+    targets = await fetchJson(endpoints.list(host(), port()))
+  } catch {
+    return
+  }
+  const tab = (Array.isArray(targets) ? targets : []).find(
+    (t) => t.type === "page" && slackTeamIdOf(t.url || "") === teamId,
+  )
+  if (!tab) return
+  slackStuckReloadAt[teamId] = Date.now()
+  try {
+    await fetchJson(endpoints.close(host(), port(), tab.id))
+    console.log(`[web] slack ${teamId} stuck stale — closed keeper tab for a fresh token`)
+  } catch (e) {
+    console.error(`[web] slack stuck-reload close failed for ${teamId}:`, e.message)
+  }
+}
+
 // One combined reconcile cycle: notification side-channels + the Slack parked-tab keeper.
 // A single /json fetch feeds both so we don't double-poll the remote browser.
 async function reconcileCycle() {
@@ -693,15 +747,39 @@ const nameCacheSet = (bucket, team, id, name) => {
   if (!slackSweepState[bucket][team]) slackSweepState[bucket][team] = {}
   slackSweepState[bucket][team][id] = name
 }
+// Persist {watermark, seeded} across restarts (t099, ADR-0016). Debounced + atomic write;
+// getState reads the live sweep state at flush time so the latest watermark wins.
+const sweepStatePersister = createSweepStatePersister({
+  read: () => loadJson(SLACK_SWEEP_STATE_PATH, null),
+  write: (data) => {
+    try {
+      atomicWriteFileSync(SLACK_SWEEP_STATE_PATH, JSON.stringify(data))
+    } catch (e) {
+      console.error("[web] sweep-state persist failed:", e.message)
+    }
+  },
+  getState: () => slackSweepState,
+})
+// Resume on boot: previously-seeded teams fetch since their watermark (backfilling the
+// downtime gap) instead of re-seeding from `latest` and silently dropping downtime messages.
+{
+  const restored = sweepStatePersister.load()
+  slackSweepState.watermark = restored.watermark
+  for (const t of restored.seeded) slackSweepState.seeded.add(t)
+}
 const slackSweeper = createSlackSweeper({
   listCreds: () => notificationCenter.listCreds(),
   makeApi: (cred) => createSlackApi({ token: cred.token, cookie: cred.cookie }),
   getWatermark: (t) => slackSweepState.watermark[t] || {},
   setWatermark: (t, w) => {
     slackSweepState.watermark[t] = w
+    sweepStatePersister.scheduleFlush()
   },
   isSeeded: (t) => slackSweepState.seeded.has(t),
-  markSeeded: (t) => slackSweepState.seeded.add(t),
+  markSeeded: (t) => {
+    slackSweepState.seeded.add(t)
+    sweepStatePersister.scheduleFlush()
+  },
   // Channel Exclude list (t072): the excluded channel ids for this workspace, read live
   // from ui-state (`slackExcludes: {team,channelId,label}[]`) so a mute applies next sweep.
   // The runner passes the merged groupId (t092); excludes are stored keyed by that same
@@ -799,8 +877,19 @@ function checkSlackHealthAlerts() {
 // Periodic backstop sweep (every 15s) — the hijack trigger + cred-extraction trigger carry
 // real-time delivery; this guarantees completeness even if the hijack never fires (tab
 // asleep, native-app routing) or a signal was missed. Health alerts piggyback the cycle.
+// Single-flight guard (t099): a sweep that hits a 429 Retry-After sleeps past the 15s tick, so
+// without this a second (and third) runOnce would stack and pile duplicate load into the exact
+// rate-limit we're already backing off from.
+let sweepBackstopInFlight = false
 setInterval(() => {
-  slackSweeper.runOnce().catch(() => {})
+  if (sweepBackstopInFlight) return
+  sweepBackstopInFlight = true
+  slackSweeper
+    .runOnce()
+    .catch(() => {})
+    .finally(() => {
+      sweepBackstopInFlight = false
+    })
   checkSlackHealthAlerts()
 }, 15_000)
 
@@ -821,7 +910,10 @@ const body = (req) =>
         if (!b) return resolve({})
         resolve(e2eKey ? open(b.trim(), e2eKey) : JSON.parse(b))
       } catch {
-        resolve({})
+        // A malformed / undecryptable body used to resolve `{}`, which then persisted and could
+        // wipe pins/config. Reject with a tagged error so the handler answers 400 and nothing
+        // is written (t099). An empty body still resolves `{}` above (valid for bodyless POSTs).
+        reject(Object.assign(new Error("malformed request body"), { badBody: true }))
       }
     })
   })
@@ -971,7 +1063,10 @@ const server = http.createServer(async (req, res) => {
     // config
     if (p === "/api/config" && !POST) return json(res, settings.getConfig())
     if (p === "/api/config" && POST) {
-      settings.setConfig(await body(req))
+      const cfg = await body(req)
+      // Shape-guard so a wrong/empty body can't wipe the CDP address (t099).
+      if (!isValidConfig(cfg)) return json(res, { error: "invalid config" }, 400)
+      settings.setConfig(cfg)
       return json(res, settings.getConfig())
     }
     if (p === "/api/config/test" && POST) {
@@ -1016,8 +1111,12 @@ const server = http.createServer(async (req, res) => {
       return json(res, settings.updatePin(id, patch))
     }
     if (p === "/api/pins/remove" && POST) return json(res, settings.removePin((await body(req)).id))
-    if (p === "/api/pins/reorder" && POST)
-      return json(res, settings.reorderPins((await body(req)).pins))
+    if (p === "/api/pins/reorder" && POST) {
+      const { pins } = await body(req)
+      // Shape-guard so a wrong/empty body can't blow away the pin list (t099).
+      if (!isValidPinsArray(pins)) return json(res, { error: "invalid pins" }, 400)
+      return json(res, settings.reorderPins(pins))
+    }
     // notifications
     if (p === "/api/notifications" && !POST) return json(res, notificationCenter.list())
     // Slack capture health per workspace (t074) — attached/creds/sweep state for the Settings row.
@@ -1090,6 +1189,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, { ok: true })
     }
   } catch (e) {
+    // A malformed/undecryptable body (t099) is a client error → 400, and no route ran, so
+    // nothing was persisted. Everything else stays a 500.
+    if (e && e.badBody) return json(res, { error: "malformed request body" }, 400)
     return json(res, { error: e.message }, 500)
   }
 
@@ -1114,9 +1216,17 @@ server.on("upgrade", (req, socket, head) => {
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     wsClients.add(ws)
+    // Liveness for the heartbeat reaper (t099): stamp on connect, on protocol pong, and on any
+    // inbound message (the client's 20s app-ping doubles as a liveness signal through proxies
+    // that swallow protocol pings).
+    ws.__lastPongAt = Date.now()
+    ws.on("pong", () => {
+      ws.__lastPongAt = Date.now()
+    })
     console.log(`[client] ws +1 (now ${wsClients.size})`)
     ws.send(JSON.stringify({ t: "ready" }))
     ws.on("message", async (raw) => {
+      ws.__lastPongAt = Date.now()
       const text = raw.toString()
       // Ping/pong is control traffic, never E2E-sealed (it carries only the client's own
       // monotonic stamp, no user content) — handle it before the envelope open so it works
@@ -1195,10 +1305,47 @@ server.on("upgrade", (req, socket, head) => {
   })
 })
 
+// Heartbeat reaper (t099): ping every client each interval and terminate + evict one that
+// hasn't produced a liveness signal within the deadline — the only way a half-open socket
+// (never throws on send) gets cleaned up, freeing its buffered memory and the paint-ack slot.
+setInterval(() => {
+  for (const ws of wsClients) {
+    if (isClientDead(ws.__lastPongAt, Date.now(), WS_PONG_DEADLINE_MS)) {
+      try {
+        ws.terminate()
+      } catch {}
+      wsClients.delete(ws)
+      if (paintAckClients.delete(ws) && paintAckClients.size === 0) resetPaintAckGate()
+      console.log(`[client] ws reaped (dead >${WS_PONG_DEADLINE_MS}ms; now ${wsClients.size})`)
+      continue
+    }
+    try {
+      ws.ping()
+    } catch {}
+  }
+}, WS_HEARTBEAT_INTERVAL_MS)
+
 // Surface otherwise-silent async failures in prod logs (greppable [err]) for issue-detection.
 process.on("unhandledRejection", (reason) => {
   console.error("[err] unhandledRejection:", reason?.stack || reason)
 })
+
+// Graceful shutdown (t099): flush the debounced Slack sweep watermark so a redeploy never
+// loses the last ~2s of read progress, then exit. Closes the "no shutdown hook" gap.
+let shuttingDown = false
+const gracefulShutdown = (sig) => {
+  if (shuttingDown) return
+  shuttingDown = true
+  try {
+    sweepStatePersister.flushSync()
+  } catch (e) {
+    console.error("[web] shutdown flush failed:", e.message)
+  }
+  console.log(`[web] ${sig} — flushed sweep state, exiting`)
+  process.exit(0)
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"))
+process.on("SIGINT", () => gracefulShutdown("SIGINT"))
 
 server.listen(PORT, "0.0.0.0", () =>
   console.log(

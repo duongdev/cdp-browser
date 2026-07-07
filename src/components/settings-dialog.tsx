@@ -1,6 +1,6 @@
 import { ArrowReloadHorizontalIcon, Cancel01Icon, Settings01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { readLatencyHudEnabled, setLatencyHudEnabled } from "@/components/latency-hud"
 import {
   AlertDialog,
@@ -28,6 +28,11 @@ import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { isPointerFine, usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { getCaps } from "@/lib/caps"
+import {
+  createBrowserPushDeps,
+  ensurePushSubscription,
+  removePushSubscription,
+} from "@/lib/push-subscribe"
 import { parseTier, QUALITY_TIER_KEY, QUALITY_TIERS, type QualityTier } from "@/lib/quality-tier"
 import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
 import { removeExclude, type SlackExclude } from "@/lib/slack-excludes"
@@ -39,18 +44,6 @@ import {
   VIRTUAL_POINTER_MODE_KEY,
   type VirtualPointerMode,
 } from "@/lib/virtual-pointer"
-
-// VAPID public key is delivered as URL-safe base64 by the server; pushManager.subscribe
-// expects a raw ArrayBuffer. Standard helper from the Web Push spec.
-function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/")
-  const rawData = atob(base64)
-  const buf = new ArrayBuffer(rawData.length)
-  const view = new Uint8Array(buf)
-  for (let i = 0; i < rawData.length; i++) view[i] = rawData.charCodeAt(i)
-  return buf
-}
 
 export type SwitchEffect = "none" | "blur" | "grayscale" | "blur-grayscale"
 
@@ -293,22 +286,18 @@ export function SettingsDialog({
   // the drawer reopens where it was left, surviving a refresh — restored on open, saved on close.
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Re-subscribe when the SW detects a push-subscription-change (rotation/revocation).
+  // One subscribe implementation, shared with app.tsx's boot reconcile + foreground
+  // recovery (t099) — no second copy of the pushManager.subscribe dance here.
+  const pushDeps = useMemo(() => createBrowserPushDeps(), [])
+
+  // Re-subscribe when Settings opens with push on (catches rotation/revocation); idempotent.
   const reValidateSubscription = useCallback(async () => {
     try {
-      const reg = await navigator.serviceWorker?.ready
-      if (!reg) return
-      const key = await window.cdp.getPushVapidKey?.()
-      if (!key) return
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToArrayBuffer(key),
-      })
-      await window.cdp.subscribePush?.(sub.toJSON() as PushSubscriptionJSON)
+      await ensurePushSubscription(pushDeps)
     } catch (e) {
       console.error("[push] re-validate subscription failed:", e)
     }
-  }, [])
+  }, [pushDeps])
 
   const toggleWebPush = useCallback(
     async (on: boolean) => {
@@ -327,28 +316,13 @@ export function SettingsDialog({
       // Wrapped in try/catch since service workers / pushManager may not exist on every
       // browser; failures here don't undo the ui-state toggle (the user can retry).
       try {
-        const reg = await navigator.serviceWorker?.ready
-        if (!reg) return
-        if (on) {
-          const key = await window.cdp.getPushVapidKey?.()
-          if (!key) return
-          const sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToArrayBuffer(key),
-          })
-          await window.cdp.subscribePush?.(sub.toJSON() as PushSubscriptionJSON)
-        } else {
-          const sub = await reg.pushManager.getSubscription()
-          if (sub) {
-            await window.cdp.unsubscribePush?.(sub.endpoint)
-            await sub.unsubscribe()
-          }
-        }
+        if (on) await ensurePushSubscription(pushDeps)
+        else await removePushSubscription(pushDeps)
       } catch (e) {
         console.error("[push] subscribe/unsubscribe failed:", e)
       }
     },
-    [reValidateSubscription],
+    [pushDeps],
   )
 
   // Suppress the leave-timer while a Select popover (portaled outside the panel)
@@ -356,19 +330,8 @@ export function SettingsDialog({
   const [selectOpen, setSelectOpen] = useState(false)
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  // Listen for push subscription changes from the service worker (rotation/revocation).
-  useEffect(() => {
-    const handleSWMessage = (event: Event) => {
-      const e = event as MessageEvent
-      if (e.data?.type === "push-subscription-change" && webPush) {
-        reValidateSubscription()
-      }
-    }
-    navigator.serviceWorker?.controller?.addEventListener("message" as string, handleSWMessage)
-    return () => {
-      navigator.serviceWorker?.controller?.removeEventListener("message" as string, handleSWMessage)
-    }
-  }, [webPush, reValidateSubscription])
+  // The SW push-subscription-change listener lives in app.tsx now (always mounted, correct
+  // container target, reads intent fresh) — see t099. Settings only re-validates on open.
 
   useEffect(() => {
     if (open) {
@@ -413,12 +376,13 @@ export function SettingsDialog({
             })
             .catch(() => {})
         }
-        fetch("/api/notifications/health")
-          .then((r) => r.json())
-          // t092: the payload is now `{ rows, groups }` (rows merged per Enterprise Grid org;
-          // `groups` is the teamId → groupId map consumed by app.tsx). The card reads `rows`.
-          .then((data: { rows?: SlackHealthRow[] }) =>
-            setSlackHealth(Array.isArray(data?.rows) ? data.rows : []),
+        // Through the bridge (not a raw fetch) so E2E responses open correctly (t099).
+        // t092: the payload is `{ rows, groups }` (rows merged per Enterprise Grid org;
+        // `groups` is the teamId → groupId map consumed by app.tsx). The card reads `rows`.
+        window.cdp
+          .getNotificationHealth?.()
+          .then((data) =>
+            setSlackHealth(Array.isArray(data?.rows) ? (data.rows as SlackHealthRow[]) : []),
           )
           .catch(() => setSlackHealth([]))
       }

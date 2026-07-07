@@ -872,4 +872,77 @@ describe("push subscription reconcile (E0 — endpoint-keyed deviceId)", () => {
 
     expect(id2).toBe(id1)
   })
+
+  it("adopts a client-asserted deviceId on a NEW endpoint (revocation/rotation recovery, t099)", async () => {
+    // A revoked sub re-subscribes with a NEW endpoint but the same known deviceId. The server
+    // must re-bind that id to the new endpoint so the per-device prefs keyed by it survive.
+    const res1 = await server.post("/api/notifications/subscribe", {
+      endpoint: "https://push.example.com/api/v1/old",
+      keys: { p256dh: "k1", auth: "a1" },
+    })
+    const id1 = res1.deviceId
+
+    const res2 = await server.post("/api/notifications/subscribe", {
+      endpoint: "https://push.example.com/api/v1/rotated",
+      keys: { p256dh: "k1", auth: "a1" },
+      deviceId: id1,
+    })
+
+    expect(res2.deviceId).toBe(id1)
+  })
+})
+
+describe("server hardening — body validation (t099)", () => {
+  let fake: any
+  let server: any
+
+  beforeEach(async () => {
+    fake = await startFakeCdpHost({ targets: DEFAULT_TARGETS })
+    server = await startWebServer(fake)
+  })
+  afterEach(async () => {
+    server.stop()
+    await fake.stop()
+  })
+
+  it("rejects a malformed POST body with 400 and leaves config untouched", async () => {
+    const before = await server.json("/api/config")
+
+    const res = await server.fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ this is : not valid json",
+    })
+    expect(res.status).toBe(400)
+
+    const after = await server.json("/api/config")
+    expect(after).toEqual(before) // nothing persisted from the bad body
+  })
+
+  it("rejects a wrong-shaped config (empty object) with 400 and keeps the CDP address", async () => {
+    const before = await server.json("/api/config")
+
+    const res = await server.fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
+
+    const after = await server.json("/api/config")
+    expect(after.host).toBe(before.host)
+    expect(after.port).toBe(before.port)
+  })
+
+  it("accepts a valid config", async () => {
+    const res = await server.fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host: "10.1.2.3", port: 9333 }),
+    })
+    expect(res.status).toBe(200)
+    const after = await server.json("/api/config")
+    expect(after.host).toBe("10.1.2.3")
+    expect(after.port).toBe(9333)
+  })
 })

@@ -446,6 +446,50 @@ describe("slack cred extraction (t069)", () => {
     center.setSelfUserId("T0EXAMPLE02", "U_ME")
     expect(center.getCreds("T0EXAMPLE02")?.selfUserId).toBe("U_ME")
   })
+
+  it("markCredsStale re-extracts over the live socket; a rotated token clears the stale state (t099)", async () => {
+    const onCreds = vi.fn()
+    const onCredsStuck = vi.fn()
+    const { center } = makeCenter({ onCreds, onCredsStuck, onSlackSignal: vi.fn() })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerCredExtraction(ws)
+
+    center.markCredsStale("T0EXAMPLE02", "invalid_auth") // fires refreshCreds()
+    await Promise.resolve()
+    // Slack rotated the token in localConfig — the re-extract reads the fresh value.
+    const rotated = JSON.stringify({
+      teams: { T0EXAMPLE02: { token: "xoxc-NEW", name: "Acme", url: "https://acme.slack.com/" } },
+    })
+    await answerCredExtraction(ws, { config: rotated })
+
+    expect(center.getCreds("T0EXAMPLE02")).toMatchObject({ token: "xoxc-NEW", fresh: true })
+    expect(onCredsStuck).not.toHaveBeenCalled()
+  })
+
+  it("signals onCredsStuck when the re-extract reads the SAME stale token (t099)", async () => {
+    const onCreds = vi.fn()
+    const onCredsStuck = vi.fn()
+    const { center } = makeCenter({ onCreds, onCredsStuck, onSlackSignal: vi.fn() })
+    await center.reconcile([slackTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerCredExtraction(ws)
+
+    center.markCredsStale("T0EXAMPLE02", "invalid_auth")
+    await Promise.resolve()
+    await answerCredExtraction(ws) // same LOCAL_CONFIG → same token, still stale
+
+    expect(onCredsStuck).toHaveBeenCalledWith("T0EXAMPLE02")
+    // A known-bad token is not marked fresh — the health surface stays degraded.
+    expect(center.getCreds("T0EXAMPLE02")?.fresh).toBe(false)
+  })
+
+  it("refreshCreds resolves false when no live Slack socket exists", async () => {
+    const { center } = makeCenter({ onCreds: vi.fn() })
+    expect(await center.refreshCreds()).toBe(false)
+  })
 })
 
 describe("slack hijack ↔ sweep handoff (t071)", () => {

@@ -24,6 +24,25 @@ export const QUALITY_TIERS: { id: QualityTier; label: string; tip: string }[] = 
   },
 ]
 
+// Screencast params per tier — MIRRORS `core/quality-tier.js` `tierToParams` (kept in sync by
+// quality-tier.test.ts). The server owns params on the connect path (ADR-0008); this mirror
+// exists ONLY for the renderer-initiated resize reissue in viewport.tsx, which must preserve
+// the user's tier (jpegQuality + everyNthFrame / the t054 rate ceiling) instead of resetting to
+// a hardcoded default on every resize (t099). Do not read this anywhere the server applies params.
+const TIER_PARAMS: Record<QualityTier, { jpegQuality: number; everyNthFrame: number }> = {
+  sharp: { jpegQuality: 92, everyNthFrame: 1 },
+  balanced: { jpegQuality: 80, everyNthFrame: 2 },
+  snappy: { jpegQuality: 60, everyNthFrame: 3 },
+}
+
+// The startScreencast quality params for a tier id (unknown → default), for the resize reissue.
+export function tierParams(tier: string | null | undefined): {
+  jpegQuality: number
+  everyNthFrame: number
+} {
+  return TIER_PARAMS[parseTier(tier)]
+}
+
 const VALID = new Set<QualityTier>(QUALITY_TIERS.map((t) => t.id))
 
 // Garbage / null / wrong case → DEFAULT_TIER, matching the root parseTier so a corrupt

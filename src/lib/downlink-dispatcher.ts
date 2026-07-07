@@ -66,6 +66,19 @@ function register<T>(list: T[], cb: T): () => void {
   }
 }
 
+// Fan out to every listener even if one throws (t099): an unguarded loop would stop at the
+// first throw AND propagate up to the source's message handler, poisoning the whole downlink
+// (frozen session until reload). Each listener is isolated; a throw is logged, never fatal.
+function fanOut<T>(list: ((arg: T) => void)[], arg: T): void {
+  for (const cb of list) {
+    try {
+      cb(arg)
+    } catch (e) {
+      console.error("[downlink] listener threw (isolated):", e)
+    }
+  }
+}
+
 export function createDownlinkDispatcher<N = unknown>(deps: DispatcherDeps<N>): Dispatcher<N> {
   const listeners = {
     event: [] as ((msg: unknown) => void)[],
@@ -85,20 +98,26 @@ export function createDownlinkDispatcher<N = unknown>(deps: DispatcherDeps<N>): 
           // stamp; everything else is a no-op. Never alters the payload handed to listeners.
           const serverTs = frameServerTs(payload)
           if (serverTs !== undefined) deps.recordFrameAge?.(serverTs)
-          for (const cb of listeners.event) cb(payload)
+          fanOut(listeners.event, payload)
           return
         }
         case "disconnected":
-          for (const cb of listeners.disconnected) cb(payload as DisconnectPhase | undefined)
+          fanOut(listeners.disconnected, payload as DisconnectPhase | undefined)
           return
         case "notification": {
           const entry = payload as N
-          for (const cb of listeners.notification) cb(entry)
-          deps.toast(entry)
+          fanOut(listeners.notification, entry)
+          try {
+            deps.toast(entry)
+          } catch (e) {
+            // A page-context `new Notification()` throws on iOS/Android — must not poison the
+            // downlink (t099). The toast is best-effort; the entry already reached listeners.
+            console.error("[downlink] toast threw (isolated):", e)
+          }
           return
         }
         case "notification-activate":
-          for (const cb of listeners.notificationActivate) cb(payload as N)
+          fanOut(listeners.notificationActivate, payload as N)
           return
       }
     },
