@@ -95,6 +95,9 @@ function createNotificationCenter(deps) {
   const persist = () => save(notifications)
 
   const sideChannels = new Map() // targetId -> ws
+  // Live cred-capable (Slack) sockets: targetId -> { cdpCall, target }. Lets markCredsStale
+  // re-run extraction over an already-open socket without waiting for a reconnect (t099).
+  const credSockets = new Map()
   // Slack credential records keyed by teamId (t069). Populated by side-channel extraction;
   // read by the server-side content sweep (t071). Each: { teamId, token, cookie, name, url,
   // enterpriseId, fresh, lastError, selfUserId? }. Creds are the user's own session secrets
@@ -109,8 +112,17 @@ function createNotificationCenter(deps) {
   const WS_OPEN = WebSocketCtor && WebSocketCtor.OPEN != null ? WebSocketCtor.OPEN : 1
 
   function recordCreds(team, cookie) {
-    const prev = credsByTeam.get(team.teamId) || {}
-    const rec = markFresh(prev, {
+    const prev = credsByTeam.get(team.teamId)
+    // If a re-extraction (after a 401) produced the SAME token that was already stale, the
+    // live tab's localConfig itself is stale — re-extract can't fix it. Signal the server to
+    // reload the keeper-owned parked tab so Slack regenerates a token (t099); keep the record
+    // stale (don't mark a known-bad token fresh). A changed token gets a fresh chance below.
+    if (prev && prev.fresh === false && prev.token === team.token) {
+      log(`[slack-creds] ${team.teamId} still stale after re-extract — signalling reload`)
+      if (deps.onCredsStuck) deps.onCredsStuck(team.teamId)
+      return
+    }
+    const rec = markFresh(prev || {}, {
       teamId: team.teamId,
       token: team.token,
       cookie,
@@ -233,8 +245,10 @@ function createNotificationCenter(deps) {
       // document-start for future loads + the already-loaded document.
       cdp("Page.addScriptToEvaluateOnNewDocument", { source: sourceFor(adapter) })
       cdp("Runtime.evaluate", { expression: sourceFor(adapter) })
-      // Slack only: pull the workspace creds for the server-side sweep (ADR-0011).
+      // Slack only: pull the workspace creds for the server-side sweep (ADR-0011). Keep the
+      // live cdpCall handle so a later 401 can re-extract over this same socket (t099).
       if (adapter.extractCreds && deps.onCreds) {
+        credSockets.set(target.id, { cdpCall, target })
         extractSlackCreds(cdpCall, target).catch(() => {})
       }
     })
@@ -253,6 +267,7 @@ function createNotificationCenter(deps) {
     })
     const drop = () => {
       if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
+      credSockets.delete(target.id)
       // Free any in-flight awaitable call so a stalled socket can't leak its promise.
       for (const p of pending.values()) p.reject(new Error("side-channel closed"))
       pending.clear()
@@ -285,6 +300,21 @@ function createNotificationCenter(deps) {
     } catch (e) {
       log(`[slack-creds] extraction failed: ${e && e.message ? e.message : e}`)
     }
+  }
+
+  // Re-extract creds over any already-open Slack side-channel socket (t099). One live tab's
+  // localConfig_v2 + shared `d` cookie refresh EVERY workspace, so the first live socket wins.
+  // Called on a 401 (markCredsStale) so a rotated xoxc token self-heals within a sweep cycle
+  // without waiting for a reconnect. Best-effort; resolves false when no live socket exists.
+  async function refreshCreds() {
+    for (const [id, ws] of sideChannels) {
+      if (ws.readyState !== WS_OPEN) continue
+      const handle = credSockets.get(id)
+      if (!handle) continue
+      await extractSlackCreds(handle.cdpCall, handle.target)
+      return true
+    }
+    return false
   }
 
   // Attach to newly-seen adapter-matching Tab targets, drop vanished/changed ones.
@@ -356,12 +386,17 @@ function createNotificationCenter(deps) {
     // Slack cred accessors (t069) — the server-side sweep (t071) reads these.
     listCreds: () => [...credsByTeam.values()],
     getCreds: (teamId) => credsByTeam.get(teamId) || null,
-    // Mark a workspace's creds stale (e.g. the sweep got a 401) so the health surface
-    // (t074) can flag it and the parked-tab keeper (t070) re-extracts. Keeps the last creds.
+    // Mark a workspace's creds stale (e.g. the sweep got a 401) so the health surface (t074)
+    // can flag it, then immediately re-extract over a live Slack socket so a rotated token
+    // self-heals within a sweep cycle (t099). Keeps the last creds until a fresh read replaces
+    // them. If the re-extract reads the same stale token, recordCreds fires deps.onCredsStuck.
     markCredsStale: (teamId, reason) => {
       const prev = credsByTeam.get(teamId)
       if (prev) credsByTeam.set(teamId, markStale(prev, reason))
+      refreshCreds().catch(() => {})
     },
+    // Force a re-extraction over any live Slack socket (t099) — exposed for the server + tests.
+    refreshCreds,
     // The sweep caches the resolved self user id (for channel @-mention parity) here.
     setSelfUserId: (teamId, selfUserId) => {
       const prev = credsByTeam.get(teamId)

@@ -14,6 +14,7 @@ import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import webpush from "web-push"
 import WebSocket, { WebSocketServer } from "ws"
+import { atomicWriteFileSync } from "../core/atomic-write.js"
 import endpoints from "../core/cdp-endpoints.js"
 import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
@@ -30,6 +31,7 @@ import { createSettingsStore } from "../core/settings-store.js"
 import { createSlackApi } from "../core/slack-api.js"
 import { buildSlackGroups } from "../core/slack-creds.js"
 import { createSlackSweeper } from "../core/slack-sweep-runner.js"
+import { createSweepStatePersister } from "../core/slack-sweep-state.js"
 import {
   liveTeamIds as slackLiveTeamIds,
   planParkedTabs as slackPlanParkedTabs,
@@ -48,6 +50,10 @@ const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notificatio
 // the shared d cookie + all-team localConfig re-extract from any live Slack tab.
 const SLACK_WORKSPACES_PATH =
   process.env.SLACK_WORKSPACES_PATH || join(HERE, "..", "slack-workspaces.json")
+// Slack sweep read state (t099, ADR-0016) — non-secret {watermark, seeded}. Persisted so a
+// restart RESUMES from the watermark (backfilling the downtime gap) instead of re-seeding.
+const SLACK_SWEEP_STATE_PATH =
+  process.env.SLACK_SWEEP_STATE_PATH || join(HERE, "..", "slack-sweep-state.json")
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
 const APP_TITLE = process.env.APP_TITLE || "CDP Browser"
@@ -566,6 +572,10 @@ const notificationCenter = createNotificationCenter({
     const rec = notificationCenter.getCreds(teamId)
     if (rec && rec.fresh !== false) sweepScheduler.request(teamId, rec)
   },
+  // A workspace still stale after re-extraction (t099): the live tab's localConfig token is
+  // itself stale, so re-extract can't fix it. Close the keeper-owned tab (never a pin) so the
+  // keeper recreates it with a fresh token on the next cycle.
+  onCredsStuck: (teamId) => reloadStuckSlackTab(teamId),
   onEntry: (entry) => {
     // Verbose prod log (greppable [notif]) — proves the entry's keying: a Grid workspace's
     // entries carry the merged `slack:{groupId}` groupKey (t092) while keeping a concrete team.
@@ -657,6 +667,38 @@ async function keepSlackTabsAlive(targets) {
   if (changed) saveSlackRegistry()
 }
 
+// Escalation when a Slack workspace stays stale after re-extraction (t099): close its live
+// tab so the keeper recreates it with a fresh token — but ONLY when the tab is keeper-owned.
+// A pinned workspace is owned by its pin (t098): closing it would disrupt the user, so we
+// leave it and let the health surface degrade. A per-team cooldown prevents a reload loop.
+const slackStuckReloadAt = {} // teamId → last stuck-reload timestamp
+const STUCK_RELOAD_COOLDOWN_MS = 5 * 60 * 1000
+async function reloadStuckSlackTab(teamId) {
+  if (Date.now() - (slackStuckReloadAt[teamId] || 0) < STUCK_RELOAD_COOLDOWN_MS) return
+  const pinned = settings.getPins().some((p) => slackTeamIdOf(p.url || "") === teamId)
+  if (pinned) {
+    console.log(`[web] slack ${teamId} stuck stale but pinned — leaving it (health degrades)`)
+    return
+  }
+  let targets
+  try {
+    targets = await fetchJson(endpoints.list(host(), port()))
+  } catch {
+    return
+  }
+  const tab = (Array.isArray(targets) ? targets : []).find(
+    (t) => t.type === "page" && slackTeamIdOf(t.url || "") === teamId,
+  )
+  if (!tab) return
+  slackStuckReloadAt[teamId] = Date.now()
+  try {
+    await fetchJson(endpoints.close(host(), port(), tab.id))
+    console.log(`[web] slack ${teamId} stuck stale — closed keeper tab for a fresh token`)
+  } catch (e) {
+    console.error(`[web] slack stuck-reload close failed for ${teamId}:`, e.message)
+  }
+}
+
 // One combined reconcile cycle: notification side-channels + the Slack parked-tab keeper.
 // A single /json fetch feeds both so we don't double-poll the remote browser.
 async function reconcileCycle() {
@@ -693,15 +735,39 @@ const nameCacheSet = (bucket, team, id, name) => {
   if (!slackSweepState[bucket][team]) slackSweepState[bucket][team] = {}
   slackSweepState[bucket][team][id] = name
 }
+// Persist {watermark, seeded} across restarts (t099, ADR-0016). Debounced + atomic write;
+// getState reads the live sweep state at flush time so the latest watermark wins.
+const sweepStatePersister = createSweepStatePersister({
+  read: () => loadJson(SLACK_SWEEP_STATE_PATH, null),
+  write: (data) => {
+    try {
+      atomicWriteFileSync(SLACK_SWEEP_STATE_PATH, JSON.stringify(data))
+    } catch (e) {
+      console.error("[web] sweep-state persist failed:", e.message)
+    }
+  },
+  getState: () => slackSweepState,
+})
+// Resume on boot: previously-seeded teams fetch since their watermark (backfilling the
+// downtime gap) instead of re-seeding from `latest` and silently dropping downtime messages.
+{
+  const restored = sweepStatePersister.load()
+  slackSweepState.watermark = restored.watermark
+  for (const t of restored.seeded) slackSweepState.seeded.add(t)
+}
 const slackSweeper = createSlackSweeper({
   listCreds: () => notificationCenter.listCreds(),
   makeApi: (cred) => createSlackApi({ token: cred.token, cookie: cred.cookie }),
   getWatermark: (t) => slackSweepState.watermark[t] || {},
   setWatermark: (t, w) => {
     slackSweepState.watermark[t] = w
+    sweepStatePersister.scheduleFlush()
   },
   isSeeded: (t) => slackSweepState.seeded.has(t),
-  markSeeded: (t) => slackSweepState.seeded.add(t),
+  markSeeded: (t) => {
+    slackSweepState.seeded.add(t)
+    sweepStatePersister.scheduleFlush()
+  },
   // Channel Exclude list (t072): the excluded channel ids for this workspace, read live
   // from ui-state (`slackExcludes: {team,channelId,label}[]`) so a mute applies next sweep.
   // The runner passes the merged groupId (t092); excludes are stored keyed by that same
@@ -1199,6 +1265,23 @@ server.on("upgrade", (req, socket, head) => {
 process.on("unhandledRejection", (reason) => {
   console.error("[err] unhandledRejection:", reason?.stack || reason)
 })
+
+// Graceful shutdown (t099): flush the debounced Slack sweep watermark so a redeploy never
+// loses the last ~2s of read progress, then exit. Closes the "no shutdown hook" gap.
+let shuttingDown = false
+const gracefulShutdown = (sig) => {
+  if (shuttingDown) return
+  shuttingDown = true
+  try {
+    sweepStatePersister.flushSync()
+  } catch (e) {
+    console.error("[web] shutdown flush failed:", e.message)
+  }
+  console.log(`[web] ${sig} — flushed sweep state, exiting`)
+  process.exit(0)
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"))
+process.on("SIGINT", () => gracefulShutdown("SIGINT"))
 
 server.listen(PORT, "0.0.0.0", () =>
   console.log(

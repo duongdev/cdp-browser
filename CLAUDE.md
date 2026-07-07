@@ -65,12 +65,14 @@ cdp-browser/
 ├── preload.js           # IPC bridge (contextBridge)
 ├── core/                # Backend-agnostic shared CommonJS modules (consumed by main.js + web/server.mjs)
 │   ├── notifications.js           # Pure notification logic (dedup, cap, OS-toast gating, Slack workspace key: parseSlackContext/slackGroupKey)
-│   ├── notifications-sidechain.js # Notification Side-Channel state machine (createNotificationCenter, DI); Slack-only cred extraction (xoxc+d-cookie, carries enterpriseId for Grid grouping t092) via onCreds dep + listCreds/getCreds/markCredsStale/setSelfUserId accessors (t069). Side-channel cdpCall has a timeout + rejects pending on close, and reconcile reaps a hung non-OPEN socket on a still-live target (t096)
+│   ├── notifications-sidechain.js # Notification Side-Channel state machine (createNotificationCenter, DI); Slack-only cred extraction (xoxc+d-cookie, carries enterpriseId for Grid grouping t092) via onCreds dep + listCreds/getCreds/markCredsStale/setSelfUserId accessors (t069). markCredsStale re-extracts over the live socket (refreshCreds) so a rotated token self-heals; recordCreds fires onCredsStuck when the re-extract reads the same stale token so the server reloads the keeper-owned parked tab, never a pin (t099). Side-channel cdpCall has a timeout + rejects pending on close, and reconcile reaps a hung non-OPEN socket on a still-live target (t096)
 │   ├── remote-page-connector.js   # Remote Page connect choreography (createRemotePageConnector, DI) + screencast rate ceiling (SCREENCAST_TARGET_FPS/EVERY_NTH_FRAME)
 │   ├── theme-emulation.js         # Pure theme-sync logic (emulatedMediaParams)
 │   ├── cdp-endpoints.js           # Pure /json URL builders
 │   ├── settings-store.js          # Pure settings/pins/ui-state store (device-suffixed ui-state keys pass by prefix allowlist, t093)
 │   ├── line-splitter.js           # Pure NDJSON frame reassembly for the streaming input channel
+│   ├── atomic-write.js            # Atomic write-temp-then-rename (crash-safe JSON persistence); shared by server + main (t099)
+│   ├── slack-sweep-state.js       # Persisted Slack sweep {watermark, seeded} — serialize/deserialize + DI debounced persister; restart resumes from watermark instead of re-seeding (t099, ADR-0016)
 │   ├── frame-throttle.js          # Pure screencast rate throttle (createFrameThrottle, DI clock; fresh-frame-wins)
 │   ├── frame-ack-gate.js          # Pure one-in-flight gate + watchdog for WS paint-ack backpressure (t056)
 │   ├── paint-ack-pacer.js         # Pure adaptive paint-ack watchdog window: EWMA of observed paint latency sizes the stranded-paint timeout (floor 1s, cap 5s) so a slow device isn't tripped early (t096, P2)
