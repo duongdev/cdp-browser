@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.3.0...cdp-browser-v0.4.0) (2026-07-08)
+
+
+### Features
+
+* **push:** harden web push delivery reliability (t095) ([#9](https://github.com/duongdev/cdp-browser/issues/9)) ([d018f3c](https://github.com/duongdev/cdp-browser/commit/d018f3c7b0a957d3232b475e9fdd6e5279c7d69e))
+* **t100:** durable per-device client prefs ([54717e1](https://github.com/duongdev/cdp-browser/commit/54717e180536642f3655eb2f481fab80d8100b4e))
+* **t101:** electron notification channel mutes ([f47a92f](https://github.com/duongdev/cdp-browser/commit/f47a92fe7fc339e7b3517834ed848ef710a78afd))
+* **t102:** two-line tab titles ([3df9a60](https://github.com/duongdev/cdp-browser/commit/3df9a60935d1d9449a9a0d23cf68d839c270fd57))
+* **t103:** cross-device pin and history sync with new tab omnibox ([8bd12ec](https://github.com/duongdev/cdp-browser/commit/8bd12ec2d38d320b52ed5c9af348bbb1a193eb78))
+
+
+### Bug Fixes
+
+* **phone:** keyboard-follow, safe-area, nav stack, pull-to-refresh ([83e6397](https://github.com/duongdev/cdp-browser/commit/83e6397f5b10c0e1e9a6eadbfebb4e450fe3fbe1))
+* **renderer:** gate cmd shortcuts on physical key code, not character ([#6](https://github.com/duongdev/cdp-browser/issues/6)) ([5b512ff](https://github.com/duongdev/cdp-browser/commit/5b512ffb1843ddfbd28ebc8f9c255a2ecc1d1ee7))
+* **t099:** notification & transport reliability ([f00a267](https://github.com/duongdev/cdp-browser/commit/f00a267ed07ec9d1932f63535a0e19003f707a26))
+
 ## [0.3.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.2.1...cdp-browser-v0.3.0) (2026-06-19)
 
 
