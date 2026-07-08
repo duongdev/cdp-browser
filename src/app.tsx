@@ -87,6 +87,20 @@ type NavRow =
   | { kind: "tab"; id: string }
   | { kind: "local"; id: string }
 
+// Re-links each pin's targetId against the current tab list (a saved pin can point at a
+// target that closed, or match a fresh tab opened at the same URL). Shared by the initial
+// load, the realtime poll (t103), and manual sync-enable — all three re-resolve a pin list
+// fetched from the store the same way.
+function resolvePinsAgainstTabs(loaded: Pin[], tabs: TabInfo[]): Pin[] {
+  return loaded.map((p) => {
+    const targetId = resolvePinLink(p, tabs)
+    if (targetId === p.targetId) return p
+    if (targetId) return { ...p, targetId }
+    const { targetId: _gone, ...rest } = p
+    return rest
+  })
+}
+
 function applyThemeClass(theme: ThemeSource, systemDark: boolean) {
   const isDark = theme === "dark" || (theme === "system" && systemDark)
   document.documentElement.classList.toggle("dark", isDark)
@@ -189,6 +203,10 @@ export default function App() {
   const notificationsRef = useRef<NotifEntry[]>([])
   const activeTabIdRef = useRef<string | null>(null)
   const pinsRef = useRef<Pin[]>([])
+  // Timestamp of the last local pin edit — the realtime pin-sync poll skips a short
+  // window after it so an in-flight fire-and-forget write can't be reverted by a
+  // stale server read (t103).
+  const pinEditAtRef = useRef(0)
   const page = useRemotePage()
   const caps = getCaps()
   // Phone Shell (t076, ADR-0012): below the width breakpoint the Inbox is the root
@@ -571,6 +589,7 @@ export default function App() {
   // Persist the whole pins array (covers link/unlink and reorder). The renderer
   // owns link state; main is the store. Keeps pinsRef in sync for callbacks.
   const persistPins = useCallback((next: Pin[]) => {
+    pinEditAtRef.current = Date.now()
     pinsRef.current = next
     setPins(next)
     window.cdp.reorderPins(next)
@@ -579,12 +598,14 @@ export default function App() {
   // Un-pin keeps any live tab alive — removing the pin un-hides its target, so it
   // returns to the Tabs list.
   const unpinPin = useCallback(async (id: string) => {
+    pinEditAtRef.current = Date.now()
     const updated = await window.cdp.removePin(id)
     pinsRef.current = updated
     setPins(updated)
   }, [])
 
   const handleEditPinSave = useCallback(async (id: string, title: string, pinUrl: string) => {
+    pinEditAtRef.current = Date.now()
     const updated = await window.cdp.updatePin(id, { title, url: pinUrl })
     pinsRef.current = updated
     setPins(updated)
@@ -626,11 +647,31 @@ export default function App() {
     // A pin whose target vanished (closed externally or via close) goes dormant.
     const pruned = dropDeadLinks(pinsRef.current, ordered)
     if (pruned !== pinsRef.current) {
+      pinEditAtRef.current = Date.now()
       pinsRef.current = pruned
       setPins(pruned)
       window.cdp.reorderPins(pruned)
     }
     return ordered
+  }, [])
+
+  // Realtime pin sync (t103): pins are server-authoritative (shared across web devices,
+  // and synced from Electron when enabled) but only load once at startup — a pin made on
+  // another device wouldn't appear until reload. Re-resolves each pin's link against the
+  // live tabs and applies only when the set actually changed, so an unchanged fetch never
+  // churns the list (a drag in progress is safe). The grace window (stamped by every local
+  // pin write, including the dead-link prune above) skips a poll for a few seconds after,
+  // so a stale server read can't revert an in-flight write.
+  const syncPins = useCallback(async () => {
+    if (Date.now() - pinEditAtRef.current < 5000) return
+    const loaded = await window.cdp.getPins().catch(() => null)
+    if (!loaded) return
+    const resolved = resolvePinsAgainstTabs(loaded, tabsRef.current)
+    const sig = (list: Pin[]) =>
+      list.map((p) => `${p.id}|${p.url}|${p.title}|${p.targetId ?? ""}`).join(";")
+    if (sig(resolved) === sig(pinsRef.current)) return
+    pinsRef.current = resolved
+    setPins(resolved)
   }, [])
 
   const switchTab = useCallback(
@@ -885,10 +926,7 @@ export default function App() {
     setSyncEnabled(enabled)
     await window.cdp.setUiState({ syncEnabled: enabled })
     const loaded = await window.cdp.getPins()
-    const resolved = loaded.map((p) => {
-      const targetId = resolvePinLink(p, tabsRef.current)
-      return targetId ? { ...p, targetId } : { ...p, targetId: undefined }
-    })
+    const resolved = resolvePinsAgainstTabs(loaded, tabsRef.current)
     pinsRef.current = resolved
     setPins(resolved)
   }, [])
@@ -1057,6 +1095,7 @@ export default function App() {
         favicon: tab.faviconUrl,
         targetId: tab.id,
       }
+      pinEditAtRef.current = Date.now()
       const updated = await window.cdp.addPin(newPin)
       pinsRef.current = updated
       setPins(updated)
@@ -1718,13 +1757,7 @@ export default function App() {
     const init = async () => {
       const [loadedPins, ordered] = await Promise.all([window.cdp.getPins(), refreshTabs()])
       if (cancelled || !ordered) return
-      const resolved = loadedPins.map((p) => {
-        const targetId = resolvePinLink(p, ordered)
-        if (targetId === p.targetId) return p
-        if (targetId) return { ...p, targetId }
-        const { targetId: _gone, ...rest } = p
-        return rest
-      })
+      const resolved = resolvePinsAgainstTabs(loadedPins, ordered)
       pinsRef.current = resolved
       setPins(resolved)
       if (resolved.some((p, i) => p !== loadedPins[i])) window.cdp.reorderPins(resolved)
@@ -1732,12 +1765,17 @@ export default function App() {
       if (first) switchTab(first.id)
     }
     init()
-    const interval = setInterval(refreshTabs, 3000)
+    // Sequential, not two independent timers: refreshTabs' dead-link prune (and its
+    // grace-window stamp) always lands before syncPins reads the store back, so the two
+    // can't interleave and fight over the same pin list (t103).
+    const interval = setInterval(() => {
+      refreshTabs().then(syncPins)
+    }, 3000)
     return () => {
       cancelled = true
       clearInterval(interval)
     }
-  }, [refreshTabs, switchTab])
+  }, [refreshTabs, switchTab, syncPins])
 
   // Toolbar/URL bar reflect whichever surface is active.
   const isLocal = activeKind === "local"

@@ -1021,7 +1021,7 @@ function SortableTabItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-start gap-2 rounded-lg px-2 py-0.5 cursor-default touch-target",
+                  "group relative flex items-start gap-2 rounded-lg px-2 py-px cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1147,7 +1147,7 @@ function SortableLocalItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-start gap-2 rounded-lg px-2 py-0.5 cursor-default touch-target",
+                  "group relative flex items-start gap-2 rounded-lg px-2 py-px cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active

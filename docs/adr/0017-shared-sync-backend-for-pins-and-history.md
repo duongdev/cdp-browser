@@ -45,11 +45,14 @@ served over its plain HTTP API.
   not the Authentik/E2E-fronted prod portal. Keeping Electron plaintext avoids
   porting the crypto-envelope handshake into the main process.
 
-- **Propagation.** Sync is **eventual, not real-time**: a device loads pins on
-  launch/reconnect and history when the New Tab omnibox opens, so a change made on
-  one device shows on another the next time it loads that surface. Turning sync on
-  re-loads pins immediately (server-wins). No live SSE push of pin/history edits —
-  good enough for pins/history; a live channel can be added later if wanted.
+- **Propagation.** Pins update in **near-real-time**: every renderer re-fetches the
+  pin store on the same ~3s cadence as the tab-list poll, re-resolves each pin's
+  link against its live tabs, and applies only when the set actually changed (a
+  short grace window after a local edit prevents a stale read reverting an in-flight
+  write; an unchanged fetch never churns the list, so a drag in progress is safe).
+  History is fetched fresh each time the New Tab omnibox opens, so it is current on
+  every open. No live SSE push is needed — the poll is simple and uniform across
+  both builds.
 
 ## Consequences
 
