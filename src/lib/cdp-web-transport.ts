@@ -913,6 +913,7 @@ export function createWebCdp(deps: WebTransportDeps = resolveDeps()): CdpBridge 
     updatePin: (id, patch) => rest.postJson("/api/pins/update", { id, patch }),
     removePin: (id) => rest.postJson("/api/pins/remove", { id }),
     reorderPins: (pins) => rest.postJson("/api/pins/reorder", { pins }),
+    getHistory: () => rest.getJson("/api/history"),
     getNotifications: () => rest.getJson("/api/notifications"),
     // Slack capture health + the Grid teamId→groupId map. Through the REST bridge (not a raw
     // fetch) so it opens the E2E envelope like every other /api call (t099).

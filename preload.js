@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld("cdp", {
   updatePin: (id, patch) => ipcRenderer.invoke("cdp:update-pin", id, patch),
   removePin: (id) => ipcRenderer.invoke("cdp:remove-pin", id),
   reorderPins: (pins) => ipcRenderer.invoke("cdp:reorder-pins", pins),
+  // Browsing history (t103) — New Tab omnibox source
+  getHistory: () => ipcRenderer.invoke("cdp:get-history"),
   // Notifications
   getNotifications: () => ipcRenderer.invoke("cdp:get-notifications"),
   markNotificationRead: (id) => ipcRenderer.invoke("cdp:mark-notification-read", id),

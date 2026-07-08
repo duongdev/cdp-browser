@@ -19,6 +19,7 @@ import endpoints from "../core/cdp-endpoints.js"
 import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
 import { createFrameThrottle } from "../core/frame-throttle.js"
+import { recordVisit as historyRecord, visitsFromTabs } from "../core/history-store.js"
 import { createLineSplitter } from "../core/line-splitter.js"
 import { muteKey, unreadExcluding } from "../core/notif-mutes.js"
 import { buildHealth, shouldAlert } from "../core/notification-health.js"
@@ -141,6 +142,32 @@ const settings = createSettingsStore({
 // Env wins on first boot so a fresh deploy points at the right host immediately.
 if (process.env.CDP_HOST)
   settings.setConfig({ host: process.env.CDP_HOST, port: Number(process.env.CDP_PORT || 9222) })
+
+// ---- browsing history (t103, ADR-0017) ------------------------------------
+// CDP exposes no history API, so we record it from the tab poll: reconcileCycle
+// diffs the /json snapshot into visits. Shared across devices (the single server
+// store), served to the New Tab omnibox via /api/history. Titled by the tab, so
+// SPA route changes that never alter the /json url aren't captured — fine for
+// suggestions. Now stamped by the caller (pure store needs a clock).
+const HISTORY_PATH = process.env.HISTORY_PATH || join(HERE, "..", "web-history.json")
+let history = loadJson(HISTORY_PATH, [])
+let lastTabUrls = {} // tabId → last-seen url, for the navigation diff
+const saveHistory = () => {
+  try {
+    atomicWriteFileSync(HISTORY_PATH, JSON.stringify(history))
+  } catch (e) {
+    console.error("[web] saveHistory failed:", e.message)
+  }
+}
+// Fold new tab-navigation visits into the store; persists only when something changed.
+function ingestHistoryFromTabs(tabs, now) {
+  const pages = tabs.filter((t) => t.type === "page")
+  const { changed, next } = visitsFromTabs(lastTabUrls, pages)
+  lastTabUrls = next
+  if (changed.length === 0) return
+  for (const v of changed) history = historyRecord(history, { ...v, ts: now })
+  saveHistory()
+}
 
 // Load persisted push subscriptions; treat invalid/missing as empty.
 pushSubs = loadJson(SUBS_PATH, [])
@@ -721,6 +748,7 @@ async function reconcileCycle() {
     return
   }
   if (!Array.isArray(targets)) return
+  ingestHistoryFromTabs(targets, Date.now())
   await notificationCenter.reconcile(targets)
   await keepSlackTabsAlive(targets)
 }
@@ -1116,6 +1144,16 @@ const server = http.createServer(async (req, res) => {
       // Shape-guard so a wrong/empty body can't blow away the pin list (t099).
       if (!isValidPinsArray(pins)) return json(res, { error: "invalid pins" }, 400)
       return json(res, settings.reorderPins(pins))
+    }
+    // history (t103) — the New Tab omnibox source; record is for the Electron sync client.
+    if (p === "/api/history" && !POST) return json(res, history)
+    if (p === "/api/history/record" && POST) {
+      const { url, title, ts } = await body(req)
+      if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+        history = historyRecord(history, { url, title: title || "", ts: ts || Date.now() })
+        saveHistory()
+      }
+      return res.writeHead(204).end()
     }
     // notifications
     if (p === "/api/notifications" && !POST) return json(res, notificationCenter.list())

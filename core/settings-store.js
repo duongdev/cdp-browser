@@ -39,6 +39,12 @@ const UI_DEFAULTS = {
   // channels/DMs as { team, channelId, label }. The server sweep reads it; the renderer
   // edits it (a "Mute this channel" action + the Settings list). See ADR-0011.
   slackExcludes: [],
+  // Electron-only cross-device sync (t103, ADR-0017). When `syncEnabled` and a
+  // `syncServerUrl` are set, main.js routes pin + history CRUD to that web server
+  // (plaintext tailnet) so the Mac app shares one set with the PWA. The web build
+  // is inherently server-backed, so it ignores both.
+  syncEnabled: false,
+  syncServerUrl: "",
 }
 // Keys settable via setUiState (localExtensionPaths is owned by extension flows).
 const UI_SETTABLE = Object.keys(UI_DEFAULTS).filter((k) => k !== "localExtensionPaths")

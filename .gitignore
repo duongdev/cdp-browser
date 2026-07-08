@@ -5,6 +5,7 @@ release
 # Web build runtime state (default paths write to repo root; override via env)
 web-settings.json
 web-notifications.json
+web-history.json
 
 # Baked build identity (Docker builder writes it; never committed)
 .gitsha
