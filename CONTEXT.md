@@ -100,6 +100,14 @@ _Avoid_: preview, mini-client, mobile Slack.
 A locally-rendered web page displayed as an in-DOM Electron `<webview>` element inside the chrome view. Unlike a **Tab** (which renders a remote page as a JPEG screencast), a Local Tab has full device access: real OS notifications, audio, mic, camera, screen-share, and loadable MV3 extensions. The renderer holds `LocalTab` metadata (`{ id, url, title, favicon?, pinned, loading, canGoBack, canGoForward, audible, muted }`); the main process owns the `persist:local` session and extension loading. Local Tabs occupy the LOCAL TABS sidebar section; a `pinned` flag (distinct from CDP Pins) keeps them atop that section and restores them on relaunch. See `docs/adr/0005-local-tabs-base-window.md`.
 _Avoid_: native tab, page view, webview tab.
 
+**Visit**:
+One recorded page load, `{ url, title, visitCount, lastVisit }`, folded into the browsing-history store by `core/history-store.js`'s `recordVisit` (dedup by url) from a `/json` tab-poll diff (`visitsFromTabs`) — CDP/Edge exposes no History domain, so a Visit is only ever inferred from a Tab's url changing, not read back from the Remote Browser. Ranked by frecency (`rankHistory`) for the New Tab omnibox. See `docs/adr/0017-shared-sync-backend-for-pins-and-history.md`.
+_Avoid_: history entry, page visit, navigation event.
+
+**Sync Backend**:
+The web server acting as the shared source of truth for **Pin**s and **Visit**s across a user's devices (ADR-0017). Web is a Sync Backend client by construction (`/api/pins*`, `/api/history*`); Electron opts in per device via `syncEnabled` + `syncServerUrl` (plaintext tailnet URL, no auth/E2E), proxying its Pin + Visit reads/writes there instead of its local `settings.json` / `history.json` and falling back to local on any network failure. First enable is server-wins.
+_Avoid_: sync server, sync service, cloud sync.
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
@@ -110,6 +118,7 @@ _Avoid_: native tab, page view, webview tab.
 - A **Notification Side-Channel** attaches to a background **Tab**'s target and uses a **Notification Adapter** to run **Notification Capture** — independent of the **Active Tab**'s screencast socket. Clicking the result activates the owning Tab and, if the entry carries an `activate` intent, the activation registry maps it to a **Remote Page** deep-open intention.
 - For Slack, the **Slack Content Sweep** is the authoritative **Notification Capture** writer; the in-page hijack provides only an instant foreground toast. The sweep reads creds from a live **Tab**, persists workspaces in the **Workspace Registry**, uses the **Parked Tab** keeper (pin-deferred since t098 — a pinned workspace is owned by its Pin), and respects the **Channel Exclude** list.
 - A **Local Tab** renders a real local web page (in-DOM `<webview>`) alongside CDP Tabs — it does not use **Screencast Frames** or **Input Forwarding**; it gets direct device access instead.
+- The **Sync Backend** is the shared store for **Pin**s and **Visit**s; the New Tab omnibox ranks **Visit**s (`rankHistory`/`suggest`) alongside currently-open Tabs to offer a "switch to tab" result ahead of opening a duplicate.
 
 ## Example dialogue
 

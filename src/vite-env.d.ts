@@ -14,6 +14,14 @@ interface Pin {
   targetId?: string
 }
 
+/** A recorded browsing-history visit (t103) — the New Tab omnibox source. */
+interface HistoryVisit {
+  url: string
+  title: string
+  visitCount: number
+  lastVisit: number
+}
+
 interface CdpNotification {
   id: string
   source: string
@@ -99,6 +107,9 @@ interface CdpBridge {
     virtualPointerMode: "off" | "on" | "auto"
     settingsScrollTop: number
     slackExcludes: { team: string; channelId: string; label: string }[]
+    /** Electron cross-device sync of pins + history (t103) — off/empty on web. */
+    syncEnabled: boolean
+    syncServerUrl: string
   }>
   setUiState: (
     partial: Partial<{
@@ -122,6 +133,9 @@ interface CdpBridge {
       virtualPointerMode: "off" | "on" | "auto"
       settingsScrollTop: number
       slackExcludes: { team: string; channelId: string; label: string }[]
+      /** Electron cross-device sync of pins + history (t103). */
+      syncEnabled: boolean
+      syncServerUrl: string
     }>,
   ) => Promise<void>
   setThemeSource: (source: "system" | "light" | "dark") => Promise<void>
@@ -139,6 +153,8 @@ interface CdpBridge {
   updatePin: (id: string, patch: { title: string; url: string }) => Promise<Pin[]>
   removePin: (id: string) => Promise<Pin[]>
   reorderPins: (pins: Pin[]) => Promise<Pin[]>
+  /** Browsing history for the New Tab omnibox (t103); [] when unavailable. */
+  getHistory: () => Promise<HistoryVisit[]>
   // Notifications
   getNotifications: () => Promise<CdpNotification[]>
   markNotificationRead: (id: string) => Promise<CdpNotification[]>

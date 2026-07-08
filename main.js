@@ -19,6 +19,7 @@ const { emulatedMediaParams } = require("./core/theme-emulation")
 const { createSettingsStore } = require("./core/settings-store")
 const endpoints = require("./core/cdp-endpoints")
 const { tierToParams, DEFAULT_TIER } = require("./core/quality-tier")
+const { recordVisit: historyRecord, visitsFromTabs } = require("./core/history-store")
 
 // The window is a BaseWindow composed of a chrome view (the React UI, full
 // window) layered over zero-or-more local-tab page views. `chromeView` hosts
@@ -92,6 +93,85 @@ const saveSettings = () => persist(settings)
 
 // Re-persist the migrated shape once on first load when a legacy key was present.
 if (hadLegacyKeys) saveSettings()
+
+// ---- cross-device sync (t103, ADR-0017) -----------------------------------
+// When sync is on and a server URL is set, pins + history read/write the shared
+// web-server backend (plaintext tailnet, no auth/E2E) instead of the local file,
+// so the Mac app and the iPad PWA share one set. Server-wins: reads come from the
+// server, so enabling sync simply shows the server's pins. Any network failure
+// falls back to the local store — sync is best-effort, never a crash.
+const syncBase = () =>
+  settings.syncEnabled && settings.syncServerUrl
+    ? String(settings.syncServerUrl).replace(/\/+$/, "")
+    : null
+
+async function syncGetJson(pathname) {
+  const res = await fetch(syncBase() + pathname)
+  return res.json()
+}
+// `parseJson` is only true for endpoints that reply with a body (the pin CRUD
+// endpoints echo the resulting pins array); history/record replies 204.
+async function syncPost(pathname, payload, { parseJson = false } = {}) {
+  const res = await fetch(syncBase() + pathname, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  return parseJson ? res.json() : undefined
+}
+
+// Try the shared backend first, falling back to the local store on any network
+// failure — sync is best-effort, never a crash.
+async function syncOrLocal(syncCall, localCall) {
+  if (syncBase()) {
+    try {
+      return await syncCall()
+    } catch {
+      /* fall back to local */
+    }
+  }
+  return localCall()
+}
+
+// Local history fallback (userData/history.json) — used only when sync is off.
+const historyPath = path.join(app.getPath("userData"), "history.json")
+let localHistory = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(historyPath, "utf8"))
+  } catch {
+    return []
+  }
+})()
+const saveLocalHistory = () => {
+  try {
+    fs.writeFileSync(historyPath, JSON.stringify(localHistory))
+  } catch (e) {
+    console.error("[main] history persist failed:", e.message)
+  }
+}
+let lastTabUrls = {} // tabId → last-seen url, for the navigation diff
+
+// Fold a /json snapshot into history — to the server when syncing, else the local
+// file. Non-fatal: a sync POST failure just drops that visit.
+async function ingestHistoryFromTabs(tabs) {
+  const pages = tabs.filter((t) => t.type === "page")
+  const { changed, next } = visitsFromTabs(lastTabUrls, pages)
+  lastTabUrls = next
+  if (changed.length === 0) return
+  const now = Date.now()
+  if (syncBase()) {
+    for (const v of changed) {
+      try {
+        await syncPost("/api/history/record", { ...v, ts: now })
+      } catch {
+        /* best-effort */
+      }
+    }
+  } else {
+    for (const v of changed) localHistory = historyRecord(localHistory, { ...v, ts: now })
+    saveLocalHistory()
+  }
+}
 
 let cdpHost = settings.host
 let cdpPort = settings.port
@@ -216,7 +296,9 @@ ipcMain.handle("cdp:list-tabs", async () => {
   try {
     const { url, method } = endpoints.list(cdpHost, cdpPort)
     const res = await fetch(url, { method })
-    return await res.json()
+    const tabs = await res.json()
+    if (Array.isArray(tabs)) ingestHistoryFromTabs(tabs)
+    return tabs
   } catch (e) {
     return { error: e.message }
   }
@@ -465,11 +547,44 @@ ipcMain.handle("cdp:set-ui-state", (_, partial) => {
 // Pins (live-tab holders). The renderer owns link state (`targetId`); main is the
 // persistent store. `reorder-pins` replaces the whole array, so it also persists
 // link/unlink changes. Dedup-by-url and persistence live in the shared store.
-ipcMain.handle("cdp:get-pins", () => settingsStore.getPins())
-ipcMain.handle("cdp:add-pin", (_, pin) => settingsStore.addPin(pin))
-ipcMain.handle("cdp:update-pin", (_, id, patch) => settingsStore.updatePin(id, patch))
-ipcMain.handle("cdp:remove-pin", (_, id) => settingsStore.removePin(id))
-ipcMain.handle("cdp:reorder-pins", (_, pins) => settingsStore.reorderPins(pins))
+// Sync-aware: when a sync server is set, pin CRUD rides the shared backend so the
+// pin set matches the PWA; a network failure falls back to the local store.
+ipcMain.handle("cdp:get-pins", () =>
+  syncOrLocal(
+    () => syncGetJson("/api/pins"),
+    () => settingsStore.getPins(),
+  ),
+)
+ipcMain.handle("cdp:add-pin", (_, pin) =>
+  syncOrLocal(
+    () => syncPost("/api/pins/add", pin, { parseJson: true }),
+    () => settingsStore.addPin(pin),
+  ),
+)
+ipcMain.handle("cdp:update-pin", (_, id, patch) =>
+  syncOrLocal(
+    () => syncPost("/api/pins/update", { id, patch }, { parseJson: true }),
+    () => settingsStore.updatePin(id, patch),
+  ),
+)
+ipcMain.handle("cdp:remove-pin", (_, id) =>
+  syncOrLocal(
+    () => syncPost("/api/pins/remove", { id }, { parseJson: true }),
+    () => settingsStore.removePin(id),
+  ),
+)
+ipcMain.handle("cdp:reorder-pins", (_, pins) =>
+  syncOrLocal(
+    () => syncPost("/api/pins/reorder", { pins }, { parseJson: true }),
+    () => settingsStore.reorderPins(pins),
+  ),
+)
+ipcMain.handle("cdp:get-history", () =>
+  syncOrLocal(
+    () => syncGetJson("/api/history"),
+    () => localHistory,
+  ),
+)
 
 ipcMain.handle("cdp:set-theme-source", (_, source) => {
   nativeTheme.themeSource = source

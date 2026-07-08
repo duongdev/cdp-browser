@@ -119,6 +119,11 @@ interface SettingsDialogProps {
   notifications: MuteEntry[]
   syncTheme: boolean
   onSyncThemeChange: (enabled: boolean) => void
+  /** Cross-device sync of pins + history (t103, Electron only — web is inherently server-backed). */
+  syncEnabled: boolean
+  onSyncEnabledChange: (enabled: boolean) => void
+  syncServerUrl: string
+  onSyncServerUrlChange: (url: string) => void
   autoGrantLocalMedia: boolean
   onAutoGrantLocalMediaChange: (enabled: boolean) => void
   localExtensions: LocalExtensionInfo[]
@@ -214,6 +219,10 @@ export function SettingsDialog({
   notifications,
   syncTheme,
   onSyncThemeChange,
+  syncEnabled,
+  onSyncEnabledChange,
+  syncServerUrl,
+  onSyncServerUrlChange,
   autoGrantLocalMedia,
   onAutoGrantLocalMediaChange,
   localExtensions,
@@ -631,6 +640,44 @@ export function SettingsDialog({
                     />
                   </div>
                 </Card>
+
+                {/* Cross-device sync (t103) — Electron only; the web build is inherently
+                    server-backed, so its pins/history already sync with other web devices. */}
+                {!caps.web && (
+                  <Card title="Sync">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <Label className="text-[13px]">Sync across devices</Label>
+                        <p className="text-[11px] leading-snug text-muted-foreground">
+                          Share pins and browsing history with your other devices via the web server
+                          below.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={syncEnabled}
+                        className="mt-0.5"
+                        onCheckedChange={onSyncEnabledChange}
+                      />
+                    </div>
+                    <div
+                      className={
+                        "mt-3 space-y-2 border-l border-border/60 pl-3 transition-opacity " +
+                        (syncEnabled ? "" : "pointer-events-none opacity-40")
+                      }
+                    >
+                      <Label className="text-[13px]">Sync server URL</Label>
+                      <Input
+                        onChange={(e) => onSyncServerUrlChange(e.target.value)}
+                        placeholder="https://cdp.your-tailnet.ts.net"
+                        value={syncServerUrl}
+                      />
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        A reachable web build (plaintext, no auth). Turning sync on adopts that
+                        server's pins.
+                      </p>
+                    </div>
+                  </Card>
+                )}
 
                 {/* Viewport */}
                 <Card title="Viewport">

@@ -159,6 +159,8 @@ export default function App() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
   const [notifMutes, setNotifMutes] = useState<string[]>([])
   const [syncTheme, setSyncTheme] = useState(true)
+  const [syncEnabled, setSyncEnabled] = useState(false)
+  const [syncServerUrl, setSyncServerUrl] = useState("")
   const [bellOpen, setBellOpen] = useState(false)
   const [newTabOpen, setNewTabOpen] = useState(false)
   const [newTabKind, setNewTabKind] = useState<NewTabKind>("cdp")
@@ -405,6 +407,15 @@ export default function App() {
     switchTab: (id) => switchTabRef.current?.(id),
   })
 
+  // Open tabs (CDP + local) for the New Tab "Switch to tab" suggestion (t103).
+  const openTabsForSuggest = useMemo(
+    () => [
+      ...tabs.map((t) => ({ kind: "cdp" as const, id: t.id, title: t.title, url: t.url })),
+      ...localTabs.map((t) => ({ kind: "local" as const, id: t.id, title: t.title, url: t.url })),
+    ],
+    [tabs, localTabs],
+  )
+
   // Theme initialization
   useEffect(() => {
     // Reflect the current DOM theme in the OS chrome immediately, before the async
@@ -446,6 +457,8 @@ export default function App() {
         setCurrentTier(s.qualityTier)
       }
       setSyncTheme(s.syncTheme ?? true)
+      setSyncEnabled(s.syncEnabled ?? false)
+      setSyncServerUrl(s.syncServerUrl ?? "")
       setAutoGrantLocalMedia(s.autoGrantLocalMedia ?? true)
       restoreLocalPinsRef.current = s.restoreLocalPins ?? true
       uiStateLoadedRef.current = true
@@ -863,6 +876,26 @@ export default function App() {
   const handleSyncThemeChange = useCallback((enabled: boolean) => {
     setSyncTheme(enabled)
     window.cdp.setUiState({ syncTheme: enabled })
+  }, [])
+
+  // Cross-device sync (t103, Electron). Enabling adopts the server's pins (server-wins):
+  // main.js reads pins from the server while sync is on, so re-loading shows them,
+  // re-linking each to a live target by saved url.
+  const handleSyncEnabledChange = useCallback(async (enabled: boolean) => {
+    setSyncEnabled(enabled)
+    await window.cdp.setUiState({ syncEnabled: enabled })
+    const loaded = await window.cdp.getPins()
+    const resolved = loaded.map((p) => {
+      const targetId = resolvePinLink(p, tabsRef.current)
+      return targetId ? { ...p, targetId } : { ...p, targetId: undefined }
+    })
+    pinsRef.current = resolved
+    setPins(resolved)
+  }, [])
+
+  const handleSyncServerUrlChange = useCallback((url: string) => {
+    setSyncServerUrl(url)
+    window.cdp.setUiState({ syncServerUrl: url })
   }, [])
 
   const handleAutoGrantLocalMediaChange = useCallback((enabled: boolean) => {
@@ -2073,6 +2106,8 @@ export default function App() {
             onSettingsOpenChange={handleSettingsOpenChange}
             onSettingsRequestOpenMouse={handleSettingsRequestOpenMouse}
             onSwitchEffectChange={handleSwitchEffectChange}
+            onSyncEnabledChange={handleSyncEnabledChange}
+            onSyncServerUrlChange={handleSyncServerUrlChange}
             onSyncThemeChange={handleSyncThemeChange}
             onThemeChange={handleThemeChange}
             onToggleMute={handleToggleMute}
@@ -2085,6 +2120,8 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             status={status}
             switchEffect={switchEffect}
+            syncEnabled={syncEnabled}
+            syncServerUrl={syncServerUrl}
             syncTheme={syncTheme}
             theme={theme}
             url={effectiveUrl}
@@ -2144,7 +2181,9 @@ export default function App() {
           onActivatePin={(kind, p) => (kind === "cdp" ? activatePin(p) : switchLocalTab(p.id))}
           onOpenChange={setNewTabOpen}
           onOpenUrl={(kind, u) => (kind === "cdp" ? newTab(u) : createLocalTab(u))}
+          onSwitchTab={(kind, id) => (kind === "cdp" ? switchTab(id) : switchLocalTab(id))}
           open={newTabOpen}
+          openTabs={openTabsForSuggest}
         />
         <EditPinDialog
           liveUrl={

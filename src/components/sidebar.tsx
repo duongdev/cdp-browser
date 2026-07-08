@@ -33,7 +33,7 @@ import {
 import type { IconSvgElement } from "@hugeicons/react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { AnimatePresence, motion } from "motion/react"
-import { type PointerEvent as ReactPointerEvent, useState } from "react"
+import { type PointerEvent as ReactPointerEvent, useLayoutEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import type { TabInfo } from "@/app"
 import { InstallBanner } from "@/components/install-banner"
@@ -749,6 +749,40 @@ function RowLabel({ children }: { children: React.ReactNode }) {
   return <span className="min-h-[2lh] text-xs line-clamp-2 text-foreground">{children}</span>
 }
 
+// Strip the protocol so the URL subtitle reads as a bare host/path.
+function stripProtocol(url: string) {
+  return url.replace(/^[a-z]+:\/\//i, "")
+}
+
+// Two-line tab label: the title wraps to at most 2 lines. When it fits on a
+// single line, the freed second line shows the bare (protocol-less) URL so the
+// fixed-height row never has an empty line.
+function TabLabel({ title, url }: { title: string; url?: string }) {
+  const titleRef = useRef<HTMLSpanElement>(null)
+  const [oneLine, setOneLine] = useState(false)
+  useLayoutEffect(() => {
+    const el = titleRef.current
+    if (!el) return
+    const check = () => {
+      const lh = Number.parseFloat(getComputedStyle(el).lineHeight)
+      setOneLine(el.scrollHeight <= lh * 1.5)
+    }
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const sub = oneLine && url ? stripProtocol(url) : ""
+  return (
+    <span className="flex min-h-[2lh] min-w-0 flex-1 flex-col justify-center">
+      <span className={cn("text-xs", sub ? "line-clamp-1" : "line-clamp-2")} ref={titleRef}>
+        {title}
+      </span>
+      {sub && <span className="truncate text-[10px] text-muted-foreground">{sub}</span>}
+    </span>
+  )
+}
+
 function RowFavicon({ favicon }: { favicon?: string }) {
   if (favicon) {
     return (
@@ -987,7 +1021,7 @@ function SortableTabItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-start gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
+                  "group relative flex items-start gap-2 rounded-lg px-2 py-0.5 cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1006,12 +1040,12 @@ function SortableTabItem({
                 {...attributes}
                 {...listeners}
               >
-                <span className="relative shrink-0">
+                <span className="relative shrink-0 self-center">
                   <RowFavicon favicon={tab.faviconUrl} />
                   <UnreadBadge count={unread} />
                   <NumberHint n={number} />
                 </span>
-                <span className="min-h-[2lh] flex-1 line-clamp-2 text-xs">{displayTitle}</span>
+                <TabLabel title={displayTitle} url={tab.url} />
                 <div
                   className={cn(
                     "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100",
@@ -1020,7 +1054,7 @@ function SortableTabItem({
                 />
                 <button
                   aria-label="Close tab"
-                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground touch-target-end"
+                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 top-1/2 -translate-y-1/2 items-center text-muted-foreground hover:text-foreground touch-target-end"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClose()
@@ -1028,7 +1062,7 @@ function SortableTabItem({
                   onPointerDown={(e) => e.stopPropagation()}
                   type="button"
                 >
-                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+                  <HugeiconsIcon className="size-3.5" icon={Cancel01Icon} />
                 </button>
               </div>
             </TooltipTrigger>
@@ -1060,8 +1094,15 @@ function SortableTabItem({
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
-        <TooltipContent className="max-w-[300px]" side="bottom">
-          <p className="text-xs line-clamp-2">{displayTitle}</p>
+        <TooltipContent className="max-w-[300px]" side="right">
+          <div className="flex flex-col items-start">
+            <p className="text-xs line-clamp-2">{displayTitle}</p>
+            {tab.url && (
+              <p className="mt-0.5 text-[10px] text-background/60 break-all line-clamp-2">
+                {stripProtocol(tab.url)}
+              </p>
+            )}
+          </div>
         </TooltipContent>
       </Tooltip>
     </motion.div>
@@ -1106,7 +1147,7 @@ function SortableLocalItem({
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "group relative flex items-start gap-2 rounded-lg px-2.5 py-1.5 cursor-default touch-target",
+                  "group relative flex items-start gap-2 rounded-lg px-2 py-0.5 cursor-default touch-target",
                   isDragging
                     ? "opacity-50"
                     : active
@@ -1125,7 +1166,7 @@ function SortableLocalItem({
                 {...attributes}
                 {...listeners}
               >
-                <span className="relative shrink-0">
+                <span className="relative shrink-0 self-center">
                   <RowFavicon favicon={tab.favicon} />
                   <NumberHint n={number} />
                   {/* Pinned cue as a favicon corner dot — shows identically on fine + coarse
@@ -1135,7 +1176,7 @@ function SortableLocalItem({
                     <span className="absolute bottom-0.5 right-0.5 size-1.5 rounded-full bg-foreground/40 ring-1 ring-sidebar" />
                   )}
                 </span>
-                <span className="min-h-[2lh] flex-1 line-clamp-2 text-xs">{displayTitle}</span>
+                <TabLabel title={displayTitle} url={tab.url} />
                 <div
                   className={cn(
                     "pointer-events-none absolute right-0 top-0 bottom-0 w-12 rounded-r-lg bg-gradient-to-l to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100",
@@ -1144,7 +1185,7 @@ function SortableLocalItem({
                 />
                 <button
                   aria-label="Close tab"
-                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 text-muted-foreground hover:text-foreground touch-target-end"
+                  className="hidden group-hover:flex [@media(hover:none)]:flex absolute right-2 top-1/2 -translate-y-1/2 items-center text-muted-foreground hover:text-foreground touch-target-end"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClose()
@@ -1152,7 +1193,7 @@ function SortableLocalItem({
                   onPointerDown={(e) => e.stopPropagation()}
                   type="button"
                 >
-                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+                  <HugeiconsIcon className="size-3.5" icon={Cancel01Icon} />
                 </button>
               </div>
             </TooltipTrigger>
@@ -1173,8 +1214,15 @@ function SortableLocalItem({
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
-        <TooltipContent className="max-w-[300px]" side="bottom">
-          <p className="text-xs line-clamp-2">{displayTitle}</p>
+        <TooltipContent className="max-w-[300px]" side="right">
+          <div className="flex flex-col items-start">
+            <p className="text-xs line-clamp-2">{displayTitle}</p>
+            {tab.url && (
+              <p className="mt-0.5 text-[10px] text-background/60 break-all line-clamp-2">
+                {stripProtocol(tab.url)}
+              </p>
+            )}
+          </div>
         </TooltipContent>
       </Tooltip>
     </motion.div>

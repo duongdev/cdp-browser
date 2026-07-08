@@ -73,6 +73,10 @@ interface ToolbarProps {
   onToggleMute: (key: string) => void
   syncTheme: boolean
   onSyncThemeChange: (enabled: boolean) => void
+  syncEnabled: boolean
+  onSyncEnabledChange: (enabled: boolean) => void
+  syncServerUrl: string
+  onSyncServerUrlChange: (url: string) => void
   autoGrantLocalMedia: boolean
   onAutoGrantLocalMediaChange: (enabled: boolean) => void
   /** Extensions apply to local tabs only — their toolbar icons hide for CDP tabs. */
@@ -140,6 +144,10 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     onToggleMute,
     syncTheme,
     onSyncThemeChange,
+    syncEnabled,
+    onSyncEnabledChange,
+    syncServerUrl,
+    onSyncServerUrlChange,
     autoGrantLocalMedia,
     onAutoGrantLocalMediaChange,
     isLocalActive,
@@ -463,11 +471,15 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           onRemoveLocalExtension={onRemoveLocalExtension}
           onRequestOpenMouse={onSettingsRequestOpenMouse}
           onSwitchEffectChange={onSwitchEffectChange}
+          onSyncEnabledChange={onSyncEnabledChange}
+          onSyncServerUrlChange={onSyncServerUrlChange}
           onSyncThemeChange={onSyncThemeChange}
           onThemeChange={onThemeChange}
           onToggleMute={onToggleMute}
           open={settingsOpen}
           switchEffect={switchEffect}
+          syncEnabled={syncEnabled}
+          syncServerUrl={syncServerUrl}
           syncTheme={syncTheme}
           theme={theme}
         />

@@ -1,8 +1,14 @@
-import { CloudIcon, Globe02Icon, LaptopIcon } from "@hugeicons/core-free-icons"
+import {
+  ArrowMoveDownRightIcon,
+  CloudIcon,
+  Globe02Icon,
+  LaptopIcon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { VisuallyHidden } from "radix-ui"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { type OpenTab, suggest } from "@/lib/tab-suggest"
 import { cn } from "@/lib/utils"
 
 export type NewTabKind = "cdp" | "local"
@@ -35,8 +41,11 @@ interface NewTabDialogProps {
   localPins: Pin[]
   /** Electron only: when false the local mode + Tab-to-switch are hidden (web build). */
   localEnabled: boolean
+  /** Currently-open tabs (CDP + local) — matched for the "Switch to tab" suggestion (t103). */
+  openTabs: OpenTab[]
   onOpenUrl: (kind: NewTabKind, url: string) => void
   onActivatePin: (kind: NewTabKind, pin: Pin) => void
+  onSwitchTab: (kind: "cdp" | "local", id: string) => void
 }
 
 export function NewTabDialog({
@@ -46,20 +55,28 @@ export function NewTabDialog({
   cdpPins,
   localPins,
   localEnabled,
+  openTabs,
   onOpenUrl,
   onActivatePin,
+  onSwitchTab,
 }: NewTabDialogProps) {
   const [kind, setKind] = useState<NewTabKind>(initialKind)
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState(0)
+  const [history, setHistory] = useState<HistoryVisit[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Seed mode + reset on each open. Web (no local) is always pinned to cdp.
+  // Seed mode + reset on each open. Web (no local) is always pinned to cdp. Load the
+  // browsing history once per open — it feeds the omnibox suggestions (t103).
   useEffect(() => {
     if (open) {
       setKind(localEnabled ? initialKind : "cdp")
       setQuery("")
       setSelected(0)
+      window.cdp
+        .getHistory?.()
+        .then((h) => setHistory(h ?? []))
+        .catch(() => setHistory([]))
       const t = setTimeout(() => inputRef.current?.focus(), 50)
       return () => clearTimeout(t)
     }
@@ -75,14 +92,28 @@ export function NewTabDialog({
     return pins.filter((p) => p.title.toLowerCase().includes(q) || p.url.toLowerCase().includes(q))
   }, [pins, trimmed])
 
-  // Row model: an optional "open URL" row first (when typing), then matching pins.
-  type Item = { kind: "url"; url: string } | { kind: "pin"; pin: Pin }
+  // History + open-tab suggestions for the typed query (t103). Empty query returns [].
+  const suggestions = useMemo(
+    () => suggest({ query: trimmed, history, openTabs, now: Date.now(), limit: 8 }),
+    [trimmed, history, openTabs],
+  )
+
+  // Row model. Empty query: pins only. Typing: the "open URL" row, then switch/history
+  // suggestions, then matching pins.
+  type Item =
+    | { kind: "url"; url: string }
+    | { kind: "pin"; pin: Pin }
+    | { kind: "switch"; tabKind: "cdp" | "local"; id: string; title: string; url: string }
+    | { kind: "history"; title: string; url: string }
   const items = useMemo<Item[]>(() => {
     const list: Item[] = []
-    if (trimmed) list.push({ kind: "url", url: trimmed })
+    if (trimmed) {
+      list.push({ kind: "url", url: trimmed })
+      for (const s of suggestions) list.push(s)
+    }
     for (const p of filteredPins) list.push({ kind: "pin", pin: p })
     return list
-  }, [trimmed, filteredPins])
+  }, [trimmed, suggestions, filteredPins])
 
   // Keep the selection in range as items change.
   useEffect(() => {
@@ -96,6 +127,8 @@ export function NewTabDialog({
       return
     }
     if (item.kind === "url") onOpenUrl(kind, normalizeUrl(item.url))
+    else if (item.kind === "switch") onSwitchTab(item.tabKind, item.id)
+    else if (item.kind === "history") onOpenUrl(kind, item.url)
     else onActivatePin(kind, item.pin)
     onOpenChange(false)
   }
@@ -173,12 +206,20 @@ export function NewTabDialog({
                     "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors touch-target",
                     isSel ? "bg-foreground/[0.07]" : "hover:bg-foreground/[0.04]",
                   )}
-                  key={item.kind === "url" ? "__url" : item.pin.id}
+                  key={
+                    item.kind === "url"
+                      ? "__url"
+                      : item.kind === "pin"
+                        ? `pin:${item.pin.id}`
+                        : item.kind === "switch"
+                          ? `switch:${item.tabKind}:${item.id}`
+                          : `hist:${item.url}`
+                  }
                   onClick={() => run(item)}
                   onMouseMove={() => setSelected(i)}
                   type="button"
                 >
-                  {item.kind === "url" ? (
+                  {item.kind === "url" && (
                     <>
                       <HugeiconsIcon
                         className="size-4 shrink-0 text-muted-foreground"
@@ -188,7 +229,36 @@ export function NewTabDialog({
                         Open <span className="text-foreground">{item.url}</span>
                       </span>
                     </>
-                  ) : (
+                  )}
+                  {item.kind === "switch" && (
+                    <>
+                      <HugeiconsIcon
+                        className="size-4 shrink-0 text-muted-foreground"
+                        icon={ArrowMoveDownRightIcon}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px]">{item.title || item.url}</span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          Switch to tab · {stripScheme(item.url)}
+                        </span>
+                      </span>
+                    </>
+                  )}
+                  {item.kind === "history" && (
+                    <>
+                      <HugeiconsIcon
+                        className="size-4 shrink-0 text-muted-foreground"
+                        icon={Globe02Icon}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px]">{item.title || item.url}</span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {stripScheme(item.url)}
+                        </span>
+                      </span>
+                    </>
+                  )}
+                  {item.kind === "pin" && (
                     <>
                       <PinFavicon favicon={item.pin.favicon} />
                       <span className="min-w-0 flex-1">
@@ -255,4 +325,8 @@ function PinFavicon({ favicon }: { favicon?: string }) {
 
 function normalizeUrl(input: string) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : `https://${input}`
+}
+
+function stripScheme(url: string) {
+  return url.replace(/^[a-z]+:\/\//i, "")
 }
