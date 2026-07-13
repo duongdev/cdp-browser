@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.4.0...cdp-browser-v0.4.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **t104:** stop slack keeper parking a phantom sso landing page ([b0111ab](https://github.com/duongdev/cdp-browser/commit/b0111ab3f600654336bb6ec13df316e1f7d10d82))
+* **t105:** capture teams notifications in the actively-viewed chat ([b941ebb](https://github.com/duongdev/cdp-browser/commit/b941ebb9c876849dcc8526aff3a3c3e726827fce))
+
 ## [0.4.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.3.0...cdp-browser-v0.4.0) (2026-07-08)
 
 
