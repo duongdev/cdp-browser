@@ -40,8 +40,12 @@ function groupKeyFor(payload, targetUrl) {
 // Slack workspace context from a tab URL. Modern Slack runs every workspace under one
 // origin (`app.slack.com/client/{TEAM}/{CHANNEL}`), so per-origin grouping can't tell
 // workspaces apart — the team id (path segment, `T…` standard or `E…` Enterprise Grid)
-// is the real key. Legacy `acme.slack.com` URLs fall back to the subdomain as the team
-// id. Returns nulls for non-Slack / unparseable URLs. Pure.
+// is the real key. Only that path shape yields a team id: a `*.slack.com` subdomain is a
+// workspace *name*, never a team id, and every downstream consumer (cred lookup, sweep,
+// deep link, parked-tab registry) needs the real id — so a subdomain-derived id is always
+// wrong, and treating one as a workspace manufactures a phantom that can never resolve
+// (t104: the Grid sign-in host `acme.enterprise.slack.com/?sso_failed=1` became a
+// workspace the keeper then reopened forever). Returns nulls otherwise. Pure.
 function parseSlackContext(url) {
   let u
   try {
@@ -52,9 +56,6 @@ function parseSlackContext(url) {
   if (!/(^|\.)slack\.com$/.test(u.hostname)) return { teamId: null, channelId: null }
   const m = u.pathname.match(/\/client\/([TE][A-Z0-9]+)(?:\/([CDG][A-Z0-9]+))?/)
   if (m) return { teamId: m[1], channelId: m[2] || null }
-  // Legacy per-workspace subdomain (acme.slack.com) — not app.slack.com.
-  const sub = u.hostname.replace(/\.slack\.com$/, "")
-  if (sub && sub !== "app" && sub !== "slack.com") return { teamId: sub, channelId: null }
   return { teamId: null, channelId: null }
 }
 

@@ -24,14 +24,13 @@
 
   const text = (el) => (el ? (el.innerText || el.textContent || "").trim() : "")
 
-  // teamId from the unified-client path (app.slack.com/client/{TEAM}/…), else the legacy
-  // workspace subdomain (acme.slack.com). Mirrors core/notifications.js parseSlackContext;
-  // kept inline because an injected script can't require the core module.
+  // teamId from the unified-client path (app.slack.com/client/{TEAM}/…) — a `*.slack.com`
+  // subdomain is a workspace name, never a team id, so it yields "" (t104). Mirrors
+  // core/notifications.js parseSlackContext; kept inline because an injected script can't
+  // require the core module.
   const teamId = () => {
     const m = location.pathname.match(/\/client\/([TE][A-Z0-9]+)/)
-    if (m) return m[1]
-    const sub = location.hostname.replace(/\.slack\.com$/, "")
-    return sub && sub !== "app" && sub !== "slack.com" ? sub : ""
+    return m ? m[1] : ""
   }
 
   // Best-effort workspace name for display: the team-switcher label, else the middle

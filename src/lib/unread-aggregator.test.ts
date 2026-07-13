@@ -147,6 +147,20 @@ describe("aggregateUnread", () => {
       expect(byTab.w1).toBe(1)
     })
 
+    it("buckets a teamless slack.com page by origin, not a subdomain pseudo-team (t104)", () => {
+      // A `*.slack.com` subdomain is a workspace name, never a team id. Keying one as a team
+      // manufactured a phantom workspace that the server keeper then parked forever.
+      const notifications = [
+        notif({ groupKey: "slack:T111", targetUrl: "https://app.slack.com/client/T111/C1" }),
+      ]
+      const tabs = [{ id: "sso", url: "https://acme.enterprise.slack.com/?sso_failed=1" }]
+
+      const { byGroup, byTab } = aggregateUnread(notifications, tabs, [], {})
+
+      expect(byGroup["slack:acme.enterprise"]).toBeUndefined()
+      expect(byTab.sso).toBe(0)
+    })
+
     it("keeps two workspaces on app.slack.com distinct (no cross-bleed)", () => {
       const notifications = [
         notif({ groupKey: "slack:T111", targetUrl: "https://app.slack.com/client/T111/C1" }),

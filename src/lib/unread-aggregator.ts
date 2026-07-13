@@ -77,7 +77,9 @@ export type TeamGroupMap = Record<string, string>
 // (mirrors core/notifications.js `slackGroupKey`; one tab per workspace, so the URL is
 // authoritative). With an Enterprise Grid `teamGroupMap`, the extracted teamId maps to its
 // merged `groupId` (`map[teamId] || teamId`), so an org tab and its member workspace bucket
-// together; no map entry → today's `slack:{teamId}`. `T…` standard / `E…` Grid, legacy fallback.
+// together; no map entry → today's `slack:{teamId}`. `T…` standard / `E…` Grid. A team id
+// comes from the client path only — a `*.slack.com` subdomain is a workspace name, never a
+// team id, so it buckets by origin like any other URL (t104).
 function slackGroupKey(url: string | undefined, teamGroupMap: TeamGroupMap): string | null {
   if (!url) return null
   let u: URL
@@ -88,9 +90,7 @@ function slackGroupKey(url: string | undefined, teamGroupMap: TeamGroupMap): str
   }
   if (!/(^|\.)slack\.com$/.test(u.hostname)) return null
   const m = u.pathname.match(/\/client\/([TE][A-Z0-9]+)/)
-  if (m) return `slack:${teamGroupMap[m[1]] || m[1]}`
-  const sub = u.hostname.replace(/\.slack\.com$/, "")
-  return sub && sub !== "app" ? `slack:${teamGroupMap[sub] || sub}` : null
+  return m ? `slack:${teamGroupMap[m[1]] || m[1]}` : null
 }
 
 /** A URL's unread bucket: Slack's per-workspace (or per-Grid-group) `slack:{groupId}`, else

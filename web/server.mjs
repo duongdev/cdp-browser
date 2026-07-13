@@ -35,8 +35,10 @@ import { buildSlackGroups } from "../core/slack-creds.js"
 import { createSlackSweeper } from "../core/slack-sweep-runner.js"
 import { createSweepStatePersister } from "../core/slack-sweep-state.js"
 import {
+  hasBrokenSlackSession,
   liveTeamIds as slackLiveTeamIds,
   planParkedTabs as slackPlanParkedTabs,
+  pruneRegistry as slackPruneRegistry,
   teamIdOf as slackTeamIdOf,
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
@@ -654,7 +656,10 @@ const notificationCenter = createNotificationCenter({
 // workspace with no live tab (closed by the user, or gone after a browser restart) — so the
 // sweep's creds self-refresh and the hijack stays armed. Per the user's "fully live" choice,
 // this actively provisions tabs via /json/new. Registry persists non-secret metadata only.
-let slackRegistry = loadJson(SLACK_WORKSPACES_PATH, {})
+// Pruned on load (t104): a registry poisoned by the pre-t104 keeper — a Slack sign-in
+// landing page persisted as a workspace — self-heals instead of reopening its bad tab.
+const slackRegistryOnDisk = loadJson(SLACK_WORKSPACES_PATH, {})
+let slackRegistry = slackPruneRegistry(slackRegistryOnDisk)
 const slackCreatedAt = {} // teamId → last /json/new timestamp (create cooldown)
 const saveSlackRegistry = () => {
   try {
@@ -662,6 +667,10 @@ const saveSlackRegistry = () => {
   } catch (e) {
     console.error("[web] saveSlackRegistry failed:", e.message)
   }
+}
+if (JSON.stringify(slackRegistryOnDisk) !== JSON.stringify(slackRegistry)) {
+  console.log("[web] slack registry pruned (t104): dropped phantom workspaces / stale URLs")
+  saveSlackRegistry()
 }
 
 async function keepSlackTabsAlive(targets) {
@@ -678,7 +687,7 @@ async function keepSlackTabsAlive(targets) {
       notificationCenter.getCreds(teamId)?.enterpriseId ?? before?.enterpriseId ?? ""
     slackRegistry = slackUpsertWorkspace(
       slackRegistry,
-      { teamId, url: t.url, name: before?.name, enterpriseId },
+      { teamId, name: before?.name, enterpriseId },
       Date.now(),
     )
     if (!before || before.enterpriseId !== enterpriseId) changed = true
@@ -693,7 +702,17 @@ async function keepSlackTabsAlive(targets) {
     const tid = slackTeamIdOf(pin.url || "")
     if (tid && !pinUrlByTeam[tid]) pinUrlByTeam[tid] = pin.url
   }
-  const plans = slackPlanParkedTabs(slackRegistry, live, slackCreatedAt, Date.now(), pinUrlByTeam)
+  // A dead Slack session (a sign-in / SSO-failure landing page is open) stands the keeper
+  // down: every tab it opened would redirect straight back to one (t104).
+  const broken = hasBrokenSlackSession(targets)
+  const plans = slackPlanParkedTabs(
+    slackRegistry,
+    live,
+    slackCreatedAt,
+    Date.now(),
+    pinUrlByTeam,
+    broken,
+  )
   for (const plan of plans) {
     slackCreatedAt[plan.teamId] = Date.now()
     try {

@@ -64,11 +64,20 @@ describe("parseSlackContext", () => {
     expect(parseSlackContext("https://app.slack.com/client/T1/G999").channelId).toBe("G999")
   })
 
-  it("falls back to the subdomain as teamId for legacy workspace URLs", () => {
-    expect(parseSlackContext("https://acme.slack.com/messages")).toEqual({
-      teamId: "acme",
-      channelId: null,
-    })
+  it("resolves no teamId for a slack.com host with no client path (t104)", () => {
+    // A subdomain is a workspace *name*, never a team id — and Slack's own sign-in hosts
+    // live under one too. Treating either as a workspace manufactures a phantom the sweep
+    // can never fetch creds for, and a parked tab the keeper reopens forever.
+    for (const url of [
+      "https://acme.slack.com/messages",
+      "https://acme.enterprise.slack.com/?sso_failed=1",
+      "https://my.slack.com/",
+      "https://api.slack.com/docs",
+      "https://slack.com/",
+      "https://app.slack.com/",
+    ]) {
+      expect(parseSlackContext(url)).toEqual({ teamId: null, channelId: null })
+    }
   })
 
   it("returns nulls for non-Slack and unparseable URLs", () => {
