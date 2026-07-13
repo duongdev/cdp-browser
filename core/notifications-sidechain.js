@@ -29,6 +29,7 @@ const {
   redact,
 } = require("./slack-creds")
 const { tsCmp } = require("./slack-sweep")
+const { CAPTURE_MARKER } = require("./capture-tab")
 
 const NOTIFY_BINDING = "__cdpNotify"
 const DEFAULT_CAP = 200
@@ -52,6 +53,11 @@ const ADAPTERS = [
     // Served from the app's own origin (t086): external favicon CDNs are blocked by a
     // corporate TLS-intercepting proxy / need auth, so they silently failed to load on the phone.
     iconUrl: "/icons/teams.svg",
+    // Teams suppresses its in-app toast for the conversation a tab has open + focused, so a
+    // message in the actively-viewed chat is never scraped. The keeper (t105) maintains one
+    // always-background capture tab at this URL — never focused, so Teams toasts every message.
+    captureTab: true,
+    captureUrl: "https://teams.microsoft.com/v2/",
   },
   {
     name: "outlook",
@@ -95,6 +101,11 @@ function createNotificationCenter(deps) {
   const persist = () => save(notifications)
 
   const sideChannels = new Map() // targetId -> ws
+  // Capture-tab detection (t105): a target whose `window.name === CAPTURE_MARKER` is the
+  // keeper's dedicated always-background capture tab. The backend reads this to hide it from
+  // the tab list and never activate it. Read once per attach — window.name survives a reload,
+  // and the marker is set at creation before this side-channel attaches, so one read suffices.
+  const captureTabTargets = new Set()
   // Live cred-capable (Slack) sockets: targetId -> { cdpCall, target }. Lets markCredsStale
   // re-run extraction over an already-open socket without waiting for a reconnect (t099).
   const credSockets = new Map()
@@ -245,6 +256,13 @@ function createNotificationCenter(deps) {
       // document-start for future loads + the already-loaded document.
       cdp("Page.addScriptToEvaluateOnNewDocument", { source: sourceFor(adapter) })
       cdp("Runtime.evaluate", { expression: sourceFor(adapter) })
+      // Detect the keeper's capture tab by its durable window.name marker (t105).
+      cdpCall("Runtime.evaluate", { expression: "window.name", returnByValue: true })
+        .then((msg) => {
+          if (msg?.result?.result?.value === CAPTURE_MARKER) captureTabTargets.add(target.id)
+          else captureTabTargets.delete(target.id)
+        })
+        .catch(() => {})
       // Slack only: pull the workspace creds for the server-side sweep (ADR-0011). Keep the
       // live cdpCall handle so a later 401 can re-extract over this same socket (t099).
       if (adapter.extractCreds && deps.onCreds) {
@@ -268,6 +286,7 @@ function createNotificationCenter(deps) {
     const drop = () => {
       if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
       credSockets.delete(target.id)
+      captureTabTargets.delete(target.id)
       // Free any in-flight awaitable call so a stalled socket can't leak its promise.
       for (const p of pending.values()) p.reject(new Error("side-channel closed"))
       pending.clear()
@@ -352,6 +371,9 @@ function createNotificationCenter(deps) {
   return {
     adapterFor,
     reconcile,
+    // Capture-tab detection (t105): is this target the keeper's dedicated capture tab?
+    // The backend uses this to hide it from the tab list and never activate it.
+    isCaptureTab: (id) => captureTabTargets.has(id),
     list: () => notifications,
     markRead: (id) => {
       notifications = markRead(notifications, id)

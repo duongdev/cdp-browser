@@ -297,8 +297,12 @@ ipcMain.handle("cdp:list-tabs", async () => {
     const { url, method } = endpoints.list(cdpHost, cdpPort)
     const res = await fetch(url, { method })
     const tabs = await res.json()
-    if (Array.isArray(tabs)) ingestHistoryFromTabs(tabs)
-    return tabs
+    if (!Array.isArray(tabs)) return tabs
+    // Hide the keeper's dedicated capture tab (t105) from the renderer entirely — it must
+    // never appear in the Tabs list, be activated, or pollute browsing history.
+    const visible = tabs.filter((t) => !isCaptureTargetId(t.id))
+    ingestHistoryFromTabs(visible)
+    return visible
   } catch (e) {
     return { error: e.message }
   }
@@ -603,7 +607,8 @@ ipcMain.handle("cdp:get-theme-source", () => settingsStore.getThemeSource())
 // persisted store file, the OS Notification + dock badge gated by shouldNotifyOs).
 const { shouldNotifyOs } = require("./core/notifications")
 const { unreadExcluding } = require("./core/notif-mutes")
-const { createNotificationCenter } = require("./core/notifications-sidechain")
+const { createNotificationCenter, ADAPTERS } = require("./core/notifications-sidechain")
+const { planCaptureTabs, CAPTURE_MARKER } = require("./core/capture-tab")
 
 // Persisted store (separate from settings.json to keep that file lean).
 const notificationsPath = path.join(app.getPath("userData"), "notifications.json")
@@ -680,10 +685,129 @@ const notificationCenter = createNotificationCenter({
   },
 })
 
-setInterval(() => notificationCenter.reconcile(), 5000)
+// ---------------------------------------------------------------------------
+// Dedicated notification capture tab keeper (t105, ADR-0018). Some adapters (Teams)
+// suppress their in-app toast for the conversation a tab has open + focused, so a
+// message in the actively-viewed chat is never scraped. The keeper maintains one
+// always-background capture tab per capture-tab adapter: never focused, so the app
+// fires the toast for every message. The capture tab is marked with a durable
+// `window.name` (survives reload; a URL marker does not) so both this client and a
+// second Electron client on the same host hide it from the tab list and never activate
+// it. Electron-only — the web build's Slack path is covered by the content sweep.
+// ---------------------------------------------------------------------------
+const CAPTURE_COOLDOWN_MS = 30_000
+// Capture tabs THIS process created — treated as marked immediately (before the
+// side-channel re-reads window.name) so a fresh tab isn't hidden late or re-created.
+const myCaptureTabs = new Set()
+const captureCreatedAt = new Map() // adapter name -> last create timestamp
+
+const isCaptureTargetId = (id) => myCaptureTabs.has(id) || notificationCenter.isCaptureTab(id)
+
+// Open one background capture tab and stamp its durable marker. Uses the browser-level
+// CDP socket so `Target.createTarget({ background: true })` opens it WITHOUT stealing the
+// remote foreground (/json/new would). Returns the new targetId.
+async function createCaptureTab(url) {
+  const ver = endpoints.version(cdpHost, cdpPort)
+  const { webSocketDebuggerUrl } = await (await fetch(ver.url, { method: ver.method })).json()
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(webSocketDebuggerUrl)
+    let cid = 0
+    const pending = new Map()
+    const call = (method, params, sessionId) =>
+      new Promise((res, rej) => {
+        const id = ++cid
+        pending.set(id, { res, rej })
+        const msg = { id, method, params: params || {} }
+        if (sessionId) msg.sessionId = sessionId
+        ws.send(JSON.stringify(msg))
+      })
+    ws.on("message", (d) => {
+      try {
+        const m = JSON.parse(d.toString())
+        if (m.id != null && pending.has(m.id)) {
+          const p = pending.get(m.id)
+          pending.delete(m.id)
+          m.error ? p.rej(new Error(JSON.stringify(m.error))) : p.res(m)
+        }
+      } catch {}
+    })
+    ws.on("error", reject)
+    ws.on("open", async () => {
+      try {
+        const created = await call("Target.createTarget", { url, background: true })
+        const targetId = created.result.targetId
+        const at = await call("Target.attachToTarget", { targetId, flatten: true })
+        const sid = at.result.sessionId
+        await call("Page.enable", {}, sid)
+        await call("Runtime.enable", {}, sid)
+        const setMarker = `window.name = ${JSON.stringify(CAPTURE_MARKER)}`
+        // Re-apply at document-start (in case a full navigation ever clears it) + now.
+        await call("Page.addScriptToEvaluateOnNewDocument", { source: setMarker }, sid)
+        await call("Runtime.evaluate", { expression: setMarker, returnByValue: true }, sid)
+        ws.close()
+        resolve(targetId)
+      } catch (e) {
+        try {
+          ws.close()
+        } catch {}
+        reject(e)
+      }
+    })
+  })
+}
+
+const CAPTURE_ADAPTERS = ADAPTERS.filter((a) => a.captureTab).map((a) => ({
+  name: a.name,
+  url: a.captureUrl,
+}))
+
+async function reconcileCaptureTabs(targets) {
+  if (!CAPTURE_ADAPTERS.length || !Array.isArray(targets)) return
+  const adapterTabs = []
+  for (const t of targets) {
+    if (t.type !== "page") continue
+    const a = notificationCenter.adapterFor(t.url)
+    if (a?.captureTab) adapterTabs.push({ id: t.id, adapter: a.name })
+  }
+  const { create, reap } = planCaptureTabs(adapterTabs, isCaptureTargetId, CAPTURE_ADAPTERS)
+  const now = Date.now()
+  for (const c of create) {
+    if (now - (captureCreatedAt.get(c.adapter) || 0) < CAPTURE_COOLDOWN_MS) continue
+    captureCreatedAt.set(c.adapter, now)
+    try {
+      myCaptureTabs.add(await createCaptureTab(c.url))
+    } catch (e) {
+      console.error("[capture-tab] create failed:", e.message)
+    }
+  }
+  for (const id of reap) {
+    myCaptureTabs.delete(id)
+    try {
+      const { url, method } = endpoints.close(cdpHost, cdpPort, id)
+      await fetch(url, { method })
+    } catch {}
+  }
+}
+
+// One /json fetch feeds both the side-channel reconcile and the capture-tab keeper.
+async function reconcileNotifications() {
+  if (!cdpHost) return
+  let targets
+  try {
+    const { url, method } = endpoints.list(cdpHost, cdpPort)
+    targets = await (await fetch(url, { method })).json()
+  } catch {
+    return
+  }
+  if (!Array.isArray(targets)) return
+  await notificationCenter.reconcile(targets)
+  await reconcileCaptureTabs(targets)
+}
+
+setInterval(reconcileNotifications, 5000)
 app.whenReady().then(() => {
   updateBadge() // restore dock badge from persisted unread
-  setTimeout(() => notificationCenter.reconcile(), 1000)
+  setTimeout(reconcileNotifications, 1000)
 })
 
 ipcMain.handle("cdp:get-notifications", () => notificationCenter.list())
