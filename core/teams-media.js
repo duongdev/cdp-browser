@@ -47,13 +47,38 @@ const SRC_RE = /(\bsrc\s*=\s*)(["'])([\s\S]*?)\2/i
 // `&amp;` round-trips as a real `&`.
 function rewriteMediaHtml(html) {
   if (typeof html !== "string" || !html) return html
-  return html.replace(TAG_RE, (tag) =>
+  const rewritten = html.replace(TAG_RE, (tag) =>
     tag.replace(SRC_RE, (full, pre, q, raw) => {
       const decoded = raw.replace(/&amp;/g, "&")
       if (!isValidAmsUrl(decoded)) return full
       return `${pre}${q}/api/teams/media?url=${encodeURIComponent(decoded)}${q}`
     }),
   )
+  return ensureMediaDimensions(rewritten)
 }
 
-module.exports = { isValidAmsUrl, amsObjectId, rewriteMediaHtml }
+// Reserve a media element's box before its bytes load (t118). Some AMS `<img>`/`<video>` carry NO
+// width/height ATTRS — the size lives in inline `style="width:Npx; height:Npx"` (which DOMPurify
+// strips), so the box renders at height 0 and jumps on load → scroll flicker. Convert those px dims
+// to real width/height attrs (which survive the sanitizer) so the browser derives the aspect-ratio
+// box up front. Tags that already have either attr, or that have no px style dims, are untouched.
+// The lookbehind excludes max-width/min-height etc. from matching the real dimension.
+// ponytail: `properties.blurHash` also exists on Teams media if a real blur placeholder is ever
+// wanted; the reserved muted box is the accepted-for-now stand-in.
+function ensureMediaDimensions(html) {
+  if (typeof html !== "string" || !html) return html
+  return html.replace(TAG_RE, (tag) => {
+    if (/\bwidth\s*=/i.test(tag) || /\bheight\s*=/i.test(tag)) return tag
+    const style = tag.match(/\bstyle\s*=\s*(["'])([\s\S]*?)\1/i)
+    if (!style) return tag
+    const w = style[2].match(/(?<![-\w])width\s*:\s*([\d.]+)px/i)
+    const h = style[2].match(/(?<![-\w])height\s*:\s*([\d.]+)px/i)
+    if (!w || !h) return tag
+    return tag.replace(
+      /^<(img|video)\b/i,
+      (_m, name) => `<${name} width="${w[1]}" height="${h[1]}"`,
+    )
+  })
+}
+
+module.exports = { isValidAmsUrl, amsObjectId, rewriteMediaHtml, ensureMediaDimensions }

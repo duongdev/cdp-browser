@@ -71,12 +71,16 @@
    thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
    small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the
    split — the older class="emoji" tag is kept as an equivalent for text-emoji that carry no class. */
+/* Generic placeholder (t118): width/height attrs (from ensureMediaDimensions) reserve the aspect-ratio
+   box before load; the muted background fills it so the layout is stable and no content-shift flicker
+   happens while scrolling before the bytes paint over it. Emoji/stickers opt out below (no bg). */
 .teams-message-body img {
   display: block;
   max-width: 100%;
   max-height: 320px;
   height: auto;
   border-radius: 6px;
+  background: var(--muted);
   cursor: zoom-in;
 }
 .teams-message-body img[itemtype*="Emoji"],
@@ -87,12 +91,14 @@
   max-height: none;
   margin: 0;
   border-radius: 0;
+  background: transparent;
   vertical-align: -0.2em;
   cursor: auto;
 }
 .teams-message-body img[itemtype*="Sticker"] {
   max-height: 140px;
   width: auto;
+  background: transparent;
   cursor: auto;
 }
 .teams-message-body video {
@@ -100,4 +106,5 @@
   max-width: 100%;
   max-height: 360px;
   border-radius: 6px;
+  background: var(--muted);
 }

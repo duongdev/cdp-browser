@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 // AMS media SSRF gate + HTML rewrite (t117, ADR-0018). AMS media 401s from a server-side / no-cors
 // fetch; it loads only via an IN-PAGE fetch with the skypetoken. The proxy is CA-proof like the rest
 // of Teams, so a garbled/hostile `src` must not steer the in-page fetch at an arbitrary host.
-import { amsObjectId, isValidAmsUrl, rewriteMediaHtml } from "./teams-media"
+import { amsObjectId, ensureMediaDimensions, isValidAmsUrl, rewriteMediaHtml } from "./teams-media"
 
 const ASM = "https://as-api.asm.skype.com/v1/objects/0-eus-d1-abc123/views/imgo"
 const ASYNC_IMG =
@@ -111,5 +111,66 @@ describe("rewriteMediaHtml", () => {
     // @ts-expect-error runtime guard
     expect(rewriteMediaHtml(null)).toBe(null)
     expect(rewriteMediaHtml("")).toBe("")
+  })
+  it("also reserves dimensions from a style-only AMS img (composes with the src rewrite)", () => {
+    const out = rewriteMediaHtml(`<img src="${ASM}" style="width:1080px; height:1363px">`)
+    expect(out).toContain(`src="${proxy(ASM)}"`)
+    expect(out).toContain('width="1080"')
+    expect(out).toContain('height="1363"')
+  })
+})
+
+// FIX B (t118): AMS imgs sometimes carry no width/height ATTRS, only an inline `style` (which
+// DOMPurify strips) — so the box has zero reserved height until bytes load, then jumps → scroll
+// flicker. Convert `style="width:Npx; height:Npx"` to real width/height attrs so the browser derives
+// the aspect-ratio box before load. Tags that already have the attrs, or neither, are left alone.
+describe("ensureMediaDimensions", () => {
+  it("adds width/height attrs from a style-only img", () => {
+    const out = ensureMediaDimensions('<img src="x.png" style="width:1080px; height:1363px">')
+    expect(out).toBe(
+      '<img width="1080" height="1363" src="x.png" style="width:1080px; height:1363px">',
+    )
+  })
+  it("adds attrs to a style-only video", () => {
+    const out = ensureMediaDimensions('<video src="v.mp4" style="width:640px;height:360px">')
+    expect(out).toContain('width="640"')
+    expect(out).toContain('height="360"')
+  })
+  it("leaves a tag that already has width/height attrs untouched (no doubling)", () => {
+    const html = '<img src="x.png" width="200" height="150" style="width:1080px; height:1363px">'
+    expect(ensureMediaDimensions(html)).toBe(html)
+  })
+  it("leaves a tag with only a width attr untouched", () => {
+    const html = '<img src="x.png" width="200">'
+    expect(ensureMediaDimensions(html)).toBe(html)
+  })
+  it("leaves a tag with neither attrs nor style-dims untouched", () => {
+    const html = '<img src="x.png">'
+    expect(ensureMediaDimensions(html)).toBe(html)
+  })
+  it("ignores a style with no px dimensions", () => {
+    const html = '<img src="x.png" style="max-width:100%">'
+    expect(ensureMediaDimensions(html)).toBe(html)
+  })
+  it("does not confuse max-width/min-height for the real dimensions", () => {
+    const out = ensureMediaDimensions(
+      '<img src="x.png" style="max-width:100%; width:800px; min-height:10px; height:600px">',
+    )
+    expect(out).toContain('width="800"')
+    expect(out).toContain('height="600"')
+  })
+  it("handles decimal px values", () => {
+    const out = ensureMediaDimensions('<img src="x.png" style="width:100.5px;height:50.25px">')
+    expect(out).toContain('width="100.5"')
+    expect(out).toContain('height="50.25"')
+  })
+  it("leaves a non-media tag untouched", () => {
+    const html = '<span style="width:10px;height:10px">hi</span>'
+    expect(ensureMediaDimensions(html)).toBe(html)
+  })
+  it("returns non-string input unchanged", () => {
+    // @ts-expect-error runtime guard
+    expect(ensureMediaDimensions(null)).toBe(null)
+    expect(ensureMediaDimensions("")).toBe("")
   })
 })

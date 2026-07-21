@@ -85,6 +85,56 @@ describe("renderBody — rich HTML, mention-resolved", () => {
   })
 })
 
+// FIX A (t118): Teams splits one person's @mention into per-token spans (each name word its own
+// itemtype-Mention span), and properties.mentions maps EVERY itemid of the run to the SAME mri. A
+// run of adjacent same-person spans must collapse into ONE pill; two genuinely different people
+// stay two pills; without the mentions prop nothing merges (distinct itemids → distinct keys).
+describe("renderBody — mention run merging (t118)", () => {
+  const span = (id, text) =>
+    `<span itemscope itemtype="http://schema.skype.com/Mention" itemid="${id}">${text}</span>`
+
+  it("merges a run of same-person spans into one pill with the joined name", () => {
+    const mri = "8:orgid:aaaa-bbbb-798f77fe"
+    const content = `<p>hi ${[span(0, "Glory"), span(1, "Nguyen"), span(2, "-"), span(3, "Group"), span(4, "Office"), span(5, "[C]")].join("&nbsp;")}</p>`
+    const mentions = [0, 1, 2, 3, 4, 5].map((itemid) => ({ itemid, mri }))
+    expect(renderBody(msg({ content, properties: { mentions } }))).toBe(
+      '<p>hi <span class="mention">@Glory Nguyen - Group Office [C]</span></p>',
+    )
+  })
+
+  it("keeps two genuinely different adjacent people as two pills", () => {
+    const content = `${span(0, "Alice")} ${span(1, "Bob")}`
+    const mentions = [
+      { itemid: 0, mri: "8:orgid:alice" },
+      { itemid: 1, mri: "8:orgid:bob" },
+    ]
+    expect(renderBody(msg({ content, properties: { mentions } }))).toBe(
+      '<span class="mention">@Alice</span> <span class="mention">@Bob</span>',
+    )
+  })
+
+  it("leaves a single mention unchanged", () => {
+    const content = span(0, "Carol Ng")
+    expect(
+      renderBody(msg({ content, properties: { mentions: [{ itemid: 0, mri: "8:orgid:c" }] } })),
+    ).toBe('<span class="mention">@Carol Ng</span>')
+  })
+
+  it("does not merge adjacent spans when properties.mentions is absent (distinct itemids)", () => {
+    const content = `${span(0, "Glory")}&nbsp;${span(1, "Nguyen")}`
+    expect(renderBody(msg({ content }))).toBe(
+      '<span class="mention">@Glory</span>&nbsp;<span class="mention">@Nguyen</span>',
+    )
+  })
+
+  it("still resolves legacy <at> mentions one pill each (no run split there)", () => {
+    const content = '<at id="8:orgid:AAA">Alice</at> <at id="8:orgid:BBB">Bob</at>'
+    expect(renderBody(msg({ content }))).toBe(
+      '<span class="mention">@Alice</span> <span class="mention">@Bob</span>',
+    )
+  })
+})
+
 describe("renderBody — card / attachment chip", () => {
   it("returns [card] when properties.cards is present and no text", () => {
     expect(renderBody(msg({ content: "", properties: { cards: "[{...}]" } }))).toBe("[card]")

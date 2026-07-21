@@ -21,17 +21,66 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;")
 }
 
+// Private-use-area sentinels wrapping a resolved itemtype-Mention span while a run is merged: S_OPEN
+// opens, S_SPLIT divides the group key from the display text, S_CLOSE closes (U+E000-E002 — can't
+// occur in Teams site HTML, and not control chars). Built from code points so no literal special
+// char lives in source. Every sentinel is replaced by a pill before resolveMentions returns, so none
+// ever leaks to the output.
+// ponytail: if a mention's inner text ever literally held U+E000-E002 the sentinel would break —
+// unreachable for Teams-authored HTML; not guarding it.
+const S_OPEN = String.fromCharCode(0xe000)
+const S_SPLIT = String.fromCharCode(0xe001)
+const S_CLOSE = String.fromCharCode(0xe002)
+const NOT_SPLIT_CLOSE = `[^${S_SPLIT}${S_CLOSE}]*`
+const NOT_CLOSE = `[^${S_CLOSE}]*`
+const SENTINEL_RE = new RegExp(
+  `${S_OPEN}(${NOT_SPLIT_CLOSE})${S_SPLIT}(${NOT_CLOSE})${S_CLOSE}`,
+  "g",
+)
+// Two adjacent sentinels sharing the SAME key (the `\\1` backref), separated only by whitespace/nbsp.
+const RUN = new RegExp(
+  `${S_OPEN}(${NOT_SPLIT_CLOSE})${S_SPLIT}(${NOT_CLOSE})${S_CLOSE}(?:\\s|&nbsp;|&#160;|&#xa0;)*${S_OPEN}\\1${S_SPLIT}(${NOT_CLOSE})${S_CLOSE}`,
+  "gi",
+)
+
 // Resolve Teams' two mention encodings — legacy `<at id=…>Name</at>` and the newer
 // `<span itemtype="…/Mention">Name</span>` — to one stable node: `<span class="mention">@Name</span>`.
 // Both carry the display name as inner text; we keep that name (any inner tags stripped, entities
 // left intact) and drop every site-authored mention attribute (id/itemid/itemscope).
-function resolveMentions(html) {
-  return html
-    .replace(/<at\b[^>]*>([\s\S]*?)<\/at>/gi, (_m, inner) => mentionSpan(inner))
-    .replace(
-      /<span\b[^>]*\bitemtype\s*=\s*(["'])[^"']*[Mm]ention[^"']*\1[^>]*>([\s\S]*?)<\/span>/gi,
-      (_m, _q, inner) => mentionSpan(inner),
-    )
+//
+// Teams splits ONE person's @mention into per-token spans (t118) — "@Glory Nguyen - Group Office [C]"
+// arrives as 6 adjacent Mention spans, and properties.mentions maps EVERY one of their itemids to the
+// SAME person's mri. So a RUN of adjacent same-person spans (grouped by mri, else by itemid) collapses
+// into one pill. `mentionMri` is the itemid→mri map (string keys) built by renderBody; without it each
+// span keys on its own itemid, so nothing merges (we never merge two different people). Legacy `<at>`
+// is one pill each — Teams never splits those.
+function resolveMentions(html, mentionMri = {}) {
+  const withAt = html.replace(/<at\b[^>]*>([\s\S]*?)<\/at>/gi, (_m, inner) => mentionSpan(inner))
+  let uid = 0
+  const withSentinels = withAt.replace(
+    /<span\b([^>]*\bitemtype\s*=\s*(["'])[^"']*[Mm]ention[^"']*\2[^>]*)>([\s\S]*?)<\/span>/gi,
+    (_m, attrs, _q, inner) => {
+      const idm = attrs.match(/\bitemid\s*=\s*(?:(["'])([\s\S]*?)\1|([^\s>]+))/i)
+      const itemid = idm ? (idm[2] ?? idm[3]) : null
+      const key = mentionMri[String(itemid)] ?? (itemid != null ? `id:${itemid}` : `uniq:${uid++}`)
+      const text = inner.replace(/<[^>]+>/g, "").trim()
+      return `${S_OPEN}${key}${S_SPLIT}${text}${S_CLOSE}`
+    },
+  )
+  return mergeMentionRuns(withSentinels).replace(SENTINEL_RE, (_m, _key, text) => mentionSpan(text))
+}
+
+// Collapse a run of same-key sentinels, joining the texts with a single space; repeat until stable so
+// a 6-span run folds fully. The `\1` backref forces same-key — two different people never match (their
+// sentinels aren't consumed, so they still emit as two separate pills).
+function mergeMentionRuns(html) {
+  let out = html
+  let prev
+  do {
+    prev = out
+    out = out.replace(RUN, (_m, key, t1, t2) => `${S_OPEN}${key}${S_SPLIT}${t1} ${t2}${S_CLOSE}`)
+  } while (out !== prev)
+  return out
 }
 
 function mentionSpan(inner) {
@@ -77,6 +126,19 @@ function attachmentChip(message) {
   return ""
 }
 
+// itemid→mri map from properties.mentions ({ itemid, mri, displayName }[]); itemids normalize to
+// string keys. Drives the same-person run merge in resolveMentions (t118).
+function mentionMriMap(message) {
+  const list = message.properties?.mentions
+  const map = {}
+  if (Array.isArray(list)) {
+    for (const m of list) {
+      if (m && m.itemid != null && m.mri) map[String(m.itemid)] = String(m.mri)
+    }
+  }
+  return map
+}
+
 // Render a message body to mention-resolved, entity-intact HTML (t111). Real content wins over a
 // chip so a message with both text and a file keeps its words; a body-less/empty card/file falls
 // back to the chip. HTML messagetypes keep their markup (mentions + emoji normalized); a literal
@@ -85,7 +147,7 @@ function renderBody(message) {
   const content = typeof message.content === "string" ? message.content : ""
   if (!content.trim()) return attachmentChip(message)
   const html = /html/i.test(message.messagetype || "")
-    ? rewriteMediaHtml(tagEmoji(resolveMentions(content)).trim())
+    ? rewriteMediaHtml(tagEmoji(resolveMentions(content, mentionMriMap(message))).trim())
     : escapeHtml(content.trim()).replace(/\r?\n/g, "<br>")
   return hasVisibleText(html) ? html : attachmentChip(message)
 }
