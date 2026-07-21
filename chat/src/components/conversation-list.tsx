@@ -180,10 +180,31 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
         />
       ))}
       {hasMore && (
-        <div className="flex items-center justify-center py-3" ref={sentinelRef}>
-          {loadingMore && <span className="text-muted-foreground text-xs">Loading…</span>}
+        // Keep the sentinel mounted (with a little idle height so the observer keeps firing); while
+        // paging, fill it with ~3 row skeletons — a reserved-height placeholder the real rows swap
+        // into, so the append doesn't collapse or blink the indicator.
+        <div className="flex flex-col gap-0.5 py-1" ref={sentinelRef}>
+          {loadingMore &&
+            Array.from({ length: 3 }).map((_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: static placeholder rows, no identity
+              <ConversationRowSkeleton key={i} />
+            ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// One placeholder row matching ConversationRow's height + layout (size-10 avatar + two lines). Shared
+// by the full-screen initial skeleton and the infinite-scroll load-more placeholder so they can't drift.
+function ConversationRowSkeleton() {
+  return (
+    <div className="flex items-center gap-3 px-3 py-2.5">
+      <div className="size-10 shrink-0 animate-pulse rounded-full bg-muted" />
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="h-3.5 w-2/5 animate-pulse rounded bg-muted" />
+        <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
+      </div>
     </div>
   )
 }
@@ -193,13 +214,7 @@ function ListSkeleton() {
     <div aria-hidden className="flex flex-col gap-0.5 p-2">
       {Array.from({ length: 7 }).map((_, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static placeholder rows, no identity
-        <div className="flex items-center gap-3 px-3 py-2.5" key={i}>
-          <div className="size-10 shrink-0 animate-pulse rounded-full bg-muted" />
-          <div className="min-w-0 flex-1 space-y-2">
-            <div className="h-3.5 w-2/5 animate-pulse rounded bg-muted" />
-            <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
-          </div>
-        </div>
+        <ConversationRowSkeleton key={i} />
       ))}
     </div>
   )

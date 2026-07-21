@@ -355,11 +355,12 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
               onScroll={onScroll}
               ref={scrollRef}
             >
-              {loadingOlder && (
-                <p className="shrink-0 py-1 text-center text-[11px] text-muted-foreground">
-                  Loading older…
-                </p>
-              )}
+              {loadingOlder &&
+                // Reserve space for the incoming older page with bubble skeletons. prevHeight is
+                // captured before these mount, and loadingOlder flips false (unmounting them) in the
+                // same resolution as the prepend — so the rAF scroll-anchor correction runs after the
+                // skeletons are gone and measures only the fresh-message delta. No double-count, no jump.
+                [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
               {state.messages.map((m) => (
                 <MessageRow key={m.id} message={m} />
               ))}
@@ -381,19 +382,24 @@ function sendErrorCopy(code: string): string {
   return "Could not send. Your message is kept — retry."
 }
 
+// One placeholder bubble matching ThreadSkeleton's row (label chip + bubble), alternating side by
+// index. Shared by the full-screen initial skeleton and the top-of-thread load-older placeholder.
+function MessageBubbleSkeleton({ index }: { index: number }) {
+  return (
+    <div
+      className={cn("flex shrink-0 flex-col gap-1", index % 2 === 0 ? "items-start" : "items-end")}
+    >
+      <div className="h-3 w-16 animate-pulse rounded bg-muted" />
+      <div className="h-8 w-2/3 animate-pulse rounded-2xl bg-muted" />
+    </div>
+  )
+}
+
 function ThreadSkeleton() {
   return (
     <div aria-hidden className="flex flex-1 flex-col gap-3 p-3">
       {[0, 1, 2, 3, 4].map((i) => (
-        <div
-          className={
-            i % 2 === 0 ? "flex flex-col items-start gap-1" : "flex flex-col items-end gap-1"
-          }
-          key={i}
-        >
-          <div className="h-3 w-16 animate-pulse rounded bg-muted" />
-          <div className="h-8 w-2/3 animate-pulse rounded-2xl bg-muted" />
-        </div>
+        <MessageBubbleSkeleton index={i} key={i} />
       ))}
     </div>
   )
