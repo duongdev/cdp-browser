@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { composeTitle, renderBody, toReaderMessages } from "./teams-render"
+import { composeTitle, parseAttachments, renderBody, toReaderMessages } from "./teams-render"
 
 // A raw-ish Teams message (only the fields the renderer reads).
 const msg = (over = {}) => ({
@@ -163,6 +163,140 @@ describe("renderBody — card / attachment chip", () => {
 
   it("falls to a chip when the HTML has no visible text", () => {
     expect(renderBody(msg({ content: "<p></p>", properties: { cards: "[{}]" } }))).toBe("[card]")
+  })
+})
+
+// t119: file attachments + call-recording / Swift-card chips. `properties.files` arrives as a JSON
+// STRING (like properties.mentions), so it MUST be parsed defensively. Call-recording + Swift cards
+// live as <URIObject> blocks in `content` whose inner text renders as garbage — parse them into
+// chips and strip the block from the rendered body. AMS thumbnails route through the media proxy.
+describe("parseAttachments — files (JSON-string properties.files)", () => {
+  const fileMsg = (files) => msg({ content: "<p>here</p>", properties: { files } })
+
+  it("parses a file from a JSON-STRING properties.files, best url = fileInfo.shareUrl", () => {
+    const files = JSON.stringify([
+      {
+        "@type": "http://schema.skype.com/File",
+        fileName: "[GU-1933] Results.pdf",
+        fileType: "pdf",
+        title: "Results",
+        objectUrl: "https://fwdgroup-my.sharepoint.com/x/file.pdf",
+        fileInfo: {
+          fileUrl: "https://fwdgroup-my.sharepoint.com/x/fileUrl.pdf",
+          shareUrl: "https://fwdgroup-my.sharepoint.com/:b:/g/personal/share",
+        },
+      },
+    ])
+    expect(parseAttachments(fileMsg(files))).toEqual([
+      {
+        kind: "file",
+        name: "[GU-1933] Results.pdf",
+        type: "pdf",
+        url: "https://fwdgroup-my.sharepoint.com/:b:/g/personal/share",
+      },
+    ])
+  })
+
+  it("falls back to objectUrl when there is no shareUrl", () => {
+    const files = JSON.stringify([
+      { fileName: "a.docx", fileType: "docx", objectUrl: "https://sp/obj", fileInfo: {} },
+    ])
+    expect(parseAttachments(fileMsg(files))[0].url).toBe("https://sp/obj")
+  })
+
+  it("falls back to fileInfo.fileUrl when there is no shareUrl or objectUrl", () => {
+    const files = JSON.stringify([
+      { fileName: "b.txt", fileInfo: { fileUrl: "https://sp/fileUrl" } },
+    ])
+    expect(parseAttachments(fileMsg(files))[0].url).toBe("https://sp/fileUrl")
+  })
+
+  it("tolerates an already-parsed properties.files array", () => {
+    const files = [{ fileName: "c.pdf", fileType: "pdf", objectUrl: "https://sp/c" }]
+    expect(parseAttachments(fileMsg(files))).toEqual([
+      { kind: "file", name: "c.pdf", type: "pdf", url: "https://sp/c" },
+    ])
+  })
+
+  it("returns no attachments when properties.files is absent, empty, or malformed", () => {
+    expect(parseAttachments(msg({ content: "<p>hi</p>" }))).toEqual([])
+    expect(parseAttachments(fileMsg("[]"))).toEqual([])
+    expect(parseAttachments(fileMsg("{not json"))).toEqual([])
+  })
+})
+
+describe("parseAttachments — call recording / Swift card (URIObject)", () => {
+  it("extracts a call recording and proxies its AMS thumbnail", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/0-wus-d1-abc/views/thumbnail_small"><RecordingStatus status="viewable"></RecordingStatus></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      {
+        kind: "recording",
+        thumbnailUrl:
+          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-wus-d1-abc%2Fviews%2Fthumbnail_small",
+      },
+    ])
+  })
+
+  it("extracts a Swift card with its Title and proxied AMS thumbnail", () => {
+    const content =
+      '<URIObject type="SWIFT.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/card-thumb/views/imgpsh"><Title>Weekly digest</Title><Swift b64="eyto="></Swift></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      {
+        kind: "card",
+        title: "Weekly digest",
+        thumbnailUrl:
+          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2Fcard-thumb%2Fviews%2Fimgpsh",
+      },
+    ])
+  })
+
+  it("leaves a non-AMS card thumbnail unproxied and defaults a missing Title to Card", () => {
+    const content =
+      '<URIObject type="SWIFT.1" url_thumbnail="https://urlp.asm.skype.com/preview.png"><Swift b64="x"></Swift></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      { kind: "card", title: "Card", thumbnailUrl: "https://urlp.asm.skype.com/preview.png" },
+    ])
+  })
+})
+
+describe("renderBody — URIObject blocks (t119)", () => {
+  it("renders empty for a call-recording-only body (no garbled inner text)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/thumbnail_small">Card - access it on go.skype.com/cards.unsupported</URIObject>'
+    expect(renderBody(msg({ content }))).toBe("")
+  })
+
+  it("renders empty for a Swift-card-only body", () => {
+    const content =
+      '<URIObject type="SWIFT.1"><Title>Card</Title><Swift b64="x"></Swift></URIObject>'
+    expect(renderBody(msg({ content }))).toBe("")
+  })
+
+  it("keeps real text but strips the URIObject block", () => {
+    const content =
+      '<p>watch this</p><URIObject type="Video.2/CallRecording.1" url_thumbnail="https://x">junk</URIObject>'
+    expect(renderBody(msg({ content }))).toBe("<p>watch this</p>")
+  })
+})
+
+describe("toReaderMessages — attachments", () => {
+  it("attaches parsed attachments to a message with a file", () => {
+    const files = JSON.stringify([
+      { fileName: "d.pdf", fileType: "pdf", objectUrl: "https://sp/d" },
+    ])
+    const out = toReaderMessages(
+      [msg({ id: "1", content: "<p>doc</p>", properties: { files } })],
+      "ME",
+    )
+    expect(out[0].attachments).toEqual([
+      { kind: "file", name: "d.pdf", type: "pdf", url: "https://sp/d" },
+    ])
+  })
+
+  it("omits attachments when there are none", () => {
+    const out = toReaderMessages([msg({ id: "1", content: "<p>plain</p>" })], "ME")
+    expect(out[0].attachments).toBeUndefined()
   })
 })
 

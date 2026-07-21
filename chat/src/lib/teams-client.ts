@@ -61,6 +61,17 @@ export async function fetchConversations(
   return { conversations: data.conversations ?? [], cursor: data.cursor ?? null }
 }
 
+/** A file / call-recording / Swift-card chip parsed from a message (t119). `url` opens in a new tab
+ *  (SharePoint files ride the browser's SSO); `thumbnailUrl` is already media-proxied when it's AMS. */
+export interface TeamsAttachment {
+  kind: "file" | "recording" | "card"
+  name?: string
+  type?: string
+  url?: string
+  thumbnailUrl?: string
+  title?: string
+}
+
 /** One rendered message (server's `teams-render.toReaderMessages` output). `ts` is epoch ms;
  *  `body` is already sanitized plain text — the view renders it as a text node, never innerHTML. */
 export interface TeamsMessage {
@@ -72,6 +83,8 @@ export interface TeamsMessage {
   self: boolean
   edited: boolean
   deleted: boolean
+  /** File / recording / card chips (t119); absent when the message has none. */
+  attachments?: TeamsAttachment[]
 }
 
 interface HistoryResponse {

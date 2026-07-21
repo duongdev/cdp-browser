@@ -9,7 +9,7 @@
 // DOMPurify (browser-native) over this output before any dangerouslySetInnerHTML. Entities are left
 // ENCODED here — decoding them into new tags is exactly what we must not do.
 
-const { rewriteMediaHtml } = require("./teams-media")
+const { rewriteMediaHtml, isValidAmsUrl } = require("./teams-media")
 
 // Escape the HTML-significant chars in literal user text. A "Text" messagetype carries plain text,
 // not HTML; once the body is assigned via innerHTML on the client, its `<`/`&` must stay literal.
@@ -149,16 +149,103 @@ function mentionMriMap(message) {
   return map
 }
 
+// ---- attachments (t119) ---------------------------------------------------
+// Teams delivers three attachment shapes the plain body can't render: file uploads (in a JSON-STRING
+// `properties.files`), call recordings, and Swift cards (both as <URIObject> blocks inside `content`
+// whose inner text renders as garbage). parseAttachments turns them into flat chip descriptors the
+// client renders below the body; renderBody strips the URIObject blocks so they never leak as text.
+
+// An AMS thumbnail loads only through the CA-proof media proxy (401s otherwise); a non-AMS/public
+// thumbnail is left direct (mirrors rewriteMediaHtml). Empty stays empty.
+function proxyThumb(url) {
+  if (typeof url !== "string" || !url) return ""
+  const decoded = url.replace(/&amp;/g, "&")
+  return isValidAmsUrl(decoded) ? `/api/teams/media?url=${encodeURIComponent(decoded)}` : decoded
+}
+
+// Value of an attribute in a tag's attribute string (double/single quoted), or "".
+function attrValue(attrs, name) {
+  const m = attrs.match(new RegExp(`\\b${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"))
+  return m ? m[2] : ""
+}
+
+// Parse `properties.files` — a JSON STRING in live data (like properties.mentions), so parse it
+// defensively. Best "open" url = fileInfo.shareUrl (browser-openable SharePoint link) → objectUrl →
+// fileInfo.fileUrl. These are SharePoint (not AMS) — no proxy; the browser's SSO opens them.
+function parseFiles(message) {
+  let files = message.properties?.files
+  if (typeof files === "string") {
+    try {
+      files = JSON.parse(files)
+    } catch {
+      files = null
+    }
+  }
+  if (!Array.isArray(files)) return []
+  const out = []
+  for (const f of files) {
+    if (!f) continue
+    const info = f.fileInfo || {}
+    const url = info.shareUrl || f.objectUrl || info.fileUrl || undefined
+    const att = { kind: "file", name: f.fileName || f.title || "file" }
+    if (f.fileType) att.type = String(f.fileType)
+    if (url) att.url = String(url)
+    out.push(att)
+  }
+  return out
+}
+
+const URIOBJECT_RE = /<URIObject\b([^>]*)>([\s\S]*?)<\/URIObject>/gi
+
+// Parse call-recording (URIObject type "Video…/CallRecording…") and Swift-card (type "SWIFT…")
+// blocks out of `content`. Recording → its proxied AMS thumbnail; card → its <Title> + thumbnail.
+function parseUriObjects(content) {
+  const html = typeof content === "string" ? content : ""
+  const out = []
+  for (const m of html.matchAll(URIOBJECT_RE)) {
+    const type = attrValue(m[1], "type")
+    const thumb = proxyThumb(attrValue(m[1], "url_thumbnail"))
+    if (/CallRecording/i.test(type)) {
+      const att = { kind: "recording" }
+      if (thumb) att.thumbnailUrl = thumb
+      out.push(att)
+    } else if (/SWIFT/i.test(type)) {
+      const titleM = m[2].match(/<Title\b[^>]*>([\s\S]*?)<\/Title>/i)
+      const title = titleM ? titleM[1].replace(/<[^>]+>/g, "").trim() : ""
+      const att = { kind: "card", title: title || "Card" }
+      if (thumb) att.thumbnailUrl = thumb
+      out.push(att)
+    }
+  }
+  return out
+}
+
+// Flat chip descriptors for one message: files first, then recordings/cards in content order.
+function parseAttachments(message) {
+  return [...parseFiles(message), ...parseUriObjects(message.content)]
+}
+
+// Drop whole <URIObject>…</URIObject> blocks — DOMPurify keeps their messy inner text ("Card -
+// access it on go.skype.com/cards.unsupported") otherwise. The chip carries the meaning.
+function stripUriObjects(html) {
+  return html.replace(URIOBJECT_RE, "")
+}
+
 // Render a message body to mention-resolved, entity-intact HTML (t111). Real content wins over a
 // chip so a message with both text and a file keeps its words; a body-less/empty card/file falls
 // back to the chip. HTML messagetypes keep their markup (mentions + emoji normalized); a literal
 // "Text" messagetype is HTML-escaped (angle brackets stay literal) with newlines as <br>.
 function renderBody(message) {
-  const content = typeof message.content === "string" ? message.content : ""
+  // Strip <URIObject> blocks (call-recording / Swift card) FIRST, before the messagetype branch —
+  // these messagetypes (RichText/Media_CallRecording, RichText/Media_Card) are NOT "html", so without
+  // stripping here they hit the escape branch and leak as literal `<URIObject …>` text (t119). The
+  // chip (parseAttachments) carries their meaning.
+  const content = stripUriObjects(typeof message.content === "string" ? message.content : "")
   if (!content.trim()) return attachmentChip(message)
-  const html = /html/i.test(message.messagetype || "")
-    ? rewriteMediaHtml(tagEmoji(resolveMentions(content, mentionMriMap(message))).trim())
-    : escapeHtml(content.trim()).replace(/\r?\n/g, "<br>")
+  if (!/html/i.test(message.messagetype || "")) {
+    return escapeHtml(content.trim()).replace(/\r?\n/g, "<br>")
+  }
+  const html = rewriteMediaHtml(tagEmoji(resolveMentions(content, mentionMriMap(message))).trim())
   return hasVisibleText(html) ? html : attachmentChip(message)
 }
 
@@ -210,6 +297,7 @@ function toReaderMessages(list, selfId) {
     if (!m?.id || isSystemMessage(m)) continue
     const deleted = isDeleted(m)
     const senderId = senderIdOf(m.from)
+    const attachments = deleted ? [] : parseAttachments(m)
     out.push({
       id: String(m.id),
       ts: toEpochMs(m.originalarrivaltime) ?? toEpochMs(m.composetime) ?? 0,
@@ -219,6 +307,7 @@ function toReaderMessages(list, selfId) {
       self: isSelf(senderId, selfId),
       edited: !deleted && !!m.properties?.edittime,
       deleted,
+      ...(attachments.length ? { attachments } : {}),
     })
   }
   out.sort((a, b) => a.ts - b.ts)
@@ -232,4 +321,4 @@ function composeTitle(conv) {
   return conv && conv.kind === "oneOnOne" ? "Direct message" : "Group chat"
 }
 
-module.exports = { renderBody, toReaderMessages, composeTitle, senderIdOf }
+module.exports = { renderBody, toReaderMessages, composeTitle, senderIdOf, parseAttachments }
