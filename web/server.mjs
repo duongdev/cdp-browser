@@ -12,6 +12,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs"
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
+import Database from "better-sqlite3"
 import webpush from "web-push"
 import WebSocket, { WebSocketServer } from "ws"
 import { atomicWriteFileSync } from "../core/atomic-write.js"
@@ -43,6 +44,12 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import {
+  listConversations as teamsListConversations,
+  migrate as teamsMigrate,
+  upsertAccount as teamsUpsertAccount,
+  upsertConversations as teamsUpsertConversations,
+} from "../core/teams-store.js"
 import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -578,6 +585,15 @@ function applyBatch(items) {
   for (const c of items || []) if (c?.method) send(c.method, c.params)
 }
 
+// ---- Teams chat store (t105, ADR-0018) ------------------------------------
+// Server-owned SQLite = the single source of truth for Teams chat state (ADR-0018). Web build
+// only — Electron is a shell that loads the served URL, so the native module is never bundled
+// there (not in package.json build.files). t105 writes accounts + conversations; the rest of
+// the schema ships migration-only. Lives next to the settings file.
+const TEAMS_DB_PATH = process.env.TEAMS_DB_PATH || join(HERE, "..", "web-teams.db")
+const teamsDb = new Database(TEAMS_DB_PATH)
+teamsMigrate(teamsDb)
+
 // ---- notification side-channel (shared core, headless) --------------------
 // The whole lifecycle + store lives in notifications-sidechain.js; the server
 // injects only its effects (capture-script reads, /json target list, the
@@ -605,6 +621,21 @@ const notificationCenter = createNotificationCenter({
   onCreds: (rec) => {
     console.log(`[web] slack creds ready: ${rec.teamId} (${rec.name})`)
     sweepScheduler.request(rec.teamId, rec)
+  },
+  // Teams messaging creds minted from a live Teams tab (t105, ADR-0018). Record the account
+  // identity so the chat DB knows this signed-in tenant. Passing this callback is what turns on
+  // the Teams cred path in the side-channel — Electron never does, so it structurally stubs.
+  onTeamsCreds: (rec) => {
+    console.log(`[web] teams creds ready: tenant=${rec.tenant} base=${rec.chatServiceBase}`)
+    try {
+      teamsUpsertAccount(teamsDb, {
+        tenant: rec.tenant,
+        userId: rec.userId,
+        chatServiceBase: rec.chatServiceBase,
+      })
+    } catch (e) {
+      console.error("[web] teams account upsert failed:", e.message)
+    }
   },
   // The Slack hijack (t064) is demoted to a "sweep now" trigger (ADR-0011): a fired
   // notification means something happened, so sweep that workspace immediately for the
@@ -940,6 +971,60 @@ setInterval(() => {
   checkSlackHealthAlerts()
 }, 15_000)
 
+// ---- Teams conversation list (t105, ADR-0018) -----------------------------
+// CA-proof: the conversations GET runs IN-PAGE via the side-channel (the browser's own
+// authenticated fetch), never a server-side fetch. Pin to the minted chatServiceBase —
+// chatsvcagg.teams.microsoft.com is a proven 401 dead-end. Returns { conversations } or a
+// typed { error } the route maps to an HTTP status.
+async function fetchTeamsConversationsInPage(cred) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=50&startTime=1`
+  // The skype token auths the msg service via `Authentication: skypetoken=…` (NOT a Bearer).
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return await r.json()
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.error) return { error: result.error }
+  return { conversations: Array.isArray(result.conversations) ? result.conversations : [] }
+}
+
+// Mint/reuse creds → in-page conversations fetch → upsert → return the DB view. A 401 in-page
+// drives a single re-authz (markTeamsCredsStale re-mints over the live tab) and one retry, then
+// a hard typed invalid_auth. The keeper tab is load-bearing: only its MSAL rotates the bearer.
+async function teamsConversations() {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds() // no fresh cred yet — mint over a live Teams tab
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await fetchTeamsConversationsInPage(cred)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth") // re-authz (one retry)
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await fetchTeamsConversationsInPage(cred)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  teamsUpsertAccount(teamsDb, {
+    tenant: cred.tenant,
+    userId: cred.userId,
+    chatServiceBase: cred.chatServiceBase,
+  })
+  teamsUpsertConversations(teamsDb, cred.tenant, out.conversations) // filters reserved/self + version-gates
+  return { conversations: teamsListConversations(teamsDb, cred.tenant) }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
 const body = (req) =>
@@ -1219,6 +1304,15 @@ const server = http.createServer(async (req, res) => {
       if (out?.error === "rate_limited") return json(res, { error: "rate_limited" }, 429)
       if (!out?.ok) return json(res, { error: out?.error || "send_failed" }, 502)
       return json(res, { ok: true, ts: out.ts })
+    }
+    // Teams chat: the authenticated conversation list (t105, ADR-0018). Mints creds via the
+    // keeper tab, fetches conversations IN-PAGE (CA-proof), upserts into the chat DB, returns
+    // the DB view. Web build only (Electron has no scrapable Teams creds path).
+    if (p === "/api/teams/conversations" && !POST) {
+      const out = await teamsConversations()
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
     }
     // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
     // the client uses it as `applicationServerKey` for pushManager.subscribe.

@@ -7,6 +7,11 @@ web-settings.json
 web-notifications.json
 web-history.json
 
+# Teams chat store (server-owned SQLite; default path writes to repo root)
+web-teams.db
+web-teams.db-shm
+web-teams.db-wal
+
 # Baked build identity (Docker builder writes it; never committed)
 .gitsha
 
