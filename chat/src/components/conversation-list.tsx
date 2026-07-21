@@ -29,7 +29,8 @@ interface ConversationListProps {
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
- *  states, and pages older via a "Load more" affordance driven by the backwardLink cursor (t112). */
+ *  states, and auto-pages older via infinite scroll (a bottom IntersectionObserver sentinel, t114)
+ *  driven by the backwardLink cursor (t112). */
 export function ConversationList({ onOpenConversation, selectedId }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t112): true while a "Load more" fetch is in flight (dedup guard + affordance).
@@ -120,13 +121,36 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
           }
         })
       })
-      // Stop offering "Load more" if a page fetch fails — the affordance hides on a null cursor.
+      // Stop paging if a page fetch fails — the sentinel unmounts on a null cursor.
       .catch(() => setState((s) => (s.status === "ready" ? { ...s, cursor: null } : s)))
       .finally(() => {
         loadingMoreRef.current = false
         setLoadingMore(false)
       })
   }, [state])
+
+  // Infinite scroll (t114): auto-load the next page when a bottom sentinel scrolls into view,
+  // replacing the manual "Load more" button. A ref holds the latest loadMore so the observer is
+  // built once per cursor-presence change (not per appended row); rootMargin prefetches ahead of
+  // the true bottom so paging feels seamless. Observer root defaults to the viewport — the list
+  // scroll container fills it, so the sentinel intersects as it nears the bottom.
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const loadMoreRef = useRef(loadMore)
+  loadMoreRef.current = loadMore
+  const hasMore = state.status === "ready" && state.cursor != null
+  useEffect(() => {
+    if (!hasMore) return
+    const el = sentinelRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMoreRef.current()
+      },
+      { rootMargin: "400px 0px" },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [hasMore])
 
   if (state.status === "loading") return <ListSkeleton />
 
@@ -155,16 +179,10 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
           onOpen={onOpenConversation}
         />
       ))}
-      {state.cursor && (
-        <Button
-          className="mx-2 mt-1 text-muted-foreground"
-          disabled={loadingMore}
-          onClick={loadMore}
-          size="sm"
-          variant="ghost"
-        >
-          {loadingMore ? "Loading…" : "Load more"}
-        </Button>
+      {hasMore && (
+        <div className="flex items-center justify-center py-3" ref={sentinelRef}>
+          {loadingMore && <span className="text-muted-foreground text-xs">Loading…</span>}
+        </div>
       )}
     </div>
   )
