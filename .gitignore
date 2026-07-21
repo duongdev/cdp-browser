@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-chat
 release
 
 # Web build runtime state (default paths write to repo root; override via env)

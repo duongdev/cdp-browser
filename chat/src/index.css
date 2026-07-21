@@ -1,0 +1,5 @@
+/* Reuse the browser renderer's design system verbatim — Tailwind v4 engine, shadcn
+   radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0018 decision 1): the
+   chat app should look like the same product. The Vite Tailwind plugin scans this build's
+   module graph, so the shared ui components imported by the chat views are covered. */
+@import "../../src/index.css";

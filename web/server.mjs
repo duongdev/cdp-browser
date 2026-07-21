@@ -54,6 +54,9 @@ import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
+// Standalone Teams chat app (t106, ADR-0018) — a second built bundle served at the
+// same-origin path /chat, path-scoped so it never shadows the / browser PWA above.
+const DIST_CHAT = join(HERE, "..", "dist-chat")
 const PORT = Number(process.env.PORT || 7800)
 const SETTINGS_PATH = process.env.SETTINGS_PATH || join(HERE, "..", "web-settings.json")
 const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notifications.json")
@@ -1086,6 +1089,22 @@ function serveStatic(req, res, pathname) {
   createReadStream(file).pipe(res)
 }
 
+// Serve the built Teams chat app (t106) under /chat: static assets stream, and any deep link
+// falls back to the SPA index. Rooted at DIST_CHAT and prefix-stripped so it can never reach
+// into DIST (the / build) or above the output dir.
+function serveChat(req, res, pathname) {
+  const sub = pathname.replace(/^\/chat/, "") || "/"
+  const rel = normalize(sub).replace(/^(\.\.[/\\])+/, "")
+  let file = join(DIST_CHAT, rel === "/" ? "index.html" : rel)
+  if (!existsSync(file) || !file.startsWith(DIST_CHAT)) file = join(DIST_CHAT, "index.html") // SPA fallback
+  if (!existsSync(file)) return res.writeHead(404).end("build the chat app: pnpm chat:build")
+  const type = file.endsWith(".webmanifest")
+    ? "application/manifest+json"
+    : MIME[extname(file)] || "application/octet-stream"
+  res.writeHead(200, { "Content-Type": type })
+  createReadStream(file).pipe(res)
+}
+
 // Verbose request log (greppable [req]/[err]) for prod issue-detection. The hot input +
 // long-poll paths are suppressed unless they error, so per-frame/per-input traffic never
 // floods the log (and never degrades the prod we're watching); every other request logs
@@ -1347,6 +1366,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p.startsWith("/api/")) return res.writeHead(404).end("unknown api route")
+  if (p === "/chat" || p.startsWith("/chat/")) return serveChat(req, res, p)
   return serveStatic(req, res, p)
 })
 
