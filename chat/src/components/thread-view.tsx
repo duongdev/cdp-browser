@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
+import { mergeMessages } from "../lib/message-merge"
 import {
   fetchHistory,
   markRead,
@@ -20,6 +21,13 @@ import {
 } from "../lib/teams-client"
 import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
 import { MessageRow } from "./message-row"
+
+// Live sync (t113, poll-first): cadence for re-fetching the newest history page while this pane is
+// the visible one and the tab is foregrounded.
+const THREAD_POLL_MS = 4000
+// Stick-to-bottom slack: within this many px of the bottom, a merge that lands newer content
+// re-pins to the bottom; farther up we leave scroll alone so we don't yank someone reading history.
+const THREAD_BOTTOM_SLACK = 64
 
 const errorMessage = (e: unknown): string => {
   if (e instanceof TeamsApiError) {
@@ -146,6 +154,74 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     if (!visible) return
     const el = scrollRef.current
     if (el) el.scrollTop = savedScrollTop.current
+  }, [visible])
+
+  // Poll the newest history page and merge it in (t113). Only touches a "ready" state — a loading/
+  // error pane is left to the initial load. Errors are swallowed: a failed poll keeps the last-good
+  // thread rather than flipping to error. Sticks to the bottom only if the user was already there.
+  const poll = useCallback(() => {
+    fetchHistory(convId)
+      .then((page) => {
+        const el = scrollRef.current
+        const nearBottom = el
+          ? el.scrollHeight - el.scrollTop - el.clientHeight < THREAD_BOTTOM_SLACK
+          : false
+        setState((s) => {
+          if (s.status !== "ready") return s
+          const merged = mergeMessages(s.messages, page.messages)
+          return merged.changed ? { status: "ready", messages: merged.messages } : s
+        })
+        if (nearBottom) {
+          requestAnimationFrame(() => {
+            const now = scrollRef.current
+            if (now) now.scrollTop = now.scrollHeight
+          })
+        }
+      })
+      .catch(() => {
+        // Poll errors are silent (t113) — the last-good thread stays put.
+      })
+  }, [convId])
+
+  // Drive the poll off a stable ref so the interval survives a conversation switch (convId change
+  // only re-points the ref; `load` already refetches on switch) and doesn't reset every 4s.
+  const pollRef = useRef(poll)
+  useEffect(() => {
+    pollRef.current = poll
+  }, [poll])
+
+  // Only the active + visible pane polls, and only while the tab is foregrounded. Becoming visible
+  // (or the tab returning to foreground) fires one immediate poll so a switched-back kept-alive
+  // thread refreshes at once; going hidden clears the interval.
+  useEffect(() => {
+    if (!visible) return
+    let timer: ReturnType<typeof setInterval> | undefined
+    const tick = () => pollRef.current()
+    const start = () => {
+      if (timer == null) timer = setInterval(tick, THREAD_POLL_MS)
+    }
+    const stop = () => {
+      if (timer != null) {
+        clearInterval(timer)
+        timer = undefined
+      }
+    }
+    const onVisibility = () => {
+      if (document.hidden) stop()
+      else {
+        tick()
+        start()
+      }
+    }
+    if (!document.hidden) {
+      tick()
+      start()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
   }, [visible])
 
   // Composer (t108, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send

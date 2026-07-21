@@ -2,8 +2,12 @@ import { Alert02Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { mergeConversations } from "../lib/conversation-merge"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
 import { ConversationRow } from "./conversation-row"
+
+// Live sync (t113, poll-first): cadence for re-unioning the newest conversation page.
+const LIST_POLL_MS = 12_000
 
 type State =
   | { status: "loading" }
@@ -50,6 +54,53 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
     load(ac.signal)
     return () => ac.abort()
   }, [load])
+
+  // Re-union page 1 into the list without disturbing the paging cursor / Load-more state (t113).
+  // No-ops unless "ready"; mergeConversations returns the same ref when nothing changed, so we skip
+  // the setState (and its re-render) then. Errors are swallowed — a failed refresh keeps the list.
+  const refresh = useCallback(() => {
+    fetchConversations()
+      .then((page) => {
+        setState((s) => {
+          if (s.status !== "ready") return s
+          const merged = mergeConversations(s.conversations, page.conversations)
+          return merged === s.conversations ? s : { ...s, conversations: merged }
+        })
+      })
+      .catch(() => {
+        // Silent (t113) — the last-good list stays put.
+      })
+  }, [])
+
+  // Refresh on a cadence + on the tab returning to foreground / window focus. Paused while hidden.
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined
+    const start = () => {
+      if (timer == null) timer = setInterval(refresh, LIST_POLL_MS)
+    }
+    const stop = () => {
+      if (timer != null) {
+        clearInterval(timer)
+        timer = undefined
+      }
+    }
+    const onVisibility = () => {
+      if (document.hidden) stop()
+      else {
+        refresh()
+        start()
+      }
+    }
+    const onFocus = () => refresh()
+    if (!document.hidden) start()
+    document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("focus", onFocus)
+    return () => {
+      stop()
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("focus", onFocus)
+    }
+  }, [refresh])
 
   const loadMore = useCallback(() => {
     if (loadingMoreRef.current) return
