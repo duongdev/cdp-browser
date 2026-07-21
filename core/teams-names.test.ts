@@ -62,35 +62,66 @@ describe("composeTitle", () => {
     )
   })
 
-  it("DM → the one other name", () => {
-    expect(composeTitle({ kind: "oneOnOne", topic: null, memberNames: ["Alice"] })).toBe("Alice")
-  })
-
-  it("group-DM → comma-joined names under the cap", () => {
-    expect(composeTitle({ kind: "group", topic: null, memberNames: ["Alice", "Bob"] })).toBe(
-      "Alice, Bob",
+  // Teams "Notes" (chat-with-yourself, id 48:notes). Title = "{selfName} (You)".
+  it("self chat → '{selfName} (You)', or 'Notes' with no name", () => {
+    expect(composeTitle({ kind: "self", selfName: "Dustin Do - Group Office [C]" })).toBe(
+      "Dustin Do - Group Office [C] (You)",
     )
-    expect(
-      composeTitle({ kind: "group", topic: null, memberNames: ["Alice", "Bob", "Cara"] }),
-    ).toBe("Alice, Bob, Cara")
+    expect(composeTitle({ kind: "self" })).toBe("Notes")
+    expect(composeTitle({ kind: "self", selfName: "   " })).toBe("Notes")
   })
 
-  it("group-DM → caps names and adds a +N overflow", () => {
+  it("DM → the one other full name (unchanged)", () => {
+    expect(composeTitle({ kind: "oneOnOne", topic: null, memberNames: ["Alice Nguyen"] })).toBe(
+      "Alice Nguyen",
+    )
+  })
+
+  // Group-DM without a topic = given names (first token), self excluded, alpha-sorted, joined by
+  // member count — matching Teams verbatim.
+  it("group-DM → given names, alpha-sorted, joined by count", () => {
+    // n=1 → just the given name
     expect(
-      composeTitle({ kind: "group", topic: null, memberNames: ["Alice", "Bob", "Cara", "Dan"] }),
-    ).toBe("Alice, Bob, Cara, +1")
+      composeTitle({ kind: "group", topic: null, memberNames: ["Careen Tan - Group Office"] }),
+    ).toBe("Careen")
+    // n=2 → "A and B"
+    expect(
+      composeTitle({ kind: "group", topic: null, memberNames: ["Tiffani Wong", "Careen Tan"] }),
+    ).toBe("Careen and Tiffani")
+    // n=3 → Oxford comma + "and"
     expect(
       composeTitle({
         kind: "group",
         topic: null,
-        memberNames: ["Alice", "Bob", "Cara", "Dan", "Eve"],
+        memberNames: ["Haiyang Li", "Careen Tan", "Glory Sun"],
       }),
-    ).toBe("Alice, Bob, Cara, +2")
+    ).toBe("Careen, Glory, and Haiyang")
+  })
+
+  it("group-DM ≥4 → first two given names alpha + '+N' overflow", () => {
+    expect(
+      composeTitle({
+        kind: "group",
+        topic: null,
+        memberNames: ["Haiyang Li", "Careen Tan", "Zed Xu", "Ana Bo"],
+      }),
+    ).toBe("Ana, Careen, +2")
+  })
+
+  it("keeps duplicate given names (two different people, same first name)", () => {
+    expect(composeTitle({ kind: "group", topic: null, memberNames: ["Alex Kim", "Alex Ng"] })).toBe(
+      "Alex and Alex",
+    )
   })
 
   it("excludes selfName from the names", () => {
     expect(
-      composeTitle({ kind: "group", topic: null, memberNames: ["Me", "Bob"], selfName: "Me" }),
+      composeTitle({
+        kind: "group",
+        topic: null,
+        memberNames: ["Me Myself", "Bob Jones"],
+        selfName: "Me Myself",
+      }),
     ).toBe("Bob")
   })
 

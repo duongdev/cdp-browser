@@ -10,6 +10,7 @@ export function conversationLabel(conv: TeamsConversation): string {
   if (title) return title
   const topic = conv.topic?.trim()
   if (topic) return topic
+  if (conv.kind === "self") return "Notes"
   return conv.kind === "oneOnOne" ? "Direct message" : "Group chat"
 }
 

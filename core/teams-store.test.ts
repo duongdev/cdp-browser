@@ -61,14 +61,16 @@ describe("migrate — idempotent full schema", () => {
 })
 
 describe("classifiers", () => {
-  it("flags reserved 48:* (self / notifications / mentions)", () => {
-    expect(isReservedConversation("48:notes")).toBe(true)
+  it("keeps 48:notes (the self chat) but flags the other reserved 48:* threads", () => {
+    expect(isReservedConversation("48:notes")).toBe(false)
     expect(isReservedConversation("48:notifications")).toBe(true)
+    expect(isReservedConversation("48:mentions")).toBe(true)
     expect(isReservedConversation("19:aaa@thread.v2")).toBe(false)
   })
   it("derives kind from the id shape", () => {
     expect(conversationKind("19:xyz@unq.gbl.spaces")).toBe("oneOnOne")
     expect(conversationKind("19:aaa@thread.v2")).toBe("group")
+    expect(conversationKind("48:notes")).toBe("self")
   })
   it("shapes a raw conversation into a row (topic, preview, ts, version)", () => {
     const row = shapeConversation(conv(), TENANT)
@@ -134,14 +136,22 @@ describe("upsertConversations — insert / version-gated update / no-op", () => 
     expect(row.updated_at).toBe(1000) // untouched
   })
 
-  it("skips reserved 48:* / self conversations", () => {
+  it("keeps 48:notes (self chat) but skips other reserved 48:* conversations", () => {
     upsertConversations(db, TENANT, [
       conv(),
-      { id: "48:notes", lastUpdatedMessageVersion: 9, lastMessage: { content: "self" } },
+      {
+        id: "48:notes",
+        lastUpdatedMessageVersion: 9,
+        lastMessage: { content: "self", originalarrivaltime: "2024-05-01T00:00:00.000Z" },
+      },
       { id: "48:notifications", lastUpdatedMessageVersion: 9 },
     ])
-    const ids = listConversations(db, TENANT).map((c) => c.id)
-    expect(ids).toEqual(["19:aaa@thread.v2"])
+    const list = listConversations(db, TENANT)
+    const ids = list.map((c) => c.id)
+    expect(ids).toContain("48:notes")
+    expect(ids).not.toContain("48:notifications")
+    expect(list.find((c) => c.id === "48:notes")?.kind).toBe("self")
+    expect(list.find((c) => c.id === "48:notes")?.topic).toBeNull()
   })
 
   it("returns the tenant list newest-first via listConversations", () => {

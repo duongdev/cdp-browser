@@ -71,16 +71,17 @@ function migrate(db) {
   return db
 }
 
-// Reserved / self conversations to skip. Teams uses the `48:` namespace for non-chat threads:
-// `48:notes` (the self "chat with yourself"), `48:notifications`, `48:mentions`. None are real
-// conversations, so they never enter the store.
+// Reserved conversations to skip. Teams uses the `48:` namespace for non-chat threads:
+// `48:notes` (the self "chat with yourself" / "Notes"), `48:notifications`, `48:mentions`. Only
+// `48:notes` is a real chat (it has a lastMessage), so it enters the store; the others never do.
 function isReservedConversation(id) {
-  return typeof id === "string" && id.startsWith("48:")
+  return typeof id === "string" && id.startsWith("48:") && id !== "48:notes"
 }
 
-// 1:1 chat ids end `@unq.gbl.spaces`; group chats are `…@thread.v2`. Everything else that
-// isn't reserved is treated as a group thread.
+// `48:notes` is the self chat; 1:1 chat ids end `@unq.gbl.spaces`; group chats are `…@thread.v2`.
+// Everything else that isn't reserved is treated as a group thread.
 function conversationKind(id) {
+  if (id === "48:notes") return "self"
   return typeof id === "string" && id.includes("@unq.gbl.spaces") ? "oneOnOne" : "group"
 }
 

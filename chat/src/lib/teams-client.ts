@@ -5,7 +5,8 @@
 /** One conversation row as the server's `listConversations` returns it (core/teams-store.js). */
 export interface TeamsConversation {
   id: string
-  kind: "oneOnOne" | "group"
+  /** `self` is the Teams "Notes" chat-with-yourself (id `48:notes`). */
+  kind: "oneOnOne" | "group" | "self"
   /** Resolved display title (t109): real member names for a topic-less DM/group-DM, else the
    *  topic. Server-computed and best-effort — absent when name resolution failed. */
   title?: string

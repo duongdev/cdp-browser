@@ -16,7 +16,10 @@ function otherMrisFromId(convId, selfMri) {
   if (typeof convId !== "string" || !convId.includes("@unq.gbl.spaces")) return []
   const inner = convId.split("@")[0].replace(/^19:/, "")
   const selfOid = oidFromMri(selfMri)
-  return inner.split("_").filter(Boolean).filter((m) => oidFromMri(m) !== selfOid)
+  return inner
+    .split("_")
+    .filter(Boolean)
+    .filter((m) => oidFromMri(m) !== selfOid)
 }
 
 // Graph's getByIds keys objects by the AAD object id, which is the MRI minus its `8:orgid:`
@@ -25,12 +28,11 @@ function oidFromMri(mri) {
   return typeof mri === "string" ? mri.replace(/^8:orgid:/, "") : ""
 }
 
-// Show at most this many names before collapsing the rest into a "+N" overflow.
-const GROUP_NAME_CAP = 3
-
-// Compose the display title. Precedence: an explicit topic wins (any kind); else the resolved
-// member names — a DM shows the single other name, a group-DM shows up to GROUP_NAME_CAP names
-// with a "+N" overflow; else the kind fallback. `selfName` is filtered out defensively (the
+// Compose the display title exactly as Teams renders it (verified live against the running tenant).
+// Precedence: an explicit topic wins (any kind); the self "Notes" chat shows "{selfName} (You)";
+// a 1:1 DM shows the other full name; a topic-less group-DM shows GIVEN names (first token of each
+// member's display name), self excluded, alpha-sorted, joined by member count — `A` / `A and B` /
+// `A, B, and C` (Oxford comma) / `A, B, +N` overflow. `selfName` is filtered out defensively (the
 // group roster fetch includes self). Missing/empty everything → "Direct message" / "Group chat".
 function composeTitle(input = {}) {
   const { kind, topic, memberNames, selfName } = input
@@ -38,14 +40,21 @@ function composeTitle(input = {}) {
   if (t) return t
 
   const self = typeof selfName === "string" ? selfName.trim() : ""
+  if (kind === "self") return self ? `${self} (You)` : "Notes"
+
   const names = (Array.isArray(memberNames) ? memberNames : [])
     .map((n) => (typeof n === "string" ? n.trim() : ""))
     .filter((n) => n && n !== self)
 
   if (names.length === 0) return kind === "oneOnOne" ? "Direct message" : "Group chat"
   if (kind === "oneOnOne") return names[0]
-  if (names.length <= GROUP_NAME_CAP) return names.join(", ")
-  return `${names.slice(0, GROUP_NAME_CAP).join(", ")}, +${names.length - GROUP_NAME_CAP}`
+
+  // Group-DM: given name = first whitespace token; keep duplicates; alpha sort.
+  const g = names.map((n) => n.split(/\s+/)[0]).sort((a, b) => a.localeCompare(b))
+  if (g.length === 1) return g[0]
+  if (g.length === 2) return `${g[0]} and ${g[1]}`
+  if (g.length === 3) return `${g[0]}, ${g[1]}, and ${g[2]}`
+  return `${g[0]}, ${g[1]}, +${g.length - 2}`
 }
 
-module.exports = { otherMrisFromId, oidFromMri, composeTitle, GROUP_NAME_CAP }
+module.exports = { otherMrisFromId, oidFromMri, composeTitle }

@@ -39,6 +39,7 @@ describe("conversationLabel", () => {
   it("falls back by kind when there is no topic", () => {
     expect(conversationLabel(conv({ topic: null, kind: "oneOnOne" }))).toBe("Direct message")
     expect(conversationLabel(conv({ topic: null, kind: "group" }))).toBe("Group chat")
+    expect(conversationLabel(conv({ topic: null, kind: "self" }))).toBe("Notes")
   })
 })
 

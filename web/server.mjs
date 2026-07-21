@@ -1125,13 +1125,13 @@ async function resolveTeamsNamesInPage(oids) {
 // for a group-DM), hitting the cache first and Graph-resolving only the misses in one batch.
 async function teamsResolveTitles(cred, convs) {
   const selfMri = `8:orgid:${cred.userId || ""}`
-  const selfName = cred.displayName || ""
+  const hasSelf = convs.some((c) => c.kind === "self")
   const mrisByConv = new Map()
   const groupDmIds = []
   for (const c of convs) {
     if (c.topic && c.topic.trim()) continue // topic wins — no name resolution needed
     if (c.kind === "oneOnOne") mrisByConv.set(c.id, teamsOtherMrisFromId(c.id, selfMri))
-    else groupDmIds.push(c.id)
+    else if (c.kind === "group") groupDmIds.push(c.id) // self chat's title is selfName-only
   }
 
   const cache = new Map()
@@ -1147,6 +1147,9 @@ async function teamsResolveTitles(cred, convs) {
     }
     const needed = new Set()
     for (const mris of mrisByConv.values()) for (const m of mris) needed.add(m)
+    // Resolve self's own display name in the same batch when a self chat is present, so its
+    // "{selfName} (You)" title works even without cred.displayName.
+    if (hasSelf && cred.userId) needed.add(selfMri)
     const cached = teamsGetUsers(teamsDb, [...needed])
     for (const [mri, name] of cached) cache.set(mri, name)
     const misses = [...needed].filter((m) => !cache.has(m))
@@ -1166,6 +1169,7 @@ async function teamsResolveTitles(cred, convs) {
     console.error("[web] teams name resolution failed:", e.message) // degrade to fallback labels
   }
 
+  const selfName = cred.displayName || cache.get(selfMri) || ""
   return convs.map((c) => ({
     ...c,
     title: teamsComposeTitle({
