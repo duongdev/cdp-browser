@@ -44,6 +44,7 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import { isValidTeamsCursor } from "../core/teams-cursor.js"
 import {
   composeTitle as teamsComposeTitle,
   oidFromMri as teamsOidFromMri,
@@ -985,14 +986,23 @@ setInterval(() => {
   checkSlackHealthAlerts()
 }, 15_000)
 
-// ---- Teams conversation list (t105, ADR-0018) -----------------------------
+// ---- Teams conversation list (t105/t112, ADR-0018) ------------------------
 // CA-proof: the conversations GET runs IN-PAGE via the side-channel (the browser's own
 // authenticated fetch), never a server-side fetch. Pin to the minted chatServiceBase —
-// chatsvcagg.teams.microsoft.com is a proven 401 dead-end. Returns { conversations } or a
-// typed { error } the route maps to an HTTP status.
-async function fetchTeamsConversationsInPage(cred) {
+// chatsvcagg.teams.microsoft.com is a proven 401 dead-end. First page = the base URL; older
+// pages = the previous response's `_metadata.backwardLink` (an opaque syncState cursor), fetched
+// verbatim after the security gate (isValidTeamsCursor) confirms it stays under our chatServiceBase.
+// Returns { conversations, cursor } (cursor = next backwardLink or null) or a typed { error }.
+async function fetchTeamsConversationsInPage(cred, cursor) {
   if (!cred.chatServiceBase) return { error: "no_base" }
-  const url = `${cred.chatServiceBase}/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=50&startTime=1`
+  let url
+  if (cursor) {
+    // SSRF gate: the cursor is a server-fetched IN-PAGE URL carrying the skypetoken.
+    if (!isValidTeamsCursor(cursor, cred.chatServiceBase)) return { error: "bad_cursor" }
+    url = cursor
+  } else {
+    url = `${cred.chatServiceBase}/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=50&startTime=1`
+  }
   // The skype token auths the msg service via `Authentication: skypetoken=…` (NOT a Bearer).
   const script = `(async () => {
     try {
@@ -1007,13 +1017,16 @@ async function fetchTeamsConversationsInPage(cred) {
   const result = await notificationCenter.runInTeamsPage(script)
   if (!result) return { error: "no_teams_tab" }
   if (result.error) return { error: result.error }
-  return { conversations: Array.isArray(result.conversations) ? result.conversations : [] }
+  return {
+    conversations: Array.isArray(result.conversations) ? result.conversations : [],
+    cursor: result._metadata?.backwardLink || null,
+  }
 }
 
 // Mint/reuse creds → in-page conversations fetch → upsert → return the DB view. A 401 in-page
 // drives a single re-authz (markTeamsCredsStale re-mints over the live tab) and one retry, then
 // a hard typed invalid_auth. The keeper tab is load-bearing: only its MSAL rotates the bearer.
-async function teamsConversations() {
+async function teamsConversations(cursor) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds() // no fresh cred yet — mint over a live Teams tab
@@ -1021,12 +1034,12 @@ async function teamsConversations() {
   }
   if (!cred) return { error: "invalid_auth" }
 
-  let out = await fetchTeamsConversationsInPage(cred)
+  let out = await fetchTeamsConversationsInPage(cred, cursor)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth") // re-authz (one retry)
     cred = notificationCenter.getTeamsCreds(cred.tenant)
     if (!cred || cred.fresh === false) return { error: "invalid_auth" }
-    out = await fetchTeamsConversationsInPage(cred)
+    out = await fetchTeamsConversationsInPage(cred, cursor)
   }
   if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
 
@@ -1035,9 +1048,12 @@ async function teamsConversations() {
     userId: cred.userId,
     chatServiceBase: cred.chatServiceBase,
   })
-  teamsUpsertConversations(teamsDb, cred.tenant, out.conversations) // filters reserved/self + version-gates
-  const convs = teamsListConversations(teamsDb, cred.tenant)
-  return { conversations: await teamsResolveTitles(cred, convs) }
+  // Return only THIS page's conversations (the client appends + dedups), enriched from the DB view
+  // (unread/preview/muted) and t109 name resolution per page. `rows` = the page's non-reserved convs.
+  const rows = teamsUpsertConversations(teamsDb, cred.tenant, out.conversations)
+  const pageIds = new Set(rows.map((r) => r.id))
+  const convs = teamsListConversations(teamsDb, cred.tenant).filter((c) => pageIds.has(c.id))
+  return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
 }
 
 // ---- DM / group-DM name resolution (t109, ADR-0018) -----------------------
@@ -1161,13 +1177,21 @@ async function teamsResolveTitles(cred, convs) {
   }))
 }
 
-// ---- Teams conversation history (t107, ADR-0018) --------------------------
-// CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. `before` (a ts
-// cursor) pages older via &startTime. Returns { messages: raw[] } or a typed { error }.
-async function fetchTeamsHistoryInPage(cred, convId, before) {
+// ---- Teams conversation history (t107/t112, ADR-0018) ---------------------
+// CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. First page = the
+// base URL; older pages = the previous response's `_metadata.backwardLink` (an opaque syncState
+// cursor), fetched verbatim after the security gate (isValidTeamsCursor) confirms it stays under
+// our chatServiceBase. Returns { messages: raw[], cursor } or a typed { error }.
+async function fetchTeamsHistoryInPage(cred, convId, cursor) {
   if (!cred.chatServiceBase) return { error: "no_base" }
-  const q = `pageSize=30&view=msnp24Equivalent${before ? `&startTime=${Number(before)}` : ""}`
-  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages?${q}`
+  let url
+  if (cursor) {
+    // SSRF gate: the cursor is a server-fetched IN-PAGE URL carrying the skypetoken.
+    if (!isValidTeamsCursor(cursor, cred.chatServiceBase)) return { error: "bad_cursor" }
+    url = cursor
+  } else {
+    url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages?pageSize=30&view=msnp24Equivalent&startTime=1`
+  }
   const script = `(async () => {
     try {
       const r = await fetch(${JSON.stringify(url)}, {
@@ -1181,12 +1205,15 @@ async function fetchTeamsHistoryInPage(cred, convId, before) {
   const result = await notificationCenter.runInTeamsPage(script)
   if (!result) return { error: "no_teams_tab" }
   if (result.error) return { error: result.error }
-  return { messages: Array.isArray(result.messages) ? result.messages : [] }
+  return {
+    messages: Array.isArray(result.messages) ? result.messages : [],
+    cursor: result._metadata?.backwardLink || null,
+  }
 }
 
-// Mint/reuse creds → in-page history fetch → render → upsert → return ReaderMessages. A 401
+// Mint/reuse creds → in-page history fetch → render → upsert → return { messages, cursor }. A 401
 // drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations).
-async function teamsHistory(convId, before) {
+async function teamsHistory(convId, cursor) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1194,12 +1221,12 @@ async function teamsHistory(convId, before) {
   }
   if (!cred) return { error: "invalid_auth" }
 
-  let out = await fetchTeamsHistoryInPage(cred, convId, before)
+  let out = await fetchTeamsHistoryInPage(cred, convId, cursor)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
     cred = notificationCenter.getTeamsCreds(cred.tenant)
     if (!cred || cred.fresh === false) return { error: "invalid_auth" }
-    out = await fetchTeamsHistoryInPage(cred, convId, before)
+    out = await fetchTeamsHistoryInPage(cred, convId, cursor)
   }
   if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
 
@@ -1207,10 +1234,10 @@ async function teamsHistory(convId, before) {
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
   // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
   // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
-  if (before == null && messages.length > 0) {
+  if (cursor == null && messages.length > 0) {
     teamsSetLocalRead(teamsDb, cred.tenant, convId, messages[messages.length - 1].ts)
   }
-  return { messages }
+  return { messages, cursor: out.cursor }
 }
 
 // ---- Teams reply + mark-read (t108, ADR-0018) -----------------------------
@@ -1627,22 +1654,27 @@ const server = http.createServer(async (req, res) => {
       if (!out?.ok) return json(res, { error: out?.error || "send_failed" }, 502)
       return json(res, { ok: true, ts: out.ts })
     }
-    // Teams chat: the authenticated conversation list (t105, ADR-0018). Mints creds via the
-    // keeper tab, fetches conversations IN-PAGE (CA-proof), upserts into the chat DB, returns
-    // the DB view. Web build only (Electron has no scrapable Teams creds path).
-    if (p === "/api/teams/conversations" && !POST) {
-      const out = await teamsConversations()
+    // Teams chat: the authenticated conversation list (t105/t112, ADR-0018). Mints creds via the
+    // keeper tab, fetches a page IN-PAGE (CA-proof), upserts into the chat DB, returns the page +
+    // a `cursor` (backwardLink) for the next older page. POST so the opaque cursor URL rides the
+    // body, never a query. Web build only (Electron has no scrapable Teams creds path).
+    if (p === "/api/teams/conversations" && POST) {
+      const { cursor } = await body(req)
+      const out = await teamsConversations(cursor)
       if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error === "bad_cursor") return json(res, out, 400)
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: one conversation's message history (t107, ADR-0018). Fetches IN-PAGE, renders
-    // to ReaderMessages, persists, returns them. `before` (ts cursor) pages older. Web only.
+    // Teams chat: one conversation's message history (t107/t112, ADR-0018). Fetches IN-PAGE,
+    // renders to ReaderMessages, persists, returns { messages, cursor }. No `cursor` → first
+    // page; a `cursor` (backwardLink) pages older after the SSRF gate. Web only.
     if (p === "/api/teams/history" && POST) {
-      const { convId, before } = await body(req)
+      const { convId, cursor } = await body(req)
       if (!convId) return json(res, { error: "missing convId" }, 400)
-      const out = await teamsHistory(convId, before)
+      const out = await teamsHistory(convId, cursor)
       if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error === "bad_cursor") return json(res, out, 400)
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }

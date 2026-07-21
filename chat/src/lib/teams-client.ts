@@ -19,7 +19,15 @@ export interface TeamsConversation {
 
 interface ConversationsResponse {
   conversations?: TeamsConversation[]
+  /** Opaque backwardLink for the next older page; null when there are no more (t112). */
+  cursor?: string | null
   error?: string
+}
+
+/** One page of the conversation list plus the cursor to page older (null = end). */
+export interface ConversationsPage {
+  conversations: TeamsConversation[]
+  cursor: string | null
 }
 
 /** A failed conversation fetch, carrying the server's typed code (e.g. `invalid_auth`). */
@@ -33,13 +41,23 @@ export class TeamsApiError extends Error {
   }
 }
 
-export async function fetchConversations(signal?: AbortSignal): Promise<TeamsConversation[]> {
-  const res = await fetch("/api/teams/conversations", { signal })
+/** One page of the conversation list (t112). No `cursor` → the newest page; a `cursor` (the prior
+ *  page's backwardLink) → the next older page. Returns the page + the next cursor (null = end). */
+export async function fetchConversations(
+  cursor?: string | null,
+  signal?: AbortSignal,
+): Promise<ConversationsPage> {
+  const res = await fetch("/api/teams/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cursor ? { cursor } : {}),
+    signal,
+  })
   const data = (await res.json().catch(() => ({}))) as ConversationsResponse
   if (!res.ok || data.error) {
     throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
   }
-  return data.conversations ?? []
+  return { conversations: data.conversations ?? [], cursor: data.cursor ?? null }
 }
 
 /** One rendered message (server's `teams-render.toReaderMessages` output). `ts` is epoch ms;
@@ -57,22 +75,31 @@ export interface TeamsMessage {
 
 interface HistoryResponse {
   messages?: TeamsMessage[]
+  /** Opaque backwardLink for the next older page; null when there are no more (t112). */
+  cursor?: string | null
   error?: string
 }
 
-/** One page of a conversation's history, newest-first from the server, oldest-first after render.
- *  `before` (a ts cursor) pages older. Throws TeamsApiError with the server's typed code. */
-export async function fetchHistory(convId: string, before?: number): Promise<TeamsMessage[]> {
+/** One page of a conversation's history plus the cursor to page older (null = end, t112). */
+export interface HistoryPage {
+  messages: TeamsMessage[]
+  cursor: string | null
+}
+
+/** One page of a conversation's history, oldest-first after render. No `cursor` → the newest page;
+ *  a `cursor` (the prior page's backwardLink) → the next older page. Throws TeamsApiError with the
+ *  server's typed code. */
+export async function fetchHistory(convId: string, cursor?: string | null): Promise<HistoryPage> {
   const res = await fetch("/api/teams/history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, before }),
+    body: JSON.stringify(cursor ? { convId, cursor } : { convId }),
   })
   const data = (await res.json().catch(() => ({}))) as HistoryResponse
   if (!res.ok || data.error) {
     throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
   }
-  return data.messages ?? []
+  return { messages: data.messages ?? [], cursor: data.cursor ?? null }
 }
 
 /** The server's reply response: `ts` is the sent message's id/arrival-time (epoch ms as string). */

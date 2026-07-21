@@ -1,6 +1,6 @@
 import { Alert02Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
 import { ConversationRow } from "./conversation-row"
@@ -8,7 +8,7 @@ import { ConversationRow } from "./conversation-row"
 type State =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; conversations: TeamsConversation[] }
+  | { status: "ready"; conversations: TeamsConversation[]; cursor: string | null }
 
 const errorMessage = (e: unknown): string => {
   if (e instanceof TeamsApiError) {
@@ -24,15 +24,20 @@ interface ConversationListProps {
   selectedId?: string | null
 }
 
-/** The conversation list — loads `GET /api/teams/conversations` and covers all four states. */
+/** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
+ *  states, and pages older via a "Load more" affordance driven by the backwardLink cursor (t112). */
 export function ConversationList({ onOpenConversation, selectedId }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
+  // Older-page paging (t112): true while a "Load more" fetch is in flight (dedup guard + affordance).
+  const [loadingMore, setLoadingMore] = useState(false)
+  const loadingMoreRef = useRef(false)
 
   const load = useCallback((signal?: AbortSignal) => {
     setState({ status: "loading" })
-    fetchConversations(signal)
-      .then((conversations) => {
-        if (!signal?.aborted) setState({ status: "ready", conversations })
+    fetchConversations(undefined, signal)
+      .then((page) => {
+        if (!signal?.aborted)
+          setState({ status: "ready", conversations: page.conversations, cursor: page.cursor })
       })
       .catch((e) => {
         if (signal?.aborted) return
@@ -45,6 +50,32 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
     load(ac.signal)
     return () => ac.abort()
   }, [load])
+
+  const loadMore = useCallback(() => {
+    if (loadingMoreRef.current) return
+    if (state.status !== "ready" || !state.cursor) return
+    loadingMoreRef.current = true
+    setLoadingMore(true)
+    fetchConversations(state.cursor)
+      .then((page) => {
+        setState((s) => {
+          if (s.status !== "ready") return s
+          const known = new Set(s.conversations.map((c) => c.id))
+          const fresh = page.conversations.filter((c) => !known.has(c.id))
+          return {
+            status: "ready",
+            conversations: [...s.conversations, ...fresh],
+            cursor: page.cursor,
+          }
+        })
+      })
+      // Stop offering "Load more" if a page fetch fails — the affordance hides on a null cursor.
+      .catch(() => setState((s) => (s.status === "ready" ? { ...s, cursor: null } : s)))
+      .finally(() => {
+        loadingMoreRef.current = false
+        setLoadingMore(false)
+      })
+  }, [state])
 
   if (state.status === "loading") return <ListSkeleton />
 
@@ -73,6 +104,17 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
           onOpen={onOpenConversation}
         />
       ))}
+      {state.cursor && (
+        <Button
+          className="mx-2 mt-1 text-muted-foreground"
+          disabled={loadingMore}
+          onClick={loadMore}
+          size="sm"
+          variant="ghost"
+        >
+          {loadingMore ? "Loading…" : "Load more"}
+        </Button>
+      )}
     </div>
   )
 }

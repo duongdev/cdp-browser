@@ -49,8 +49,11 @@ interface ThreadViewProps {
  *  mounted across conversation switches (t110) — hidden when inactive, never refetched. */
 export function ThreadView({ conversation, onBack, visible = true }: ThreadViewProps) {
   const [state, setState] = useState<State>({ status: "loading" })
-  // Older-page paging: false once a page comes back short (no more history above).
+  // Older-page paging (t112): the server returns an opaque `backwardLink` cursor with each page;
+  // null means there is no older page. `hasMore` mirrors "cursor is non-null" for the affordance.
   const [hasMore, setHasMore] = useState(true)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const olderCursor = useRef<string | null>(null)
   const loadingOlderRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   // Latest scroll offset, tracked live while visible — display:none drops the container's scrollTop,
@@ -62,11 +65,13 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     (signal?: AbortSignal) => {
       setState({ status: "loading" })
       setHasMore(true)
+      olderCursor.current = null
       fetchHistory(convId)
-        .then((messages) => {
+        .then((page) => {
           if (signal?.aborted) return
-          setState({ status: "ready", messages })
-          setHasMore(messages.length >= PAGE_SIZE)
+          setState({ status: "ready", messages: page.messages })
+          olderCursor.current = page.cursor
+          setHasMore(page.cursor != null)
         })
         .catch((e) => {
           if (!signal?.aborted) setState({ status: "error", message: errorMessage(e) })
@@ -93,18 +98,21 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
 
   const loadOlder = useCallback(() => {
     if (loadingOlderRef.current || !hasMore) return
+    const cursor = olderCursor.current
+    if (!cursor) return
     if (state.status !== "ready" || state.messages.length === 0) return
     const el = scrollRef.current
     if (!el) return
     loadingOlderRef.current = true
-    const oldest = state.messages[0].ts
+    setLoadingOlder(true)
     const prevHeight = el.scrollHeight
-    fetchHistory(convId, oldest)
+    fetchHistory(convId, cursor)
       .then((older) => {
-        // Drop overlap (the cursor is exclusive server-side, but be defensive).
+        // Dedup by id (a page boundary can re-emit a message; keep the render idempotent).
         const known = new Set(state.messages.map((m) => m.id))
-        const fresh = older.filter((m) => !known.has(m.id))
-        setHasMore(older.length >= PAGE_SIZE)
+        const fresh = older.messages.filter((m) => !known.has(m.id))
+        olderCursor.current = older.cursor
+        setHasMore(older.cursor != null)
         if (fresh.length > 0) {
           setState((s) =>
             s.status === "ready" ? { status: "ready", messages: [...fresh, ...s.messages] } : s,
@@ -119,6 +127,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       .catch(() => setHasMore(false))
       .finally(() => {
         loadingOlderRef.current = false
+        setLoadingOlder(false)
       })
   }, [convId, hasMore, state])
 
@@ -270,6 +279,11 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
               onScroll={onScroll}
               ref={scrollRef}
             >
+              {loadingOlder && (
+                <p className="shrink-0 py-1 text-center text-[11px] text-muted-foreground">
+                  Loading older…
+                </p>
+              )}
               {state.messages.map((m) => (
                 <MessageRow key={m.id} message={m} />
               ))}
@@ -290,9 +304,6 @@ function sendErrorCopy(code: string): string {
     return "Teams is rate-limiting. Your message is kept — retry in a moment."
   return "Could not send. Your message is kept — retry."
 }
-
-// The server page size (mirrors POST /api/teams/history pageSize=30) — a full page implies more.
-const PAGE_SIZE = 30
 
 function ThreadSkeleton() {
   return (
