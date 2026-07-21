@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
   conversationKind,
   getReadState,
+  getUsers,
   isReservedConversation,
   listConversations,
   listMessages,
@@ -14,6 +15,7 @@ import {
   upsertAccount,
   upsertConversations,
   upsertMessages,
+  upsertUsers,
 } from "./teams-store"
 
 const TENANT = "TENANT-1"
@@ -45,7 +47,14 @@ describe("migrate — idempotent full schema", () => {
       .prepare("SELECT name FROM sqlite_master WHERE type IN ('table') ORDER BY name")
       .all()
       .map((r: any) => r.name)
-    for (const t of ["accounts", "conversations", "messages", "read_state", "messages_fts"]) {
+    for (const t of [
+      "accounts",
+      "conversations",
+      "messages",
+      "read_state",
+      "messages_fts",
+      "users",
+    ]) {
       expect(names).toContain(t)
     }
   })
@@ -245,6 +254,42 @@ describe("upsertAccount", () => {
       updated_at: 2,
     })
     expect(db.prepare("SELECT COUNT(*) n FROM accounts").get()).toMatchObject({ n: 1 })
+  })
+})
+
+describe("users — display-name cache (t109)", () => {
+  it("upserts names and reads back a mri→name map for the requested mris", () => {
+    upsertUsers(db, [
+      { mri: "8:orgid:AAA", displayName: "Alice" },
+      { mri: "8:orgid:BBB", displayName: "Bob" },
+    ])
+    const map = getUsers(db, ["8:orgid:AAA", "8:orgid:BBB", "8:orgid:CCC"])
+    expect(map.get("8:orgid:AAA")).toBe("Alice")
+    expect(map.get("8:orgid:BBB")).toBe("Bob")
+    expect(map.has("8:orgid:CCC")).toBe(false) // uncached miss — the caller resolves it
+  })
+
+  it("updates a name in place (a person can be renamed)", () => {
+    upsertUsers(db, [{ mri: "8:orgid:AAA", displayName: "Alice" }])
+    upsertUsers(db, [{ mri: "8:orgid:AAA", displayName: "Alice Smith" }])
+    expect(getUsers(db, ["8:orgid:AAA"]).get("8:orgid:AAA")).toBe("Alice Smith")
+  })
+
+  it("skips rows without a mri or a name, and no-ops on empty input", () => {
+    upsertUsers(db, [
+      { mri: "8:orgid:AAA", displayName: "Alice" },
+      { mri: "", displayName: "Nameless" },
+      { mri: "8:orgid:BBB", displayName: "" },
+    ])
+    upsertUsers(db, [])
+    const map = getUsers(db, ["8:orgid:AAA", "8:orgid:BBB"])
+    expect(map.get("8:orgid:AAA")).toBe("Alice")
+    expect(map.has("8:orgid:BBB")).toBe(false)
+  })
+
+  it("returns an empty map for an empty mri list", () => {
+    upsertUsers(db, [{ mri: "8:orgid:AAA", displayName: "Alice" }])
+    expect(getUsers(db, []).size).toBe(0)
   })
 })
 

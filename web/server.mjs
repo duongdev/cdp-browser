@@ -44,8 +44,14 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import {
+  composeTitle as teamsComposeTitle,
+  oidFromMri as teamsOidFromMri,
+  otherMrisFromId as teamsOtherMrisFromId,
+} from "../core/teams-names.js"
 import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
 import {
+  getUsers as teamsGetUsers,
   listConversations as teamsListConversations,
   migrate as teamsMigrate,
   setLocalRead as teamsSetLocalRead,
@@ -53,6 +59,7 @@ import {
   upsertAccount as teamsUpsertAccount,
   upsertConversations as teamsUpsertConversations,
   upsertMessages as teamsUpsertMessages,
+  upsertUsers as teamsUpsertUsers,
 } from "../core/teams-store.js"
 import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
@@ -1029,7 +1036,129 @@ async function teamsConversations() {
     chatServiceBase: cred.chatServiceBase,
   })
   teamsUpsertConversations(teamsDb, cred.tenant, out.conversations) // filters reserved/self + version-gates
-  return { conversations: teamsListConversations(teamsDb, cred.tenant) }
+  const convs = teamsListConversations(teamsDb, cred.tenant)
+  return { conversations: await teamsResolveTitles(cred, convs) }
+}
+
+// ---- DM / group-DM name resolution (t109, ADR-0018) -----------------------
+// A DM/group-DM has no topic, so its title is built from member display names. CA-proof like the
+// rest: the roster + Graph fetches run IN-PAGE. Names are cached by MRI so a re-render is a cache
+// hit — resolution only fires for MRIs seen for the first time. Best-effort throughout: any fetch
+// failure degrades a conversation to its kind fallback and NEVER fails the list.
+
+// Batch every group-DM roster in ONE in-page call: the 1:1 id already encodes its members, but a
+// group-DM's members come from /v1/threads/{id}. Returns { convId: [mri, …] }; a per-thread miss
+// just omits that id (→ the group falls back to "Group chat").
+async function fetchTeamsGroupRostersInPage(cred, convIds) {
+  if (!cred.chatServiceBase || convIds.length === 0) return {}
+  const script = `(async () => {
+    const ids = ${JSON.stringify(convIds)}
+    const out = {}
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const r = await fetch(${JSON.stringify(cred.chatServiceBase)} + "/v1/threads/" + encodeURIComponent(id) + "?view=msnp24Equivalent", {
+          headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+        })
+        if (!r.ok) return
+        const j = await r.json()
+        out[id] = (Array.isArray(j.members) ? j.members : []).map((m) => m && m.id).filter(Boolean)
+      } catch (e) {}
+    }))
+    return out
+  })()`
+  const res = await notificationCenter.runInTeamsPage(script)
+  return res && typeof res === "object" ? res : {}
+}
+
+// Resolve MRIs → names in ONE Graph getByIds batch, IN-PAGE. The Graph bearer is read from the
+// page's own MSAL cache (the accesstoken entry scoped to graph.microsoft.com) — a localStorage
+// read, not a network call, so CA doesn't apply; the POST is the browser's own authenticated
+// request. Returns { oid: displayName }; any failure → {} (all misses stay unresolved).
+async function resolveTeamsNamesInPage(oids) {
+  if (oids.length === 0) return {}
+  const script = `(async () => {
+    try {
+      let key = null
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
+      }
+      if (!key) return {}
+      let bearer = ""
+      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return {} }
+      if (!bearer) return {}
+      const r = await fetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + bearer, "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: ${JSON.stringify(oids)}, types: ["user"] }),
+      })
+      if (!r.ok) return {}
+      const j = await r.json()
+      const out = {}
+      for (const u of (Array.isArray(j.value) ? j.value : [])) {
+        if (u && u.id && u.displayName) out[u.id] = u.displayName
+      }
+      return out
+    } catch (e) { return {} }
+  })()`
+  const res = await notificationCenter.runInTeamsPage(script)
+  return res && typeof res === "object" ? res : {}
+}
+
+// Attach a `title` to each conversation: topic'd convs keep their topic (composeTitle passes it
+// through); topic-less DMs/group-DMs resolve member names (id-derived for a 1:1, roster-fetched
+// for a group-DM), hitting the cache first and Graph-resolving only the misses in one batch.
+async function teamsResolveTitles(cred, convs) {
+  const selfMri = `8:orgid:${cred.userId || ""}`
+  const selfName = cred.displayName || ""
+  const mrisByConv = new Map()
+  const groupDmIds = []
+  for (const c of convs) {
+    if (c.topic && c.topic.trim()) continue // topic wins — no name resolution needed
+    if (c.kind === "oneOnOne") mrisByConv.set(c.id, teamsOtherMrisFromId(c.id, selfMri))
+    else groupDmIds.push(c.id)
+  }
+
+  const cache = new Map()
+  try {
+    if (groupDmIds.length) {
+      const rosters = await fetchTeamsGroupRostersInPage(cred, groupDmIds)
+      for (const id of groupDmIds) {
+        mrisByConv.set(
+          id,
+          (rosters[id] || []).filter((m) => m !== selfMri),
+        )
+      }
+    }
+    const needed = new Set()
+    for (const mris of mrisByConv.values()) for (const m of mris) needed.add(m)
+    const cached = teamsGetUsers(teamsDb, [...needed])
+    for (const [mri, name] of cached) cache.set(mri, name)
+    const misses = [...needed].filter((m) => !cache.has(m))
+    if (misses.length) {
+      const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+      const resolved = []
+      for (const m of misses) {
+        const name = oidMap[teamsOidFromMri(m)]
+        if (name) {
+          resolved.push({ mri: m, displayName: name })
+          cache.set(m, name)
+        }
+      }
+      if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+    }
+  } catch (e) {
+    console.error("[web] teams name resolution failed:", e.message) // degrade to fallback labels
+  }
+
+  return convs.map((c) => ({
+    ...c,
+    title: teamsComposeTitle({
+      kind: c.kind,
+      topic: c.topic,
+      memberNames: (mrisByConv.get(c.id) || []).map((m) => cache.get(m)).filter(Boolean),
+      selfName,
+    }),
+  }))
 }
 
 // ---- Teams conversation history (t107, ADR-0018) --------------------------

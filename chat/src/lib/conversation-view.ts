@@ -3,8 +3,11 @@
 // DM without a topic degrades to a kind label and the preview is tag-stripped raw content.
 import type { TeamsConversation } from "./teams-client"
 
-/** Display label: the topic if set, else a fallback keyed by conversation kind. */
+/** Display label: the server-resolved title (real member names, t109) if present, else the topic,
+ *  else a fallback keyed by conversation kind. */
 export function conversationLabel(conv: TeamsConversation): string {
+  const title = conv.title?.trim()
+  if (title) return title
   const topic = conv.topic?.trim()
   if (topic) return topic
   return conv.kind === "oneOnOne" ? "Direct message" : "Group chat"

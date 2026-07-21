@@ -6,6 +6,9 @@
 export interface TeamsConversation {
   id: string
   kind: "oneOnOne" | "group"
+  /** Resolved display title (t109): real member names for a topic-less DM/group-DM, else the
+   *  topic. Server-computed and best-effort — absent when name resolution failed. */
+  title?: string
   topic: string | null
   lastMessageId: string | null
   lastMessageVersion: number

@@ -15,6 +15,18 @@ const conv = (over: Partial<TeamsConversation>): TeamsConversation => ({
 })
 
 describe("conversationLabel", () => {
+  it("prefers the resolved title over the topic (t109)", () => {
+    expect(conversationLabel(conv({ title: "Alice, Bob", topic: "Release planning" }))).toBe(
+      "Alice, Bob",
+    )
+  })
+
+  it("falls back to the topic when the title is blank/absent", () => {
+    expect(conversationLabel(conv({ title: "  ", topic: "Release planning" }))).toBe(
+      "Release planning",
+    )
+  })
+
   it("uses the topic when present", () => {
     expect(conversationLabel(conv({ topic: "Release planning" }))).toBe("Release planning")
   })

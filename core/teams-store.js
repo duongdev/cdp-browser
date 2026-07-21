@@ -54,6 +54,14 @@ const SCHEMA = [
     read_horizon_ts INTEGER,
     local_read_ts   INTEGER
   )`,
+  // Display-name cache keyed by MRI (t109). DMs/group-DMs carry no topic, so their title is
+  // built from member names resolved via Graph — cached here so it's a one-time lookup per person
+  // (name resolution is the expensive part; a re-render must not re-hit Graph).
+  `CREATE TABLE IF NOT EXISTS users (
+    mri          TEXT PRIMARY KEY,
+    display_name TEXT,
+    updated_at   INTEGER
+  )`,
   // Populated later (search is a deferred default) — external-content FTS over `messages`.
   `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content='messages')`,
 ]
@@ -307,6 +315,40 @@ function getReadState(db, convId) {
   return { tenant: r.tenant, readHorizonTs: r.read_horizon_ts, localReadTs: r.local_read_ts }
 }
 
+// ---- user display-name cache (t109, ADR-0018) -----------------------------
+// Insert-or-update names keyed by MRI. `list` is [{ mri, displayName }]; rows missing either
+// field are skipped (a Graph miss shouldn't cache a blank name). Empty list is a no-op.
+function upsertUsers(db, list, now = Date.now()) {
+  const rows = (Array.isArray(list) ? list : []).filter((u) => u?.mri && u?.displayName)
+  if (rows.length === 0) return
+  const stmt = db.prepare(`
+    INSERT INTO users (mri, display_name, updated_at)
+    VALUES (@mri, @display_name, @updated_at)
+    ON CONFLICT(mri) DO UPDATE SET
+      display_name = excluded.display_name,
+      updated_at = excluded.updated_at
+  `)
+  const run = db.transaction((us) => {
+    for (const u of us) stmt.run({ mri: u.mri, display_name: u.displayName, updated_at: now })
+  })
+  run(rows)
+}
+
+// The cached names for a set of MRIs → Map(mri → displayName). Only the hits are present, so the
+// caller diffs the requested MRIs against the map keys to find the misses to resolve. Empty list
+// → empty map (no query).
+function getUsers(db, mris) {
+  const map = new Map()
+  const ids = Array.isArray(mris) ? mris.filter(Boolean) : []
+  if (ids.length === 0) return map
+  const placeholders = ids.map(() => "?").join(",")
+  const rows = db
+    .prepare(`SELECT mri, display_name FROM users WHERE mri IN (${placeholders})`)
+    .all(ids)
+  for (const r of rows) map.set(r.mri, r.display_name)
+  return map
+}
+
 module.exports = {
   migrate,
   isReservedConversation,
@@ -320,4 +362,6 @@ module.exports = {
   setReadHorizon,
   setLocalRead,
   getReadState,
+  upsertUsers,
+  getUsers,
 }
