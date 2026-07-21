@@ -129,7 +129,17 @@ function attachmentChip(message) {
 // itemid→mri map from properties.mentions ({ itemid, mri, displayName }[]); itemids normalize to
 // string keys. Drives the same-person run merge in resolveMentions (t118).
 function mentionMriMap(message) {
-  const list = message.properties?.mentions
+  let list = message.properties?.mentions
+  // Teams sends properties.mentions as a JSON STRING (not a parsed array) — parse it defensively so
+  // the itemid→mri map is populated and the same-person run merge fires (t118 shipped assuming an
+  // array; live data is a string, so the map was empty and mentions rendered per-token).
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list)
+    } catch {
+      list = null
+    }
+  }
   const map = {}
   if (Array.isArray(list)) {
     for (const m of list) {

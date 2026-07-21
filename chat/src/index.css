@@ -78,7 +78,13 @@
   display: block;
   max-width: 100%;
   max-height: 320px;
+  /* width + height BOTH auto so the intrinsic aspect ratio (from the width/height attrs) scales to
+     fit within both max constraints, preserving the ratio. With only height:auto the attr width
+     forces the width while max-height clamps the height independently → a portrait image distorts
+     to a landscape box (t118 fix). object-fit is a belt-and-suspenders. */
+  width: auto;
   height: auto;
+  object-fit: contain;
   border-radius: 6px;
   background: var(--muted);
   cursor: zoom-in;

@@ -102,6 +102,15 @@ describe("renderBody — mention run merging (t118)", () => {
     )
   })
 
+  it("merges when properties.mentions is a JSON string (the real Teams shape)", () => {
+    const mri = "8:orgid:f89854b7-bc31-430f-ad88-723752d1c7dd"
+    const content = `<p>Yo ${[span(0, "Careen"), span(1, "Tan"), span(2, "-"), span(3, "Group"), span(4, "Office")].join("&nbsp;")}</p>`
+    const mentions = JSON.stringify([0, 1, 2, 3, 4].map((itemid) => ({ itemid, mri })))
+    expect(renderBody(msg({ content, properties: { mentions } }))).toBe(
+      '<p>Yo <span class="mention">@Careen Tan - Group Office</span></p>',
+    )
+  })
+
   it("keeps two genuinely different adjacent people as two pills", () => {
     const content = `${span(0, "Alice")} ${span(1, "Bob")}`
     const mentions = [
