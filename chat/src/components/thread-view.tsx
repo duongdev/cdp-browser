@@ -1,14 +1,23 @@
-import { Alert02Icon, ArrowLeft01Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
+import {
+  Alert02Icon,
+  ArrowLeft01Icon,
+  InboxIcon,
+  ReloadIcon,
+  SentIcon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { conversationLabel } from "../lib/conversation-view"
 import {
   fetchHistory,
+  markRead,
+  sendReply,
   TeamsApiError,
   type TeamsConversation,
   type TeamsMessage,
 } from "../lib/teams-client"
+import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
 import { MessageRow } from "./message-row"
 
 const errorMessage = (e: unknown): string => {
@@ -110,6 +119,94 @@ export function ThreadView({ conversation, onBack }: ThreadViewProps) {
     if (el && el.scrollTop < 48) loadOlder()
   }, [loadOlder])
 
+  // Composer (t108, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
+  // optimistically appends the message and write-through marks the conversation read on Teams.
+  // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
+  const replyTarget = selectReplyTarget(conversation)
+  const [send, setSend] = useState<SendState>({ phase: "idle", draft: "" })
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  // Reset the composer when the conversation changes (a half-typed draft doesn't leak across).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
+  useEffect(() => setSend({ phase: "idle", draft: "" }), [convId])
+  // Auto-grow the textarea up to a cap; height resets to measure the real scrollHeight each edit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: send.draft is the deliberate re-measure trigger
+  useLayoutEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`
+  }, [send.draft])
+
+  const doSend = useCallback(() => {
+    const text = send.draft.trim()
+    const next = reduceSend(send, { type: "send" })
+    setSend(next)
+    if (next.phase !== "sending" || !replyTarget) return
+    sendReply(replyTarget.convId, text)
+      .then((out) => {
+        setSend((s) => reduceSend(s, { type: "ok" }))
+        const sent: TeamsMessage = {
+          id: out.ts,
+          ts: Number(out.ts) || Date.now(),
+          senderId: "",
+          senderName: "You",
+          body: text,
+          self: true,
+          edited: false,
+          deleted: false,
+        }
+        setState((s) =>
+          s.status === "ready" ? { status: "ready", messages: [...s.messages, sent] } : s,
+        )
+        requestAnimationFrame(() => {
+          const el = scrollRef.current
+          if (el) el.scrollTop = el.scrollHeight
+        })
+        // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
+        markRead(replyTarget.convId, out.ts, out.ts)
+      })
+      .catch((e) => {
+        const code = e instanceof TeamsApiError ? e.code : "network_error"
+        setSend((s) => reduceSend(s, { type: "fail", code }))
+      })
+  }, [send, replyTarget])
+
+  const composer = (
+    <div className="shrink-0 border-border border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      {send.phase === "failed" && (
+        <p className="pb-1.5 text-destructive text-xs">{sendErrorCopy(send.code)}</p>
+      )}
+      <div className="flex items-end gap-2">
+        <textarea
+          className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
+          disabled={send.phase === "sending"}
+          onChange={(e) => setSend(reduceSend(send, { type: "edit", draft: e.target.value }))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault()
+              doSend()
+            }
+          }}
+          placeholder="Type a message…"
+          ref={taRef}
+          rows={1}
+          value={send.draft}
+        />
+        <Button
+          aria-label={send.phase === "failed" ? "Retry send" : "Send"}
+          disabled={send.phase === "sending" || !send.draft.trim()}
+          onClick={doSend}
+          size="icon"
+        >
+          <HugeiconsIcon className="size-4" icon={SentIcon} />
+        </Button>
+      </div>
+      {send.phase === "sending" && (
+        <p className="pt-1 text-[11px] text-muted-foreground">Sending…</p>
+      )}
+    </div>
+  )
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <header className="flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
@@ -140,24 +237,38 @@ export function ThreadView({ conversation, onBack }: ThreadViewProps) {
             Retry
           </Button>
         </Centered>
-      ) : state.messages.length === 0 ? (
-        <Centered>
-          <HugeiconsIcon className="size-8 text-muted-foreground" icon={InboxIcon} />
-          <p className="text-muted-foreground text-sm">No messages yet</p>
-        </Centered>
       ) : (
-        <div
-          className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain px-3 py-3"
-          onScroll={onScroll}
-          ref={scrollRef}
-        >
-          {state.messages.map((m) => (
-            <MessageRow key={m.id} message={m} />
-          ))}
-        </div>
+        <>
+          {state.messages.length === 0 ? (
+            <Centered>
+              <HugeiconsIcon className="size-8 text-muted-foreground" icon={InboxIcon} />
+              <p className="text-muted-foreground text-sm">No messages yet</p>
+            </Centered>
+          ) : (
+            <div
+              className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain px-3 py-3"
+              onScroll={onScroll}
+              ref={scrollRef}
+            >
+              {state.messages.map((m) => (
+                <MessageRow key={m.id} message={m} />
+              ))}
+            </div>
+          )}
+          {replyTarget && composer}
+        </>
       )}
     </div>
   )
+}
+
+// Composer failure copy — honest and specific where we can be, generic otherwise.
+function sendErrorCopy(code: string): string {
+  if (code === "invalid_auth")
+    return "Teams sign-in expired — it refreshes when the Teams tab reloads. Your message is kept; retry in a moment."
+  if (code === "rate_limited")
+    return "Teams is rate-limiting. Your message is kept — retry in a moment."
+  return "Could not send. Your message is kept — retry."
 }
 
 // The server page size (mirrors POST /api/teams/history pageSize=30) — a full page implies more.

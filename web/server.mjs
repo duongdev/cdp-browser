@@ -48,6 +48,8 @@ import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.
 import {
   listConversations as teamsListConversations,
   migrate as teamsMigrate,
+  setLocalRead as teamsSetLocalRead,
+  setReadHorizon as teamsSetReadHorizon,
   upsertAccount as teamsUpsertAccount,
   upsertConversations as teamsUpsertConversations,
   upsertMessages as teamsUpsertMessages,
@@ -1074,7 +1076,130 @@ async function teamsHistory(convId, before) {
 
   const messages = teamsToReaderMessages(out.messages, cred.userId)
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
+  // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
+  // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
+  if (before == null && messages.length > 0) {
+    teamsSetLocalRead(teamsDb, cred.tenant, convId, messages[messages.length - 1].ts)
+  }
   return { messages }
+}
+
+// ---- Teams reply + mark-read (t108, ADR-0018) -----------------------------
+// CA-proof like the list/history: the send runs IN-PAGE via the side-channel (the browser's own
+// authenticated POST). A random 18-digit clientmessageid dedups server-side; Teams echoes back
+// the message's OriginalArrivalTime, which IS the message id (epoch ms). No leading zero.
+function randomClientMessageId() {
+  let id = String(1 + Math.floor(Math.random() * 9))
+  for (let i = 1; i < 18; i++) id += Math.floor(Math.random() * 10)
+  return id
+}
+
+async function sendTeamsReplyInPage(cred, convId, text) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages`
+  const clientmessageid = randomClientMessageId()
+  const payload = {
+    content: text,
+    messagetype: "Text",
+    contenttype: "text",
+    clientmessageid,
+    imdisplayname: cred.displayName || "",
+    properties: {},
+  }
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "POST",
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (r.status !== 201 && !r.ok) return { error: "http_" + r.status }
+      const j = await r.json().catch(() => ({}))
+      return { OriginalArrivalTime: j.OriginalArrivalTime }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.error) return { error: result.error }
+  return { OriginalArrivalTime: result.OriginalArrivalTime, clientmessageid }
+}
+
+// Mint/reuse creds → in-page send → persist the echo → return the new ts. A 401 drives one
+// re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations/teamsHistory).
+async function teamsReply(convId, text) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await sendTeamsReplyInPage(cred, convId, text)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await sendTeamsReplyInPage(cred, convId, text)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  // Persist the sent echo (self) so a re-fetch/reconnect shows it without a round-trip.
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: text,
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, ts, clientmessageid: out.clientmessageid }
+}
+
+// Best-effort write-through mark-read (Q9 hybrid): push the consumptionHorizon to Teams IN-PAGE
+// and advance the stored read_horizon_ts. NEVER throws / fails a caller — the reply already
+// succeeded; a failed horizon write just leaves the desktop unread as a to-do trail. The exact
+// PUT verb/path/body is confirmed live by the keeper tab (see task t108 return notes).
+async function markTeamsReadInPage(cred, convId, msgId, ts) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/properties?name=consumptionhorizon`
+  const horizon = `${msgId};${ts};0`
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "PUT",
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify({ consumptionhorizon: horizon }))},
+      })
+      return { status: r.status, ok: r.ok }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+async function teamsMarkRead(convId, msgId, ts) {
+  const cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (cred) {
+    try {
+      await markTeamsReadInPage(cred, convId, msgId, ts)
+      teamsSetReadHorizon(teamsDb, cred.tenant, convId, ts)
+    } catch (e) {
+      console.error("[web] teams mark-read failed:", e.message)
+    }
+  }
+  return { ok: true }
 }
 
 // ---- HTTP routing ---------------------------------------------------------
@@ -1391,6 +1516,23 @@ const server = http.createServer(async (req, res) => {
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)
+    }
+    // Teams chat: send a text reply IN-PAGE (t108, ADR-0018). Persists the echo, returns the
+    // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/reply" && POST) {
+      const { convId, text } = await body(req)
+      if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsReply(convId, text)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: write-through mark-read (t108, Q9 hybrid). Best-effort — always { ok } even
+    // if the horizon write fails, so it can't undo a successful reply. Web only.
+    if (p === "/api/teams/mark-read" && POST) {
+      const { convId, msgId, ts } = await body(req)
+      if (!convId || !msgId || ts == null) return json(res, { error: "missing fields" }, 400)
+      return json(res, await teamsMarkRead(convId, msgId, ts))
     }
     // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
     // the client uses it as `applicationServerKey` for pushManager.subscribe.

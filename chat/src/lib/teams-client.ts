@@ -71,3 +71,40 @@ export async function fetchHistory(convId: string, before?: number): Promise<Tea
   }
   return data.messages ?? []
 }
+
+/** The server's reply response: `ts` is the sent message's id/arrival-time (epoch ms as string). */
+export interface SendReplyResult {
+  ok: true
+  ts: string
+  clientmessageid: string
+}
+
+/** Send a text reply to a conversation (t108). Throws TeamsApiError with the server's typed code
+ *  on failure so the composer can retain the draft and show honest copy. */
+export async function sendReply(convId: string, text: string): Promise<SendReplyResult> {
+  const res = await fetch("/api/teams/reply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ convId, text }),
+  })
+  const data = (await res.json().catch(() => ({}))) as SendReplyResult & { error?: string }
+  if (!res.ok || data.error) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+  return data
+}
+
+/** Write-through mark-read (t108, Q9 hybrid): push the conversation's read horizon to Teams.
+ *  Best-effort — the server never fails this, and a network error here must never surface, so
+ *  it swallows everything. Called after a successful reply (and on an explicit mark-read). */
+export async function markRead(convId: string, msgId: string, ts: string): Promise<void> {
+  try {
+    await fetch("/api/teams/mark-read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId, msgId, ts }),
+    })
+  } catch {
+    // best-effort: the desktop unread just survives as a to-do trail
+  }
+}

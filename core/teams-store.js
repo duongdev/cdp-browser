@@ -272,6 +272,41 @@ function listMessages(db, tenant, convId, opts = {}) {
   }))
 }
 
+// ---- read state (t108, ADR-0018) ------------------------------------------
+// Q9 hybrid: `local_read_ts` advances when a conversation is OPENED (a local read — no Teams
+// write), `read_horizon_ts` advances on a write-through mark-read (a reply or explicit action
+// that also pushed the consumptionHorizon to Teams). Both are monotonic (MAX guard) so a
+// stale/older ts never rewinds the horizon. Written independently — one call never clobbers the
+// other's column.
+
+function setReadHorizon(db, tenant, convId, ts) {
+  db.prepare(`
+    INSERT INTO read_state (conv_id, tenant, read_horizon_ts)
+    VALUES (@convId, @tenant, @ts)
+    ON CONFLICT(conv_id) DO UPDATE SET
+      tenant = excluded.tenant,
+      read_horizon_ts = MAX(COALESCE(read_state.read_horizon_ts, 0), excluded.read_horizon_ts)
+  `).run({ convId, tenant, ts: Number(ts) || 0 })
+}
+
+function setLocalRead(db, tenant, convId, ts) {
+  db.prepare(`
+    INSERT INTO read_state (conv_id, tenant, local_read_ts)
+    VALUES (@convId, @tenant, @ts)
+    ON CONFLICT(conv_id) DO UPDATE SET
+      tenant = excluded.tenant,
+      local_read_ts = MAX(COALESCE(read_state.local_read_ts, 0), excluded.local_read_ts)
+  `).run({ convId, tenant, ts: Number(ts) || 0 })
+}
+
+function getReadState(db, convId) {
+  const r = db
+    .prepare("SELECT tenant, read_horizon_ts, local_read_ts FROM read_state WHERE conv_id = ?")
+    .get(convId)
+  if (!r) return null
+  return { tenant: r.tenant, readHorizonTs: r.read_horizon_ts, localReadTs: r.local_read_ts }
+}
+
 module.exports = {
   migrate,
   isReservedConversation,
@@ -282,4 +317,7 @@ module.exports = {
   listConversations,
   upsertMessages,
   listMessages,
+  setReadHorizon,
+  setLocalRead,
+  getReadState,
 }

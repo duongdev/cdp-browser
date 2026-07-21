@@ -3,10 +3,13 @@ import { beforeEach, describe, expect, it } from "vitest"
 // SQLite chat store (t105, ADR-0018). Exercised against an in-memory handle — no fs, no server.
 import {
   conversationKind,
+  getReadState,
   isReservedConversation,
   listConversations,
   listMessages,
   migrate,
+  setLocalRead,
+  setReadHorizon,
   shapeConversation,
   upsertAccount,
   upsertConversations,
@@ -242,5 +245,40 @@ describe("upsertAccount", () => {
       updated_at: 2,
     })
     expect(db.prepare("SELECT COUNT(*) n FROM accounts").get()).toMatchObject({ n: 1 })
+  })
+})
+
+describe("read_state — local read on open, write-through horizon on reply (t108)", () => {
+  const CONV = "19:conv@unq.gbl.spaces"
+
+  it("no row until a read is recorded", () => {
+    expect(getReadState(db, CONV)).toBeNull()
+  })
+
+  it("setLocalRead and setReadHorizon write independent columns without clobbering", () => {
+    setLocalRead(db, TENANT, CONV, 100)
+    expect(getReadState(db, CONV)).toEqual({
+      tenant: TENANT,
+      localReadTs: 100,
+      readHorizonTs: null,
+    })
+    setReadHorizon(db, TENANT, CONV, 200)
+    expect(getReadState(db, CONV)).toEqual({
+      tenant: TENANT,
+      localReadTs: 100,
+      readHorizonTs: 200,
+    })
+  })
+
+  it("both are monotonic — an older ts never rewinds the stored value", () => {
+    setReadHorizon(db, TENANT, CONV, 500)
+    setReadHorizon(db, TENANT, CONV, 300)
+    setLocalRead(db, TENANT, CONV, 500)
+    setLocalRead(db, TENANT, CONV, 300)
+    expect(getReadState(db, CONV)).toEqual({
+      tenant: TENANT,
+      localReadTs: 500,
+      readHorizonTs: 500,
+    })
   })
 })
