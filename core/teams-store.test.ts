@@ -5,10 +5,12 @@ import {
   conversationKind,
   isReservedConversation,
   listConversations,
+  listMessages,
   migrate,
   shapeConversation,
   upsertAccount,
   upsertConversations,
+  upsertMessages,
 } from "./teams-store"
 
 const TENANT = "TENANT-1"
@@ -145,6 +147,87 @@ describe("upsertConversations — insert / version-gated update / no-op", () => 
       "19:new@thread.v2",
       "19:old@thread.v2",
     ])
+  })
+})
+
+// A ReaderMessage-shaped row (what upsertMessages persists), tsMs timestamps.
+const rmsg = (over = {}) => ({
+  id: "m1",
+  ts: Date.parse("2024-03-01T00:00:00.000Z"),
+  senderId: "8:orgid:AAA",
+  senderName: "Bob",
+  body: "hello",
+  self: false,
+  edited: false,
+  deleted: false,
+  ...over,
+})
+
+describe("upsertMessages / listMessages", () => {
+  const CONV = "19:aaa@thread.v2"
+  beforeEach(() => {
+    // Seed the conversation so cursor advance has a row (cursors start at the last-message ts).
+    upsertConversations(db, TENANT, [conv({ id: CONV })])
+  })
+
+  it("inserts messages and reads them back newest-first", () => {
+    upsertMessages(db, TENANT, CONV, [
+      rmsg({ id: "a", ts: 1000, body: "first" }),
+      rmsg({ id: "b", ts: 3000, body: "third" }),
+      rmsg({ id: "c", ts: 2000, body: "second" }),
+    ])
+    const out = listMessages(db, TENANT, CONV)
+    expect(out.map((m) => m.id)).toEqual(["b", "c", "a"])
+    expect(out[0]).toMatchObject({ id: "b", senderName: "Bob", body: "third", edited: false })
+  })
+
+  it("replaces a message by (conv_id, id)", () => {
+    upsertMessages(db, TENANT, CONV, [rmsg({ id: "a", body: "v1" })])
+    upsertMessages(db, TENANT, CONV, [rmsg({ id: "a", body: "v2 edited", edited: true })])
+    const out = listMessages(db, TENANT, CONV)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ body: "v2 edited", edited: true })
+  })
+
+  it("persists deleted flag as a tombstone body", () => {
+    upsertMessages(db, TENANT, CONV, [rmsg({ id: "d", body: "message deleted", deleted: true })])
+    const out = listMessages(db, TENANT, CONV)
+    expect(out[0]).toMatchObject({ deleted: true, body: "message deleted" })
+  })
+
+  it("pages older via the before cursor", () => {
+    upsertMessages(db, TENANT, CONV, [
+      rmsg({ id: "a", ts: 1000 }),
+      rmsg({ id: "b", ts: 2000 }),
+      rmsg({ id: "c", ts: 3000 }),
+    ])
+    const older = listMessages(db, TENANT, CONV, { before: 3000, limit: 30 })
+    expect(older.map((m) => m.id)).toEqual(["b", "a"])
+  })
+
+  it("honors the limit", () => {
+    upsertMessages(
+      db,
+      TENANT,
+      CONV,
+      Array.from({ length: 5 }, (_, i) => rmsg({ id: `m${i}`, ts: 1000 + i })),
+    )
+    expect(listMessages(db, TENANT, CONV, { limit: 2 })).toHaveLength(2)
+  })
+
+  it("advances oldest_synced_ts down and newest_synced_ts up", () => {
+    // Seeded cursors both equal the conversation's last-message ts.
+    const seedRow: any = db.prepare("SELECT * FROM conversations WHERE id = ?").get(CONV)
+    upsertMessages(db, TENANT, CONV, [rmsg({ id: "old", ts: 1 }), rmsg({ id: "new", ts: 9e14 })])
+    const row: any = db.prepare("SELECT * FROM conversations WHERE id = ?").get(CONV)
+    expect(row.oldest_synced_ts).toBe(1)
+    expect(row.newest_synced_ts).toBe(9e14)
+    expect(row.newest_synced_ts).toBeGreaterThan(seedRow.newest_synced_ts)
+  })
+
+  it("scopes reads by tenant", () => {
+    upsertMessages(db, TENANT, CONV, [rmsg({ id: "a" })])
+    expect(listMessages(db, "OTHER", CONV)).toEqual([])
   })
 })
 

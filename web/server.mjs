@@ -44,11 +44,13 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
 import {
   listConversations as teamsListConversations,
   migrate as teamsMigrate,
   upsertAccount as teamsUpsertAccount,
   upsertConversations as teamsUpsertConversations,
+  upsertMessages as teamsUpsertMessages,
 } from "../core/teams-store.js"
 import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
@@ -1028,6 +1030,53 @@ async function teamsConversations() {
   return { conversations: teamsListConversations(teamsDb, cred.tenant) }
 }
 
+// ---- Teams conversation history (t107, ADR-0018) --------------------------
+// CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. `before` (a ts
+// cursor) pages older via &startTime. Returns { messages: raw[] } or a typed { error }.
+async function fetchTeamsHistoryInPage(cred, convId, before) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const q = `pageSize=30&view=msnp24Equivalent${before ? `&startTime=${Number(before)}` : ""}`
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages?${q}`
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return await r.json()
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.error) return { error: result.error }
+  return { messages: Array.isArray(result.messages) ? result.messages : [] }
+}
+
+// Mint/reuse creds → in-page history fetch → render → upsert → return ReaderMessages. A 401
+// drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations).
+async function teamsHistory(convId, before) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await fetchTeamsHistoryInPage(cred, convId, before)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await fetchTeamsHistoryInPage(cred, convId, before)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const messages = teamsToReaderMessages(out.messages, cred.userId)
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
+  return { messages }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
 const body = (req) =>
@@ -1329,6 +1378,16 @@ const server = http.createServer(async (req, res) => {
     // the DB view. Web build only (Electron has no scrapable Teams creds path).
     if (p === "/api/teams/conversations" && !POST) {
       const out = await teamsConversations()
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: one conversation's message history (t107, ADR-0018). Fetches IN-PAGE, renders
+    // to ReaderMessages, persists, returns them. `before` (ts cursor) pages older. Web only.
+    if (p === "/api/teams/history" && POST) {
+      const { convId, before } = await body(req)
+      if (!convId) return json(res, { error: "missing convId" }, 400)
+      const out = await teamsHistory(convId, before)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

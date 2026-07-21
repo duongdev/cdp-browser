@@ -4,11 +4,12 @@ import type { TeamsConversation } from "../lib/teams-client"
 
 interface ConversationRowProps {
   conversation: TeamsConversation
-  onOpen: (convId: string) => void
+  onOpen: (conversation: TeamsConversation) => void
+  active?: boolean
 }
 
 /** One conversation entry: avatar initial + label + last-message preview + relative time. */
-export function ConversationRow({ conversation, onOpen }: ConversationRowProps) {
+export function ConversationRow({ conversation, onOpen, active }: ConversationRowProps) {
   const label = conversationLabel(conversation)
   const time = relativeTime(conversation.lastMessageTs)
 
@@ -17,8 +18,9 @@ export function ConversationRow({ conversation, onOpen }: ConversationRowProps) 
       className={cn(
         "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
         "hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
+        active && "bg-muted",
       )}
-      onClick={() => onOpen(conversation.id)}
+      onClick={() => onOpen(conversation)}
       type="button"
     >
       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-medium text-primary">

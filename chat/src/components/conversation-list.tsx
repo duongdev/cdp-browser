@@ -19,11 +19,13 @@ const errorMessage = (e: unknown): string => {
 }
 
 interface ConversationListProps {
-  onOpenConversation: (convId: string) => void
+  onOpenConversation: (conversation: TeamsConversation) => void
+  /** The open conversation, highlighted in the wide two-pane; null on the phone (stacked). */
+  selectedId?: string | null
 }
 
 /** The conversation list — loads `GET /api/teams/conversations` and covers all four states. */
-export function ConversationList({ onOpenConversation }: ConversationListProps) {
+export function ConversationList({ onOpenConversation, selectedId }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
 
   const load = useCallback((signal?: AbortSignal) => {
@@ -64,7 +66,12 @@ export function ConversationList({ onOpenConversation }: ConversationListProps) 
   return (
     <div className="flex flex-col gap-0.5 p-2">
       {state.conversations.map((c) => (
-        <ConversationRow conversation={c} key={c.id} onOpen={onOpenConversation} />
+        <ConversationRow
+          active={c.id === selectedId}
+          conversation={c}
+          key={c.id}
+          onOpen={onOpenConversation}
+        />
       ))}
     </div>
   )

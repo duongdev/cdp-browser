@@ -184,6 +184,94 @@ function listConversations(db, tenant) {
   }))
 }
 
+// Persist a page of ReaderMessages (t107, ADR-0018) into `messages`, insert-or-replace by
+// (conv_id, id) so a re-fetch or an edit overwrites in place. Bodies are pre-rendered plain text
+// (teams-render), so `content` holds display text — no re-sanitizing on read. `version` is stored
+// when the caller carries it (t109 reconcile gate); ReaderMessage v1 omits it → null. Advances the
+// conversation's sync cursors to span the page (oldest down, newest up) so paging resumes across
+// restarts. `msgs` is the toReaderMessages output; empty is a no-op.
+function upsertMessages(db, tenant, convId, msgs, now = Date.now()) {
+  const list = Array.isArray(msgs) ? msgs.filter((m) => m?.id) : []
+  if (list.length === 0) return
+  const stmt = db.prepare(`
+    INSERT INTO messages
+      (conv_id, id, tenant, version, sender_id, sender_name, ts, content, deleted, edited)
+    VALUES
+      (@conv_id, @id, @tenant, @version, @sender_id, @sender_name, @ts, @content, @deleted, @edited)
+    ON CONFLICT(conv_id, id) DO UPDATE SET
+      version = excluded.version,
+      sender_id = excluded.sender_id,
+      sender_name = excluded.sender_name,
+      ts = excluded.ts,
+      content = excluded.content,
+      deleted = excluded.deleted,
+      edited = excluded.edited
+  `)
+  const advance = db.prepare(`
+    UPDATE conversations SET
+      newest_synced_ts = MAX(COALESCE(newest_synced_ts, 0), @newest),
+      oldest_synced_ts = MIN(COALESCE(oldest_synced_ts, @oldest), @oldest),
+      updated_at = @now
+    WHERE id = @convId AND tenant = @tenant
+  `)
+  const run = db.transaction((rows) => {
+    let oldest = Number.POSITIVE_INFINITY
+    let newest = Number.NEGATIVE_INFINITY
+    for (const m of rows) {
+      const ts = Number(m.ts) || 0
+      stmt.run({
+        conv_id: convId,
+        id: String(m.id),
+        tenant,
+        version: Number.isFinite(m.version) ? m.version : null,
+        sender_id: m.senderId || null,
+        sender_name: m.senderName || null,
+        ts,
+        content: m.body || "",
+        deleted: m.deleted ? 1 : 0,
+        edited: m.edited ? 1 : 0,
+      })
+      if (ts > 0) {
+        if (ts < oldest) oldest = ts
+        if (ts > newest) newest = ts
+      }
+    }
+    if (Number.isFinite(oldest) && Number.isFinite(newest)) {
+      advance.run({ convId, tenant, oldest, newest, now })
+    }
+  })
+  run(list)
+}
+
+// A conversation's stored messages, newest-first (the thread view reverses for display). `before`
+// is a ts cursor (exclusive) for lazy older-page loads; `limit` caps the page (default 30). Bodies
+// are already rendered plain text. `self` is NOT stored — the caller recomputes it against the
+// signed-in account when this backs a response (t108); v1 fetches self fresh from toReaderMessages.
+function listMessages(db, tenant, convId, opts = {}) {
+  const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.floor(opts.limit) : 30
+  const before = Number.isFinite(opts.before) ? opts.before : null
+  const rows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, content, deleted, edited
+      FROM messages
+      WHERE conv_id = @convId AND tenant = @tenant
+        AND (@before IS NULL OR ts < @before)
+      ORDER BY ts DESC, id DESC
+      LIMIT @limit
+    `)
+    .all({ convId, tenant, before, limit })
+  return rows.map((r) => ({
+    id: r.id,
+    ts: r.ts,
+    version: r.version,
+    senderId: r.sender_id,
+    senderName: r.sender_name,
+    body: r.content,
+    edited: !!r.edited,
+    deleted: !!r.deleted,
+  }))
+}
+
 module.exports = {
   migrate,
   isReservedConversation,
@@ -192,4 +280,6 @@ module.exports = {
   upsertConversations,
   upsertAccount,
   listConversations,
+  upsertMessages,
+  listMessages,
 }
