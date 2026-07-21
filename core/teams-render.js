@@ -1,50 +1,66 @@
-// Pure Teams message rendering for the chat app (t107, ADR-0018). Mirrors core/slack-render.js:
+// Pure Teams message rendering for the chat app (t107/t111, ADR-0018). Mirrors core/slack-render.js:
 // turns a raw Teams messages-API object into the source-agnostic ReaderMessage shape the thread
 // view renders, and composes a conversation title. No I/O, no DOM — tested by teams-render.test.ts.
 //
-// SANITIZE STRATEGY: Teams message `content` is site-authored HTML. We reduce it to PLAIN TEXT —
-// the safest possible subset — so the view renders it as a React text node and NEVER assigns
-// innerHTML anywhere. Stripping every tag also drops every attribute, so event handlers
-// (onerror=…) and `javascript:` urls can't survive; <script>/<style> are removed WITH their
-// content so their source can't leak as visible text.
+// SANITIZE STRATEGY (t111): Teams message `content` is site-authored HTML, and we render it RICH
+// (bold/italic/links/mentions/emoji/code/lists/quotes). This module is PURE and does NOT sanitize —
+// it only resolves Teams' mention/emoji encodings into stable, style-able nodes and leaves the rest
+// of the HTML (and its entities) intact. The XSS boundary is the RENDERER: sanitize-message.ts runs
+// DOMPurify (browser-native) over this output before any dangerouslySetInnerHTML. Entities are left
+// ENCODED here — decoding them into new tags is exactly what we must not do.
 
-// Decode the HTML entities Teams emits. `&amp;` is decoded LAST so a double-encoded token like
-// `&amp;lt;` resolves to the literal `&lt;` (one decode), not `<`.
-function decodeEntities(s) {
+// Escape the HTML-significant chars in literal user text. A "Text" messagetype carries plain text,
+// not HTML; once the body is assigned via innerHTML on the client, its `<`/`&` must stay literal.
+function escapeHtml(s) {
   return s
-    .replace(/&nbsp;/g, " ")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;|&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_m, n) => codePoint(Number.parseInt(n, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => codePoint(Number.parseInt(h, 16)))
-    .replace(/&amp;/g, "&")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
 }
 
-function codePoint(n) {
-  return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : ""
+// Resolve Teams' two mention encodings — legacy `<at id=…>Name</at>` and the newer
+// `<span itemtype="…/Mention">Name</span>` — to one stable node: `<span class="mention">@Name</span>`.
+// Both carry the display name as inner text; we keep that name (any inner tags stripped, entities
+// left intact) and drop every site-authored mention attribute (id/itemid/itemscope).
+function resolveMentions(html) {
+  return html
+    .replace(/<at\b[^>]*>([\s\S]*?)<\/at>/gi, (_m, inner) => mentionSpan(inner))
+    .replace(
+      /<span\b[^>]*\bitemtype\s*=\s*(["'])[^"']*[Mm]ention[^"']*\1[^>]*>([\s\S]*?)<\/span>/gi,
+      (_m, _q, inner) => mentionSpan(inner),
+    )
 }
 
-// HTML → plain text. Order is load-bearing: kill script/style (with content) and comments first,
-// turn block boundaries into spaces so words don't glue, strip remaining tags, THEN decode
-// entities (decoding before stripping would let a literal `&lt;b&gt;` be treated as a tag).
-function htmlToText(html) {
-  return decodeEntities(
-    html
-      .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
-      .replace(/<\s*(br|hr|\/p|\/div|\/li|\/tr|p|div|li|tr)\b[^>]*>/gi, " ")
-      .replace(/<[^>]+>/g, ""),
-  )
-    .replace(/\s+/g, " ")
+function mentionSpan(inner) {
+  const name = inner
+    .replace(/<[^>]+>/g, "")
     .trim()
+    .replace(/^@+/, "")
+  return `<span class="mention">@${name || "mention"}</span>`
 }
 
-// A "Text" messagetype carries literal text (not HTML), so we decode entities + collapse
-// whitespace but must NOT strip `<…>` — those are the user's own angle brackets.
-function plainToText(text) {
-  return decodeEntities(text).replace(/\s+/g, " ").trim()
+// Teams emoji arrive as `<img itemtype="…/Emoji" …>`. Tag them `class="emoji"` (only when the img
+// has no class already) so the renderer can size them inline (~1.25em) while any other image stays
+// width-bounded. `class` survives the DOMPurify allowlist; the itemtype attr is dropped there.
+function tagEmoji(html) {
+  return html.replace(/<img\b([^>]*)>/gi, (full, attrs) => {
+    if (!/\bitemtype\s*=\s*(["'])[^"']*[Ee]moji[^"']*\1/.test(attrs)) return full
+    if (/\bclass\s*=/i.test(attrs)) return full
+    return `<img class="emoji"${attrs}>`
+  })
+}
+
+// Does the rendered HTML carry anything visible (text or an image)? An empty/whitespace-only body
+// (e.g. `<p></p>`) falls back to the attachment chip, matching the pre-t111 behavior.
+function hasVisibleText(html) {
+  if (/<img\b/i.test(html)) return true
+  return (
+    html
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .trim().length > 0
+  )
 }
 
 // A card (adaptive card, deferred to t112) or file attachment → a chip placeholder.
@@ -59,17 +75,17 @@ function attachmentChip(message) {
   return ""
 }
 
-// Render a message body to a single readable plain-text line. Real text wins over a chip so a
-// message with both text and a file keeps its words; a body-less card/file falls back to the chip.
+// Render a message body to mention-resolved, entity-intact HTML (t111). Real content wins over a
+// chip so a message with both text and a file keeps its words; a body-less/empty card/file falls
+// back to the chip. HTML messagetypes keep their markup (mentions + emoji normalized); a literal
+// "Text" messagetype is HTML-escaped (angle brackets stay literal) with newlines as <br>.
 function renderBody(message) {
   const content = typeof message.content === "string" ? message.content : ""
-  const type = message.messagetype || ""
-  const text = content.trim()
-    ? /html/i.test(type)
-      ? htmlToText(content)
-      : plainToText(content)
-    : ""
-  return text || attachmentChip(message)
+  if (!content.trim()) return attachmentChip(message)
+  const html = /html/i.test(message.messagetype || "")
+    ? tagEmoji(resolveMentions(content)).trim()
+    : escapeHtml(content.trim()).replace(/\r?\n/g, "<br>")
+  return hasVisibleText(html) ? html : attachmentChip(message)
 }
 
 // Teams sender identity lives in the MRI (`8:orgid:<oid>`), which `from` carries either bare or as

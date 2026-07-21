@@ -13,51 +13,75 @@ const msg = (over = {}) => ({
   ...over,
 })
 
-describe("renderBody — HTML → safe plain text", () => {
-  it("strips tags, keeping the visible text", () => {
-    expect(renderBody(msg({ content: "<p>hello <b>world</b></p>" }))).toBe("hello world")
+// renderBody now emits RICH HTML (t111): the site-authored Teams HTML is kept mention-resolved and
+// entity-intact. It is NOT sanitized here — the renderer sanitizes with DOMPurify before it hits the
+// DOM (sanitize-message.ts). So these tests assert markup is PRESERVED, not stripped.
+describe("renderBody — rich HTML, mention-resolved", () => {
+  it("keeps inline formatting tags", () => {
+    expect(renderBody(msg({ content: "<p>hello <b>world</b></p>" }))).toBe(
+      "<p>hello <b>world</b></p>",
+    )
   })
 
-  it("keeps an <at> mention's display name", () => {
+  it("keeps links, lists and blockquotes", () => {
+    const html = '<ul><li>a</li><li><a href="https://x.test">b</a></li></ul>'
+    expect(renderBody(msg({ content: html }))).toBe(html)
+  })
+
+  it("resolves a legacy <at> mention to a stable span", () => {
     expect(renderBody(msg({ content: '<p>hi <at id="8:orgid:AAA">Alice</at>!</p>' }))).toBe(
-      "hi Alice!",
+      '<p>hi <span class="mention">@Alice</span>!</p>',
     )
   })
 
-  it("removes <script> element AND its content (no leak)", () => {
-    expect(renderBody(msg({ content: "hi<script>alert('x')</script>bye" }))).toBe("hibye")
-  })
-
-  it("removes <style> element AND its content", () => {
-    expect(renderBody(msg({ content: "a<style>.x{color:red}</style>b" }))).toBe("ab")
-  })
-
-  it("drops event-handler attributes and javascript: urls (tags stripped entirely)", () => {
-    expect(renderBody(msg({ content: '<img src=x onerror="alert(1)">seen' }))).toBe("seen")
-    expect(renderBody(msg({ content: '<a href="javascript:alert(1)">click</a>' }))).toBe("click")
-  })
-
-  it("decodes HTML entities (named, numeric, hex)", () => {
-    expect(renderBody(msg({ content: "a &amp; b &lt;3 &#39;q&#39; &#x41;" }))).toBe(
-      "a & b <3 'q' A",
+  it("resolves an itemtype mention span to the same stable span", () => {
+    const html =
+      '<p>ping <span itemscope itemtype="http://schema.skype.com/Mention" itemid="0">Bob Lee</span></p>'
+    expect(renderBody(msg({ content: html }))).toBe(
+      '<p>ping <span class="mention">@Bob Lee</span></p>',
     )
   })
 
-  it("does not double-decode &amp;lt;", () => {
-    expect(renderBody(msg({ content: "&amp;lt;" }))).toBe("&lt;")
+  it("does not double-prefix an @ already in the mention text", () => {
+    expect(renderBody(msg({ content: '<at id="0">@Al</at>' }))).toBe(
+      '<span class="mention">@Al</span>',
+    )
   })
 
-  it("collapses whitespace across block tags and newlines", () => {
-    expect(renderBody(msg({ content: "<div>one</div>\n<div>two</div>" }))).toBe("one two")
-    expect(renderBody(msg({ content: "a<br>b<br/>c" }))).toBe("a b c")
+  it('tags an emoji <img> with class="emoji" (attributes left for the sanitizer)', () => {
+    const html = '<img itemtype="http://schema.skype.com/Emoji" alt="😄" src="e.png">seen'
+    expect(renderBody(msg({ content: html }))).toBe(
+      '<img class="emoji" itemtype="http://schema.skype.com/Emoji" alt="😄" src="e.png">seen',
+    )
   })
 
-  it("renders a Text messagetype without tag-stripping its literal angle brackets", () => {
-    expect(renderBody(msg({ messagetype: "Text", content: "x < y and z" }))).toBe("x < y and z")
+  it("keeps HTML entities encoded (does not decode into new tags)", () => {
+    expect(renderBody(msg({ content: "<p>a &amp; b &lt;3</p>" }))).toBe("<p>a &amp; b &lt;3</p>")
+  })
+
+  it("does NOT strip a <script> — sanitizing is the renderer's job, not this pure module", () => {
+    expect(renderBody(msg({ content: "hi<script>alert(1)</script>bye" }))).toBe(
+      "hi<script>alert(1)</script>bye",
+    )
+  })
+
+  it("escapes a Text messagetype so its literal angle brackets render as text", () => {
+    expect(renderBody(msg({ messagetype: "Text", content: "x < y & z" }))).toBe("x &lt; y &amp; z")
+  })
+
+  it("turns newlines in a Text messagetype into <br>", () => {
+    expect(renderBody(msg({ messagetype: "Text", content: "a\nb" }))).toBe("a<br>b")
   })
 
   it("renders empty for a blank body", () => {
     expect(renderBody(msg({ content: "   " }))).toBe("")
+  })
+
+  it("keeps an emoji-only body (no text) instead of falling to a chip", () => {
+    const html = '<img itemtype="http://schema.skype.com/Emoji" alt="😄" src="e.png">'
+    expect(renderBody(msg({ content: html }))).toBe(
+      '<img class="emoji" itemtype="http://schema.skype.com/Emoji" alt="😄" src="e.png">',
+    )
   })
 })
 
@@ -74,13 +98,17 @@ describe("renderBody — card / attachment chip", () => {
 
   it("prefers real text over an attachment chip", () => {
     expect(renderBody(msg({ content: "<p>see file</p>", attachments: [{ name: "a" }] }))).toBe(
-      "see file",
+      "<p>see file</p>",
     )
+  })
+
+  it("falls to a chip when the HTML has no visible text", () => {
+    expect(renderBody(msg({ content: "<p></p>", properties: { cards: "[{}]" } }))).toBe("[card]")
   })
 })
 
 describe("toReaderMessages", () => {
-  it("shapes, resolves self by oid, and sorts oldest-first", () => {
+  it("shapes, resolves self by oid, sorts oldest-first, and carries HTML bodies", () => {
     const out = toReaderMessages(
       [
         msg({
@@ -102,7 +130,7 @@ describe("toReaderMessages", () => {
     expect(out[0]).toMatchObject({
       id: "1",
       senderName: "Bob",
-      body: "first",
+      body: "<p>first</p>",
       self: false,
       edited: false,
       deleted: false,

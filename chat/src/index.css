@@ -3,3 +3,81 @@
    chat app should look like the same product. The Vite Tailwind plugin scans this build's
    module graph, so the shared ui components imported by the chat views are covered. */
 @import "../../src/index.css";
+
+/* Rich message body (t111): the sanitized Teams HTML rendered inside a message bubble. Styles use
+   currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
+   preflight resets margins/list styles, so lists and block spacing are restored here. */
+.teams-message-body {
+  white-space: normal;
+}
+.teams-message-body > *:first-child {
+  margin-top: 0;
+}
+.teams-message-body > *:last-child {
+  margin-bottom: 0;
+}
+.teams-message-body p {
+  margin: 0.25em 0;
+}
+.teams-message-body a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.teams-message-body ul,
+.teams-message-body ol {
+  margin: 0.25em 0;
+  padding-left: 1.25em;
+}
+.teams-message-body ul {
+  list-style: disc;
+}
+.teams-message-body ol {
+  list-style: decimal;
+}
+.teams-message-body blockquote {
+  margin: 0.25em 0;
+  padding-left: 0.6em;
+  border-left: 2px solid color-mix(in oklab, currentColor 30%, transparent);
+  opacity: 0.85;
+}
+.teams-message-body code,
+.teams-message-body kbd,
+.teams-message-body pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: color-mix(in oklab, currentColor 12%, transparent);
+  border-radius: 4px;
+}
+.teams-message-body code,
+.teams-message-body kbd {
+  padding: 0.05em 0.3em;
+}
+.teams-message-body pre {
+  margin: 0.35em 0;
+  padding: 0.5em 0.6em;
+  overflow-x: auto;
+}
+.teams-message-body pre code {
+  padding: 0;
+  background: none;
+}
+.teams-message-body .mention {
+  padding: 0 0.25em;
+  border-radius: 4px;
+  font-weight: 500;
+  background: color-mix(in oklab, currentColor 14%, transparent);
+}
+/* Non-emoji images stay bounded to the bubble width; emoji render inline at ~1.25em. */
+.teams-message-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+.teams-message-body img.emoji {
+  display: inline;
+  height: 1.25em;
+  width: auto;
+  margin: 0;
+  border-radius: 0;
+  vertical-align: text-bottom;
+}
