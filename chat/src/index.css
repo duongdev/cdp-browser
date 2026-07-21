@@ -67,17 +67,37 @@
   font-weight: 500;
   background: color-mix(in oklab, currentColor 14%, transparent);
 }
-/* Non-emoji images stay bounded to the bubble width; emoji render inline at ~1.25em. */
+/* Inline media by kind (t117). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
+   thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
+   small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the
+   split — the older class="emoji" tag is kept as an equivalent for text-emoji that carry no class. */
 .teams-message-body img {
+  display: block;
   max-width: 100%;
+  max-height: 320px;
   height: auto;
   border-radius: 6px;
+  cursor: zoom-in;
 }
+.teams-message-body img[itemtype*="Emoji"],
 .teams-message-body img.emoji {
   display: inline;
   height: 1.25em;
   width: auto;
+  max-height: none;
   margin: 0;
   border-radius: 0;
-  vertical-align: text-bottom;
+  vertical-align: -0.2em;
+  cursor: auto;
+}
+.teams-message-body img[itemtype*="Sticker"] {
+  max-height: 140px;
+  width: auto;
+  cursor: auto;
+}
+.teams-message-body video {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 6px;
 }

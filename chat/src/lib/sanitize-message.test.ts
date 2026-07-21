@@ -86,3 +86,39 @@ describe("sanitize — images", () => {
     expect(out).toContain('loading="lazy"')
   })
 })
+
+describe("sanitize — media (t117)", () => {
+  it("keeps itemtype/width/height on an image (for the media-kind CSS)", () => {
+    const out = sanitize(
+      '<img itemtype="http://schema.skype.com/AMSImage" src="/api/teams/media?url=x" width="200" height="150">',
+    )
+    expect(out).toContain('itemtype="http://schema.skype.com/AMSImage"')
+    expect(out).toContain('width="200"')
+    expect(out).toContain('height="150"')
+  })
+
+  it("keeps the same-origin media-proxy src", () => {
+    const out = sanitize('<img src="/api/teams/media?url=https%3A%2F%2Fas-api.asm.skype.com%2Fa">')
+    expect(out).toContain('src="/api/teams/media?url=https%3A%2F%2Fas-api.asm.skype.com%2Fa"')
+  })
+
+  it("keeps a public-CDN giphy src", () => {
+    const out = sanitize('<img src="https://media1.giphy.com/media/x/giphy.gif">')
+    expect(out).toContain('src="https://media1.giphy.com/media/x/giphy.gif"')
+  })
+
+  it("keeps a video with its src and forces controls", () => {
+    const out = sanitize(
+      '<video src="/api/teams/media?url=vid" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT27S">',
+    )
+    expect(out).toContain("<video")
+    expect(out).toContain('src="/api/teams/media?url=vid"')
+    expect(out).toContain("controls")
+  })
+
+  it("still strips a script even next to media", () => {
+    const out = sanitize('<img src="/api/teams/media?url=x"><script>alert(1)</script>')
+    expect(out).not.toContain("<script")
+    expect(out).toContain("<img")
+  })
+})

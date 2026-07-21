@@ -9,6 +9,8 @@
 // DOMPurify (browser-native) over this output before any dangerouslySetInnerHTML. Entities are left
 // ENCODED here — decoding them into new tags is exactly what we must not do.
 
+const { rewriteMediaHtml } = require("./teams-media")
+
 // Escape the HTML-significant chars in literal user text. A "Text" messagetype carries plain text,
 // not HTML; once the body is assigned via innerHTML on the client, its `<`/`&` must stay literal.
 function escapeHtml(s) {
@@ -83,7 +85,7 @@ function renderBody(message) {
   const content = typeof message.content === "string" ? message.content : ""
   if (!content.trim()) return attachmentChip(message)
   const html = /html/i.test(message.messagetype || "")
-    ? tagEmoji(resolveMentions(content)).trim()
+    ? rewriteMediaHtml(tagEmoji(resolveMentions(content)).trim())
     : escapeHtml(content.trim()).replace(/\r?\n/g, "<br>")
   return hasVisibleText(html) ? html : attachmentChip(message)
 }

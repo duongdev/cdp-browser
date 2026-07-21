@@ -45,6 +45,7 @@ import {
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
 import { isValidTeamsCursor } from "../core/teams-cursor.js"
+import { isValidAmsUrl } from "../core/teams-media.js"
 import {
   composeTitle as teamsComposeTitle,
   oidFromMri as teamsOidFromMri,
@@ -1244,6 +1245,86 @@ async function teamsHistory(convId, cursor) {
   return { messages, cursor: out.cursor }
 }
 
+// ---- Teams AMS media proxy (t117, ADR-0018) -------------------------------
+// AMS media (images/video) 401s from a server-side or no-cors fetch — it loads ONLY from an
+// IN-PAGE fetch with the skypetoken header (like teamsHistory). So the proxy fetches the object
+// through the side-channel and serves the decoded bytes. The in-page reader is FileReader (a data
+// URL) — NOT String.fromCharCode over the byte array, which stack-overflows on a real image. An
+// LRU (the object id is immutable) avoids re-hitting the side-channel on every scroll.
+// ponytail: serves the whole imgo/video object by value over CDP — no thumbnail view, no HTTP
+// range/seek. Fine for chat-sized media; add streaming+range if a large video ever stutters (t118+).
+const TEAMS_MEDIA_CACHE = new Map() // url -> { ct, buf }
+const TEAMS_MEDIA_CACHE_MAX = 64
+
+function teamsMediaCacheGet(url) {
+  const hit = TEAMS_MEDIA_CACHE.get(url)
+  if (!hit) return null
+  TEAMS_MEDIA_CACHE.delete(url) // re-insert marks most-recently-used
+  TEAMS_MEDIA_CACHE.set(url, hit)
+  return hit
+}
+
+function teamsMediaCacheSet(url, entry) {
+  TEAMS_MEDIA_CACHE.set(url, entry)
+  while (TEAMS_MEDIA_CACHE.size > TEAMS_MEDIA_CACHE_MAX) {
+    TEAMS_MEDIA_CACHE.delete(TEAMS_MEDIA_CACHE.keys().next().value) // evict oldest
+  }
+}
+
+async function fetchTeamsMediaInPage(cred, url) {
+  // AMS objects auth with `Authorization: skype_token {sk}` — NOT the msg-service's
+  // `Authentication: skypetoken=` form (that 401s for cross-region/other-user AMS objects; only
+  // same-region ones happen to accept it). Proven live against the running tenant (t117).
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        headers: { Authorization: "skype_token " + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      const blob = await r.blob()
+      const dataUrl = await new Promise((resolve, reject) => {
+        const fr = new FileReader()
+        fr.onload = () => resolve(fr.result)
+        fr.onerror = () => reject(fr.error)
+        fr.readAsDataURL(blob)
+      })
+      return { ct: blob.type || r.headers.get("content-type") || "application/octet-stream", dataUrl }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Mint/reuse creds → in-page media fetch → decode the data URL to bytes. A 401 drives one re-authz
+// + retry (mirrors teamsHistory), then a typed invalid_auth. Returns { ct, buf } or { error }.
+async function teamsMedia(url) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await fetchTeamsMediaInPage(cred, url)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await fetchTeamsMediaInPage(cred, url)
+  }
+  if (out.error) return { error: out.error }
+
+  // Split the `data:{ct};base64,{b64}` the in-page FileReader produced → raw bytes.
+  const comma = typeof out.dataUrl === "string" ? out.dataUrl.indexOf(",") : -1
+  if (comma === -1) return { error: "bad_data_url" }
+  return {
+    ct: out.ct || "application/octet-stream",
+    buf: Buffer.from(out.dataUrl.slice(comma + 1), "base64"),
+  }
+}
+
 // ---- Teams reply + mark-read (t108, ADR-0018) -----------------------------
 // CA-proof like the list/history: the send runs IN-PAGE via the side-channel (the browser's own
 // authenticated POST). A random 18-digit clientmessageid dedups server-side; Teams echoes back
@@ -1691,6 +1772,28 @@ const server = http.createServer(async (req, res) => {
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)
+    }
+    // Teams chat: AMS media proxy (t117, ADR-0018). The rendered <img>/<video> src points here;
+    // the server fetches the authenticated AMS object IN-PAGE (CA-proof — a server-side fetch 401s)
+    // and serves the raw bytes so the browser caches them normally (no data URLs in the DOM). The
+    // response is plaintext binary (never E2E-sealed — an <img> src can't decrypt), SSRF-gated by
+    // isValidAmsUrl, LRU-cached. Web only. GET so it slots straight into an <img>/<video> src.
+    if (p === "/api/teams/media" && !POST) {
+      const target = url.searchParams.get("url") || ""
+      if (!isValidAmsUrl(target)) return res.writeHead(400).end("bad url")
+      const hit = teamsMediaCacheGet(target) || (await teamsMedia(target))
+      if (hit.error) return res.writeHead(502).end(hit.error)
+      // Only ever serve image/video bytes on our origin — never render an arbitrary content-type
+      // (nosniff + an explicit allowlist so a non-media AMS object can't become same-origin HTML; t117 review).
+      if (!/^(image|video)\//.test(hit.ct || "")) return res.writeHead(502).end("bad media type")
+      teamsMediaCacheSet(target, hit)
+      return res
+        .writeHead(200, {
+          "Content-Type": hit.ct,
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "public, max-age=604800, immutable",
+        })
+        .end(hit.buf)
     }
     // Teams chat: write-through mark-read (t108, Q9 hybrid). Best-effort — always { ok } even
     // if the horizon write fails, so it can't undo a successful reply. Web only.

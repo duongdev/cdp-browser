@@ -25,8 +25,23 @@ const ALLOWED_TAGS = [
   "p",
   "span",
   "img",
+  "video",
 ]
-const ALLOWED_ATTR = ["href", "title", "class", "src", "alt"]
+// `src`/`alt`/`class` for images; `itemtype`/`width`/`height` for the media-kind CSS selectors and
+// natural sizing; `controls`/`data-duration` for AMS video (t117). The proxy src (same-origin
+// `/api/teams/media?url=…`) and the public-CDN hosts pass DOMPurify's default URI policy unchanged.
+const ALLOWED_ATTR = [
+  "href",
+  "title",
+  "class",
+  "src",
+  "alt",
+  "itemtype",
+  "width",
+  "height",
+  "controls",
+  "data-duration",
+]
 
 const SAFE_HREF = /^(https?:|mailto:)/i
 
@@ -44,6 +59,11 @@ function purifier(): typeof DOMPurify {
       node.setAttribute("rel", "noopener noreferrer")
     }
     if (node.tagName === "IMG") node.setAttribute("loading", "lazy")
+    // AMS video arrives with no `controls` attr — force it so the clip is playable inline (t117).
+    if (node.tagName === "VIDEO") {
+      node.setAttribute("controls", "")
+      node.setAttribute("preload", "metadata")
+    }
   })
   configured = DOMPurify
   return DOMPurify
