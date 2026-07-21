@@ -8,6 +8,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
 import {
   fetchHistory,
@@ -38,16 +39,23 @@ interface ThreadViewProps {
   conversation: TeamsConversation
   /** Back to the list — shown on the phone (stacked), hidden in the wide two-pane. */
   onBack?: () => void
+  /** Whether this pane is the on-screen one (t110). Inactive panes stay mounted (fetch + scroll
+   *  preserved) but hidden via display:none, so switching conversations is instant. Defaults true. */
+  visible?: boolean
 }
 
 /** The thread pane (t107, ADR-0018): one conversation's real messages, rendered oldest-first from
- *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. */
-export function ThreadView({ conversation, onBack }: ThreadViewProps) {
+ *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
+ *  mounted across conversation switches (t110) — hidden when inactive, never refetched. */
+export function ThreadView({ conversation, onBack, visible = true }: ThreadViewProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging: false once a page comes back short (no more history above).
   const [hasMore, setHasMore] = useState(true)
   const loadingOlderRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Latest scroll offset, tracked live while visible — display:none drops the container's scrollTop,
+  // so this ref (not a read at hide-time, which would already be 0) is what we restore on re-show.
+  const savedScrollTop = useRef(0)
   const convId = conversation.id
 
   const load = useCallback(
@@ -116,8 +124,20 @@ export function ThreadView({ conversation, onBack }: ThreadViewProps) {
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current
-    if (el && el.scrollTop < 48) loadOlder()
+    if (!el) return
+    savedScrollTop.current = el.scrollTop
+    if (el.scrollTop < 48) loadOlder()
   }, [loadOlder])
+
+  // Restore scroll when this pane becomes visible again (t110). display:none resets the container's
+  // scrollTop, so re-showing a kept-alive thread must re-seat it. Keyed on `visible` only: on a fresh
+  // mount this restores 0 while still loading, then the status→ready scroll-to-bottom lands at bottom
+  // and this won't refire (visible unchanged), so first-load bottom still wins.
+  useLayoutEffect(() => {
+    if (!visible) return
+    const el = scrollRef.current
+    if (el) el.scrollTop = savedScrollTop.current
+  }, [visible])
 
   // Composer (t108, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
   // optimistically appends the message and write-through marks the conversation read on Teams.
@@ -208,7 +228,7 @@ export function ThreadView({ conversation, onBack }: ThreadViewProps) {
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div className={cn("flex h-full min-h-0 flex-col bg-background", !visible && "hidden")}>
       <header className="flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
         {onBack && (
           <Button
