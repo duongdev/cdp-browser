@@ -95,25 +95,19 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     return () => ac.abort()
   }, [load])
 
-  // Land at the bottom (newest) on first ready render. Keyed on convId + status only: older-page
-  // prepends keep status "ready" so this won't refire and yank the viewport (they self-manage).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: convId + status are the deliberate keys
-  useLayoutEffect(() => {
-    if (state.status === "ready" && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [convId, state.status])
+  // Reverse-flexbox scroll model: the message list is `flex-col-reverse`, so the browser pins the
+  // scroll to the bottom (newest) for free — scrollTop 0 IS the bottom. First render lands there with
+  // no manual scroll, prepending older messages at the visual top never shifts the viewport, and new
+  // messages stick to the bottom automatically when the user is already there. This removes the whole
+  // class of scroll-anchor math (and the load-more jump/flicker it caused).
 
   const loadOlder = useCallback(() => {
     if (loadingOlderRef.current || !hasMore) return
     const cursor = olderCursor.current
     if (!cursor) return
     if (state.status !== "ready" || state.messages.length === 0) return
-    const el = scrollRef.current
-    if (!el) return
     loadingOlderRef.current = true
     setLoadingOlder(true)
-    const prevHeight = el.scrollHeight
     fetchHistory(convId, cursor)
       .then((older) => {
         // Dedup by id (a page boundary can re-emit a message; keep the render idempotent).
@@ -122,14 +116,11 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         olderCursor.current = older.cursor
         setHasMore(older.cursor != null)
         if (fresh.length > 0) {
+          // flex-col-reverse pins the viewport to its bottom-distance, so the prepend needs no
+          // scroll correction — the read position holds through the insert.
           setState((s) =>
             s.status === "ready" ? { status: "ready", messages: [...fresh, ...s.messages] } : s,
           )
-          // Preserve the viewport: keep the same message under the user's eye after the prepend.
-          requestAnimationFrame(() => {
-            const now = scrollRef.current
-            if (now) now.scrollTop += now.scrollHeight - prevHeight
-          })
         }
       })
       .catch(() => setHasMore(false))
@@ -139,12 +130,33 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       })
   }, [convId, hasMore, state])
 
+  // Trigger load-older from a sentinel at the visual top (mirrors the list's t114 infinite scroll)
+  // rather than a scrollTop threshold — flex-col-reverse makes scrollTop's sign browser-dependent, but
+  // an IntersectionObserver on a top sentinel is sign-agnostic. A ref carries the latest loadOlder so
+  // the observer rebuilds only when load-ability flips.
+  const topSentinelRef = useRef<HTMLDivElement>(null)
+  const loadOlderRef = useRef(loadOlder)
+  loadOlderRef.current = loadOlder
+  const canLoadOlder = state.status === "ready" && hasMore && state.messages.length > 0
+  useEffect(() => {
+    if (!canLoadOlder) return
+    const el = topSentinelRef.current
+    const root = scrollRef.current
+    if (!el || !root) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadOlderRef.current()
+      },
+      { root, rootMargin: "300px 0px" },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [canLoadOlder])
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current
-    if (!el) return
-    savedScrollTop.current = el.scrollTop
-    if (el.scrollTop < 48) loadOlder()
-  }, [loadOlder])
+    if (el) savedScrollTop.current = el.scrollTop
+  }, [])
 
   // Restore scroll when this pane becomes visible again (t110). display:none resets the container's
   // scrollTop, so re-showing a kept-alive thread must re-seat it. Keyed on `visible` only: on a fresh
@@ -163,9 +175,8 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     fetchHistory(convId)
       .then((page) => {
         const el = scrollRef.current
-        const nearBottom = el
-          ? el.scrollHeight - el.scrollTop - el.clientHeight < THREAD_BOTTOM_SLACK
-          : false
+        // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
+        const nearBottom = el ? Math.abs(el.scrollTop) < THREAD_BOTTOM_SLACK : false
         setState((s) => {
           if (s.status !== "ready") return s
           const merged = mergeMessages(s.messages, page.messages)
@@ -174,7 +185,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         if (nearBottom) {
           requestAnimationFrame(() => {
             const now = scrollRef.current
-            if (now) now.scrollTop = now.scrollHeight
+            if (now) now.scrollTop = 0
           })
         }
       })
@@ -265,7 +276,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         )
         requestAnimationFrame(() => {
           const el = scrollRef.current
-          if (el) el.scrollTop = el.scrollHeight
+          if (el) el.scrollTop = 0 // flex-col-reverse: 0 is the bottom (newest)
         })
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
         markRead(replyTarget.convId, out.ts, out.ts)
@@ -351,19 +362,21 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
             </Centered>
           ) : (
             <div
-              className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain px-3 py-3"
+              className="flex min-h-0 flex-1 flex-col-reverse gap-2 overflow-y-auto overscroll-contain px-3 py-3"
               onScroll={onScroll}
               ref={scrollRef}
             >
-              {loadingOlder &&
-                // Reserve space for the incoming older page with bubble skeletons. prevHeight is
-                // captured before these mount, and loadingOlder flips false (unmounting them) in the
-                // same resolution as the prepend — so the rAF scroll-anchor correction runs after the
-                // skeletons are gone and measures only the fresh-message delta. No double-count, no jump.
-                [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
-              {state.messages.map((m) => (
-                <MessageRow key={m.id} message={m} />
-              ))}
+              {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
+                  to show oldest→newest top→bottom. Older messages prepend to the array (→ end of this
+                  reversed map = the visual top), and the loading skeleton + sentinel sit above them. */}
+              {state.messages
+                .slice()
+                .reverse()
+                .map((m) => (
+                  <MessageRow key={m.id} message={m} />
+                ))}
+              {loadingOlder && [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
+              {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
             </div>
           )}
           {replyTarget && composer}
