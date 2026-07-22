@@ -3,6 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 import { ConversationList } from "./components/conversation-list"
+import { NotifyToggle } from "./components/notify-toggle"
 import { ThreadView } from "./components/thread-view"
 import type { TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
@@ -25,8 +26,27 @@ function AppHeader() {
     <header className="flex items-center gap-2 border-border border-b px-4 py-3">
       <HugeiconsIcon className="size-5 text-primary" icon={BubbleChatIcon} />
       <h1 className="font-heading font-semibold text-base text-foreground">Teams Chat</h1>
+      <div className="ml-auto">
+        <NotifyToggle />
+      </div>
     </header>
   )
+}
+
+// A placeholder conversation for a push deep-link — we only know the id. ThreadView fetches history
+// + sender names by id; a later list tap replaces this with the real row (title etc.).
+// ponytail: header shows a kind-label ("Direct message") until then — the deep-link only carries id.
+function stubConversation(id: string): TeamsConversation {
+  return {
+    id,
+    kind: "oneOnOne",
+    topic: null,
+    lastMessageId: null,
+    lastMessageVersion: 0,
+    lastMessageTs: null,
+    lastMessagePreview: "",
+    muted: false,
+  }
 }
 
 /** Root of the standalone Teams chat app (t106/t107, ADR-0018). List+pane: wide shows the
@@ -50,6 +70,38 @@ export function ChatApp() {
     setKeepAlive((s) => openThread(s, conv.id))
     setPhoneView("thread")
   }, [])
+
+  const openConversationById = useCallback((id: string) => {
+    setConvById((m) => (m[id] ? m : { ...m, [id]: stubConversation(id) }))
+    setKeepAlive((s) => openThread(s, id))
+    setPhoneView("thread")
+  }, [])
+
+  // Push deep-link (t125): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
+  // open) arrives as an SW postMessage { type:"open-conv", convId }. Both open that conversation;
+  // strip ?conv= after consuming so a refresh doesn't reopen.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const conv = params.get("conv")
+    if (conv) {
+      openConversationById(conv)
+      params.delete("conv")
+      const qs = params.toString()
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+      )
+    }
+    const sw = navigator.serviceWorker
+    if (!sw) return
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === "open-conv" && typeof e.data.convId === "string")
+        openConversationById(e.data.convId)
+    }
+    sw.addEventListener("message", onMessage)
+    return () => sw.removeEventListener("message", onMessage)
+  }, [openConversationById])
 
   const backToList = useCallback(() => setPhoneView("list"), [])
 

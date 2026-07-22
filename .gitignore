@@ -34,3 +34,5 @@ playwright-report/
 slack-workspaces.json
 slack-sweep-state.json
 web-push-subs.json
+teams-push-subs.json
+teams-notify-state.json

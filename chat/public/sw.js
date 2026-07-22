@@ -42,3 +42,50 @@ self.addEventListener("fetch", (e) => {
     }),
   )
 })
+
+// Web Push (t125). The server sends the ADR-0018 payload
+// { type, title, body, convId, msgId, ts, tag }. iOS revokes a userVisibleOnly subscription
+// that receives a push without showing a notification, so ALWAYS showNotification — a generic
+// fallback on any parse failure.
+self.addEventListener("push", (e) => {
+  e.waitUntil(
+    (async () => {
+      let p = null
+      try {
+        p = e.data?.json() ?? null
+      } catch {
+        p = null
+      }
+      const title = p?.title || "New message"
+      await self.registration.showNotification(title, {
+        body: p?.body || "",
+        tag: p?.tag || "teams-chat",
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
+        data: { convId: p?.convId || null },
+      })
+    })(),
+  )
+})
+
+// Click: focus an open /chat window and deep-route via postMessage (warm tap); else open the
+// app with ?conv= for the page to consume on boot (cold tap).
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close()
+  const convId = e.notification.data?.convId || null
+  e.waitUntil(
+    (async () => {
+      const clientsArr = await self.clients.matchAll({ type: "window", includeUncontrolled: true })
+      for (const client of clientsArr) {
+        if ("focus" in client) {
+          client.postMessage({ type: "open-conv", convId })
+          return client.focus()
+        }
+      }
+      if (self.clients.openWindow)
+        return self.clients.openWindow(
+          convId ? `/chat?conv=${encodeURIComponent(convId)}` : "/chat",
+        )
+    })(),
+  )
+})

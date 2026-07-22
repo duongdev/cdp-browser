@@ -53,8 +53,10 @@ import {
   oidFromMri as teamsOidFromMri,
   otherMrisFromId as teamsOtherMrisFromId,
 } from "../core/teams-names.js"
+import { planTeamsNotifications } from "../core/teams-notify-sweep.js"
 import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
 import {
+  conversationKind as teamsConversationKind,
   getUsers as teamsGetUsers,
   listConversations as teamsListConversations,
   migrate as teamsMigrate,
@@ -203,6 +205,38 @@ const savePushSubs = () => {
     atomicWriteFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
   } catch (e) {
     console.error("[web] savePushSubs failed:", e.message)
+  }
+}
+
+// ---- Teams push (t125) ----------------------------------------------------
+// Fully isolated from the CDP-browser push spine above: its own subscription store + send
+// path, so a Teams-chat subscriber and its every-new-message pushes never touch the existing
+// notification delivery. Capture is a server-side REST poll (trouter realtime is a dead end),
+// mirroring the Slack sweep — see teamsNotifySweep + core/teams-notify-sweep.js.
+const TEAMS_PUSH_SUBS_PATH =
+  process.env.TEAMS_PUSH_SUBS_PATH || join(HERE, "..", "teams-push-subs.json")
+const TEAMS_NOTIFY_STATE_PATH =
+  process.env.TEAMS_NOTIFY_STATE_PATH || join(HERE, "..", "teams-notify-state.json")
+let teamsPushSubs = loadJson(TEAMS_PUSH_SUBS_PATH, [])
+if (!Array.isArray(teamsPushSubs)) teamsPushSubs = []
+// { watermarks: { convId: lastNotifiedTs }, seeded } — persisted so a restart resumes from the
+// watermark instead of re-seeding (which would drop every message that arrived while down).
+let teamsNotifyState = (() => {
+  const s = loadJson(TEAMS_NOTIFY_STATE_PATH, null)
+  return s && typeof s === "object" && s.watermarks ? s : { watermarks: {}, seeded: false }
+})()
+const saveTeamsPushSubs = () => {
+  try {
+    atomicWriteFileSync(TEAMS_PUSH_SUBS_PATH, JSON.stringify(teamsPushSubs, null, 2))
+  } catch (e) {
+    console.error("[web] saveTeamsPushSubs failed:", e.message)
+  }
+}
+const saveTeamsNotifyState = () => {
+  try {
+    atomicWriteFileSync(TEAMS_NOTIFY_STATE_PATH, JSON.stringify(teamsNotifyState))
+  } catch (e) {
+    console.error("[web] saveTeamsNotifyState failed:", e.message)
   }
 }
 
@@ -1058,6 +1092,122 @@ async function teamsConversations(cursor) {
   const convs = teamsListConversations(teamsDb, cred.tenant).filter((c) => pageIds.has(c.id))
   return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
 }
+
+// ---- Teams push notifications (t125) --------------------------------------
+// Server-side poll → push, fully isolated from the CDP-browser notification path. Scope is every
+// new incoming chat message; the pure planner (core/teams-notify-sweep.js) does the seeding +
+// self/system/reserved skipping + watermark bookkeeping.
+
+// Raw last-message arrival time → epoch ms (mirrors teams-store's private toEpochMs).
+function teamsLastMessageTs(last) {
+  const t = Date.parse(last?.originalarrivaltime || last?.composetime || "")
+  return Number.isFinite(t) ? t : null
+}
+
+// Send a Teams push to every Teams subscription; prune the ones that come back gone (404/410).
+async function sendTeamsPush(payload) {
+  if (teamsPushSubs.length === 0) return
+  const data = JSON.stringify(payload)
+  const dead = []
+  await Promise.all(
+    teamsPushSubs.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub, data, pushSendOptions())
+      } catch (e) {
+        if (e.statusCode === 404 || e.statusCode === 410) dead.push(sub.endpoint)
+        else console.error("[teams-push] send failed:", e.statusCode, e.body || e.message)
+      }
+    }),
+  )
+  if (dead.length > 0) {
+    teamsPushSubs = teamsPushSubs.filter((s) => !dead.includes(s.endpoint))
+    saveTeamsPushSubs()
+  }
+}
+
+// The SHARED PAYLOAD CONTRACT the SW consumes (exact field names). title = sender for a 1:1/self,
+// else "{sender} · {topic}" when the group has a topic (topic-less group → just the sender).
+function buildTeamsPushPayload(n, rawConv) {
+  const topic = rawConv?.threadProperties?.topic
+  const sender = n.senderName || "Teams"
+  const isGroup = teamsConversationKind(n.convId) === "group"
+  const title = isGroup && topic ? `${sender} · ${topic}` : sender
+  return {
+    type: "teams",
+    title,
+    body: n.preview,
+    convId: n.convId,
+    msgId: n.msgId,
+    ts: n.ts,
+    tag: n.convId,
+  }
+}
+
+// One capture tick: fetch the RAW conversation page in-page, plan the notifications, send them,
+// persist the advanced watermark. No work if nobody's subscribed or there's no Teams cred.
+async function teamsNotifySweep() {
+  if (teamsPushSubs.length === 0) return
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds() // mint over a live Teams tab, like teamsConversations
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return
+
+  let out = await fetchTeamsConversationsInPage(cred) // raw lastMessage fields, first page only
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return
+    out = await fetchTeamsConversationsInPage(cred)
+  }
+  if (out.error) return
+
+  const convMap = new Map()
+  const conversations = []
+  for (const c of out.conversations) {
+    const last = c?.lastMessage
+    if (!c?.id || !last) continue
+    convMap.set(c.id, c)
+    conversations.push({
+      id: c.id,
+      lastMessage: {
+        id: last.id,
+        from: last.from,
+        imdisplayname: last.imdisplayname,
+        content: last.content,
+        ts: teamsLastMessageTs(last),
+        messagetype: last.messagetype,
+      },
+    })
+  }
+
+  const { notifications, state } = planTeamsNotifications({
+    conversations,
+    state: teamsNotifyState,
+    selfId: cred.userId,
+  })
+  if (state !== teamsNotifyState) {
+    teamsNotifyState = state
+    saveTeamsNotifyState()
+  }
+  if (notifications.length > 0)
+    console.log(`[teams-push] ${notifications.length} new -> ${teamsPushSubs.length} sub(s)`)
+  for (const n of notifications)
+    await sendTeamsPush(buildTeamsPushPayload(n, convMap.get(n.convId)))
+}
+
+// Poll every 10s. Single-flight so a slow in-page fetch can't stack overlapping sweeps.
+let teamsNotifyInFlight = false
+setInterval(() => {
+  if (teamsNotifyInFlight) return
+  teamsNotifyInFlight = true
+  teamsNotifySweep()
+    .catch((e) => console.error("[teams-push] sweep failed:", e.message))
+    .finally(() => {
+      teamsNotifyInFlight = false
+    })
+}, 10_000)
 
 // ---- DM / group-DM name resolution (t109, ADR-0018) -----------------------
 // A DM/group-DM has no topic, so its title is built from member display names. CA-proof like the
@@ -2355,6 +2505,25 @@ const server = http.createServer(async (req, res) => {
       if (!endpoint) return json(res, { error: "missing endpoint" }, 400)
       pushSubs = pushSubs.filter((s) => s.endpoint !== endpoint)
       savePushSubs()
+      return json(res, { ok: true })
+    }
+    // Teams chat push (t125) — its own isolated subscription store; same VAPID keys, separate subs.
+    if (p === "/api/teams/push/vapid-public-key" && !POST) {
+      return json(res, { key: VAPID_PUBLIC_KEY })
+    }
+    if (p === "/api/teams/push/subscribe" && POST) {
+      const { subscription, deviceId } = await body(req)
+      if (!subscription?.endpoint) return json(res, { error: "missing endpoint" }, 400)
+      teamsPushSubs = teamsPushSubs.filter((s) => s.endpoint !== subscription.endpoint)
+      teamsPushSubs.push(deviceId ? { ...subscription, deviceId } : subscription)
+      saveTeamsPushSubs()
+      return json(res, { ok: true })
+    }
+    if (p === "/api/teams/push/unsubscribe" && POST) {
+      const { endpoint } = await body(req)
+      if (!endpoint) return json(res, { error: "missing endpoint" }, 400)
+      teamsPushSubs = teamsPushSubs.filter((s) => s.endpoint !== endpoint)
+      saveTeamsPushSubs()
       return json(res, { ok: true })
     }
   } catch (e) {
