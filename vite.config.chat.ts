@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 import pkg from "./package.json"
 
-// Second Vite entry for the standalone Teams chat app (t106, ADR-0018). Root is `chat/`,
+// Second Vite entry for the standalone Teams chat app (t128, ADR-0019). Root is `chat/`,
 // served at the same-origin path `/chat` (hence `base: "/chat/"` so assets + deep links
 // resolve absolutely). The `@` alias points at the browser renderer's `src/` so the chat app
 // reuses the shared shadcn design system instead of forking it. The main `/` build
