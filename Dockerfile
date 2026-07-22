@@ -6,17 +6,22 @@
 # ---- build the renderer (needs devDependencies: vite, etc.) ----------------
 FROM node:24-alpine AS builder
 WORKDIR /app
-RUN corepack enable && apk add --no-cache git
-# Install with the lockfile first for layer caching. --ignore-scripts skips the
-# husky `prepare` hook (it would try to wire git hooks during the build).
-COPY .npmrc package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-scripts
+# git for the commit SHA; python3/make/g++ so better-sqlite3 compiles its native binary here (alpine
+# musl has no prebuilt). The compiled module is copied into the slim runtime stage below.
+RUN corepack enable && apk add --no-cache git python3 make g++
+# Full install WITH scripts so better-sqlite3's postinstall builds. pnpm-workspace.yaml carries the
+# `allowBuilds` allowlist (better-sqlite3: true) — without it pnpm v11 refuses the native build with
+# ERR_PNPM_IGNORED_BUILDS and exits 1. The husky `prepare` hook is non-fatal without a git repo.
+COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY . .
 # Bake the commit SHA for /api/version + the About panel's Build field. .git is in the
 # build context (no longer .dockerignored); degrade to "unknown" if it's ever absent so
 # the build never fails. Only this tiny file ships to runtime, never .git itself.
 RUN git rev-parse --short HEAD > .gitsha 2>/dev/null || echo unknown > .gitsha
-RUN pnpm build
+# Build BOTH renderers: the main CDP-browser SPA (dist/) and the Teams chat app (dist-chat/),
+# which web/server.mjs serves at /chat. Skipping chat:build would 404 the whole Teams app on prod.
+RUN pnpm build && pnpm chat:build
 
 # ---- runtime: only `ws` + the server + built assets ------------------------
 FROM node:24-alpine AS runtime
@@ -25,19 +30,31 @@ ENV NODE_ENV=production
 RUN corepack enable
 COPY .npmrc package.json pnpm-lock.yaml ./
 RUN pnpm install --prod --frozen-lockfile --ignore-scripts && pnpm store prune
+# --prod --ignore-scripts leaves better-sqlite3 without its compiled native binary (web/server.mjs
+# imports it for the Teams chat SQLite store; missing → "Could not locate the bindings file" at boot).
+# Copy the module the builder already compiled (same node:24-alpine base → abi-compatible), instead of
+# shipping a toolchain into the runtime image.
+COPY --from=builder /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
 
-# Built renderer + the server + the shared core/ CJS modules and inject scripts it reads.
+# Built renderers + the server + the shared core/ CJS modules and inject scripts it reads.
 # core/*.js covers every module web/server.mjs imports via `../core/*.js` — a missing one
-# fails at boot with ERR_MODULE_NOT_FOUND. (*.test.ts files are not matched.)
+# fails at boot with ERR_MODULE_NOT_FOUND. (*.test.ts files are not matched.) dist-chat is the
+# Teams chat app served at /chat.
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/dist-chat ./dist-chat
 COPY --from=builder /app/.gitsha ./.gitsha
 COPY web ./web
 COPY core/*.js ./core/
 COPY inject ./inject
 
+# Teams chat state (SQLite store, push subs, notify watermark) lives in the persistent /data
+# volume like settings/notifications, so they survive redeploys (subs don't need re-subscribing).
 ENV PORT=7800 \
     SETTINGS_PATH=/data/settings.json \
-    NOTIFS_PATH=/data/notifications.json
+    NOTIFS_PATH=/data/notifications.json \
+    TEAMS_DB_PATH=/data/web-teams.db \
+    TEAMS_PUSH_SUBS_PATH=/data/teams-push-subs.json \
+    TEAMS_NOTIFY_STATE_PATH=/data/teams-notify-state.json
 
 # Persisted settings/notifications live in /data; run unprivileged.
 RUN mkdir -p /data && addgroup -S app && adduser -S app -G app && chown -R app /data /app
