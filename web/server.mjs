@@ -46,6 +46,7 @@ import {
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
 import { buildAmsImageContent } from "../core/teams-ams.js"
 import { isValidTeamsCursor } from "../core/teams-cursor.js"
+import { buildTeamsFilePayload } from "../core/teams-files.js"
 import { isValidAmsUrl, rewriteMediaHtml } from "../core/teams-media.js"
 import {
   composeTitle as teamsComposeTitle,
@@ -1384,9 +1385,17 @@ function randomClientMessageId() {
   return id
 }
 
-// Shared by the text reply (t108) and the image send (t123): the reply passes plain text with
-// messagetype "Text", the image path passes the pre-built AMSImage HTML with "RichText/Html".
-async function sendTeamsMessageInPage(cred, convId, content, messagetype = "Text") {
+// Shared by the text reply (t108), the image send (t123), and the file send (t124): the reply
+// passes plain text with messagetype "Text", the media paths pass the pre-built HTML with
+// "RichText/Html". `properties` carries the message extras — the file send passes a JSON-string
+// `files` there so Teams renders the SharePoint chip; every other caller omits it (→ {}).
+async function sendTeamsMessageInPage(
+  cred,
+  convId,
+  content,
+  messagetype = "Text",
+  properties = {},
+) {
   if (!cred.chatServiceBase) return { error: "no_base" }
   const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages`
   const clientmessageid = randomClientMessageId()
@@ -1396,7 +1405,7 @@ async function sendTeamsMessageInPage(cred, convId, content, messagetype = "Text
     contenttype: "text",
     clientmessageid,
     imdisplayname: cred.displayName || "",
-    properties: {},
+    properties,
   }
   const script = `(async () => {
     try {
@@ -1764,11 +1773,140 @@ async function teamsUploadImage({ convId, filename, base64, width, height, text 
   return { ok: true, msgId: ts }
 }
 
+// Upload the raw bytes to the user's SharePoint drive + mint a share link, all IN-PAGE (CA-proof
+// like the AMS image path). Returns { driveItem:{id, sharepointIds}, shareUrl, myHost, userPath } or
+// a typed { error }. The SharePoint bearer + host are read from the page's MSAL cache; a missing
+// token or a 401 on any SharePoint call → invalid_auth (the caller drives one re-authz + retry).
+async function uploadTeamsFileInPage(filename, base64) {
+  const script = `(async () => {
+    try {
+      // The SharePoint bearer + host live in the page's MSAL cache — a localStorage read, not a
+      // network call, so CA doesn't apply. The token's target scope names the -my.sharepoint.com host.
+      let sp = null, myHost = null
+      const rx = /https?:\\/\\/([a-z0-9-]+-my\\.sharepoint\\.com)/
+      for (const k of Object.keys(localStorage)) {
+        if (!(k.startsWith("msal.") && k.includes("accesstoken"))) continue
+        try {
+          const j = JSON.parse(localStorage.getItem(k))
+          const m = j && j.target && String(j.target).match(rx)
+          if (m && j.secret) { sp = j.secret; myHost = m[1]; break }
+        } catch (e) {}
+      }
+      if (!sp || !myHost) return { error: "invalid_auth" }
+      const bearer = { Authorization: "Bearer " + sp }
+      // me/drive → webUrl carries /personal/{userPath}/Documents; pull the {userPath} segment out.
+      const drv = await fetch("https://" + myHost + "/_api/v2.0/me/drive", {
+        headers: { ...bearer, Accept: "application/json" },
+      })
+      if (drv.status === 401) return { error: "invalid_auth" }
+      const dj = await drv.json().catch(() => ({}))
+      const parts = String(dj.webUrl || "").split("/personal/")
+      const userPath = parts.length > 1 ? parts[1].split("/")[0] : ""
+      if (!userPath) return { error: "http_" + drv.status }
+      // Scenario headers mirror Teams' own composer upload.
+      const scen = { scenario: "ShareUploadFile", scenariotype: "AUO" }
+      const bytes = Uint8Array.from(atob(${JSON.stringify(base64)}), (c) => c.charCodeAt(0))
+      const put = await fetch(
+        "https://" + myHost + "/_api/v2.0/drive/root:/Microsoft Teams Chat Files/" +
+          encodeURIComponent(${JSON.stringify(filename)}) + ":/content",
+        {
+          method: "PUT",
+          headers: { ...bearer, ...scen, "Content-Type": "application/octet-stream" },
+          body: bytes,
+        },
+      )
+      if (put.status === 401) return { error: "invalid_auth" }
+      if (put.status !== 201 && !put.ok) return { error: "http_" + put.status }
+      const item = await put.json().catch(() => ({}))
+      if (!item || !item.id) return { error: "http_" + put.status }
+      const link = await fetch(
+        "https://" + myHost + "/_api/v2.0/drive/items/" + encodeURIComponent(item.id) + "/createLink",
+        {
+          method: "POST",
+          headers: { ...bearer, ...scen, "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "view", scope: "organization" }),
+        },
+      )
+      if (link.status === 401) return { error: "invalid_auth" }
+      if (link.status !== 201 && !link.ok) return { error: "http_" + link.status }
+      const lj = await link.json().catch(() => ({}))
+      const shareUrl = lj && lj.link && lj.link.webUrl
+      if (!shareUrl) return { error: "http_" + link.status }
+      return {
+        driveItem: { id: item.id, sharepointIds: item.sharepointIds || null },
+        shareUrl, myHost, userPath,
+      }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Mint/reuse creds → in-page SharePoint upload+share → build the file descriptor → in-page send with
+// properties.files. A 401 on either half drives one re-authz + retry, then a hard typed invalid_auth
+// (mirrors teamsUploadImage). Returns { ok, msgId } (msgId = OriginalArrivalTime = the message id/ts).
+async function teamsUploadFile({ convId, filename, base64, text }) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  // A caption rides as the message content (RichText/Html) above the file chip; empty → no bubble.
+  const caption = text && String(text).trim() ? escapeHtml(text).replace(/\n/g, "<br>") : ""
+  const run = async () => {
+    const up = await uploadTeamsFileInPage(filename, base64)
+    if (up.error) return up
+    const fileObj = buildTeamsFilePayload({
+      myHost: up.myHost,
+      userPath: up.userPath,
+      driveItem: up.driveItem,
+      shareUrl: up.shareUrl,
+      filename,
+    })
+    return await sendTeamsMessageInPage(cred, convId, caption, "RichText/Html", {
+      files: JSON.stringify([fileObj]),
+    })
+  }
+
+  let out = await run()
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await run()
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  // Persist the sent echo (self) so a re-fetch shows the caption before the live poll lands. The file
+  // chip isn't persisted — the store keeps only the body — so it re-derives from the next poll's
+  // properties.files (like the image echo, whose <img> lives in its stored body).
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: caption,
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, msgId: ts }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
 // A pasted screenshot as base64 JSON dwarfs 1 MB, so the image-upload route reads with a larger cap
 // (t123). Still bounded to guard memory — Teams itself rejects larger inline images.
 const IMAGE_BODY_LIMIT = 24 * 1024 * 1024 // 24 MB
+// A non-image file upload (t124) rides base64 too; cap it larger — ~30 MB of file is ~40 MB encoded.
+const FILE_BODY_LIMIT = 40 * 1024 * 1024 // 40 MB
 const body = (req, limit = BODY_LIMIT) =>
   new Promise((resolve, reject) => {
     let b = ""
@@ -2178,6 +2316,18 @@ const server = http.createServer(async (req, res) => {
         height,
         text,
       })
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: upload a pasted/picked non-image file to SharePoint + post it as a chip IN-PAGE
+    // (t124, ADR-0018). One atomic endpoint: PUT the bytes to the drive → createLink → send the
+    // properties.files message. Larger body cap than the image route (files run bigger). A 401 →
+    // one re-authz + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/upload-file" && POST) {
+      const { convId, filename, base64, text } = await body(req, FILE_BODY_LIMIT)
+      if (!convId || !base64) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsUploadFile({ convId, filename: filename || "file", base64, text })
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

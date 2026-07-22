@@ -1,8 +1,9 @@
 import {
   Alert02Icon,
   ArrowLeft01Icon,
+  Attachment01Icon,
   Cancel01Icon,
-  Image01Icon,
+  File01Icon,
   InboxIcon,
   ReloadIcon,
   SentIcon,
@@ -12,7 +13,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { pickImageFile } from "../lib/image-attach"
+import { pickFile } from "../lib/image-attach"
 import { applyPendingReactions, applyReaction, mergeMessages } from "../lib/message-merge"
 import {
   deleteMessage,
@@ -24,6 +25,7 @@ import {
   TeamsApiError,
   type TeamsConversation,
   type TeamsMessage,
+  uploadFile,
   uploadImage,
 } from "../lib/teams-client"
 import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
@@ -69,6 +71,14 @@ function reconcilePendingReactions(
     }
     if (byKey.size === 0) pending.delete(msgId)
   }
+}
+
+// Lowercased extension for the optimistic file chip's icon (mirrors core/teams-files.js:fileExt;
+// the CJS core isn't importable into the typechecked chat bundle). The next poll's server-rendered
+// chip carries the authoritative type. No dot / leading-dot / trailing-dot → "file".
+const pendingExt = (name: string): string => {
+  const dot = name.lastIndexOf(".")
+  return dot <= 0 || dot === name.length - 1 ? "file" : name.slice(dot + 1).toLowerCase()
 }
 
 const errorMessage = (e: unknown): string => {
@@ -373,27 +383,29 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
   const replyTarget = selectReplyTarget(conversation)
   const [send, setSend] = useState<SendState>({ phase: "idle", draft: "" })
-  // A pasted/picked image staged for send (t123): held until Send uploads it (or the ✕ clears it).
-  const [pendingImage, setPendingImage] = useState<File | null>(null)
+  // A pasted/picked attachment staged for send (t123 image, t124 any file): held until Send uploads
+  // it (or the ✕ clears it). An image routes to uploadImage; any other file routes to uploadFile.
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [pendingUrl, setPendingUrl] = useState<string | null>(null)
+  const pendingIsImage = pendingFile?.type.startsWith("image/") ?? false
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  // Reset the composer when the conversation changes (a half-typed draft / staged image doesn't leak).
+  // Reset the composer when the conversation changes (a half-typed draft / staged file doesn't leak).
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
   useEffect(() => {
     setSend({ phase: "idle", draft: "" })
-    setPendingImage(null)
+    setPendingFile(null)
   }, [convId])
-  // Object-URL preview for the staged image; revoked when it changes or the pane unmounts.
+  // Object-URL thumbnail preview — images only; a non-image file shows a chip, not a thumbnail.
   useEffect(() => {
-    if (!pendingImage) {
+    if (!pendingFile?.type.startsWith("image/")) {
       setPendingUrl(null)
       return
     }
-    const url = URL.createObjectURL(pendingImage)
+    const url = URL.createObjectURL(pendingFile)
     setPendingUrl(url)
     return () => URL.revokeObjectURL(url)
-  }, [pendingImage])
+  }, [pendingFile])
   // Auto-grow the textarea up to a cap; height resets to measure the real scrollHeight each edit.
   // biome-ignore lint/correctness/useExhaustiveDependencies: send.draft is the deliberate re-measure trigger
   useLayoutEffect(() => {
@@ -418,15 +430,19 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     if (!replyTarget || send.phase === "sending") return
     const text = send.draft.trim()
 
-    // Image send (t123): an uploaded image can carry an optional caption. Its draft can be empty, so
-    // it bypasses reduceSend's non-empty guard. On success the poll reconciles the optimistic preview
-    // to the server-rendered AMSImage; on failure the image + caption stay so the user can retry.
-    if (pendingImage) {
-      const file = pendingImage
+    // Attachment send (t123 image, t124 file): an upload can carry an optional caption, so its draft
+    // can be empty — it bypasses reduceSend's non-empty guard. On success the poll reconciles the
+    // optimistic bubble to the server-rendered message; on failure the file + caption stay for retry.
+    if (pendingFile) {
+      const file = pendingFile
+      const isImage = file.type.startsWith("image/")
       setSend({ phase: "sending", draft: send.draft })
-      uploadImage(replyTarget.convId, file, text)
+      const upload = isImage
+        ? uploadImage(replyTarget.convId, file, text)
+        : uploadFile(replyTarget.convId, file, text)
+      upload
         .then((out) => {
-          setPendingImage(null)
+          setPendingFile(null)
           setSend({ phase: "idle", draft: "" })
           appendSent({
             id: out.msgId,
@@ -437,8 +453,16 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
             self: true,
             edited: false,
             deleted: false,
-            // Own object URL for the optimistic bubble — the pending preview URL is revoked on clear.
-            localImageUrl: URL.createObjectURL(file),
+            // Image → own object URL for the optimistic bubble (revoked with the pending preview);
+            // file → a chip descriptor. Either is replaced by the server's rendered message on the
+            // next poll (the chip gains its clickable SharePoint url then).
+            ...(isImage
+              ? { localImageUrl: URL.createObjectURL(file) }
+              : {
+                  attachments: [
+                    { kind: "file", name: file.name || "file", type: pendingExt(file.name) },
+                  ],
+                }),
           })
           markRead(replyTarget.convId, out.msgId, out.msgId)
         })
@@ -472,26 +496,36 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         const code = e instanceof TeamsApiError ? e.code : "network_error"
         setSend((s) => reduceSend(s, { type: "fail", code }))
       })
-  }, [send, replyTarget, pendingImage, appendSent])
+  }, [send, replyTarget, pendingFile, appendSent])
 
   const composer = (
     <div className="shrink-0 border-border border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
       {send.phase === "failed" && (
         <p className="pb-1.5 text-destructive text-xs">{sendErrorCopy(send.code)}</p>
       )}
-      {pendingUrl && (
+      {(pendingUrl || (pendingFile && !pendingIsImage)) && (
         <div className="pb-2">
           <div className="relative inline-block">
-            <img
-              alt="Attachment preview"
-              className="size-16 rounded-md border border-border object-cover"
-              src={pendingUrl}
-            />
+            {pendingUrl ? (
+              <img
+                alt="Attachment preview"
+                className="size-16 rounded-md border border-border object-cover"
+                src={pendingUrl}
+              />
+            ) : (
+              <div className="flex max-w-[16rem] items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
+                <HugeiconsIcon
+                  className="size-4 shrink-0 text-muted-foreground"
+                  icon={File01Icon}
+                />
+                <span className="truncate text-sm">{pendingFile?.name || "file"}</span>
+              </div>
+            )}
             <button
-              aria-label="Remove image"
+              aria-label="Remove attachment"
               className="-right-1.5 -top-1.5 absolute flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent"
               disabled={send.phase === "sending"}
-              onClick={() => setPendingImage(null)}
+              onClick={() => setPendingFile(null)}
               type="button"
             >
               <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
@@ -501,24 +535,23 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       )}
       <div className="flex items-end gap-2">
         <input
-          accept="image/*"
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0]
-            if (f) setPendingImage(f)
+            if (f) setPendingFile(f)
             e.target.value = "" // allow re-picking the same file
           }}
           ref={fileRef}
           type="file"
         />
         <Button
-          aria-label="Add image"
+          aria-label="Attach file"
           disabled={send.phase === "sending"}
           onClick={() => fileRef.current?.click()}
           size="icon"
           variant="ghost"
         >
-          <HugeiconsIcon className="size-4" icon={Image01Icon} />
+          <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
         </Button>
         <textarea
           className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
@@ -531,10 +564,10 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
             }
           }}
           onPaste={(e) => {
-            const file = pickImageFile(e.clipboardData?.items)
+            const file = pickFile(e.clipboardData?.items)
             if (file) {
               e.preventDefault()
-              setPendingImage(file)
+              setPendingFile(file)
             }
           }}
           placeholder="Type a message…"
@@ -544,7 +577,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         />
         <Button
           aria-label={send.phase === "failed" ? "Retry send" : "Send"}
-          disabled={send.phase === "sending" || (!send.draft.trim() && !pendingImage)}
+          disabled={send.phase === "sending" || (!send.draft.trim() && !pendingFile)}
           onClick={doSend}
           size="icon"
         >

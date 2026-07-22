@@ -1,28 +1,31 @@
 import { describe, expect, it } from "vitest"
-import { pickImageFile } from "./image-attach"
+import { pickFile } from "./image-attach"
 
-// Minimal DataTransferItem-like stub: what pickImageFile reads (type + getAsFile).
-const item = (type: string, file: File | null) => ({ type, getAsFile: () => file })
+// Minimal DataTransferItem-like stub: what pickFile reads (getAsFile).
+const item = (file: File | null) => ({ getAsFile: () => file })
 const png = new File(["x"], "shot.png", { type: "image/png" })
+const pdf = new File(["x"], "report.pdf", { type: "application/pdf" })
 
-describe("pickImageFile", () => {
-  it("returns the first image File from a clipboard items list", () => {
-    const items = [item("text/plain", null), item("image/png", png)]
-    expect(pickImageFile(items)).toBe(png)
+describe("pickFile", () => {
+  it("returns the first File-backed item from a clipboard items list", () => {
+    expect(pickFile([item(null), item(png)])).toBe(png)
   })
 
-  it("ignores non-image items (a plain text paste)", () => {
-    expect(pickImageFile([item("text/plain", null), item("text/html", null)])).toBeNull()
+  it("picks a non-image file too (t124)", () => {
+    expect(pickFile([item(null), item(pdf)])).toBe(pdf)
+  })
+
+  it("ignores text items with no backing File (a plain text paste)", () => {
+    expect(pickFile([item(null), item(null)])).toBeNull()
   })
 
   it("returns null for an empty or missing list", () => {
-    expect(pickImageFile([])).toBeNull()
-    expect(pickImageFile(null)).toBeNull()
-    expect(pickImageFile(undefined)).toBeNull()
+    expect(pickFile([])).toBeNull()
+    expect(pickFile(null)).toBeNull()
+    expect(pickFile(undefined)).toBeNull()
   })
 
-  it("skips an image item whose getAsFile yields null and keeps looking", () => {
-    const items = [item("image/gif", null), item("image/png", png)]
-    expect(pickImageFile(items)).toBe(png)
+  it("skips an item whose getAsFile yields null and keeps looking", () => {
+    expect(pickFile([item(null), item(pdf)])).toBe(pdf)
   })
 })

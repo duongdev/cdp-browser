@@ -270,6 +270,38 @@ export async function uploadImage(
   return { msgId: data.msgId }
 }
 
+/** Upload a pasted/picked non-image file to the user's SharePoint drive and post it as a chip
+ *  (t124). Reads the file as base64 client-side, then POSTs the one atomic endpoint (PUT bytes →
+ *  createLink → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer
+ *  keeps the pending file + caption. Returns the sent message's id (its arrival ts). */
+export async function uploadFile(
+  convId: string,
+  file: File,
+  text?: string,
+): Promise<{ msgId: string }> {
+  const base64 = await fileToBase64(file)
+  const res = await fetch("/api/teams/upload-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      convId,
+      filename: file.name || "file",
+      base64,
+      contentType: file.type || "application/octet-stream",
+      text: text?.trim() || undefined,
+    }),
+  })
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: true
+    msgId?: string
+    error?: string
+  }
+  if (!res.ok || data.error || !data.msgId) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+  return { msgId: data.msgId }
+}
+
 /** Write-through mark-read (t108, Q9 hybrid): push the conversation's read horizon to Teams.
  *  Best-effort — the server never fails this, and a network error here must never surface, so
  *  it swallows everything. Called after a successful reply (and on an explicit mark-read). */
