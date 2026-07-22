@@ -10,7 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { applyReaction, mergeMessages } from "../lib/message-merge"
+import { applyPendingReactions, applyReaction, mergeMessages } from "../lib/message-merge"
 import {
   fetchHistory,
   markRead,
@@ -29,6 +29,41 @@ const THREAD_POLL_MS = 4000
 // Stick-to-bottom slack: within this many px of the bottom, a merge that lands newer content
 // re-pins to the bottom; farther up we leave scroll alone so we don't yank someone reading history.
 const THREAD_BOTTOM_SLACK = 64
+// A pending optimistic reaction is overlaid on every merge until the server confirms it, or until it
+// ages past this window — a lost write shouldn't pin a phantom reaction forever (t121).
+const PENDING_REACTION_TTL_MS = 20000
+
+/** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
+ *  and when it was fired (for the failed-write timeout). Keyed msgId → key. */
+type PendingReactions = Map<
+  string,
+  Map<string, { emoji: string; desiredMine: boolean; ts: number }>
+>
+
+/** Drop pending entries the server has caught up on, or that have aged out (t121). Mutates in place.
+ *  A `(msgId, key)` is confirmed — and its overlay retired so a later real change isn't masked — once
+ *  the server page shows that key's `mine` equal to `desiredMine`. Only messages present in the page
+ *  can be confirmed; the rest wait for the TTL. */
+function reconcilePendingReactions(
+  pending: PendingReactions,
+  serverMessages: TeamsMessage[],
+  now: number,
+): void {
+  const byId = new Map(serverMessages.map((m) => [m.id, m]))
+  for (const [msgId, byKey] of pending) {
+    const msg = byId.get(msgId)
+    for (const [key, entry] of byKey) {
+      if (now - entry.ts > PENDING_REACTION_TTL_MS) {
+        byKey.delete(key)
+        continue
+      }
+      if (!msg) continue // not in this page — can't confirm; leave it to the TTL
+      const serverMine = msg.reactions?.find((r) => r.key === key)?.mine ?? false
+      if (serverMine === entry.desiredMine) byKey.delete(key)
+    }
+    if (byKey.size === 0) pending.delete(msgId)
+  }
+}
 
 const errorMessage = (e: unknown): string => {
   if (e instanceof TeamsApiError) {
@@ -68,6 +103,10 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // Latest scroll offset, tracked live while visible — display:none drops the container's scrollTop,
   // so this ref (not a read at hide-time, which would already be 0) is what we restore on re-show.
   const savedScrollTop = useRef(0)
+  // In-flight optimistic reactions, overlaid on every merge until the server confirms (t121). A ref
+  // (not state) — mutating it never needs a re-render; the overlay it drives is applied inside the
+  // merge setState. Cleared per conversation switch below.
+  const pendingReactions = useRef<PendingReactions>(new Map())
   const convId = conversation.id
 
   const load = useCallback(
@@ -75,6 +114,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       setState({ status: "loading" })
       setHasMore(true)
       olderCursor.current = null
+      pendingReactions.current = new Map() // stale optimistic reactions don't leak across a switch
       fetchHistory(convId)
         .then((page) => {
           if (signal?.aborted) return
@@ -120,7 +160,15 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
           // flex-col-reverse pins the viewport to its bottom-distance, so the prepend needs no
           // scroll correction — the read position holds through the insert.
           setState((s) =>
-            s.status === "ready" ? { status: "ready", messages: [...fresh, ...s.messages] } : s,
+            s.status === "ready"
+              ? {
+                  status: "ready",
+                  messages: applyPendingReactions(
+                    [...fresh, ...s.messages],
+                    pendingReactions.current,
+                  ),
+                }
+              : s,
           )
         }
       })
@@ -178,10 +226,17 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         const el = scrollRef.current
         // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
         const nearBottom = el ? Math.abs(el.scrollTop) < THREAD_BOTTOM_SLACK : false
+        // Retire optimistic reactions the server now reflects (or that timed out) BEFORE overlaying,
+        // so a confirmed reaction stops being pinned and a later real change isn't masked (t121).
+        reconcilePendingReactions(pendingReactions.current, page.messages, Date.now())
         setState((s) => {
           if (s.status !== "ready") return s
           const merged = mergeMessages(s.messages, page.messages)
-          return merged.changed ? { status: "ready", messages: merged.messages } : s
+          // Overlay the still-pending reactions so a stale server page can't revert the optimistic
+          // chip. The overlay reuses the same-ref no-op, so a poll that changes nothing re-renders
+          // nothing.
+          const overlaid = applyPendingReactions(merged.messages, pendingReactions.current)
+          return overlaid === s.messages ? s : { status: "ready", messages: overlaid }
         })
         if (nearBottom) {
           requestAnimationFrame(() => {
@@ -238,9 +293,17 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
 
   // Reactions (t120): the thread owns message state, so it applies the optimistic toggle here
   // (add/remove self + adjust count via the pure applyReaction) and fires the best-effort server
-  // call. The next poll's merge reconciles the true count (reactionSig is in its changed-diff).
+  // call. The optimistic change is also recorded as a pending overlay (t121) so the 4s poll's
+  // server-wins merge can't revert it before Teams propagates the reaction; the overlay is retired
+  // the moment the server reflects it (reconcilePendingReactions).
   const onReact = useCallback(
     (msgId: string, key: string, emoji: string, remove: boolean) => {
+      let byKey = pendingReactions.current.get(msgId)
+      if (!byKey) {
+        byKey = new Map()
+        pendingReactions.current.set(msgId, byKey)
+      }
+      byKey.set(key, { emoji, desiredMine: !remove, ts: Date.now() })
       setState((s) => {
         if (s.status !== "ready") return s
         return {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { applyReaction, mergeMessages } from "./message-merge"
+import { applyPendingReactions, applyReaction, mergeMessages } from "./message-merge"
 import type { TeamsMessage } from "./teams-client"
+
+type Pending = Map<string, Map<string, { emoji: string; desiredMine: boolean }>>
+const pending = (
+  entries: [string, [string, { emoji: string; desiredMine: boolean }][]][],
+): Pending => new Map(entries.map(([id, keys]) => [id, new Map(keys)]))
 
 const msg = (over: Partial<TeamsMessage> & { id: string; ts: number }): TeamsMessage => ({
   senderId: "u1",
@@ -135,5 +140,83 @@ describe("applyReaction (optimistic toggle)", () => {
   it("is a no-op re-adding a reaction I already made", () => {
     const r = [{ key: "like", emoji: "👍", count: 2, mine: true }]
     expect(applyReaction(r, "like", "👍", false)).toEqual(r)
+  })
+})
+
+describe("applyPendingReactions (overlay that survives a stale poll)", () => {
+  it("adds a desired-mine reaction the server list lacks (optimistic add)", () => {
+    const messages = [msg({ id: "1", ts: 100 })]
+    const out = applyPendingReactions(
+      messages,
+      pending([["1", [["like", { emoji: "👍", desiredMine: true }]]]]),
+    )
+    expect(out).not.toBe(messages)
+    expect(out[0].reactions).toEqual([{ key: "like", emoji: "👍", count: 1, mine: true }])
+  })
+
+  it("marks mine + bumps count when the server shows the key but not-mine", () => {
+    const messages = [
+      msg({ id: "1", ts: 100, reactions: [{ key: "like", emoji: "👍", count: 1, mine: false }] }),
+    ]
+    const out = applyPendingReactions(
+      messages,
+      pending([["1", [["like", { emoji: "👍", desiredMine: true }]]]]),
+    )
+    expect(out[0].reactions).toEqual([{ key: "like", emoji: "👍", count: 2, mine: true }])
+  })
+
+  it("unmarks + drops the chip when not desired but the server still shows it mine", () => {
+    const messages = [
+      msg({ id: "1", ts: 100, reactions: [{ key: "like", emoji: "👍", count: 1, mine: true }] }),
+    ]
+    const out = applyPendingReactions(
+      messages,
+      pending([["1", [["like", { emoji: "👍", desiredMine: false }]]]]),
+    )
+    expect(out[0].reactions).toEqual([])
+  })
+
+  it("unmarks + decrements but keeps the chip when others remain", () => {
+    const messages = [
+      msg({ id: "1", ts: 100, reactions: [{ key: "like", emoji: "👍", count: 2, mine: true }] }),
+    ]
+    const out = applyPendingReactions(
+      messages,
+      pending([["1", [["like", { emoji: "👍", desiredMine: false }]]]]),
+    )
+    expect(out[0].reactions).toEqual([{ key: "like", emoji: "👍", count: 1, mine: false }])
+  })
+
+  it("leaves other messages and other keys untouched", () => {
+    const messages = [
+      msg({ id: "1", ts: 100, reactions: [{ key: "heart", emoji: "❤️", count: 1, mine: false }] }),
+      msg({ id: "2", ts: 200 }),
+    ]
+    const out = applyPendingReactions(
+      messages,
+      pending([["1", [["like", { emoji: "👍", desiredMine: true }]]]]),
+    )
+    // message 2 untouched (same object ref), message 1's heart preserved alongside the new like.
+    expect(out[1]).toBe(messages[1])
+    expect(out[0].reactions).toEqual([
+      { key: "heart", emoji: "❤️", count: 1, mine: false },
+      { key: "like", emoji: "👍", count: 1, mine: true },
+    ])
+  })
+
+  it("is a same-ref no-op when the server already matches every pending entry", () => {
+    const messages = [
+      msg({ id: "1", ts: 100, reactions: [{ key: "like", emoji: "👍", count: 1, mine: true }] }),
+    ]
+    const out = applyPendingReactions(
+      messages,
+      pending([["1", [["like", { emoji: "👍", desiredMine: true }]]]]),
+    )
+    expect(out).toBe(messages)
+  })
+
+  it("is a same-ref no-op when there are no pending entries", () => {
+    const messages = [msg({ id: "1", ts: 100 })]
+    expect(applyPendingReactions(messages, pending([]))).toBe(messages)
   })
 })

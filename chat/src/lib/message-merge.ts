@@ -74,3 +74,50 @@ export function applyReaction(
   if (existing.mine) return list
   return list.map((r) => (r.key === key ? { ...r, count: r.count + 1, mine: true } : r))
 }
+
+/** One in-flight optimistic reaction: the emoji to draw and whether the viewer should end up in it.
+ *  (`thread-view` also tracks a `ts` for the failed-write timeout; the overlay ignores it.) */
+interface PendingReaction {
+  emoji: string
+  desiredMine: boolean
+}
+
+/** Re-apply the viewer's pending (optimistic) reactions on top of a freshly merged message list, so
+ *  a poll whose server response hasn't propagated the reaction yet can't revert it (t121). Keyed by
+ *  (msgId → key → desiredMine): for each pending key it forces `mine` to `desiredMine` — add/mark-mine
+ *  + bump count when desired but absent/not-mine, unmark + decrement (drop the chip at 0) when not
+ *  desired but currently mine. Never mutates the input; returns the same array ref when nothing
+ *  changed (so the caller's same-ref no-render optimization holds). The overlay self-heals — the
+ *  caller drops a pending entry once the server reflects it, so this can't mask a real later change. */
+export function applyPendingReactions(
+  messages: TeamsMessage[],
+  pending: ReadonlyMap<string, ReadonlyMap<string, PendingReaction>>,
+): TeamsMessage[] {
+  if (pending.size === 0) return messages
+  let changed = false
+  const out = messages.map((m) => {
+    const keys = pending.get(m.id)
+    if (!keys || keys.size === 0) return m
+    let reactions = m.reactions ?? []
+    let msgChanged = false
+    for (const [key, { emoji, desiredMine }] of keys) {
+      const existing = reactions.find((r) => r.key === key)
+      const currentlyMine = existing?.mine ?? false
+      if (currentlyMine === desiredMine) continue
+      msgChanged = true
+      if (desiredMine) {
+        reactions = existing
+          ? reactions.map((r) => (r.key === key ? { ...r, count: r.count + 1, mine: true } : r))
+          : [...reactions, { key, emoji, count: 1, mine: true }]
+      } else {
+        reactions = reactions
+          .map((r) => (r.key === key ? { ...r, count: r.count - 1, mine: false } : r))
+          .filter((r) => r.count > 0)
+      }
+    }
+    if (!msgChanged) return m
+    changed = true
+    return { ...m, reactions }
+  })
+  return changed ? out : messages
+}

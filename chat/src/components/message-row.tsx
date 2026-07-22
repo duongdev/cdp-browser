@@ -31,6 +31,16 @@ const QUICK_REACTIONS: readonly { key: string; emoji: string }[] = [
   { key: "angry", emoji: "😠" },
 ]
 
+// Hover tooltip listing who reacted (t121). The viewer is "You" (first) when `mine`; the rest are
+// the server-resolved `reactorNames`. Names can be fewer than `count` (unresolved MRIs omitted), so
+// any shortfall becomes "and N more". Empty → no title (chip still shows emoji + count).
+function reactorTitle(r: TeamsReaction): string | undefined {
+  const shown = r.mine ? ["You", ...(r.reactorNames ?? [])] : (r.reactorNames ?? [])
+  if (shown.length === 0) return undefined
+  const hidden = r.count - shown.length
+  return hidden > 0 ? `${shown.join(", ")} and ${hidden} more` : shown.join(", ")
+}
+
 interface MessageRowProps {
   message: TeamsMessage
   /** Toggle the viewer's reaction for `key` on this message (t120). `remove` true → leave it.
@@ -132,6 +142,7 @@ export function MessageRow({ message, onReact }: MessageRowProps) {
               disabled={!onReact}
               key={r.key}
               onClick={() => toggleChip(r)}
+              title={reactorTitle(r)}
               type="button"
             >
               <span aria-hidden>{r.emoji}</span>

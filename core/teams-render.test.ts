@@ -319,8 +319,8 @@ describe("parseEmotions", () => {
       },
     })
     expect(parseEmotions(message, "ME")).toEqual([
-      { key: "like", emoji: "👍", count: 2, mine: false },
-      { key: "heart", emoji: "❤️", count: 1, mine: false },
+      { key: "like", emoji: "👍", count: 2, mine: false, userMris: ["8:orgid:A", "8:orgid:B"] },
+      { key: "heart", emoji: "❤️", count: 1, mine: false, userMris: ["8:orgid:C"] },
     ])
   })
 
@@ -331,7 +331,7 @@ describe("parseEmotions", () => {
       },
     })
     expect(parseEmotions(message, "ME")).toEqual([
-      { key: "laugh", emoji: "😆", count: 1, mine: false },
+      { key: "laugh", emoji: "😆", count: 1, mine: false, userMris: ["8:orgid:X"] },
     ])
   })
 
@@ -342,8 +342,16 @@ describe("parseEmotions", () => {
       },
     })
     expect(parseEmotions(message, "ME")).toEqual([
-      { key: "like", emoji: "👍", count: 2, mine: true },
+      { key: "like", emoji: "👍", count: 2, mine: true, userMris: ["8:orgid:A", "8:orgid:ME"] },
     ])
+  })
+
+  it("collects reactor MRIs into userMris, capped at 25 while count stays exact", () => {
+    const users = Array.from({ length: 40 }, (_, i) => ({ mri: `8:orgid:U${i}` }))
+    const [r] = parseEmotions(emo({ properties: { emotions: [{ key: "like", users }] } }), "ME")
+    expect(r.count).toBe(40)
+    expect(r.userMris).toHaveLength(25)
+    expect(r.userMris[0]).toBe("8:orgid:U0")
   })
 
   it("drops a key whose users list is empty (nobody reacts)", () => {
@@ -379,7 +387,9 @@ describe("toReaderMessages — reactions", () => {
       ],
       "ME",
     )
-    expect(out[0].reactions).toEqual([{ key: "like", emoji: "👍", count: 1, mine: true }])
+    expect(out[0].reactions).toEqual([
+      { key: "like", emoji: "👍", count: 1, mine: true, userMris: ["8:orgid:ME"] },
+    ])
   })
 
   it("omits reactions when there are none (or all keys are empty)", () => {

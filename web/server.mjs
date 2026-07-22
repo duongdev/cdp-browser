@@ -1182,6 +1182,53 @@ async function teamsResolveTitles(cred, convs) {
   }))
 }
 
+// Resolve each reaction's reactor MRIs → display names for the hover tooltip (t121), reusing the
+// SAME cache-first + one-Graph-batch path as teamsResolveTitles. The viewer's own MRI is excluded
+// (the client renders it as "You"); `userMris` is stripped from the payload, leaving `reactorNames`
+// (names only, best-effort — an unresolved MRI is just omitted). Mutates `messages` in place. Cache-
+// warm: once a reactor is known, a repeat poll adds no Graph latency (the misses set is empty).
+async function attachTeamsReactorNames(cred, messages) {
+  const selfOid = cred.userId || ""
+  const isSelfMri = (mri) => teamsOidFromMri(mri) === selfOid
+  const needed = new Set()
+  for (const m of messages)
+    for (const r of m.reactions || [])
+      for (const mri of r.userMris || []) if (!isSelfMri(mri)) needed.add(mri)
+
+  const nameByMri = new Map()
+  if (needed.size) {
+    try {
+      const cached = teamsGetUsers(teamsDb, [...needed])
+      for (const [mri, name] of cached) nameByMri.set(mri, name)
+      const misses = [...needed].filter((m) => !nameByMri.has(m))
+      if (misses.length) {
+        const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+        const resolved = []
+        for (const m of misses) {
+          const name = oidMap[teamsOidFromMri(m)]
+          if (name) {
+            resolved.push({ mri: m, displayName: name })
+            nameByMri.set(m, name)
+          }
+        }
+        if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+      }
+    } catch (e) {
+      console.error("[web] teams reactor name resolution failed:", e.message) // degrade to no names
+    }
+  }
+
+  for (const m of messages)
+    for (const r of m.reactions || []) {
+      const names = (r.userMris || [])
+        .filter((mri) => !isSelfMri(mri))
+        .map((mri) => nameByMri.get(mri))
+        .filter(Boolean)
+      r.userMris = undefined
+      if (names.length) r.reactorNames = names
+    }
+}
+
 // ---- Teams conversation history (t107/t112, ADR-0018) ---------------------
 // CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. First page = the
 // base URL; older pages = the previous response's `_metadata.backwardLink` (an opaque syncState
@@ -1237,6 +1284,7 @@ async function teamsHistory(convId, cursor) {
 
   const messages = teamsToReaderMessages(out.messages, cred.userId)
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
+  await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t121); strips userMris
   // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
   // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
   if (cursor == null && messages.length > 0) {

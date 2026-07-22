@@ -79,6 +79,10 @@ export interface TeamsReaction {
   emoji: string
   count: number
   mine: boolean
+  /** Display names of the OTHER reactors, server-resolved best-effort for the hover tooltip (t121).
+   *  Excludes the viewer (shown as "You" when `mine`); absent when none resolved. May be shorter than
+   *  `count` — unresolved MRIs are omitted, so the tooltip appends "and N more". */
+  reactorNames?: string[]
 }
 
 /** One rendered message (server's `teams-render.toReaderMessages` output). `ts` is epoch ms;

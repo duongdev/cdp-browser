@@ -129,9 +129,12 @@ function attachmentChip(message) {
 
 // ---- reactions (t120) -----------------------------------------------------
 // Parse `properties.emotions` — `[{ key, users: [{ mri, time, value }] }]` — into flat reaction
-// descriptors `{ key, emoji, count, mine }`. Like properties.mentions/files it may arrive as a JSON
-// STRING (the t118 trap), so parse defensively. A key with zero reactors is dropped (Teams leaves an
-// empty `users` row behind after a remove). `mine` is true when the viewer's oid is among the mris.
+// descriptors `{ key, emoji, count, mine, userMris }`. Like properties.mentions/files it may arrive
+// as a JSON STRING (the t118 trap), so parse defensively. A key with zero reactors is dropped (Teams
+// leaves an empty `users` row behind after a remove). `mine` is true when the viewer's oid is among
+// the mris. `userMris` carries the reactor MRIs (capped, t121) so the server can resolve them to
+// names for the hover tooltip; `count` stays the exact reactor total.
+const REACTOR_MRI_CAP = 25
 function parseEmotions(message, selfId) {
   let emotions = message.properties?.emotions
   if (typeof emotions === "string") {
@@ -148,7 +151,17 @@ function parseEmotions(message, selfId) {
     const users = Array.isArray(e.users) ? e.users : []
     if (users.length === 0) continue
     const mine = users.some((u) => u && isSelf(String(u.mri || ""), selfId))
-    out.push({ key: String(e.key), emoji: reactionEmoji(String(e.key)), count: users.length, mine })
+    const userMris = users
+      .map((u) => String(u?.mri || ""))
+      .filter(Boolean)
+      .slice(0, REACTOR_MRI_CAP)
+    out.push({
+      key: String(e.key),
+      emoji: reactionEmoji(String(e.key)),
+      count: users.length,
+      mine,
+      userMris,
+    })
   }
   return out
 }
