@@ -21,6 +21,23 @@ describe("reactionEmoji", () => {
     expect(reactionEmoji("some_new_emotion")).toBe("🙂")
     expect(reactionEmoji("")).toBe("🙂")
   })
+
+  it("resolves a skin-tone thumbs-up to 👍 (the reported 🙂 bug)", () => {
+    expect(reactionEmoji("yes")).toBe("👍")
+    expect(reactionEmoji("yes-tone1")).toBe("👍")
+    expect(reactionEmoji("yes-tone5")).toBe("👍")
+    expect(reactionEmoji("praying-tone1")).toBe("🙏")
+  })
+
+  it("derives the glyph from a unicode-codepoint-prefixed key", () => {
+    expect(reactionEmoji("1f4af_hundredpointssymbol")).toBe("💯")
+    expect(reactionEmoji("1f440_eyes")).toBe("👀")
+    expect(reactionEmoji("2705_whiteheavycheckmark")).toBe("✅")
+  })
+
+  it("falls back for an unknown custom org emoji (name;objectId)", () => {
+    expect(reactionEmoji("hajimi_run;0-ea-d11-abc")).toBe("🙂")
+  })
 })
 
 describe("DEFAULT_REACTIONS", () => {
