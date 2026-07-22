@@ -7,30 +7,59 @@ import {
   Pdf01Icon,
   PlayCircleIcon,
   Ppt01Icon,
+  SmileIcon,
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { type MouseEvent, useState } from "react"
+import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { relativeTime } from "../lib/conversation-view"
 import { sanitize } from "../lib/sanitize-message"
-import type { TeamsAttachment, TeamsMessage } from "../lib/teams-client"
+import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
 import { ImageLightbox } from "./image-lightbox"
+
+// The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
+// DEFAULT_REACTIONS — a frozen, closed set, kept local so the browser build needn't import the CJS
+// core module (which the tsconfig doesn't typecheck). Chips carry their own emoji from the server.
+const QUICK_REACTIONS: readonly { key: string; emoji: string }[] = [
+  { key: "like", emoji: "👍" },
+  { key: "heart", emoji: "❤️" },
+  { key: "laugh", emoji: "😆" },
+  { key: "surprised", emoji: "😮" },
+  { key: "sad", emoji: "😢" },
+  { key: "angry", emoji: "😠" },
+]
 
 interface MessageRowProps {
   message: TeamsMessage
+  /** Toggle the viewer's reaction for `key` on this message (t120). `remove` true → leave it.
+   *  The parent (thread-view) applies the optimistic update + fires the server call. */
+  onReact?: (msgId: string, key: string, emoji: string, remove: boolean) => void
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
  *  sender name. `body` is rich, site-authored HTML (t111) — bold/links/mentions/emoji/code/lists,
  *  plus inline media (t117: AMS images/video via the proxy, public-CDN emoji/GIF/sticker). File /
  *  call-recording / card chips (t119) render below the body; a chips-only message shows no bubble. */
-export function MessageRow({ message }: MessageRowProps) {
+export function MessageRow({ message, onReact }: MessageRowProps) {
   const { self, deleted } = message
   const time = relativeTime(message.ts)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const coarse = usePointerCoarse()
   const attachments = message.attachments ?? []
+  const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
+  const canReact = !deleted && !!onReact
+
+  // Clicking a chip toggles my own reaction for that key (mine → remove, else join).
+  const toggleChip = (r: TeamsReaction) => onReact?.(message.id, r.key, r.emoji, r.mine)
+  // Tapping a quick-bar emoji adds it (a re-tap of one I already made is a no-op upstream).
+  const quickReact = (key: string, emoji: string) => {
+    setPickerOpen(false)
+    onReact?.(message.id, key, emoji, false)
+  }
 
   // A tap on a content image (not an emoji/sticker) opens the lightbox with that image's src.
   // Delegated off the body so it covers every img the sanitized HTML produced.
@@ -49,7 +78,12 @@ export function MessageRow({ message }: MessageRowProps) {
         <span className="px-1 font-medium text-muted-foreground text-xs">{message.senderName}</span>
       )}
       {hasBody && (
-        <>
+        <div
+          className={cn(
+            "group/msg flex max-w-full items-center gap-1",
+            self ? "flex-row-reverse" : "flex-row",
+          )}
+        >
           {/* XSS BOUNDARY: message.body is site-authored HTML. It MUST pass through sanitize()
               (DOMPurify, strict allowlist) before it hits the DOM — never render body raw. */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap opens a lightbox. */}
@@ -64,7 +98,16 @@ export function MessageRow({ message }: MessageRowProps) {
             dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
             onClick={onBodyClick}
           />
-        </>
+          {canReact && (
+            <QuickReact
+              coarse={coarse}
+              onPick={quickReact}
+              onToggleOpen={() => setPickerOpen((v) => !v)}
+              open={pickerOpen}
+              side={self ? "end" : "start"}
+            />
+          )}
+        </div>
       )}
       {attachments.length > 0 && (
         <div className="flex max-w-[85%] flex-col gap-1">
@@ -74,11 +117,94 @@ export function MessageRow({ message }: MessageRowProps) {
           ))}
         </div>
       )}
+      {reactions.length > 0 && (
+        <div
+          className={cn("flex max-w-[85%] flex-wrap gap-1", self ? "justify-end" : "justify-start")}
+        >
+          {reactions.map((r) => (
+            <button
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                r.mine
+                  ? "border-primary bg-primary/15 text-foreground"
+                  : "border-border bg-background/60 text-muted-foreground hover:bg-accent",
+              )}
+              disabled={!onReact}
+              key={r.key}
+              onClick={() => toggleChip(r)}
+              type="button"
+            >
+              <span aria-hidden>{r.emoji}</span>
+              <span className="font-mono">{r.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <span className="px-1 font-mono text-[10px] text-muted-foreground">
         {time}
         {message.edited && !deleted && <span className="ml-1">(edited)</span>}
       </span>
       <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
+    </div>
+  )
+}
+
+/** The react affordance beside a bubble (t120): a smiley that reveals the six-default quick-react
+ *  bar. Fine pointer → the smiley fades in on bubble hover; coarse pointer → it stays visible and a
+ *  tap opens the bar (no hover to rely on). An open bar closes on an outside tap or after a pick. */
+function QuickReact({
+  coarse,
+  open,
+  onToggleOpen,
+  onPick,
+  side,
+}: {
+  coarse: boolean
+  open: boolean
+  onToggleOpen: () => void
+  onPick: (key: string, emoji: string) => void
+  side: "start" | "end"
+}) {
+  return (
+    <div className="relative shrink-0">
+      <button
+        aria-expanded={open}
+        aria-label="Add reaction"
+        className={cn(
+          "flex size-7 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+          coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+        )}
+        onClick={onToggleOpen}
+        type="button"
+      >
+        <HugeiconsIcon className="size-4" icon={SmileIcon} />
+      </button>
+      {open && (
+        <>
+          {/* Outside-tap catcher — closes the bar without a document listener. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: Esc-independent dismiss; the bar buttons are focusable */}
+          <div className="fixed inset-0 z-40" onClick={onToggleOpen} />
+          <div
+            className={cn(
+              "absolute bottom-full z-50 mb-1 flex gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 shadow-md",
+              side === "end" ? "right-0" : "left-0",
+            )}
+          >
+            {QUICK_REACTIONS.map((r) => (
+              <button
+                aria-label={r.key}
+                className="flex size-8 items-center justify-center rounded-full text-lg transition-transform hover:scale-125"
+                key={r.key}
+                onClick={() => onPick(r.key, r.emoji)}
+                type="button"
+              >
+                {r.emoji}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

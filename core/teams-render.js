@@ -10,6 +10,7 @@
 // ENCODED here — decoding them into new tags is exactly what we must not do.
 
 const { rewriteMediaHtml, isValidAmsUrl } = require("./teams-media")
+const { reactionEmoji } = require("./teams-emoji")
 
 // Escape the HTML-significant chars in literal user text. A "Text" messagetype carries plain text,
 // not HTML; once the body is assigned via innerHTML on the client, its `<`/`&` must stay literal.
@@ -124,6 +125,32 @@ function attachmentChip(message) {
     return name ? `[attachment: ${name}]` : "[attachment]"
   }
   return ""
+}
+
+// ---- reactions (t120) -----------------------------------------------------
+// Parse `properties.emotions` — `[{ key, users: [{ mri, time, value }] }]` — into flat reaction
+// descriptors `{ key, emoji, count, mine }`. Like properties.mentions/files it may arrive as a JSON
+// STRING (the t118 trap), so parse defensively. A key with zero reactors is dropped (Teams leaves an
+// empty `users` row behind after a remove). `mine` is true when the viewer's oid is among the mris.
+function parseEmotions(message, selfId) {
+  let emotions = message.properties?.emotions
+  if (typeof emotions === "string") {
+    try {
+      emotions = JSON.parse(emotions)
+    } catch {
+      emotions = null
+    }
+  }
+  if (!Array.isArray(emotions)) return []
+  const out = []
+  for (const e of emotions) {
+    if (!e?.key) continue
+    const users = Array.isArray(e.users) ? e.users : []
+    if (users.length === 0) continue
+    const mine = users.some((u) => u && isSelf(String(u.mri || ""), selfId))
+    out.push({ key: String(e.key), emoji: reactionEmoji(String(e.key)), count: users.length, mine })
+  }
+  return out
 }
 
 // itemid→mri map from properties.mentions ({ itemid, mri, displayName }[]); itemids normalize to
@@ -298,6 +325,7 @@ function toReaderMessages(list, selfId) {
     const deleted = isDeleted(m)
     const senderId = senderIdOf(m.from)
     const attachments = deleted ? [] : parseAttachments(m)
+    const reactions = deleted ? [] : parseEmotions(m, selfId)
     out.push({
       id: String(m.id),
       ts: toEpochMs(m.originalarrivaltime) ?? toEpochMs(m.composetime) ?? 0,
@@ -308,6 +336,7 @@ function toReaderMessages(list, selfId) {
       edited: !deleted && !!m.properties?.edittime,
       deleted,
       ...(attachments.length ? { attachments } : {}),
+      ...(reactions.length ? { reactions } : {}),
     })
   }
   out.sort((a, b) => a.ts - b.ts)
@@ -321,4 +350,11 @@ function composeTitle(conv) {
   return conv && conv.kind === "oneOnOne" ? "Direct message" : "Group chat"
 }
 
-module.exports = { renderBody, toReaderMessages, composeTitle, senderIdOf, parseAttachments }
+module.exports = {
+  renderBody,
+  toReaderMessages,
+  composeTitle,
+  senderIdOf,
+  parseAttachments,
+  parseEmotions,
+}

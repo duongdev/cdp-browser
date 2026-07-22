@@ -72,6 +72,15 @@ export interface TeamsAttachment {
   title?: string
 }
 
+/** One reaction bucket on a message (t120): a named Teams emotion key resolved to a display emoji,
+ *  the reactor count, and whether the viewer is one of them. */
+export interface TeamsReaction {
+  key: string
+  emoji: string
+  count: number
+  mine: boolean
+}
+
 /** One rendered message (server's `teams-render.toReaderMessages` output). `ts` is epoch ms;
  *  `body` is already sanitized plain text — the view renders it as a text node, never innerHTML. */
 export interface TeamsMessage {
@@ -85,6 +94,8 @@ export interface TeamsMessage {
   deleted: boolean
   /** File / recording / card chips (t119); absent when the message has none. */
   attachments?: TeamsAttachment[]
+  /** Reaction chips (t120); absent when the message has none. */
+  reactions?: TeamsReaction[]
 }
 
 interface HistoryResponse {
@@ -136,6 +147,26 @@ export async function sendReply(convId: string, text: string): Promise<SendReply
     throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
   }
   return data
+}
+
+/** Add (`remove` false) or remove (`remove` true) the viewer's reaction on a message (t120). The
+ *  server PUT/DELETEs the emotions property IN-PAGE. Best-effort like `markRead` — the optimistic UI
+ *  already updated and the next poll reconciles, so a failure here is swallowed. */
+export async function react(
+  convId: string,
+  msgId: string,
+  key: string,
+  remove: boolean,
+): Promise<void> {
+  try {
+    await fetch("/api/teams/react", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId, msgId, key, remove }),
+    })
+  } catch {
+    // best-effort: the optimistic chip stands until the next poll reconciles
+  }
 }
 
 /** Write-through mark-read (t108, Q9 hybrid): push the conversation's read horizon to Teams.

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { composeTitle, parseAttachments, renderBody, toReaderMessages } from "./teams-render"
+import {
+  composeTitle,
+  parseAttachments,
+  parseEmotions,
+  renderBody,
+  toReaderMessages,
+} from "./teams-render"
 
 // A raw-ish Teams message (only the fields the renderer reads).
 const msg = (over = {}) => ({
@@ -297,6 +303,88 @@ describe("toReaderMessages — attachments", () => {
   it("omits attachments when there are none", () => {
     const out = toReaderMessages([msg({ id: "1", content: "<p>plain</p>" })], "ME")
     expect(out[0].attachments).toBeUndefined()
+  })
+})
+
+describe("parseEmotions", () => {
+  const emo = (over) => ({ properties: {}, ...over })
+
+  it("parses an array of emotions → reactions with count + emoji", () => {
+    const message = emo({
+      properties: {
+        emotions: [
+          { key: "like", users: [{ mri: "8:orgid:A" }, { mri: "8:orgid:B" }] },
+          { key: "heart", users: [{ mri: "8:orgid:C" }] },
+        ],
+      },
+    })
+    expect(parseEmotions(message, "ME")).toEqual([
+      { key: "like", emoji: "👍", count: 2, mine: false },
+      { key: "heart", emoji: "❤️", count: 1, mine: false },
+    ])
+  })
+
+  it("parses emotions delivered as a JSON string (the t118 mention trap)", () => {
+    const message = emo({
+      properties: {
+        emotions: JSON.stringify([{ key: "laugh", users: [{ mri: "8:orgid:X" }] }]),
+      },
+    })
+    expect(parseEmotions(message, "ME")).toEqual([
+      { key: "laugh", emoji: "😆", count: 1, mine: false },
+    ])
+  })
+
+  it("sets mine when the self oid is among the reactors' mris", () => {
+    const message = emo({
+      properties: {
+        emotions: [{ key: "like", users: [{ mri: "8:orgid:A" }, { mri: "8:orgid:ME" }] }],
+      },
+    })
+    expect(parseEmotions(message, "ME")).toEqual([
+      { key: "like", emoji: "👍", count: 2, mine: true },
+    ])
+  })
+
+  it("drops a key whose users list is empty (nobody reacts)", () => {
+    const message = emo({
+      properties: {
+        emotions: [
+          { key: "like", users: [] },
+          { key: "heart", users: [{ mri: "8:orgid:A" }] },
+        ],
+      },
+    })
+    expect(parseEmotions(message, "ME").map((r) => r.key)).toEqual(["heart"])
+  })
+
+  it("returns [] for missing / malformed emotions", () => {
+    expect(parseEmotions(emo({}), "ME")).toEqual([])
+    expect(parseEmotions(emo({ properties: { emotions: "{not json" } }), "ME")).toEqual([])
+    expect(
+      parseEmotions(emo({ properties: { emotions: [{ users: [{ mri: "x" }] }] } }), "ME"),
+    ).toEqual([])
+  })
+})
+
+describe("toReaderMessages — reactions", () => {
+  it("attaches reactions to a message that has emotions", () => {
+    const out = toReaderMessages(
+      [
+        msg({
+          id: "1",
+          content: "<p>hi</p>",
+          properties: { emotions: [{ key: "like", users: [{ mri: "8:orgid:ME" }] }] },
+        }),
+      ],
+      "ME",
+    )
+    expect(out[0].reactions).toEqual([{ key: "like", emoji: "👍", count: 1, mine: true }])
+  })
+
+  it("omits reactions when there are none (or all keys are empty)", () => {
+    const out = toReaderMessages([msg({ id: "1", content: "<p>plain</p>" })], "ME")
+    expect(out[0].reactions).toBeUndefined()
   })
 })
 

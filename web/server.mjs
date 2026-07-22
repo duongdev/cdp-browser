@@ -1443,6 +1443,56 @@ async function teamsMarkRead(convId, msgId, ts) {
   return { ok: true }
 }
 
+// ---- Teams reactions (t120, ADR-0018) -------------------------------------
+// CA-proof like reply/mark-read: PUT (add) or DELETE (remove) the message's emotions property
+// IN-PAGE. Proven live 2026-07-22: PUT/DELETE `{chatServiceBase}/…/messages/{msgId}/properties?
+// name=emotions` with body `{"emotions":{"key":"<key>","value":<Date.now()>}}` → 200; PUT adds the
+// self mri, DELETE removes it (the key row stays with users:[], which the read path then drops).
+async function reactTeamsInPage(cred, convId, msgId, key, remove) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages/${encodeURIComponent(msgId)}/properties?name=emotions`
+  const payload = { emotions: { key, value: Date.now() } }
+  const method = remove ? "DELETE" : "PUT"
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: ${JSON.stringify(method)},
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+// Mint/reuse creds → in-page react → best-effort { ok }. A 401 drives one re-authz + retry, then a
+// typed invalid_auth (mirrors teamsReply). The optimistic client already updated; the next poll
+// reconciles the true count, so any non-auth error just surfaces as a swallowed { error }.
+async function teamsReact(convId, msgId, key, remove) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await reactTeamsInPage(cred, convId, msgId, key, remove)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await reactTeamsInPage(cred, convId, msgId, key, remove)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+  return { ok: true }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
 const body = (req) =>
@@ -1801,6 +1851,16 @@ const server = http.createServer(async (req, res) => {
       const { convId, msgId, ts } = await body(req)
       if (!convId || !msgId || ts == null) return json(res, { error: "missing fields" }, 400)
       return json(res, await teamsMarkRead(convId, msgId, ts))
+    }
+    // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t120, ADR-0018). Best-effort
+    // { ok } — the client is optimistic and the poll reconciles. A 401 → one re-authz + retry. Web only.
+    if (p === "/api/teams/react" && POST) {
+      const { convId, msgId, key, remove } = await body(req)
+      if (!convId || !msgId || !key) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsReact(convId, msgId, key, !!remove)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
     }
     // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
     // the client uses it as `applicationServerKey` for pushManager.subscribe.

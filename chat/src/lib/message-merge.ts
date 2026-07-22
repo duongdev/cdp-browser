@@ -1,4 +1,13 @@
-import type { TeamsMessage } from "./teams-client"
+import type { TeamsMessage, TeamsReaction } from "./teams-client"
+
+// Order-independent signature of a message's reactions, so a poll re-render fires when a reaction is
+// added/removed but not when the same set arrives in a different array order (Teams' emotions order
+// isn't stable). Compares key + count + mine — the three fields the chip renders.
+const reactionSig = (m: TeamsMessage): string =>
+  (m.reactions ?? [])
+    .map((r) => `${r.key}:${r.count}:${r.mine ? 1 : 0}`)
+    .sort()
+    .join("|")
 
 /** Merge a freshly polled newest history page into the current thread (t113, poll-first live sync).
  *  The server returns full messages, so an id collision means "incoming (server) wins" — this
@@ -35,9 +44,33 @@ export function mergeMessages(
         m.body !== e.body ||
         m.edited !== e.edited ||
         m.deleted !== e.deleted ||
-        m.ts !== e.ts
+        m.ts !== e.ts ||
+        reactionSig(m) !== reactionSig(e)
       )
     })
 
   return changed ? { messages, changed: true } : { messages: existing, changed: false }
+}
+
+/** Optimistically toggle the viewer's own reaction for one key, returning the new reactions array
+ *  (never mutates the input). `remove` false → I join the key (new key if absent); true → I leave it
+ *  (the key is dropped when I was the only reactor). A no-op re-add of my existing reaction returns
+ *  the same shape. The server call + next poll reconcile the true count. */
+export function applyReaction(
+  reactions: TeamsReaction[] | undefined,
+  key: string,
+  emoji: string,
+  remove: boolean,
+): TeamsReaction[] {
+  const list = reactions ?? []
+  const existing = list.find((r) => r.key === key)
+  if (remove) {
+    if (!existing?.mine) return list
+    return list
+      .map((r) => (r.key === key ? { ...r, count: r.count - 1, mine: false } : r))
+      .filter((r) => r.count > 0)
+  }
+  if (!existing) return [...list, { key, emoji, count: 1, mine: true }]
+  if (existing.mine) return list
+  return list.map((r) => (r.key === key ? { ...r, count: r.count + 1, mine: true } : r))
 }

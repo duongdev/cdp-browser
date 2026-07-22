@@ -10,10 +10,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { mergeMessages } from "../lib/message-merge"
+import { applyReaction, mergeMessages } from "../lib/message-merge"
 import {
   fetchHistory,
   markRead,
+  react,
   sendReply,
   TeamsApiError,
   type TeamsConversation,
@@ -235,6 +236,27 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     }
   }, [visible])
 
+  // Reactions (t120): the thread owns message state, so it applies the optimistic toggle here
+  // (add/remove self + adjust count via the pure applyReaction) and fires the best-effort server
+  // call. The next poll's merge reconciles the true count (reactionSig is in its changed-diff).
+  const onReact = useCallback(
+    (msgId: string, key: string, emoji: string, remove: boolean) => {
+      setState((s) => {
+        if (s.status !== "ready") return s
+        return {
+          status: "ready",
+          messages: s.messages.map((m) =>
+            m.id === msgId
+              ? { ...m, reactions: applyReaction(m.reactions, key, emoji, remove) }
+              : m,
+          ),
+        }
+      })
+      react(convId, msgId, key, remove)
+    },
+    [convId],
+  )
+
   // Composer (t108, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
   // optimistically appends the message and write-through marks the conversation read on Teams.
   // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
@@ -373,7 +395,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
                 .slice()
                 .reverse()
                 .map((m) => (
-                  <MessageRow key={m.id} message={m} />
+                  <MessageRow key={m.id} message={m} onReact={onReact} />
                 ))}
               {loadingOlder && [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
               {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { mergeMessages } from "./message-merge"
+import { applyReaction, mergeMessages } from "./message-merge"
 import type { TeamsMessage } from "./teams-client"
 
 const msg = (over: Partial<TeamsMessage> & { id: string; ts: number }): TeamsMessage => ({
@@ -67,5 +67,73 @@ describe("mergeMessages", () => {
   it("breaks a ts tie by id for stable order", () => {
     const { messages } = mergeMessages([], [msg({ id: "b", ts: 100 }), msg({ id: "a", ts: 100 })])
     expect(messages.map((m) => m.id)).toEqual(["a", "b"])
+  })
+
+  it("detects a reaction change on an otherwise-identical message", () => {
+    const existing = [msg({ id: "1", ts: 100 })]
+    const incoming = [
+      msg({ id: "1", ts: 100, reactions: [{ key: "like", emoji: "👍", count: 1, mine: false }] }),
+    ]
+    const { messages, changed } = mergeMessages(existing, incoming)
+    expect(changed).toBe(true)
+    expect(messages[0].reactions).toHaveLength(1)
+  })
+
+  it("stays a same-ref no-op when reactions are unchanged (order-independent)", () => {
+    const existing = [
+      msg({
+        id: "1",
+        ts: 100,
+        reactions: [
+          { key: "like", emoji: "👍", count: 2, mine: true },
+          { key: "heart", emoji: "❤️", count: 1, mine: false },
+        ],
+      }),
+    ]
+    const incoming = [
+      msg({
+        id: "1",
+        ts: 100,
+        reactions: [
+          { key: "heart", emoji: "❤️", count: 1, mine: false },
+          { key: "like", emoji: "👍", count: 2, mine: true },
+        ],
+      }),
+    ]
+    const { messages, changed } = mergeMessages(existing, incoming)
+    expect(changed).toBe(false)
+    expect(messages).toBe(existing)
+  })
+})
+
+describe("applyReaction (optimistic toggle)", () => {
+  it("adds a brand-new reaction as mine", () => {
+    expect(applyReaction(undefined, "like", "👍", false)).toEqual([
+      { key: "like", emoji: "👍", count: 1, mine: true },
+    ])
+  })
+
+  it("joins an existing reaction I had not made", () => {
+    const r = [{ key: "like", emoji: "👍", count: 1, mine: false }]
+    expect(applyReaction(r, "like", "👍", false)).toEqual([
+      { key: "like", emoji: "👍", count: 2, mine: true },
+    ])
+  })
+
+  it("removes my reaction and drops the key when I was the only reactor", () => {
+    const r = [{ key: "like", emoji: "👍", count: 1, mine: true }]
+    expect(applyReaction(r, "like", "👍", true)).toEqual([])
+  })
+
+  it("removes my reaction but keeps the key when others remain", () => {
+    const r = [{ key: "like", emoji: "👍", count: 2, mine: true }]
+    expect(applyReaction(r, "like", "👍", true)).toEqual([
+      { key: "like", emoji: "👍", count: 1, mine: false },
+    ])
+  })
+
+  it("is a no-op re-adding a reaction I already made", () => {
+    const r = [{ key: "like", emoji: "👍", count: 2, mine: true }]
+    expect(applyReaction(r, "like", "👍", false)).toEqual(r)
   })
 })
