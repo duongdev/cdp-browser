@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
 import { applyPendingReactions, applyReaction, mergeMessages } from "../lib/message-merge"
 import {
+  deleteMessage,
+  editMessage,
   fetchHistory,
   markRead,
   react,
@@ -320,6 +322,48 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     [convId],
   )
 
+  // Edit own message (t122): optimistically swap the body to the plain text + set edited, then PUT
+  // it. Returns the client promise so the inline editor can keep itself open + show an error on a
+  // rejected write; on success the 4s poll's server-wins merge replaces the plain optimistic body
+  // with Teams' rendered edited HTML. No pending overlay — an edit makes the body DIFFER, so the
+  // merge reconciles cleanly (unlike a reaction, which the server can lag behind).
+  const onEdit = useCallback(
+    (msgId: string, text: string): Promise<void> => {
+      setState((s) => {
+        if (s.status !== "ready") return s
+        return {
+          status: "ready",
+          messages: s.messages.map((m) =>
+            m.id === msgId ? { ...m, body: text, edited: true } : m,
+          ),
+        }
+      })
+      return editMessage(convId, msgId, text)
+    },
+    [convId],
+  )
+
+  // Delete own message (t122): optimistically tombstone it (matching the read-path tombstone), then
+  // DELETE. Fire-and-forget — a failed delete is restored by the next poll's server-wins merge, so
+  // the error is swallowed (the message reappears rather than a stuck phantom tombstone).
+  const onDelete = useCallback(
+    (msgId: string) => {
+      setState((s) => {
+        if (s.status !== "ready") return s
+        return {
+          status: "ready",
+          messages: s.messages.map((m) =>
+            m.id === msgId ? { ...m, body: "message deleted", deleted: true } : m,
+          ),
+        }
+      })
+      deleteMessage(convId, msgId).catch(() => {
+        // best-effort: the next poll restores the message if the delete didn't land
+      })
+    },
+    [convId],
+  )
+
   // Composer (t108, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
   // optimistically appends the message and write-through marks the conversation read on Teams.
   // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
@@ -458,7 +502,13 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
                 .slice()
                 .reverse()
                 .map((m) => (
-                  <MessageRow key={m.id} message={m} onReact={onReact} />
+                  <MessageRow
+                    key={m.id}
+                    message={m}
+                    onDelete={onDelete}
+                    onEdit={onEdit}
+                    onReact={onReact}
+                  />
                 ))}
               {loadingOlder && [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
               {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}

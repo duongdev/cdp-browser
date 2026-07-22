@@ -1541,6 +1541,107 @@ async function teamsReact(convId, msgId, key, remove) {
   return { ok: true }
 }
 
+// ---- Teams edit + delete own message (t122, ADR-0018) ---------------------
+// CA-proof like reply/react: PUT (edit) or DELETE (delete) the message IN-PAGE. Proven live
+// 2026-07-22: PUT `{chatServiceBase}/…/messages/{msgId}` body {content:"<p>…</p>",
+// messagetype:"RichText/Html", contenttype:"text"} → 200 (sets properties.edittime); DELETE the same
+// URL → 200 (sets properties.deletetime + blanks content). The read path turns those into the
+// existing `edited` flag / `deleted` tombstone, so no store write is needed — the next poll's history
+// fetch carries the truth (like teamsReact).
+// The edit sends RichText/Html, so the plain text must be HTML-escaped and newline→<br> before it's
+// wrapped — the reply path sends messagetype:"Text" (no escaping), so it can't be reused verbatim.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+async function editTeamsInPage(cred, convId, msgId, text) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages/${encodeURIComponent(msgId)}`
+  const payload = {
+    content: `<p>${escapeHtml(text).replace(/\n/g, "<br>")}</p>`,
+    messagetype: "RichText/Html",
+    contenttype: "text",
+  }
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "PUT",
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+async function deleteTeamsInPage(cred, convId, msgId) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages/${encodeURIComponent(msgId)}`
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "DELETE",
+        headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+// Mint/reuse creds → in-page edit/delete → best-effort { ok }. A 401 drives one re-authz + retry,
+// then a typed invalid_auth (mirrors teamsReact).
+async function teamsEdit(convId, msgId, text) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await editTeamsInPage(cred, convId, msgId, text)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await editTeamsInPage(cred, convId, msgId, text)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+  return { ok: true }
+}
+
+async function teamsDelete(convId, msgId) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await deleteTeamsInPage(cred, convId, msgId)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await deleteTeamsInPage(cred, convId, msgId)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+  return { ok: true }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
 const body = (req) =>
@@ -1906,6 +2007,28 @@ const server = http.createServer(async (req, res) => {
       const { convId, msgId, key, remove } = await body(req)
       if (!convId || !msgId || !key) return json(res, { error: "missing fields" }, 400)
       const out = await teamsReact(convId, msgId, key, !!remove)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: edit the viewer's OWN message IN-PAGE (t122, ADR-0018). PUT new RichText/Html
+    // content; the read path turns properties.edittime into the "(edited)" flag. A 401 → one
+    // re-authz + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/edit" && POST) {
+      const { convId, msgId, text } = await body(req)
+      if (!convId || !msgId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsEdit(convId, msgId, text)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: delete the viewer's OWN message IN-PAGE (t122, ADR-0018). DELETE blanks content +
+    // sets properties.deletetime, which the read path renders as the tombstone. A 401 → one re-authz
+    // + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/delete" && POST) {
+      const { convId, msgId } = await body(req)
+      if (!convId || !msgId) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsDelete(convId, msgId)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

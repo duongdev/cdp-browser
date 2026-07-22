@@ -173,6 +173,36 @@ export async function react(
   }
 }
 
+/** Edit the viewer's own message text (t122). The server PUTs the new RichText/Html content IN-PAGE.
+ *  Throws TeamsApiError with the server's typed code on failure so the editor can keep the draft +
+ *  show honest copy (like `sendReply`); the optimistic edit + next poll otherwise reconcile. */
+export async function editMessage(convId: string, msgId: string, text: string): Promise<void> {
+  const res = await fetch("/api/teams/edit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ convId, msgId, text }),
+  })
+  const data = (await res.json().catch(() => ({}))) as { ok?: true; error?: string }
+  if (!res.ok || data.error) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+}
+
+/** Delete the viewer's own message (t122). The server DELETEs it IN-PAGE, leaving Teams' tombstone.
+ *  Throws TeamsApiError on failure so the UI can react; the optimistic tombstone + next poll's
+ *  server-wins merge otherwise reconcile (a failed delete restores the message). */
+export async function deleteMessage(convId: string, msgId: string): Promise<void> {
+  const res = await fetch("/api/teams/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ convId, msgId }),
+  })
+  const data = (await res.json().catch(() => ({}))) as { ok?: true; error?: string }
+  if (!res.ok || data.error) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+}
+
 /** Write-through mark-read (t108, Q9 hybrid): push the conversation's read horizon to Teams.
  *  Best-effort — the server never fails this, and a network error here must never surface, so
  *  it swallows everything. Called after a successful reply (and on an explicit mark-read). */
