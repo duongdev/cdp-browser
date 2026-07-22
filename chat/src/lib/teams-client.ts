@@ -100,6 +100,9 @@ export interface TeamsMessage {
   attachments?: TeamsAttachment[]
   /** Reaction chips (t120); absent when the message has none. */
   reactions?: TeamsReaction[]
+  /** Client-only optimistic image preview (t123): a local object-URL shown until the poll replaces
+   *  this message with the server's rendered AMSImage. Never set by the server. */
+  localImageUrl?: string
 }
 
 interface HistoryResponse {
@@ -201,6 +204,70 @@ export async function deleteMessage(convId: string, msgId: string): Promise<void
   if (!res.ok || data.error) {
     throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
   }
+}
+
+/** Read a File as base64 (the `data:…;base64,` prefix stripped) for JSON transport. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onload = () => {
+      const result = String(fr.result)
+      const comma = result.indexOf(",")
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    fr.onerror = () => reject(fr.error ?? new Error("read failed"))
+    fr.readAsDataURL(file)
+  })
+}
+
+/** An image File's natural dimensions (for the sent <img> box). Best-effort — a decode failure
+ *  resolves 0×0, which the server treats as "no dims" rather than failing the upload. */
+function imageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    const done = (width: number, height: number) => {
+      URL.revokeObjectURL(url)
+      resolve({ width, height })
+    }
+    img.onload = () => done(img.naturalWidth, img.naturalHeight)
+    img.onerror = () => done(0, 0)
+    img.src = url
+  })
+}
+
+/** Upload a pasted/picked image to Teams' AMS store and post it inline (t123). Reads the file as
+ *  base64 + its natural dimensions client-side, then POSTs the one atomic endpoint (create → PUT
+ *  bytes → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer keeps
+ *  the pending image + caption. Returns the sent message's id (its arrival ts). */
+export async function uploadImage(
+  convId: string,
+  file: File,
+  text?: string,
+): Promise<{ msgId: string }> {
+  const [base64, { width, height }] = await Promise.all([fileToBase64(file), imageDimensions(file)])
+  const res = await fetch("/api/teams/upload-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      convId,
+      filename: file.name || "image.png",
+      base64,
+      contentType: file.type || "image/png",
+      width,
+      height,
+      text: text?.trim() || undefined,
+    }),
+  })
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: true
+    msgId?: string
+    error?: string
+  }
+  if (!res.ok || data.error || !data.msgId) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+  return { msgId: data.msgId }
 }
 
 /** Write-through mark-read (t108, Q9 hybrid): push the conversation's read horizon to Teams.

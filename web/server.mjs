@@ -44,8 +44,9 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import { buildAmsImageContent } from "../core/teams-ams.js"
 import { isValidTeamsCursor } from "../core/teams-cursor.js"
-import { isValidAmsUrl } from "../core/teams-media.js"
+import { isValidAmsUrl, rewriteMediaHtml } from "../core/teams-media.js"
 import {
   composeTitle as teamsComposeTitle,
   oidFromMri as teamsOidFromMri,
@@ -1383,13 +1384,15 @@ function randomClientMessageId() {
   return id
 }
 
-async function sendTeamsReplyInPage(cred, convId, text) {
+// Shared by the text reply (t108) and the image send (t123): the reply passes plain text with
+// messagetype "Text", the image path passes the pre-built AMSImage HTML with "RichText/Html".
+async function sendTeamsMessageInPage(cred, convId, content, messagetype = "Text") {
   if (!cred.chatServiceBase) return { error: "no_base" }
   const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages`
   const clientmessageid = randomClientMessageId()
   const payload = {
-    content: text,
-    messagetype: "Text",
+    content,
+    messagetype,
     contenttype: "text",
     clientmessageid,
     imdisplayname: cred.displayName || "",
@@ -1427,12 +1430,12 @@ async function teamsReply(convId, text) {
   }
   if (!cred) return { error: "invalid_auth" }
 
-  let out = await sendTeamsReplyInPage(cred, convId, text)
+  let out = await sendTeamsMessageInPage(cred, convId, text)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
     cred = notificationCenter.getTeamsCreds(cred.tenant)
     if (!cred || cred.fresh === false) return { error: "invalid_auth" }
-    out = await sendTeamsReplyInPage(cred, convId, text)
+    out = await sendTeamsMessageInPage(cred, convId, text)
   }
   if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
 
@@ -1642,14 +1645,136 @@ async function teamsDelete(convId, msgId) {
   return { ok: true }
 }
 
+// ---- Teams send image attachment (t123, ADR-0018) -------------------------
+// CA-proof like reply/edit: the whole AMS upload runs IN-PAGE (the ic3 token is session/CA-bound like
+// the skypetoken). Proven live 2026-07-22: read the ic3.teams.office.com MSAL access token + the
+// api.spaces bearer → authz for the skypetoken/base/amsV2 → POST {amsV2}/v1/objects/ (create) → PUT
+// …/content/imgpsh (bytes) → send a RichText/Html message with the AMSImage <img> (display view imgo).
+// The load-bearing headers are `x-ms-migration: True` + `x-ms-client-version` — without them AMS
+// falls back to the UA and 400s.
+// ponytail: hardcoded AMS build id — AMS accepts it now; if it starts 400ing on a stale version,
+// extract the live Teams build version from the page (window.__ or the MSAL app metadata).
+const TEAMS_AMS_CLIENT_VERSION = "1415/26061118216"
+
+// Create the AMS object + upload the raw bytes IN-PAGE. Returns { objId, host } (host = the amsV2
+// display origin the sent <img> points at) or a typed { error }. A missing ic3/api.spaces token or a
+// 401 on create/upload → invalid_auth (the caller drives one re-authz + retry, like teamsReply).
+async function createTeamsAmsObjectInPage(convId, filename, base64) {
+  const script = `(async () => {
+    try {
+      // The AMS auth (ic3) + the bearer to mint sk/base/amsV2 (api.spaces) both live in the page's
+      // MSAL cache — a localStorage read, not a network call, so CA doesn't apply.
+      let sb = null, ic3 = null
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("ic3.teams.office.com")) {
+          try { const j = JSON.parse(localStorage.getItem(k)); if (j && j.secret) ic3 = j.secret } catch (e) {}
+        }
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.toLowerCase().includes("api.spaces.skype.com")) {
+          try { const j = JSON.parse(localStorage.getItem(k)); if (j && j.secret) sb = j.secret } catch (e) {}
+        }
+      }
+      if (!ic3 || !sb) return { error: "invalid_auth" }
+      const az = await (await fetch("https://teams.microsoft.com/api/authsvc/v1.0/authz", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sb, "Content-Type": "application/json" },
+        body: "{}",
+      })).json()
+      const host = ((az.regionGtms && az.regionGtms.amsV2) || "https://as-prod.asyncgw.teams.microsoft.com").replace(/\\/$/, "")
+      const amsH = {
+        Authorization: "Bearer " + ic3,
+        "x-ms-migration": "True",
+        "x-ms-client-version": ${JSON.stringify(TEAMS_AMS_CLIENT_VERSION)},
+      }
+      const cr = await fetch(host + "/v1/objects/", {
+        method: "POST",
+        headers: { ...amsH, "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "pish/image", permissions: { [${JSON.stringify(convId)}]: ["read"] }, sharingMode: "Inline", filename: ${JSON.stringify(filename)} }),
+      })
+      if (cr.status === 401) return { error: "invalid_auth" }
+      const cj = await cr.json().catch(() => ({}))
+      const objId = cj.id || null
+      if (!objId) return { error: "http_" + cr.status }
+      const bytes = Uint8Array.from(atob(${JSON.stringify(base64)}), (c) => c.charCodeAt(0))
+      const up = await fetch(host + "/v1/objects/" + objId + "/content/imgpsh", {
+        method: "PUT",
+        headers: { ...amsH, "Content-Type": "application/octet-stream" },
+        body: bytes,
+      })
+      if (up.status === 401) return { error: "invalid_auth" }
+      if (up.status !== 201 && !up.ok) return { error: "http_" + up.status }
+      return { objId, host }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Mint/reuse creds → in-page AMS create+upload → build the AMSImage content → in-page send. A 401 on
+// either half drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsReply).
+// Returns { ok, msgId } (msgId = OriginalArrivalTime, which is the message id/ts).
+async function teamsUploadImage({ convId, filename, base64, width, height, text }) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let content = null
+  const run = async () => {
+    const ams = await createTeamsAmsObjectInPage(convId, filename, base64)
+    if (ams.error) return ams
+    content = buildAmsImageContent({
+      host: ams.host,
+      objId: ams.objId,
+      width,
+      height,
+      caption: text,
+    })
+    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html")
+  }
+
+  let out = await run()
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await run()
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  // Persist the sent echo (self) so a re-fetch/reconnect shows it before the real history lands. The
+  // AMS src is rewritten to the media proxy so the stored copy renders authenticated (like the read
+  // path's toReaderMessages).
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: rewriteMediaHtml(content),
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, msgId: ts }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
-const body = (req) =>
+// A pasted screenshot as base64 JSON dwarfs 1 MB, so the image-upload route reads with a larger cap
+// (t123). Still bounded to guard memory — Teams itself rejects larger inline images.
+const IMAGE_BODY_LIMIT = 24 * 1024 * 1024 // 24 MB
+const body = (req, limit = BODY_LIMIT) =>
   new Promise((resolve, reject) => {
     let b = ""
     req.on("data", (c) => {
       b += c
-      if (b.length > BODY_LIMIT) {
+      if (b.length > limit) {
         req.destroy()
         reject(new Error("request body too large"))
       }
@@ -2029,6 +2154,30 @@ const server = http.createServer(async (req, res) => {
       const { convId, msgId } = await body(req)
       if (!convId || !msgId) return json(res, { error: "missing fields" }, 400)
       const out = await teamsDelete(convId, msgId)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: upload a pasted/picked image + post it inline IN-PAGE (t123, ADR-0018). One atomic
+    // endpoint: create the AMS object → PUT the bytes → send the AMSImage message. Reads with the
+    // larger body cap (a base64 screenshot dwarfs 1 MB). A 401 → one re-authz + retry → typed
+    // invalid_auth. Web only.
+    if (p === "/api/teams/upload-image" && POST) {
+      const { convId, filename, base64, contentType, width, height, text } = await body(
+        req,
+        IMAGE_BODY_LIMIT,
+      )
+      if (!convId || !base64) return json(res, { error: "missing fields" }, 400)
+      if (contentType && !String(contentType).startsWith("image/"))
+        return json(res, { error: "not_image" }, 400)
+      const out = await teamsUploadImage({
+        convId,
+        filename: filename || "image.png",
+        base64,
+        width,
+        height,
+        text,
+      })
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

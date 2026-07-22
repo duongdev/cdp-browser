@@ -1,6 +1,8 @@
 import {
   Alert02Icon,
   ArrowLeft01Icon,
+  Cancel01Icon,
+  Image01Icon,
   InboxIcon,
   ReloadIcon,
   SentIcon,
@@ -10,6 +12,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
+import { pickImageFile } from "../lib/image-attach"
 import { applyPendingReactions, applyReaction, mergeMessages } from "../lib/message-merge"
 import {
   deleteMessage,
@@ -21,6 +24,7 @@ import {
   TeamsApiError,
   type TeamsConversation,
   type TeamsMessage,
+  uploadImage,
 } from "../lib/teams-client"
 import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
 import { MessageRow } from "./message-row"
@@ -369,10 +373,27 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
   const replyTarget = selectReplyTarget(conversation)
   const [send, setSend] = useState<SendState>({ phase: "idle", draft: "" })
+  // A pasted/picked image staged for send (t123): held until Send uploads it (or the ✕ clears it).
+  const [pendingImage, setPendingImage] = useState<File | null>(null)
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
-  // Reset the composer when the conversation changes (a half-typed draft doesn't leak across).
+  const fileRef = useRef<HTMLInputElement>(null)
+  // Reset the composer when the conversation changes (a half-typed draft / staged image doesn't leak).
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
-  useEffect(() => setSend({ phase: "idle", draft: "" }), [convId])
+  useEffect(() => {
+    setSend({ phase: "idle", draft: "" })
+    setPendingImage(null)
+  }, [convId])
+  // Object-URL preview for the staged image; revoked when it changes or the pane unmounts.
+  useEffect(() => {
+    if (!pendingImage) {
+      setPendingUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(pendingImage)
+    setPendingUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [pendingImage])
   // Auto-grow the textarea up to a cap; height resets to measure the real scrollHeight each edit.
   // biome-ignore lint/correctness/useExhaustiveDependencies: send.draft is the deliberate re-measure trigger
   useLayoutEffect(() => {
@@ -382,15 +403,59 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`
   }, [send.draft])
 
+  // Append a just-sent optimistic message + pin to the bottom (flex-col-reverse: 0 is the newest).
+  const appendSent = useCallback((sent: TeamsMessage) => {
+    setState((s) =>
+      s.status === "ready" ? { status: "ready", messages: [...s.messages, sent] } : s,
+    )
+    requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el) el.scrollTop = 0
+    })
+  }, [])
+
   const doSend = useCallback(() => {
+    if (!replyTarget || send.phase === "sending") return
     const text = send.draft.trim()
+
+    // Image send (t123): an uploaded image can carry an optional caption. Its draft can be empty, so
+    // it bypasses reduceSend's non-empty guard. On success the poll reconciles the optimistic preview
+    // to the server-rendered AMSImage; on failure the image + caption stay so the user can retry.
+    if (pendingImage) {
+      const file = pendingImage
+      setSend({ phase: "sending", draft: send.draft })
+      uploadImage(replyTarget.convId, file, text)
+        .then((out) => {
+          setPendingImage(null)
+          setSend({ phase: "idle", draft: "" })
+          appendSent({
+            id: out.msgId,
+            ts: Number(out.msgId) || Date.now(),
+            senderId: "",
+            senderName: "You",
+            body: text,
+            self: true,
+            edited: false,
+            deleted: false,
+            // Own object URL for the optimistic bubble — the pending preview URL is revoked on clear.
+            localImageUrl: URL.createObjectURL(file),
+          })
+          markRead(replyTarget.convId, out.msgId, out.msgId)
+        })
+        .catch((e) => {
+          const code = e instanceof TeamsApiError ? e.code : "network_error"
+          setSend((s) => reduceSend(s, { type: "fail", code }))
+        })
+      return
+    }
+
     const next = reduceSend(send, { type: "send" })
     setSend(next)
-    if (next.phase !== "sending" || !replyTarget) return
+    if (next.phase !== "sending") return
     sendReply(replyTarget.convId, text)
       .then((out) => {
         setSend((s) => reduceSend(s, { type: "ok" }))
-        const sent: TeamsMessage = {
+        appendSent({
           id: out.ts,
           ts: Number(out.ts) || Date.now(),
           senderId: "",
@@ -399,13 +464,6 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
           self: true,
           edited: false,
           deleted: false,
-        }
-        setState((s) =>
-          s.status === "ready" ? { status: "ready", messages: [...s.messages, sent] } : s,
-        )
-        requestAnimationFrame(() => {
-          const el = scrollRef.current
-          if (el) el.scrollTop = 0 // flex-col-reverse: 0 is the bottom (newest)
         })
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
         markRead(replyTarget.convId, out.ts, out.ts)
@@ -414,14 +472,54 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         const code = e instanceof TeamsApiError ? e.code : "network_error"
         setSend((s) => reduceSend(s, { type: "fail", code }))
       })
-  }, [send, replyTarget])
+  }, [send, replyTarget, pendingImage, appendSent])
 
   const composer = (
     <div className="shrink-0 border-border border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
       {send.phase === "failed" && (
         <p className="pb-1.5 text-destructive text-xs">{sendErrorCopy(send.code)}</p>
       )}
+      {pendingUrl && (
+        <div className="pb-2">
+          <div className="relative inline-block">
+            <img
+              alt="Attachment preview"
+              className="size-16 rounded-md border border-border object-cover"
+              src={pendingUrl}
+            />
+            <button
+              aria-label="Remove image"
+              className="-right-1.5 -top-1.5 absolute flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent"
+              disabled={send.phase === "sending"}
+              onClick={() => setPendingImage(null)}
+              type="button"
+            >
+              <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex items-end gap-2">
+        <input
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) setPendingImage(f)
+            e.target.value = "" // allow re-picking the same file
+          }}
+          ref={fileRef}
+          type="file"
+        />
+        <Button
+          aria-label="Add image"
+          disabled={send.phase === "sending"}
+          onClick={() => fileRef.current?.click()}
+          size="icon"
+          variant="ghost"
+        >
+          <HugeiconsIcon className="size-4" icon={Image01Icon} />
+        </Button>
         <textarea
           className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
           disabled={send.phase === "sending"}
@@ -432,6 +530,13 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
               doSend()
             }
           }}
+          onPaste={(e) => {
+            const file = pickImageFile(e.clipboardData?.items)
+            if (file) {
+              e.preventDefault()
+              setPendingImage(file)
+            }
+          }}
           placeholder="Type a message…"
           ref={taRef}
           rows={1}
@@ -439,7 +544,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         />
         <Button
           aria-label={send.phase === "failed" ? "Retry send" : "Send"}
-          disabled={send.phase === "sending" || !send.draft.trim()}
+          disabled={send.phase === "sending" || (!send.draft.trim() && !pendingImage)}
           onClick={doSend}
           size="icon"
         >

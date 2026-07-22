@@ -261,6 +261,15 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
           </AlertDialogContent>
         </AlertDialog>
       )}
+      {message.localImageUrl && (
+        // Optimistic sent-image preview (t123): a local object-URL shown until the poll replaces this
+        // message with the server's rendered AMSImage. Not sanitized HTML — it's our own blob URL.
+        <img
+          alt=""
+          className="max-h-64 max-w-[85%] rounded-lg object-contain"
+          src={message.localImageUrl}
+        />
+      )}
       {attachments.length > 0 && (
         <div className="flex max-w-[85%] flex-col gap-1">
           {attachments.map((a, i) => (
