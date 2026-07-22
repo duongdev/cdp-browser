@@ -1,13 +1,13 @@
-# 122 — teams chat: edit + delete own message
+# 144 — teams chat: edit + delete own message
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t108 (reply/write pattern), t113 (merge/optimistic)
+- **Depends on:** t130 (reply/write pattern), t135 (merge/optimistic)
 
 ## Goal
 
 The user can edit and delete their own messages, optimistically, live-synced. Read-side "(edited)"
-and the deleted tombstone already render (t107) — this adds the write + the UI affordance.
+and the deleted tombstone already render (t129) — this adds the write + the UI affordance.
 
 ## PROVEN endpoints (live 2026-07-22, self-note, cleaned up)
 
@@ -41,7 +41,7 @@ and the deleted tombstone already render (t107) — this adds the write + the UI
     NOT `window.confirm`, it's blocked in automation). On confirm: optimistically tombstone the message
     (body "message deleted", `deleted:true`), call `deleteMessage`, poll reconciles.
   - Thread-view owns message state, so pass `onEdit(msgId, text)` / `onDelete(msgId)` callbacks down that
-    do the optimistic `setState` + the client call (same shape as the t121 `onReact` wiring). Reuse the
+    do the optimistic `setState` + the client call (same shape as the t143 `onReact` wiring). Reuse the
     pending-overlay idea only if needed — a straight optimistic setState + the server-wins merge is fine
     here because an edit/delete makes the body DIFFER, and once the server reflects it the merge is a
     no-op (unlike reactions, the server propagates edits/deletes into the message body the poll fetches).
@@ -79,7 +79,7 @@ and the deleted tombstone already render (t107) — this adds the write + the UI
 - [ ] Layer 1 (if any) green; Layer 2 live-verified (self-note, cleaned); Layer 3 shots.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/chat build clean.
 - [ ] CLAUDE.md updated (edit PUT / delete DELETE endpoints + own-message menu). No AI attribution.
-- [ ] Task → done, `t122` in commit.
+- [ ] Task → done, `t144` in commit.
 
 ## Notes
 

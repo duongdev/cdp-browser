@@ -71,7 +71,7 @@ import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
-// Standalone Teams chat app (t106, ADR-0018) — a second built bundle served at the
+// Standalone Teams chat app (t128, ADR-0019) — a second built bundle served at the
 // same-origin path /chat, path-scoped so it never shadows the / browser PWA above.
 const DIST_CHAT = join(HERE, "..", "dist-chat")
 const PORT = Number(process.env.PORT || 7800)
@@ -208,7 +208,7 @@ const savePushSubs = () => {
   }
 }
 
-// ---- Teams push (t125) ----------------------------------------------------
+// ---- Teams push (t147) ----------------------------------------------------
 // Fully isolated from the CDP-browser push spine above: its own subscription store + send
 // path, so a Teams-chat subscriber and its every-new-message pushes never touch the existing
 // notification delivery. Capture is a server-side REST poll (trouter realtime is a dead end),
@@ -637,10 +637,10 @@ function applyBatch(items) {
   for (const c of items || []) if (c?.method) send(c.method, c.params)
 }
 
-// ---- Teams chat store (t105, ADR-0018) ------------------------------------
-// Server-owned SQLite = the single source of truth for Teams chat state (ADR-0018). Web build
+// ---- Teams chat store (t127, ADR-0019) ------------------------------------
+// Server-owned SQLite = the single source of truth for Teams chat state (ADR-0019). Web build
 // only — Electron is a shell that loads the served URL, so the native module is never bundled
-// there (not in package.json build.files). t105 writes accounts + conversations; the rest of
+// there (not in package.json build.files). t127 writes accounts + conversations; the rest of
 // the schema ships migration-only. Lives next to the settings file.
 const TEAMS_DB_PATH = process.env.TEAMS_DB_PATH || join(HERE, "..", "web-teams.db")
 const teamsDb = new Database(TEAMS_DB_PATH)
@@ -674,7 +674,7 @@ const notificationCenter = createNotificationCenter({
     console.log(`[web] slack creds ready: ${rec.teamId} (${rec.name})`)
     sweepScheduler.request(rec.teamId, rec)
   },
-  // Teams messaging creds minted from a live Teams tab (t105, ADR-0018). Record the account
+  // Teams messaging creds minted from a live Teams tab (t127, ADR-0019). Record the account
   // identity so the chat DB knows this signed-in tenant. Passing this callback is what turns on
   // the Teams cred path in the side-channel — Electron never does, so it structurally stubs.
   onTeamsCreds: (rec) => {
@@ -1023,7 +1023,7 @@ setInterval(() => {
   checkSlackHealthAlerts()
 }, 15_000)
 
-// ---- Teams conversation list (t105/t112, ADR-0018) ------------------------
+// ---- Teams conversation list (t127/t134, ADR-0019) ------------------------
 // CA-proof: the conversations GET runs IN-PAGE via the side-channel (the browser's own
 // authenticated fetch), never a server-side fetch. Pin to the minted chatServiceBase —
 // chatsvcagg.teams.microsoft.com is a proven 401 dead-end. First page = the base URL; older
@@ -1086,14 +1086,14 @@ async function teamsConversations(cursor) {
     chatServiceBase: cred.chatServiceBase,
   })
   // Return only THIS page's conversations (the client appends + dedups), enriched from the DB view
-  // (unread/preview/muted) and t109 name resolution per page. `rows` = the page's non-reserved convs.
+  // (unread/preview/muted) and t131 name resolution per page. `rows` = the page's non-reserved convs.
   const rows = teamsUpsertConversations(teamsDb, cred.tenant, out.conversations)
   const pageIds = new Set(rows.map((r) => r.id))
   const convs = teamsListConversations(teamsDb, cred.tenant).filter((c) => pageIds.has(c.id))
   return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
 }
 
-// ---- Teams push notifications (t125) --------------------------------------
+// ---- Teams push notifications (t147) --------------------------------------
 // Server-side poll → push, fully isolated from the CDP-browser notification path. Scope is every
 // new incoming chat message; the pure planner (core/teams-notify-sweep.js) does the seeding +
 // self/system/reserved skipping + watermark bookkeeping.
@@ -1209,7 +1209,7 @@ setInterval(() => {
     })
 }, 10_000)
 
-// ---- DM / group-DM name resolution (t109, ADR-0018) -----------------------
+// ---- DM / group-DM name resolution (t131, ADR-0019) -----------------------
 // A DM/group-DM has no topic, so its title is built from member display names. CA-proof like the
 // rest: the roster + Graph fetches run IN-PAGE. Names are cached by MRI so a re-render is a cache
 // hit — resolution only fires for MRIs seen for the first time. Best-effort throughout: any fetch
@@ -1334,7 +1334,7 @@ async function teamsResolveTitles(cred, convs) {
   }))
 }
 
-// Resolve each reaction's reactor MRIs → display names for the hover tooltip (t121), reusing the
+// Resolve each reaction's reactor MRIs → display names for the hover tooltip (t143), reusing the
 // SAME cache-first + one-Graph-batch path as teamsResolveTitles. The viewer's own MRI is excluded
 // (the client renders it as "You"); `userMris` is stripped from the payload, leaving `reactorNames`
 // (names only, best-effort — an unresolved MRI is just omitted). Mutates `messages` in place. Cache-
@@ -1381,7 +1381,7 @@ async function attachTeamsReactorNames(cred, messages) {
     }
 }
 
-// ---- Teams conversation history (t107/t112, ADR-0018) ---------------------
+// ---- Teams conversation history (t129/t134, ADR-0019) ---------------------
 // CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. First page = the
 // base URL; older pages = the previous response's `_metadata.backwardLink` (an opaque syncState
 // cursor), fetched verbatim after the security gate (isValidTeamsCursor) confirms it stays under
@@ -1436,7 +1436,7 @@ async function teamsHistory(convId, cursor) {
 
   const messages = teamsToReaderMessages(out.messages, cred.userId)
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
-  await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t121); strips userMris
+  await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t143); strips userMris
   // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
   // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
   if (cursor == null && messages.length > 0) {
@@ -1445,14 +1445,14 @@ async function teamsHistory(convId, cursor) {
   return { messages, cursor: out.cursor }
 }
 
-// ---- Teams AMS media proxy (t117, ADR-0018) -------------------------------
+// ---- Teams AMS media proxy (t139, ADR-0019) -------------------------------
 // AMS media (images/video) 401s from a server-side or no-cors fetch — it loads ONLY from an
 // IN-PAGE fetch with the skypetoken header (like teamsHistory). So the proxy fetches the object
 // through the side-channel and serves the decoded bytes. The in-page reader is FileReader (a data
 // URL) — NOT String.fromCharCode over the byte array, which stack-overflows on a real image. An
 // LRU (the object id is immutable) avoids re-hitting the side-channel on every scroll.
 // ponytail: serves the whole imgo/video object by value over CDP — no thumbnail view, no HTTP
-// range/seek. Fine for chat-sized media; add streaming+range if a large video ever stutters (t118+).
+// range/seek. Fine for chat-sized media; add streaming+range if a large video ever stutters (t140+).
 const TEAMS_MEDIA_CACHE = new Map() // url -> { ct, buf }
 const TEAMS_MEDIA_CACHE_MAX = 64
 
@@ -1474,7 +1474,7 @@ function teamsMediaCacheSet(url, entry) {
 async function fetchTeamsMediaInPage(cred, url) {
   // AMS objects auth with `Authorization: skype_token {sk}` — NOT the msg-service's
   // `Authentication: skypetoken=` form (that 401s for cross-region/other-user AMS objects; only
-  // same-region ones happen to accept it). Proven live against the running tenant (t117).
+  // same-region ones happen to accept it). Proven live against the running tenant (t139).
   const script = `(async () => {
     try {
       const r = await fetch(${JSON.stringify(url)}, {
@@ -1525,7 +1525,7 @@ async function teamsMedia(url) {
   }
 }
 
-// ---- Teams reply + mark-read (t108, ADR-0018) -----------------------------
+// ---- Teams reply + mark-read (t130, ADR-0019) -----------------------------
 // CA-proof like the list/history: the send runs IN-PAGE via the side-channel (the browser's own
 // authenticated POST). A random 18-digit clientmessageid dedups server-side; Teams echoes back
 // the message's OriginalArrivalTime, which IS the message id (epoch ms). No leading zero.
@@ -1535,7 +1535,7 @@ function randomClientMessageId() {
   return id
 }
 
-// Shared by the text reply (t108), the image send (t123), and the file send (t124): the reply
+// Shared by the text reply (t130), the image send (t145), and the file send (t146): the reply
 // passes plain text with messagetype "Text", the media paths pass the pre-built HTML with
 // "RichText/Html". `properties` carries the message extras — the file send passes a JSON-string
 // `files` there so Teams renders the SharePoint chip; every other caller omits it (→ {}).
@@ -1619,7 +1619,7 @@ async function teamsReply(convId, text) {
 // Best-effort write-through mark-read (Q9 hybrid): push the consumptionHorizon to Teams IN-PAGE
 // and advance the stored read_horizon_ts. NEVER throws / fails a caller — the reply already
 // succeeded; a failed horizon write just leaves the desktop unread as a to-do trail. The exact
-// PUT verb/path/body is confirmed live by the keeper tab (see task t108 return notes).
+// PUT verb/path/body is confirmed live by the keeper tab (see task t130 return notes).
 async function markTeamsReadInPage(cred, convId, msgId, ts) {
   if (!cred.chatServiceBase) return { error: "no_base" }
   const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/properties?name=consumptionhorizon`
@@ -1653,7 +1653,7 @@ async function teamsMarkRead(convId, msgId, ts) {
   return { ok: true }
 }
 
-// ---- Teams reactions (t120, ADR-0018) -------------------------------------
+// ---- Teams reactions (t142, ADR-0019) -------------------------------------
 // CA-proof like reply/mark-read: PUT (add) or DELETE (remove) the message's emotions property
 // IN-PAGE. Proven live 2026-07-22: PUT/DELETE `{chatServiceBase}/…/messages/{msgId}/properties?
 // name=emotions` with body `{"emotions":{"key":"<key>","value":<Date.now()>}}` → 200; PUT adds the
@@ -1703,7 +1703,7 @@ async function teamsReact(convId, msgId, key, remove) {
   return { ok: true }
 }
 
-// ---- Teams edit + delete own message (t122, ADR-0018) ---------------------
+// ---- Teams edit + delete own message (t144, ADR-0019) ---------------------
 // CA-proof like reply/react: PUT (edit) or DELETE (delete) the message IN-PAGE. Proven live
 // 2026-07-22: PUT `{chatServiceBase}/…/messages/{msgId}` body {content:"<p>…</p>",
 // messagetype:"RichText/Html", contenttype:"text"} → 200 (sets properties.edittime); DELETE the same
@@ -1804,7 +1804,7 @@ async function teamsDelete(convId, msgId) {
   return { ok: true }
 }
 
-// ---- Teams send image attachment (t123, ADR-0018) -------------------------
+// ---- Teams send image attachment (t145, ADR-0019) -------------------------
 // CA-proof like reply/edit: the whole AMS upload runs IN-PAGE (the ic3 token is session/CA-bound like
 // the skypetoken). Proven live 2026-07-22: read the ic3.teams.office.com MSAL access token + the
 // api.spaces bearer → authz for the skypetoken/base/amsV2 → POST {amsV2}/v1/objects/ (create) → PUT
@@ -2053,9 +2053,9 @@ async function teamsUploadFile({ convId, filename, base64, text }) {
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
 // A pasted screenshot as base64 JSON dwarfs 1 MB, so the image-upload route reads with a larger cap
-// (t123). Still bounded to guard memory — Teams itself rejects larger inline images.
+// (t145). Still bounded to guard memory — Teams itself rejects larger inline images.
 const IMAGE_BODY_LIMIT = 24 * 1024 * 1024 // 24 MB
-// A non-image file upload (t124) rides base64 too; cap it larger — ~30 MB of file is ~40 MB encoded.
+// A non-image file upload (t146) rides base64 too; cap it larger — ~30 MB of file is ~40 MB encoded.
 const FILE_BODY_LIMIT = 40 * 1024 * 1024 // 40 MB
 const body = (req, limit = BODY_LIMIT) =>
   new Promise((resolve, reject) => {
@@ -2116,7 +2116,7 @@ function serveStatic(req, res, pathname) {
   createReadStream(file).pipe(res)
 }
 
-// Serve the built Teams chat app (t106) under /chat: static assets stream, and any deep link
+// Serve the built Teams chat app (t128) under /chat: static assets stream, and any deep link
 // falls back to the SPA index. Rooted at DIST_CHAT and prefix-stripped so it can never reach
 // into DIST (the / build) or above the output dir.
 function serveChat(req, res, pathname) {
@@ -2351,7 +2351,7 @@ const server = http.createServer(async (req, res) => {
       if (!out?.ok) return json(res, { error: out?.error || "send_failed" }, 502)
       return json(res, { ok: true, ts: out.ts })
     }
-    // Teams chat: the authenticated conversation list (t105/t112, ADR-0018). Mints creds via the
+    // Teams chat: the authenticated conversation list (t127/t134, ADR-0019). Mints creds via the
     // keeper tab, fetches a page IN-PAGE (CA-proof), upserts into the chat DB, returns the page +
     // a `cursor` (backwardLink) for the next older page. POST so the opaque cursor URL rides the
     // body, never a query. Web build only (Electron has no scrapable Teams creds path).
@@ -2363,7 +2363,7 @@ const server = http.createServer(async (req, res) => {
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: one conversation's message history (t107/t112, ADR-0018). Fetches IN-PAGE,
+    // Teams chat: one conversation's message history (t129/t134, ADR-0019). Fetches IN-PAGE,
     // renders to ReaderMessages, persists, returns { messages, cursor }. No `cursor` → first
     // page; a `cursor` (backwardLink) pages older after the SSRF gate. Web only.
     if (p === "/api/teams/history" && POST) {
@@ -2375,7 +2375,7 @@ const server = http.createServer(async (req, res) => {
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: send a text reply IN-PAGE (t108, ADR-0018). Persists the echo, returns the
+    // Teams chat: send a text reply IN-PAGE (t130, ADR-0019). Persists the echo, returns the
     // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/reply" && POST) {
       const { convId, text } = await body(req)
@@ -2385,7 +2385,7 @@ const server = http.createServer(async (req, res) => {
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: AMS media proxy (t117, ADR-0018). The rendered <img>/<video> src points here;
+    // Teams chat: AMS media proxy (t139, ADR-0019). The rendered <img>/<video> src points here;
     // the server fetches the authenticated AMS object IN-PAGE (CA-proof — a server-side fetch 401s)
     // and serves the raw bytes so the browser caches them normally (no data URLs in the DOM). The
     // response is plaintext binary (never E2E-sealed — an <img> src can't decrypt), SSRF-gated by
@@ -2396,7 +2396,7 @@ const server = http.createServer(async (req, res) => {
       const hit = teamsMediaCacheGet(target) || (await teamsMedia(target))
       if (hit.error) return res.writeHead(502).end(hit.error)
       // Only ever serve image/video bytes on our origin — never render an arbitrary content-type
-      // (nosniff + an explicit allowlist so a non-media AMS object can't become same-origin HTML; t117 review).
+      // (nosniff + an explicit allowlist so a non-media AMS object can't become same-origin HTML; t139 review).
       if (!/^(image|video)\//.test(hit.ct || "")) return res.writeHead(502).end("bad media type")
       teamsMediaCacheSet(target, hit)
       return res
@@ -2407,14 +2407,14 @@ const server = http.createServer(async (req, res) => {
         })
         .end(hit.buf)
     }
-    // Teams chat: write-through mark-read (t108, Q9 hybrid). Best-effort — always { ok } even
+    // Teams chat: write-through mark-read (t130, Q9 hybrid). Best-effort — always { ok } even
     // if the horizon write fails, so it can't undo a successful reply. Web only.
     if (p === "/api/teams/mark-read" && POST) {
       const { convId, msgId, ts } = await body(req)
       if (!convId || !msgId || ts == null) return json(res, { error: "missing fields" }, 400)
       return json(res, await teamsMarkRead(convId, msgId, ts))
     }
-    // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t120, ADR-0018). Best-effort
+    // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t142, ADR-0019). Best-effort
     // { ok } — the client is optimistic and the poll reconciles. A 401 → one re-authz + retry. Web only.
     if (p === "/api/teams/react" && POST) {
       const { convId, msgId, key, remove } = await body(req)
@@ -2424,7 +2424,7 @@ const server = http.createServer(async (req, res) => {
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: edit the viewer's OWN message IN-PAGE (t122, ADR-0018). PUT new RichText/Html
+    // Teams chat: edit the viewer's OWN message IN-PAGE (t144, ADR-0019). PUT new RichText/Html
     // content; the read path turns properties.edittime into the "(edited)" flag. A 401 → one
     // re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/edit" && POST) {
@@ -2435,7 +2435,7 @@ const server = http.createServer(async (req, res) => {
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: delete the viewer's OWN message IN-PAGE (t122, ADR-0018). DELETE blanks content +
+    // Teams chat: delete the viewer's OWN message IN-PAGE (t144, ADR-0019). DELETE blanks content +
     // sets properties.deletetime, which the read path renders as the tombstone. A 401 → one re-authz
     // + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/delete" && POST) {
@@ -2446,7 +2446,7 @@ const server = http.createServer(async (req, res) => {
       if (out.error) return json(res, out, 502)
       return json(res, out)
     }
-    // Teams chat: upload a pasted/picked image + post it inline IN-PAGE (t123, ADR-0018). One atomic
+    // Teams chat: upload a pasted/picked image + post it inline IN-PAGE (t145, ADR-0019). One atomic
     // endpoint: create the AMS object → PUT the bytes → send the AMSImage message. Reads with the
     // larger body cap (a base64 screenshot dwarfs 1 MB). A 401 → one re-authz + retry → typed
     // invalid_auth. Web only.
@@ -2471,7 +2471,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, out)
     }
     // Teams chat: upload a pasted/picked non-image file to SharePoint + post it as a chip IN-PAGE
-    // (t124, ADR-0018). One atomic endpoint: PUT the bytes to the drive → createLink → send the
+    // (t146, ADR-0019). One atomic endpoint: PUT the bytes to the drive → createLink → send the
     // properties.files message. Larger body cap than the image route (files run bigger). A 401 →
     // one re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/upload-file" && POST) {
@@ -2507,7 +2507,7 @@ const server = http.createServer(async (req, res) => {
       savePushSubs()
       return json(res, { ok: true })
     }
-    // Teams chat push (t125) — its own isolated subscription store; same VAPID keys, separate subs.
+    // Teams chat push (t147) — its own isolated subscription store; same VAPID keys, separate subs.
     if (p === "/api/teams/push/vapid-public-key" && !POST) {
       return json(res, { key: VAPID_PUBLIC_KEY })
     }

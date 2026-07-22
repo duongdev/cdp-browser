@@ -8,7 +8,7 @@ import { ThreadView } from "./components/thread-view"
 import type { TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 
-// Reactive wide/narrow gate (t107). Wide (≥768px) shows the two-pane list+thread; narrow stacks
+// Reactive wide/narrow gate (t129). Wide (≥768px) shows the two-pane list+thread; narrow stacks
 // list → thread → back. matchMedia over a resize listener — it fires only on the boundary cross.
 function useIsWide() {
   const [wide, setWide] = useState(() => window.matchMedia("(min-width: 768px)").matches)
@@ -49,10 +49,10 @@ function stubConversation(id: string): TeamsConversation {
   }
 }
 
-/** Root of the standalone Teams chat app (t106/t107, ADR-0018). List+pane: wide shows the
+/** Root of the standalone Teams chat app (t128/t129, ADR-0019). List+pane: wide shows the
  *  conversation list beside the thread; narrow shows one at a time with a back button.
  *
- *  Instant switch (t110): every opened conversation's thread stays mounted (its own pane, hidden
+ *  Instant switch (t132): every opened conversation's thread stays mounted (its own pane, hidden
  *  when inactive via display:none) so switching is a pure visibility toggle — no remount, no
  *  refetch, scroll retained. The pure keep-alive model (`openThread`) decides which panes mount and
  *  which is active + evicts the least-recently-viewed past the cap; this component only renders. */
@@ -77,7 +77,7 @@ export function ChatApp() {
     setPhoneView("thread")
   }, [])
 
-  // Push deep-link (t125): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
+  // Push deep-link (t147): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
   // open) arrives as an SW postMessage { type:"open-conv", convId }. Both open that conversation;
   // strip ?conv= after consuming so a refresh doesn't reopen.
   useEffect(() => {

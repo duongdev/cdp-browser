@@ -1,4 +1,4 @@
-// The XSS boundary for Teams message HTML (t111). Message `content` is site-authored HTML that the
+// The XSS boundary for Teams message HTML (t133). Message `content` is site-authored HTML that the
 // server keeps intact (mention-resolved) — so it MUST be sanitized here, in the renderer, before it
 // ever reaches dangerouslySetInnerHTML. DOMPurify is browser-native (no jsdom), so this is the only
 // place it can run. One configured, memoized instance; the hook is registered once.
@@ -28,7 +28,7 @@ const ALLOWED_TAGS = [
   "video",
 ]
 // `src`/`alt`/`class` for images; `itemtype`/`width`/`height` for the media-kind CSS selectors and
-// natural sizing; `controls`/`data-duration` for AMS video (t117). The proxy src (same-origin
+// natural sizing; `controls`/`data-duration` for AMS video (t139). The proxy src (same-origin
 // `/api/teams/media?url=…`) and the public-CDN hosts pass DOMPurify's default URI policy unchanged.
 const ALLOWED_ATTR = [
   "href",
@@ -59,7 +59,7 @@ function purifier(): typeof DOMPurify {
       node.setAttribute("rel", "noopener noreferrer")
     }
     if (node.tagName === "IMG") node.setAttribute("loading", "lazy")
-    // AMS video arrives with no `controls` attr — force it so the clip is playable inline (t117).
+    // AMS video arrives with no `controls` attr — force it so the clip is playable inline (t139).
     if (node.tagName === "VIDEO") {
       node.setAttribute("controls", "")
       node.setAttribute("preload", "metadata")

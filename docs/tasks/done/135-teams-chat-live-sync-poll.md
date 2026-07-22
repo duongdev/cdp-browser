@@ -1,9 +1,9 @@
-# 113 — teams chat live sync (poll-first): open-thread fast poll + list refresh with edit/delete reconcile
+# 135 — teams chat live sync (poll-first): open-thread fast poll + list refresh with edit/delete reconcile
 
 - **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
-- **Depends on:** t107 (thread), t108 (send), t110 (keep-alive), t112 (history/list fetch)
+- **Depends on:** t129 (thread), t130 (send), t132 (keep-alive), t134 (history/list fetch)
 - **Blocks:** unified push (server-side sweep loop + toast→sweep-now trigger lands there)
 
 ## Goal
@@ -16,7 +16,7 @@ edits and deletes reconcile in place on the open thread. After this ships, the c
 
 ## Why now
 
-t105–t112 built a working read/reply client, but it only updates on mount / open. Heavy
+t127–t134 built a working read/reply client, but it only updates on mount / open. Heavy
 daily use means a conversation is left open and messages arrive — today you must reopen it.
 This is the last core-usability gap before UI polish. Deliberately **client-driven**: the
 server already fetches-in-page → upserts → returns fresh on every `/api/teams/history` and
@@ -84,7 +84,7 @@ Describe behavior, not paths.
     order.
   - `chat/src/lib/conversation-merge.ts` — pure `mergeConversations(existing, freshPage) →
     TeamsConversation[]`. Update-by-id, insert-new, keep-unknown, re-sort by `lastMessageTs`.
-- **New ADR needed?** No — poll-first is ADR-0018 decision 4; this is its client half.
+- **New ADR needed?** No — poll-first is ADR-0019 decision 4; this is its client half.
 
 Polling wiring (effectful, in the components — the merge logic is the pure/tested part):
 
@@ -123,7 +123,7 @@ arrival-ms = the id history returns), so no separate clientmessageid tracking is
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/chat build clean.
 - [ ] CLAUDE.md updated (Teams live-sync poll: cadence, visibility-gating, the two merge
       reducers, the "server loop is deferred to push" note). No AI attribution / console debris.
-- [ ] Task → done, moved to `done/`, `t113` in commit.
+- [ ] Task → done, moved to `done/`, `t135` in commit.
 
 ## Notes
 

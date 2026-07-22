@@ -1,10 +1,10 @@
-# 105 — teams chat app: cred mint + sqlite store + conversation-list read
+# 127 — teams chat app: cred mint + sqlite store + conversation-list read
 
 - **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
 - **Depends on:** none (runtime: a live Teams tab on the remote CDP browser for cred extraction)
-- **Blocks:** t106+ (the whole Teams Chat App epic — see roadmap below)
+- **Blocks:** t128+ (the whole Teams Chat App epic — see roadmap below)
 
 ## Goal
 
@@ -17,7 +17,7 @@ chat DB — the base every downstream task reads from. No UI, no message read/re
 
 This is Ring-1 of an epic (a separate chat app that shares this repo's extended
 backend). This task delivers the cred + store + list-read spine and records the epic's
-architecture as **ADR-0018**. It is backend-only and curl-verified.
+architecture as **ADR-0019**. It is backend-only and curl-verified.
 
 ## Why now
 
@@ -28,7 +28,7 @@ SQLite) de-risks the whole bet before any UI cost is spent. The msg API round-tr
 (mint → authz → conversations → messages → send → delete) is already **proven live**
 against the remote instance; this task lands the first two rungs in code.
 
-## Locked decisions (grilled — the epic's decision ledger; ADR-0018 records these)
+## Locked decisions (grilled — the epic's decision ledger; ADR-0019 records these)
 
 1. **Structure:** new `chat/` dir (Vite web app + thin Electron shell that loads the URL)
    served by the *extended* `web/server.mjs`; `core/` shared directly; pnpm monorepo
@@ -125,7 +125,7 @@ later, layout = two-pane wide / stacked phone, working name "Teams Chat".
       returns the conversation list (id, kind, topic, lastMessage preview).
 - [ ] A stale bearer (forced) drives a single **re-authz** (not a re-scrape) and the
       request recovers; a hard-expired session returns a typed `invalid_auth`.
-- [ ] `docs/adr/0018-teams-chat-app.md` (Proposed) records the architecture + the 12
+- [ ] `docs/adr/0019-teams-chat-app.md` (Proposed) records the architecture + the 12
       decisions + the pinned trap-facts.
 - [ ] `better-sqlite3` added to `dependencies`; server boots (`node --check web/server.mjs`
       + a real boot) with the new route.
@@ -156,7 +156,7 @@ With a live Teams tab on the remote browser (the keeper) and `pnpm web:serve`:
 
 ### Layer 3 — Visual review
 
-n/a — this task touches no renderer UI (backend-only; UI is t106+).
+n/a — this task touches no renderer UI (backend-only; UI is t128+).
 
 ## Design notes
 
@@ -169,7 +169,7 @@ n/a — this task touches no renderer UI (backend-only; UI is t106+).
     `slack-creds.js` shape).
   - `core/teams-store.js` — SQLite chat store (DI handle), schema + migrations + upserts.
   - New route `GET /api/teams/conversations` in `web/server.mjs`.
-- **New ADR needed?** yes — `0018-teams-chat-app.md` (Proposed): standalone chat app +
+- **New ADR needed?** yes — `0019-teams-chat-app.md` (Proposed): standalone chat app +
   shared extended backend + server-owned SQLite + poll-first ingestion + unified push;
   pins the trap-facts + the 12 decisions.
 
@@ -189,7 +189,7 @@ interface TeamsCredsRecord {
 ```
 
 SQLite schema (this task creates all tables + FTS; only `accounts` + `conversations` are
-written here — `messages`/`read_state` land in t107+, but the schema + migration ship now so
+written here — `messages`/`read_state` land in t129+, but the schema + migration ship now so
 later tasks don't migrate):
 
 ```sql
@@ -198,24 +198,24 @@ conversations(id PK, tenant, kind, topic, last_message_id, last_message_version,
               last_message_ts, last_message_preview, newest_synced_ts, oldest_synced_ts,
               muted, updated_at)
 messages(conv_id, id, tenant, version, sender_id, sender_name, ts, content,
-         deleted INTEGER, edited INTEGER, PRIMARY KEY(conv_id, id))   -- written t107+
-read_state(conv_id PK, tenant, read_horizon_ts, local_read_ts)        -- written t108+
+         deleted INTEGER, edited INTEGER, PRIMARY KEY(conv_id, id))   -- written t129+
+read_state(conv_id PK, tenant, read_horizon_ts, local_read_ts)        -- written t130+
 messages_fts USING fts5(content, content='messages')                  -- populated later
 ```
 
 ## Out of scope (each is its own downstream task)
 
-- Message read / render / thread view (t107) and `teams-render.js` (HTML sanitize +
+- Message read / render / thread view (t129) and `teams-render.js` (HTML sanitize +
   adaptive cards).
-- Text reply (t108); rich compose — reactions, edit/delete, attachments (t110–t111).
+- Text reply (t130); rich compose — reactions, edit/delete, attachments (t132–t133).
 - Poll sweep + watermark + client SSE/WS sync + `clientmessageid` echo-dedup +
-  edit/delete reconcile (t109).
-- Eager recent-N backfill + lazy backward paging (with message read, t107).
+  edit/delete reconcile (t131).
+- Eager recent-N backfill + lazy backward paging (with message read, t129).
 - The `chat/` app shell (Vite entry + thin Electron main + served `/chat` route) + list UI
-  (t106).
-- Unified web push routing into the chat app (t113).
-- `consumptionHorizon` write-through mark-read (t108/t109).
-- Trouter realtime (t114, v2); Slack on the same surface; off-box auth.
+  (t128).
+- Unified web push routing into the chat app (t135).
+- `consumptionHorizon` write-through mark-read (t130/t131).
+- Trouter realtime (t136, v2); Slack on the same surface; off-box auth.
 
 ## Definition of Done
 
@@ -228,22 +228,22 @@ messages_fts USING fts5(content, content='messages')                  -- populat
 - [ ] `node --check web/server.mjs` + a real boot with the new route serving.
 - [ ] CLAUDE.md updated for the new `core/teams-creds.js` + `core/teams-store.js` modules
       and the `/api/teams/conversations` route.
-- [ ] ADR-0018 written (Proposed).
+- [ ] ADR-0019 written (Proposed).
 - [ ] No commented-out code, no `console.log` debris, no AI attribution.
-- [ ] Task closed: status → done, file moved to `docs/tasks/done/`, `t105` in commit.
+- [ ] Task closed: status → done, file moved to `docs/tasks/done/`, `t127` in commit.
 
 ## Roadmap (the epic — split/renumber during execution)
 
-- **t105 (this):** cred mint + SQLite store + conversation-list read + ADR-0018.
-- t106: `chat/` app shell (Vite + thin Electron shell + `/chat` route) + conversation-list UI reading the DB.
-- t107: message read + `teams-render.js` (sanitized HTML) + thread view + recent-N backfill + lazy scroll-back.
-- t108: text reply (optimistic + honest fail) + `consumptionHorizon` write-through on send.
-- t109: poll ingestion (fast-on-open + toast trigger) + DB writes + edit/delete reconcile + client SSE/WS sync + `clientmessageid` dedup.
-- t110: reactions + edit/delete own messages.
-- t111: attachments (AMS upload flow).
-- t112: adaptive-card rendering (`adaptivecards` lib).
-- t113: unified web push — Teams ingestion → push → deep-link into the chat app.
-- t114+ (v2): trouter realtime; then Slack on the same surface; then off-box auth.
+- **t127 (this):** cred mint + SQLite store + conversation-list read + ADR-0019.
+- t128: `chat/` app shell (Vite + thin Electron shell + `/chat` route) + conversation-list UI reading the DB.
+- t129: message read + `teams-render.js` (sanitized HTML) + thread view + recent-N backfill + lazy scroll-back.
+- t130: text reply (optimistic + honest fail) + `consumptionHorizon` write-through on send.
+- t131: poll ingestion (fast-on-open + toast trigger) + DB writes + edit/delete reconcile + client SSE/WS sync + `clientmessageid` dedup.
+- t132: reactions + edit/delete own messages.
+- t133: attachments (AMS upload flow).
+- t134: adaptive-card rendering (`adaptivecards` lib).
+- t135: unified web push — Teams ingestion → push → deep-link into the chat app.
+- t136+ (v2): trouter realtime; then Slack on the same surface; then off-box auth.
 
 ## Notes
 
@@ -255,7 +255,7 @@ messages_fts USING fts5(content, content='messages')                  -- populat
   deferring to a pin) is a Ring-2 hardening task.
 - Conditional-Access: **resolved up front** — all Teams calls run in-page via the
   side-channel (see the CA-proof bullet in Proven API facts), so server egress IP is never
-  the token's origin. The `teams-api` client (t106) is therefore a **side-channel-driven**
+  the token's origin. The `teams-api` client (t128) is therefore a **side-channel-driven**
   client (an in-page `fetch` executor over `Runtime.evaluate` returning JSON), NOT a node
   `fetch` client like `slack-api.js`. This is the one structural divergence from the Slack
   stack; carry it forward through the whole epic.

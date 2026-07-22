@@ -1,8 +1,8 @@
-# 125 — teams chat: push notifications (server-poll capture → isolated push sink)
+# 147 — teams chat: push notifications (server-poll capture → isolated push sink)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t105 (creds/store), t108 (send), t113 (poll patterns); reuses the web-push spine (VAPID/`webpush`/SW, t093/t095)
+- **Depends on:** t127 (creds/store), t130 (send), t135 (poll patterns); reuses the web-push spine (VAPID/`webpush`/SW, t093/t095)
 
 ## Goal
 
@@ -15,7 +15,7 @@ isolated from the existing CDP-browser push so nothing there regresses.
   Per-chat mute *inheritance from Teams* is NOT cleanly available (probed: conversation objects expose
   only `consumptionhorizon`/`favorite`, no mute field; `user/properties` has no per-chat notif map; the
   MT/CSA settings endpoints 404/401). Deferred — the user will add a client-side filter later.
-- **Capture = server-side REST poll** (mirrors the Slack sweep), NOT trouter — see t126 (trouter is a
+- **Capture = server-side REST poll** (mirrors the Slack sweep), NOT trouter — see t148 (trouter is a
   documented wall). The same poll is the near-realtime path.
 - **Isolation:** a SEPARATE subs store (`teams-push-subs.json`) + send path, so the existing
   `/api/notifications/*` push (CDP-browser app) is untouched.
@@ -52,8 +52,8 @@ isolated from the existing CDP-browser push so nothing there regresses.
 - [x] Server capture→push proven live on real messages; endpoints work; deep-link opens the thread.
 - [x] Isolated from the CDP-browser push (separate store + path); state files gitignored.
 - [x] Full gates green (1335 tests / typecheck / node --check / chat build). No AI attribution.
-- [x] Task → done, `t125` in commit.
+- [x] Task → done, `t147` in commit.
 
 ## Notes
 Isolation is the key safety property — Teams push never touches `/api/notifications/*` or `web-push-subs.json`.
-Realtime via trouter was ruled out first — see `done/126-*`.
+Realtime via trouter was ruled out first — see `done/148-*`.

@@ -31,14 +31,14 @@ import {
 import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
 import { MessageRow } from "./message-row"
 
-// Live sync (t113, poll-first): cadence for re-fetching the newest history page while this pane is
+// Live sync (t135, poll-first): cadence for re-fetching the newest history page while this pane is
 // the visible one and the tab is foregrounded.
 const THREAD_POLL_MS = 4000
 // Stick-to-bottom slack: within this many px of the bottom, a merge that lands newer content
 // re-pins to the bottom; farther up we leave scroll alone so we don't yank someone reading history.
 const THREAD_BOTTOM_SLACK = 64
 // A pending optimistic reaction is overlaid on every merge until the server confirms it, or until it
-// ages past this window — a lost write shouldn't pin a phantom reaction forever (t121).
+// ages past this window — a lost write shouldn't pin a phantom reaction forever (t143).
 const PENDING_REACTION_TTL_MS = 20000
 
 /** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
@@ -48,7 +48,7 @@ type PendingReactions = Map<
   Map<string, { emoji: string; desiredMine: boolean; ts: number }>
 >
 
-/** Drop pending entries the server has caught up on, or that have aged out (t121). Mutates in place.
+/** Drop pending entries the server has caught up on, or that have aged out (t143). Mutates in place.
  *  A `(msgId, key)` is confirmed — and its overlay retired so a later real change isn't masked — once
  *  the server page shows that key's `mine` equal to `desiredMine`. Only messages present in the page
  *  can be confirmed; the rest wait for the TTL. */
@@ -99,17 +99,17 @@ interface ThreadViewProps {
   conversation: TeamsConversation
   /** Back to the list — shown on the phone (stacked), hidden in the wide two-pane. */
   onBack?: () => void
-  /** Whether this pane is the on-screen one (t110). Inactive panes stay mounted (fetch + scroll
+  /** Whether this pane is the on-screen one (t132). Inactive panes stay mounted (fetch + scroll
    *  preserved) but hidden via display:none, so switching conversations is instant. Defaults true. */
   visible?: boolean
 }
 
-/** The thread pane (t107, ADR-0018): one conversation's real messages, rendered oldest-first from
+/** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
- *  mounted across conversation switches (t110) — hidden when inactive, never refetched. */
+ *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
 export function ThreadView({ conversation, onBack, visible = true }: ThreadViewProps) {
   const [state, setState] = useState<State>({ status: "loading" })
-  // Older-page paging (t112): the server returns an opaque `backwardLink` cursor with each page;
+  // Older-page paging (t134): the server returns an opaque `backwardLink` cursor with each page;
   // null means there is no older page. `hasMore` mirrors "cursor is non-null" for the affordance.
   const [hasMore, setHasMore] = useState(true)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -119,7 +119,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // Latest scroll offset, tracked live while visible — display:none drops the container's scrollTop,
   // so this ref (not a read at hide-time, which would already be 0) is what we restore on re-show.
   const savedScrollTop = useRef(0)
-  // In-flight optimistic reactions, overlaid on every merge until the server confirms (t121). A ref
+  // In-flight optimistic reactions, overlaid on every merge until the server confirms (t143). A ref
   // (not state) — mutating it never needs a re-render; the overlay it drives is applied inside the
   // merge setState. Cleared per conversation switch below.
   const pendingReactions = useRef<PendingReactions>(new Map())
@@ -195,7 +195,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       })
   }, [convId, hasMore, state])
 
-  // Trigger load-older from a sentinel at the visual top (mirrors the list's t114 infinite scroll)
+  // Trigger load-older from a sentinel at the visual top (mirrors the list's t136 infinite scroll)
   // rather than a scrollTop threshold — flex-col-reverse makes scrollTop's sign browser-dependent, but
   // an IntersectionObserver on a top sentinel is sign-agnostic. A ref carries the latest loadOlder so
   // the observer rebuilds only when load-ability flips.
@@ -223,7 +223,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     if (el) savedScrollTop.current = el.scrollTop
   }, [])
 
-  // Restore scroll when this pane becomes visible again (t110). display:none resets the container's
+  // Restore scroll when this pane becomes visible again (t132). display:none resets the container's
   // scrollTop, so re-showing a kept-alive thread must re-seat it. Keyed on `visible` only: on a fresh
   // mount this restores 0 while still loading, then the status→ready scroll-to-bottom lands at bottom
   // and this won't refire (visible unchanged), so first-load bottom still wins.
@@ -233,7 +233,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     if (el) el.scrollTop = savedScrollTop.current
   }, [visible])
 
-  // Poll the newest history page and merge it in (t113). Only touches a "ready" state — a loading/
+  // Poll the newest history page and merge it in (t135). Only touches a "ready" state — a loading/
   // error pane is left to the initial load. Errors are swallowed: a failed poll keeps the last-good
   // thread rather than flipping to error. Sticks to the bottom only if the user was already there.
   const poll = useCallback(() => {
@@ -243,7 +243,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
         const nearBottom = el ? Math.abs(el.scrollTop) < THREAD_BOTTOM_SLACK : false
         // Retire optimistic reactions the server now reflects (or that timed out) BEFORE overlaying,
-        // so a confirmed reaction stops being pinned and a later real change isn't masked (t121).
+        // so a confirmed reaction stops being pinned and a later real change isn't masked (t143).
         reconcilePendingReactions(pendingReactions.current, page.messages, Date.now())
         setState((s) => {
           if (s.status !== "ready") return s
@@ -262,7 +262,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         }
       })
       .catch(() => {
-        // Poll errors are silent (t113) — the last-good thread stays put.
+        // Poll errors are silent (t135) — the last-good thread stays put.
       })
   }, [convId])
 
@@ -307,9 +307,9 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     }
   }, [visible])
 
-  // Reactions (t120): the thread owns message state, so it applies the optimistic toggle here
+  // Reactions (t142): the thread owns message state, so it applies the optimistic toggle here
   // (add/remove self + adjust count via the pure applyReaction) and fires the best-effort server
-  // call. The optimistic change is also recorded as a pending overlay (t121) so the 4s poll's
+  // call. The optimistic change is also recorded as a pending overlay (t143) so the 4s poll's
   // server-wins merge can't revert it before Teams propagates the reaction; the overlay is retired
   // the moment the server reflects it (reconcilePendingReactions).
   const onReact = useCallback(
@@ -336,7 +336,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     [convId],
   )
 
-  // Edit own message (t122): optimistically swap the body to the plain text + set edited, then PUT
+  // Edit own message (t144): optimistically swap the body to the plain text + set edited, then PUT
   // it. Returns the client promise so the inline editor can keep itself open + show an error on a
   // rejected write; on success the 4s poll's server-wins merge replaces the plain optimistic body
   // with Teams' rendered edited HTML. No pending overlay — an edit makes the body DIFFER, so the
@@ -357,7 +357,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     [convId],
   )
 
-  // Delete own message (t122): optimistically tombstone it (matching the read-path tombstone), then
+  // Delete own message (t144): optimistically tombstone it (matching the read-path tombstone), then
   // DELETE. Fire-and-forget — a failed delete is restored by the next poll's server-wins merge, so
   // the error is swallowed (the message reappears rather than a stuck phantom tombstone).
   const onDelete = useCallback(
@@ -378,12 +378,12 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     [convId],
   )
 
-  // Composer (t108, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
+  // Composer (t130, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
   // optimistically appends the message and write-through marks the conversation read on Teams.
   // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
   const replyTarget = selectReplyTarget(conversation)
   const [send, setSend] = useState<SendState>({ phase: "idle", draft: "" })
-  // A pasted/picked attachment staged for send (t123 image, t124 any file): held until Send uploads
+  // A pasted/picked attachment staged for send (t145 image, t146 any file): held until Send uploads
   // it (or the ✕ clears it). An image routes to uploadImage; any other file routes to uploadFile.
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [pendingUrl, setPendingUrl] = useState<string | null>(null)
@@ -430,7 +430,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     if (!replyTarget || send.phase === "sending") return
     const text = send.draft.trim()
 
-    // Attachment send (t123 image, t124 file): an upload can carry an optional caption, so its draft
+    // Attachment send (t145 image, t146 file): an upload can carry an optional caption, so its draft
     // can be empty — it bypasses reduceSend's non-empty guard. On success the poll reconciles the
     // optimistic bubble to the server-rendered message; on failure the file + caption stay for retry.
     if (pendingFile) {

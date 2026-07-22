@@ -11,7 +11,7 @@ describe("pickFile", () => {
     expect(pickFile([item(null), item(png)])).toBe(png)
   })
 
-  it("picks a non-image file too (t124)", () => {
+  it("picks a non-image file too (t146)", () => {
     expect(pickFile([item(null), item(pdf)])).toBe(pdf)
   })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-// AMS media SSRF gate + HTML rewrite (t117, ADR-0018). AMS media 401s from a server-side / no-cors
+// AMS media SSRF gate + HTML rewrite (t139, ADR-0019). AMS media 401s from a server-side / no-cors
 // fetch; it loads only via an IN-PAGE fetch with the skypetoken. The proxy is CA-proof like the rest
 // of Teams, so a garbled/hostile `src` must not steer the in-page fetch at an arbitrary host.
 import { amsObjectId, ensureMediaDimensions, isValidAmsUrl, rewriteMediaHtml } from "./teams-media"
@@ -120,7 +120,7 @@ describe("rewriteMediaHtml", () => {
   })
 })
 
-// FIX B (t118): AMS imgs sometimes carry no width/height ATTRS, only an inline `style` (which
+// FIX B (t140): AMS imgs sometimes carry no width/height ATTRS, only an inline `style` (which
 // DOMPurify strips) — so the box has zero reserved height until bytes load, then jumps → scroll
 // flicker. Convert `style="width:Npx; height:Npx"` to real width/height attrs so the browser derives
 // the aspect-ratio box before load. Tags that already have the attrs, or neither, are left alone.

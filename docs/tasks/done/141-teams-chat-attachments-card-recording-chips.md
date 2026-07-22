@@ -1,8 +1,8 @@
-# 119 — teams chat attachments: file chips + call-recording / card chips (no garbled URIObject text)
+# 141 — teams chat attachments: file chips + call-recording / card chips (no garbled URIObject text)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t111 (render), t117 (media proxy)
+- **Depends on:** t133 (render), t139 (media proxy)
 
 ## Goal
 
@@ -59,9 +59,9 @@ Surface the message attachments the plain body couldn't render:
 
 - [x] Layer 1 green (1259 tests). typecheck / biome (touched) / chat build / `node --check` clean.
 - [x] Live-verified (file chips + no leak). CLAUDE.md updated. No AI attribution.
-- [x] Task → done, `t119` in commit.
+- [x] Task → done, `t141` in commit.
 
 ## Notes
 
-- ⚠️ `properties.*` (mentions/files/cards) are JSON STRINGS — always parse defensively (the t118
+- ⚠️ `properties.*` (mentions/files/cards) are JSON STRINGS — always parse defensively (the t140
   mention bug was exactly this). Worktree: docs on `main`, code on feature branch; `--no-verify`.

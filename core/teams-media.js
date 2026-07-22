@@ -1,4 +1,4 @@
-// AMS media SSRF gate + HTML rewrite for the Teams chat backend (t117, ADR-0018). Teams inline
+// AMS media SSRF gate + HTML rewrite for the Teams chat backend (t139, ADR-0019). Teams inline
 // media (images/video) is hosted on AMS (`as-*.asm.skype.com`, `*.asyncgw.teams.microsoft.com`)
 // and 401s from a server-side or `mode:'no-cors'` fetch — it loads ONLY from an IN-PAGE fetch with
 // the `Authentication: skypetoken=…` header. So `/api/teams/media` proxies through the side-channel
@@ -57,7 +57,7 @@ function rewriteMediaHtml(html) {
   return ensureMediaDimensions(rewritten)
 }
 
-// Reserve a media element's box before its bytes load (t118). Some AMS `<img>`/`<video>` carry NO
+// Reserve a media element's box before its bytes load (t140). Some AMS `<img>`/`<video>` carry NO
 // width/height ATTRS — the size lives in inline `style="width:Npx; height:Npx"` (which DOMPurify
 // strips), so the box renders at height 0 and jumps on load → scroll flicker. Convert those px dims
 // to real width/height attrs (which survive the sanitizer) so the browser derives the aspect-ratio

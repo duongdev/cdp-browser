@@ -6,7 +6,7 @@ import { mergeConversations } from "../lib/conversation-merge"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
 import { ConversationRow } from "./conversation-row"
 
-// Live sync (t113, poll-first): cadence for re-unioning the newest conversation page.
+// Live sync (t135, poll-first): cadence for re-unioning the newest conversation page.
 const LIST_POLL_MS = 12_000
 
 type State =
@@ -29,11 +29,11 @@ interface ConversationListProps {
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
- *  states, and auto-pages older via infinite scroll (a bottom IntersectionObserver sentinel, t114)
- *  driven by the backwardLink cursor (t112). */
+ *  states, and auto-pages older via infinite scroll (a bottom IntersectionObserver sentinel, t136)
+ *  driven by the backwardLink cursor (t134). */
 export function ConversationList({ onOpenConversation, selectedId }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
-  // Older-page paging (t112): true while a "Load more" fetch is in flight (dedup guard + affordance).
+  // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
   const [loadingMore, setLoadingMore] = useState(false)
   const loadingMoreRef = useRef(false)
 
@@ -56,7 +56,7 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
     return () => ac.abort()
   }, [load])
 
-  // Re-union page 1 into the list without disturbing the paging cursor / Load-more state (t113).
+  // Re-union page 1 into the list without disturbing the paging cursor / Load-more state (t135).
   // No-ops unless "ready"; mergeConversations returns the same ref when nothing changed, so we skip
   // the setState (and its re-render) then. Errors are swallowed — a failed refresh keeps the list.
   const refresh = useCallback(() => {
@@ -69,7 +69,7 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
         })
       })
       .catch(() => {
-        // Silent (t113) — the last-good list stays put.
+        // Silent (t135) — the last-good list stays put.
       })
   }, [])
 
@@ -129,7 +129,7 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
       })
   }, [state])
 
-  // Infinite scroll (t114): auto-load the next page when a bottom sentinel scrolls into view,
+  // Infinite scroll (t136): auto-load the next page when a bottom sentinel scrolls into view,
   // replacing the manual "Load more" button. A ref holds the latest loadMore so the observer is
   // built once per cursor-presence change (not per appended row); rootMargin prefetches ahead of
   // the true bottom so paging feels seamless. Observer root defaults to the viewport — the list

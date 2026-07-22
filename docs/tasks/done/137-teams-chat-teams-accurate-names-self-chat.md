@@ -1,8 +1,8 @@
-# 115 — teams chat: Teams-accurate group naming (given names) + show the self "Notes" chat
+# 137 — teams chat: Teams-accurate group naming (given names) + show the self "Notes" chat
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t109 (name resolution)
+- **Depends on:** t131 (name resolution)
 
 ## Goal
 
@@ -78,7 +78,7 @@ Real Teams left-rail titles (`role="treeitem"` text / `graph /me`):
 - **`chat/src/lib/teams-client.ts`**: widen the `kind` union to include `"self"`.
 - **`chat/src/lib/conversation-view.ts`**: `conversationLabel` — kind `"self"` fallback → "Notes"
   (title from the server normally wins).
-- **New ADR needed?** No — within ADR-0018.
+- **New ADR needed?** No — within ADR-0019.
 
 ## Out of scope
 
@@ -94,7 +94,7 @@ Real Teams left-rail titles (`role="treeitem"` text / `graph /me`):
 - [ ] Layer 3 shot.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/chat build clean.
 - [ ] CLAUDE.md updated (Teams naming: given-name group rule + self-notes chat). No AI attribution.
-- [ ] Task → done, moved to `done/`, `t115` in commit.
+- [ ] Task → done, moved to `done/`, `t137` in commit.
 
 ## Notes
 

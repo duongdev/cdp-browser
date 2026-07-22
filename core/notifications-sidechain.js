@@ -28,7 +28,7 @@ const {
   markStale,
   redact,
 } = require("./slack-creds")
-// Teams messaging creds are a PARALLEL path (t105, ADR-0018), not a genericization of the
+// Teams messaging creds are a PARALLEL path (t127, ADR-0019), not a genericization of the
 // Slack helpers above — the mint chains differ (Slack scrapes a static session token; Teams
 // reads a ~1h MSAL bearer then authz-mints a skype token). Kept as two impls on purpose.
 const {
@@ -52,7 +52,7 @@ const CDP_CALL_TIMEOUT_MS = 10_000
 // still-non-OPEN socket past this threshold is genuinely stuck.
 const SIDECHANNEL_STALE_MS = 15_000
 
-// ---- Teams messaging-cred in-page scripts (t105, ADR-0018) ----------------
+// ---- Teams messaging-cred in-page scripts (t127, ADR-0019) ----------------
 // CA-proof design: every Teams HTTPS call runs IN-PAGE (the browser makes its own
 // authenticated fetch from its session + egress IP), so a Conditional-Access policy binding
 // tokens to the compliant device/IP can't reject them. The server only orchestrates + persists
@@ -104,7 +104,7 @@ const ADAPTERS = [
     // Served from the app's own origin (t086): external favicon CDNs are blocked by a
     // corporate TLS-intercepting proxy / need auth, so they silently failed to load on the phone.
     iconUrl: "/icons/teams.svg",
-    // Teams also drives the standalone chat app (ADR-0018 "teams-chat-app"): the side-channel dumps
+    // Teams also drives the standalone chat app (ADR-0019 "teams-chat-app"): the side-channel dumps
     // the MSAL bearer + authz-mints a skype token IN-PAGE for the messaging API. Web build only —
     // gated by the server passing `onTeamsCreds` (Electron never does, so it structurally stubs).
     extractTeamsCreds: true,
@@ -174,7 +174,7 @@ function createNotificationCenter(deps) {
   // `team_is_restricted`). For these the hijack falls back to writing entries directly,
   // since the sweep can't cover them.
   const sweepDisabledTeams = new Set()
-  // Teams messaging creds keyed by AAD tenant (t105, ADR-0018) — a PARALLEL map to credsByTeam,
+  // Teams messaging creds keyed by AAD tenant (t127, ADR-0019) — a PARALLEL map to credsByTeam,
   // never a shared generic. Each: { tenant, userId, bearer, bearerExp, skypeToken,
   // chatServiceBase, trouterUrl, fresh, lastError }. Read by the /api/teams/* routes; the
   // bearer/skypeToken are the user's own secrets and are never logged in full (redactTeams).
@@ -333,7 +333,7 @@ function createNotificationCenter(deps) {
         credSockets.set(target.id, { cdpCall, target })
         extractSlackCreds(cdpCall, target).catch(() => {})
       }
-      // Teams only (t105): mint the messaging creds for the chat app. Keep the live cdpCall
+      // Teams only (t127): mint the messaging creds for the chat app. Keep the live cdpCall
       // handle so a 401 can re-mint and a route can run an in-page fetch over this same socket.
       if (adapter.extractTeamsCreds && deps.onTeamsCreds) {
         teamsCredSockets.set(target.id, { cdpCall, target })
@@ -407,7 +407,7 @@ function createNotificationCenter(deps) {
     return false
   }
 
-  // ---- Teams messaging-cred mint (t105, ADR-0018) --------------------------
+  // ---- Teams messaging-cred mint (t127, ADR-0019) --------------------------
   function recordTeamsCreds(fields) {
     const prev = credsByTenant.get(fields.tenant)
     const rec = markTeamsFresh(prev || {}, fields)
@@ -578,7 +578,7 @@ function createNotificationCenter(deps) {
     },
     // Force a re-extraction over any live Slack socket (t099) — exposed for the server + tests.
     refreshCreds,
-    // Teams messaging-cred accessors (t105, ADR-0018) — parallel to the Slack ones above; the
+    // Teams messaging-cred accessors (t127, ADR-0019) — parallel to the Slack ones above; the
     // /api/teams/* routes read these. getTeamsCreds/listTeamsCreds return the minted record;
     // markTeamsCredsStale flips fresh→false then re-mints over a live tab (returns that promise
     // so a synchronous route can await the one re-authz retry); runInTeamsPage executes an

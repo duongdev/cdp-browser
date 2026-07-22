@@ -1,8 +1,8 @@
-# 118 — teams chat render fixes: mention-run merge + media dimension reservation (no scroll shift)
+# 140 — teams chat render fixes: mention-run merge + media dimension reservation (no scroll shift)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t111 (render), t117 (media)
+- **Depends on:** t133 (render), t139 (media)
 
 ## Goal
 
@@ -56,7 +56,7 @@ Two user-reported gaps on shipped surfaces:
 
 - [x] Layer 1 green (1245 tests). typecheck / biome (touched) / chat build / `node --check` clean.
 - [x] Live-verified. CLAUDE.md updated. No AI attribution.
-- [x] Task → done, `t118` in commit.
+- [x] Task → done, `t140` in commit.
 
 ## Notes
 

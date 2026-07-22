@@ -1,13 +1,13 @@
-// Typed client for the Teams chat backend (t106/t107, ADR-0018). The authenticated conversation
+// Typed client for the Teams chat backend (t128/t129, ADR-0019). The authenticated conversation
 // list (`GET /api/teams/conversations`) plus one conversation's history (`POST /api/teams/history`).
-// Kept behind this thin seam so t109 (live sync) extends it instead of re-fetching ad hoc.
+// Kept behind this thin seam so t131 (live sync) extends it instead of re-fetching ad hoc.
 
 /** One conversation row as the server's `listConversations` returns it (core/teams-store.js). */
 export interface TeamsConversation {
   id: string
   /** `self` is the Teams "Notes" chat-with-yourself (id `48:notes`). */
   kind: "oneOnOne" | "group" | "self"
-  /** Resolved display title (t109): real member names for a topic-less DM/group-DM, else the
+  /** Resolved display title (t131): real member names for a topic-less DM/group-DM, else the
    *  topic. Server-computed and best-effort — absent when name resolution failed. */
   title?: string
   topic: string | null
@@ -20,7 +20,7 @@ export interface TeamsConversation {
 
 interface ConversationsResponse {
   conversations?: TeamsConversation[]
-  /** Opaque backwardLink for the next older page; null when there are no more (t112). */
+  /** Opaque backwardLink for the next older page; null when there are no more (t134). */
   cursor?: string | null
   error?: string
 }
@@ -42,7 +42,7 @@ export class TeamsApiError extends Error {
   }
 }
 
-/** One page of the conversation list (t112). No `cursor` → the newest page; a `cursor` (the prior
+/** One page of the conversation list (t134). No `cursor` → the newest page; a `cursor` (the prior
  *  page's backwardLink) → the next older page. Returns the page + the next cursor (null = end). */
 export async function fetchConversations(
   cursor?: string | null,
@@ -61,7 +61,7 @@ export async function fetchConversations(
   return { conversations: data.conversations ?? [], cursor: data.cursor ?? null }
 }
 
-/** A file / call-recording / Swift-card chip parsed from a message (t119). `url` opens in a new tab
+/** A file / call-recording / Swift-card chip parsed from a message (t141). `url` opens in a new tab
  *  (SharePoint files ride the browser's SSO); `thumbnailUrl` is already media-proxied when it's AMS. */
 export interface TeamsAttachment {
   kind: "file" | "recording" | "card"
@@ -72,14 +72,14 @@ export interface TeamsAttachment {
   title?: string
 }
 
-/** One reaction bucket on a message (t120): a named Teams emotion key resolved to a display emoji,
+/** One reaction bucket on a message (t142): a named Teams emotion key resolved to a display emoji,
  *  the reactor count, and whether the viewer is one of them. */
 export interface TeamsReaction {
   key: string
   emoji: string
   count: number
   mine: boolean
-  /** Display names of the OTHER reactors, server-resolved best-effort for the hover tooltip (t121).
+  /** Display names of the OTHER reactors, server-resolved best-effort for the hover tooltip (t143).
    *  Excludes the viewer (shown as "You" when `mine`); absent when none resolved. May be shorter than
    *  `count` — unresolved MRIs are omitted, so the tooltip appends "and N more". */
   reactorNames?: string[]
@@ -96,23 +96,23 @@ export interface TeamsMessage {
   self: boolean
   edited: boolean
   deleted: boolean
-  /** File / recording / card chips (t119); absent when the message has none. */
+  /** File / recording / card chips (t141); absent when the message has none. */
   attachments?: TeamsAttachment[]
-  /** Reaction chips (t120); absent when the message has none. */
+  /** Reaction chips (t142); absent when the message has none. */
   reactions?: TeamsReaction[]
-  /** Client-only optimistic image preview (t123): a local object-URL shown until the poll replaces
+  /** Client-only optimistic image preview (t145): a local object-URL shown until the poll replaces
    *  this message with the server's rendered AMSImage. Never set by the server. */
   localImageUrl?: string
 }
 
 interface HistoryResponse {
   messages?: TeamsMessage[]
-  /** Opaque backwardLink for the next older page; null when there are no more (t112). */
+  /** Opaque backwardLink for the next older page; null when there are no more (t134). */
   cursor?: string | null
   error?: string
 }
 
-/** One page of a conversation's history plus the cursor to page older (null = end, t112). */
+/** One page of a conversation's history plus the cursor to page older (null = end, t134). */
 export interface HistoryPage {
   messages: TeamsMessage[]
   cursor: string | null
@@ -141,7 +141,7 @@ export interface SendReplyResult {
   clientmessageid: string
 }
 
-/** Send a text reply to a conversation (t108). Throws TeamsApiError with the server's typed code
+/** Send a text reply to a conversation (t130). Throws TeamsApiError with the server's typed code
  *  on failure so the composer can retain the draft and show honest copy. */
 export async function sendReply(convId: string, text: string): Promise<SendReplyResult> {
   const res = await fetch("/api/teams/reply", {
@@ -156,7 +156,7 @@ export async function sendReply(convId: string, text: string): Promise<SendReply
   return data
 }
 
-/** Add (`remove` false) or remove (`remove` true) the viewer's reaction on a message (t120). The
+/** Add (`remove` false) or remove (`remove` true) the viewer's reaction on a message (t142). The
  *  server PUT/DELETEs the emotions property IN-PAGE. Best-effort like `markRead` — the optimistic UI
  *  already updated and the next poll reconciles, so a failure here is swallowed. */
 export async function react(
@@ -176,7 +176,7 @@ export async function react(
   }
 }
 
-/** Edit the viewer's own message text (t122). The server PUTs the new RichText/Html content IN-PAGE.
+/** Edit the viewer's own message text (t144). The server PUTs the new RichText/Html content IN-PAGE.
  *  Throws TeamsApiError with the server's typed code on failure so the editor can keep the draft +
  *  show honest copy (like `sendReply`); the optimistic edit + next poll otherwise reconcile. */
 export async function editMessage(convId: string, msgId: string, text: string): Promise<void> {
@@ -191,7 +191,7 @@ export async function editMessage(convId: string, msgId: string, text: string): 
   }
 }
 
-/** Delete the viewer's own message (t122). The server DELETEs it IN-PAGE, leaving Teams' tombstone.
+/** Delete the viewer's own message (t144). The server DELETEs it IN-PAGE, leaving Teams' tombstone.
  *  Throws TeamsApiError on failure so the UI can react; the optimistic tombstone + next poll's
  *  server-wins merge otherwise reconcile (a failed delete restores the message). */
 export async function deleteMessage(convId: string, msgId: string): Promise<void> {
@@ -236,7 +236,7 @@ function imageDimensions(file: File): Promise<{ width: number; height: number }>
   })
 }
 
-/** Upload a pasted/picked image to Teams' AMS store and post it inline (t123). Reads the file as
+/** Upload a pasted/picked image to Teams' AMS store and post it inline (t145). Reads the file as
  *  base64 + its natural dimensions client-side, then POSTs the one atomic endpoint (create → PUT
  *  bytes → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer keeps
  *  the pending image + caption. Returns the sent message's id (its arrival ts). */
@@ -271,7 +271,7 @@ export async function uploadImage(
 }
 
 /** Upload a pasted/picked non-image file to the user's SharePoint drive and post it as a chip
- *  (t124). Reads the file as base64 client-side, then POSTs the one atomic endpoint (PUT bytes →
+ *  (t146). Reads the file as base64 client-side, then POSTs the one atomic endpoint (PUT bytes →
  *  createLink → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer
  *  keeps the pending file + caption. Returns the sent message's id (its arrival ts). */
 export async function uploadFile(
@@ -302,7 +302,7 @@ export async function uploadFile(
   return { msgId: data.msgId }
 }
 
-/** Write-through mark-read (t108, Q9 hybrid): push the conversation's read horizon to Teams.
+/** Write-through mark-read (t130, Q9 hybrid): push the conversation's read horizon to Teams.
  *  Best-effort — the server never fails this, and a network error here must never surface, so
  *  it swallows everything. Called after a successful reply (and on an explicit mark-read). */
 export async function markRead(convId: string, msgId: string, ts: string): Promise<void> {

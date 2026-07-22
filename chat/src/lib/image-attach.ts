@@ -1,4 +1,4 @@
-// Clipboard/file picking for the composer (t123 image, t124 any file). Pure: given a paste event's
+// Clipboard/file picking for the composer (t145 image, t146 any file). Pure: given a paste event's
 // items, return the first item backed by a File (image OR any other file), else null — so a text
 // paste (string items, no backing File) falls through to the textarea untouched. The effectful
 // base64/dimension reads live in teams-client.ts.

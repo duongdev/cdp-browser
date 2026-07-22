@@ -1,4 +1,4 @@
-// Sent-image content builder for the Teams chat backend (t123, ADR-0018). An image pasted/picked in
+// Sent-image content builder for the Teams chat backend (t145, ADR-0019). An image pasted/picked in
 // the composer is uploaded to Teams' AMS store (create object → PUT bytes, IN-PAGE), then posted as a
 // RichText/Html message whose body is an AMSImage <img> pointing at the object's display view. This
 // module is the pure builder for that body (the effectful upload/send live in web/server.mjs). The

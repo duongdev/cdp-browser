@@ -1,8 +1,8 @@
-# 110 — teams chat instant channel switch + scroll-persist (keep-alive threads)
+# 132 — teams chat instant channel switch + scroll-persist (keep-alive threads)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t107 (thread pane), t109 (names)
+- **Depends on:** t129 (thread pane), t131 (names)
 - **Blocks:** UI polish
 
 ## Goal
@@ -59,11 +59,11 @@ and capped (bounded keep-alive set, evict least-recently-viewed).
   mirroring `closed-tabs.ts`'s bounded stack.
 - Pure model + effectful render split (like `active-order.ts` / `tab-lifecycle.ts`):
   `thread-keepalive.ts` decides mount/evict; `chat-app.tsx` renders it.
-- No backend, no new API. Covered by ADR-0018.
+- No backend, no new API. Covered by ADR-0019.
 
 ## Out of scope
 
-- Live-updating a mounted-but-hidden thread with new messages (that's t109-sweep/realtime).
+- Live-updating a mounted-but-hidden thread with new messages (that's t131-sweep/realtime).
 - Rich-HTML render, list pagination, UI polish (separate tasks).
 
 ## Definition of Done
@@ -71,7 +71,7 @@ and capped (bounded keep-alive set, evict least-recently-viewed).
 - [ ] Layer 1 green; Layer 3 scroll-persist + instant-switch screenshots.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`chat:build`/`/` build unchanged.
 - [ ] CLAUDE.md updated (keep-alive threads). No AI attribution / console debris.
-- [ ] Task → done, moved to `done/`, `t110` in commit.
+- [ ] Task → done, moved to `done/`, `t132` in commit.
 
 ## Notes
 

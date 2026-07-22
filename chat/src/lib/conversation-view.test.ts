@@ -15,7 +15,7 @@ const conv = (over: Partial<TeamsConversation>): TeamsConversation => ({
 })
 
 describe("conversationLabel", () => {
-  it("prefers the resolved title over the topic (t109)", () => {
+  it("prefers the resolved title over the topic (t131)", () => {
     expect(conversationLabel(conv({ title: "Alice, Bob", topic: "Release planning" }))).toBe(
       "Alice, Bob",
     )

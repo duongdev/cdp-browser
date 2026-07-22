@@ -1,4 +1,4 @@
-// Reply plumbing for the thread composer (t108, ADR-0018). Mirrors src/lib/slack-reply.ts:
+// Reply plumbing for the thread composer (t130, ADR-0019). Mirrors src/lib/slack-reply.ts:
 // the reply-target selector (the SINGLE owner of where a reply lands — kept as a seam even
 // though Teams chats are flat, so a future threaded surface changes only this) and the composer
 // send-state reducer (honest failure: the draft survives, the error is typed). The effectful

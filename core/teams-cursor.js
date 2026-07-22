@@ -1,4 +1,4 @@
-// Pagination-cursor security gate for the Teams chat backend (t112, ADR-0018). Older pages are
+// Pagination-cursor security gate for the Teams chat backend (t134, ADR-0019). Older pages are
 // loaded by fetching the previous response's `_metadata.backwardLink` — a FULL URL the server
 // fetches IN-PAGE with the skypetoken. A client supplies that cursor back to page further, so a
 // malicious/garbled cursor must not be able to make the server fetch an arbitrary URL (skypetoken

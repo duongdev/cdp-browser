@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-// Pure DM/group-DM name helpers (t109, ADR-0018). No CDP, no network — the effectful roster +
+// Pure DM/group-DM name helpers (t131, ADR-0019). No CDP, no network — the effectful roster +
 // Graph resolution lives in web/server.mjs; these are the id parsers + title composer.
 import { composeTitle, oidFromMri, otherMrisFromId } from "./teams-names"
 

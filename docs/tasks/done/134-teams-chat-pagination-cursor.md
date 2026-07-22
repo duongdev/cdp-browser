@@ -1,14 +1,14 @@
-# 112 — teams chat pagination: syncState/backwardLink cursor (thread scroll-back + list load-more)
+# 134 — teams chat pagination: syncState/backwardLink cursor (thread scroll-back + list load-more)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t107 (thread), t109 (list)
+- **Depends on:** t129 (thread), t131 (list)
 - **Blocks:** UI polish
 
 ## Goal
 
 Thread scroll-back actually loads older messages, and the conversation list loads more
-past the first page — both via Teams' real cursor. User feedback #1. t107's thread
+past the first page — both via Teams' real cursor. User feedback #1. t129's thread
 scroll-back used `startTime=<ts>` which is the WRONG mechanism (silently no-ops / re-returns
 the same page); replace it with the real cursor.
 
@@ -35,7 +35,7 @@ the same page); replace it with the real cursor.
   (null = no older). Keep the render + upsert. (Remove the `before`/`startTime` param path.)
 - **`web/server.mjs` `POST /api/teams/conversations`** (or keep GET + optional cursor) —
   return `{ conversations, cursor }`; accept `{ cursor }` for the next page (validate + fetch
-  the conversations `backwardLink`). Name-resolution enrichment (t109) runs per page.
+  the conversations `backwardLink`). Name-resolution enrichment (t131) runs per page.
 - **`chat/src/lib/teams-client.ts`** — `fetchHistory(convId, cursor?)` → `{ messages, cursor }`;
   `fetchConversations(cursor?)` → `{ conversations, cursor }`.
 - **`chat/src/components/thread-view.tsx`** — hold the older-cursor; scroll-to-top with a
@@ -70,7 +70,7 @@ the same page); replace it with the real cursor.
 
 - The cursor is opaque (a full MS URL) — pass it through client↔server as a string, never
   parse/trust it beyond the host-prefix gate. Prefer whitelisting the host over reconstructing.
-- Replaces t107's `before`/`startTime` older-page path. Covered by ADR-0018.
+- Replaces t129's `before`/`startTime` older-page path. Covered by ADR-0019.
 
 ## Out of scope
 
@@ -82,10 +82,10 @@ the same page); replace it with the real cursor.
 - [ ] Layer 1 green (incl. the cursor-validation reject case); Layer 2 live; Layer 3 shots.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/`chat:build`/`/` build unchanged.
 - [ ] CLAUDE.md updated (cursor pagination + the security gate). No AI attribution / console debris.
-- [ ] Task → done, moved to `done/`, `t112` in commit.
+- [ ] Task → done, moved to `done/`, `t134` in commit.
 
 ## Notes
 
 - Worktree: docs on main, code on feature branch (2-commit ship); never `git add -A`;
   `--no-verify` (rtk breaks pre-commit). backwardLink/syncState cursor PROVEN live; ts fields
-  render fine already (t107). Guard the cursor host — skypetoken rides the in-page fetch.
+  render fine already (t129). Guard the cursor host — skypetoken rides the in-page fetch.

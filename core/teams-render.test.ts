@@ -19,7 +19,7 @@ const msg = (over = {}) => ({
   ...over,
 })
 
-// renderBody now emits RICH HTML (t111): the site-authored Teams HTML is kept mention-resolved and
+// renderBody now emits RICH HTML (t133): the site-authored Teams HTML is kept mention-resolved and
 // entity-intact. It is NOT sanitized here — the renderer sanitizes with DOMPurify before it hits the
 // DOM (sanitize-message.ts). So these tests assert markup is PRESERVED, not stripped.
 describe("renderBody — rich HTML, mention-resolved", () => {
@@ -91,11 +91,11 @@ describe("renderBody — rich HTML, mention-resolved", () => {
   })
 })
 
-// FIX A (t118): Teams splits one person's @mention into per-token spans (each name word its own
+// FIX A (t140): Teams splits one person's @mention into per-token spans (each name word its own
 // itemtype-Mention span), and properties.mentions maps EVERY itemid of the run to the SAME mri. A
 // run of adjacent same-person spans must collapse into ONE pill; two genuinely different people
 // stay two pills; without the mentions prop nothing merges (distinct itemids → distinct keys).
-describe("renderBody — mention run merging (t118)", () => {
+describe("renderBody — mention run merging (t140)", () => {
   const span = (id, text) =>
     `<span itemscope itemtype="http://schema.skype.com/Mention" itemid="${id}">${text}</span>`
 
@@ -172,7 +172,7 @@ describe("renderBody — card / attachment chip", () => {
   })
 })
 
-// t119: file attachments + call-recording / Swift-card chips. `properties.files` arrives as a JSON
+// t141: file attachments + call-recording / Swift-card chips. `properties.files` arrives as a JSON
 // STRING (like properties.mentions), so it MUST be parsed defensively. Call-recording + Swift cards
 // live as <URIObject> blocks in `content` whose inner text renders as garbage — parse them into
 // chips and strip the block from the rendered body. AMS thumbnails route through the media proxy.
@@ -266,7 +266,7 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
   })
 })
 
-describe("renderBody — URIObject blocks (t119)", () => {
+describe("renderBody — URIObject blocks (t141)", () => {
   it("renders empty for a call-recording-only body (no garbled inner text)", () => {
     const content =
       '<URIObject type="Video.2/CallRecording.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/thumbnail_small">Card - access it on go.skype.com/cards.unsupported</URIObject>'
@@ -324,7 +324,7 @@ describe("parseEmotions", () => {
     ])
   })
 
-  it("parses emotions delivered as a JSON string (the t118 mention trap)", () => {
+  it("parses emotions delivered as a JSON string (the t140 mention trap)", () => {
     const message = emo({
       properties: {
         emotions: JSON.stringify([{ key: "laugh", users: [{ mri: "8:orgid:X" }] }]),

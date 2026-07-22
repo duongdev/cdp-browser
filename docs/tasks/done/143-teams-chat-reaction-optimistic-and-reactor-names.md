@@ -1,12 +1,12 @@
-# 121 — teams chat reactions: optimistic that sticks + who-reacted on hover
+# 143 — teams chat reactions: optimistic that sticks + who-reacted on hover
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t120 (reactions)
+- **Depends on:** t142 (reactions)
 
 ## Goal
 
-Two user-reported gaps on t120:
+Two user-reported gaps on t142:
 1. **Optimistic reaction gets clobbered** — clicking a reaction shows it, then it disappears and
    reappears on the next poll. The 4s poll's `mergeMessages` (server-wins) overwrites the optimistic
    reaction with the server's still-stale view (Teams hasn't propagated the reaction yet).
@@ -68,7 +68,7 @@ overlay** that is re-applied after every merge until the server confirms.
 
 - The overlay is keyed by (msgId, key) and self-heals: it stops the moment the server reflects the
   desired state, so it can't mask a later real change. The ~20s timeout guards a failed write.
-- Resolving reactor names reuses the t109 users cache + Graph batch — no new resolution path. Keep it
+- Resolving reactor names reuses the t131 users cache + Graph batch — no new resolution path. Keep it
   cache-first so the 4s poll doesn't add Graph latency once warm.
 - No new ADR.
 
@@ -82,7 +82,7 @@ overlay** that is re-applied after every merge until the server confirms.
 - [ ] Layer 1 green. Layer 2 live-verified (optimistic survives + names on hover), test reactions cleaned.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/chat build clean.
 - [ ] CLAUDE.md updated (optimistic overlay + reactor-name tooltip). No AI attribution.
-- [ ] Task → done, `t121` in commit.
+- [ ] Task → done, `t143` in commit.
 
 ## Notes
 

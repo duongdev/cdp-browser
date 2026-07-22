@@ -1,4 +1,4 @@
-// Sent-file content builder for the Teams chat backend (t124, ADR-0018). A non-image file
+// Sent-file content builder for the Teams chat backend (t146, ADR-0019). A non-image file
 // pasted/picked in the composer is uploaded to the user's SharePoint "Microsoft Teams Chat Files"
 // folder (PUT bytes → createLink, IN-PAGE), then posted as a RichText/Html message whose
 // properties.files carries this one SharePoint file descriptor — Teams renders the chip from it,

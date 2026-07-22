@@ -1,4 +1,4 @@
-/** Keep-alive state for mounted thread panes (t110). `mounted` is MRU order
+/** Keep-alive state for mounted thread panes (t132). `mounted` is MRU order
  *  (oldest → newest); `active` is the conversation currently shown (last opened). */
 export interface KeepAliveState {
   mounted: string[]

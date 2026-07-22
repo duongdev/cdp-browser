@@ -1,8 +1,8 @@
-# 111 — teams chat rich-HTML message render (DOMPurify sanitized subset)
+# 133 — teams chat rich-HTML message render (DOMPurify sanitized subset)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t107 (thread + teams-render), t109 (names)
+- **Depends on:** t129 (thread + teams-render), t131 (names)
 - **Blocks:** UI polish
 
 ## Goal
@@ -22,7 +22,7 @@ server core.
   **mention-resolved, entity-intact HTML** (resolve `<at id=…>Name</at>`/`<span itemtype=…>`
   to a stable mention markup e.g. `<span class="mention">@Name</span>`; keep the rest of the
   Teams HTML; DO decode nothing that would create tags). Cards/attachments still degrade to a
-  `[card]` chip (t112 renders them). Keep the separate plain-text **`previewLine`** for the
+  `[card]` chip (t134 renders them). Keep the separate plain-text **`previewLine`** for the
   conversation-list preview (previews stay plain — no rich). Update the TDD.
 - **`chat/src/lib/sanitize-message.ts`** (renderer, TDD-able with a jsdom-free unit via
   DOMPurify's `isSupported` guard, else covered visually): one memoized configured DOMPurify
@@ -62,11 +62,11 @@ server core.
 - Server passes untrusted HTML; the CLIENT sanitize is the security boundary — message-row
   must NEVER render `m.body` without `sanitize`. Keep that invariant loud in the code.
 - previewLine stays the plain-text reducer (list rows + notifications want no markup).
-- Covered by ADR-0018; note the DOMPurify adoption (research trigger #1 reached).
+- Covered by ADR-0019; note the DOMPurify adoption (research trigger #1 reached).
 
 ## Out of scope
 
-- Adaptive cards render (t112 — still a chip). Attachments/file previews (t111-ish? no —
+- Adaptive cards render (t134 — still a chip). Attachments/file previews (t133-ish? no —
   later). Link unfurling/previews. Markdown (Teams is HTML, not markdown).
 
 ## Definition of Done
@@ -74,7 +74,7 @@ server core.
 - [ ] Layer 1 green (incl. XSS cases); Layer 3 rich-render screenshot.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`chat:build`/`/` build unchanged.
 - [ ] CLAUDE.md updated (rich render + DOMPurify boundary). No AI attribution / console debris.
-- [ ] Task → done, moved to `done/`, `t111` in commit.
+- [ ] Task → done, moved to `done/`, `t133` in commit.
 
 ## Notes
 

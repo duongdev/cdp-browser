@@ -1,9 +1,9 @@
-# 108 — teams reply: text composer + send + write-through mark-read
+# 130 — teams reply: text composer + send + write-through mark-read
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t105 (creds + in-page seam), t106 (shell), t107 (thread pane + teams-render)
-- **Blocks:** t109 (sweep — needs the `clientmessageid` echo-dedup this task introduces), t110 (rich compose)
+- **Depends on:** t127 (creds + in-page seam), t128 (shell), t129 (thread pane + teams-render)
+- **Blocks:** t131 (sweep — needs the `clientmessageid` echo-dedup this task introduces), t132 (rich compose)
 
 ## Goal
 
@@ -28,7 +28,7 @@ Teams mobile/desktop/badge clear too. Send is **proven live** (self-chat `48:not
   body `{ content:text, messagetype:"Text", contenttype:"text", clientmessageid:<random>,
   imdisplayname:<displayName>, properties:{} }` → 201 `{ OriginalArrivalTime }` (= the msg
   id) → return `{ ok:true, ts, clientmessageid }`. 401 → `markTeamsCredsStale` + one retry →
-  typed `invalid_auth`. **Return the `clientmessageid`** so t109's sweep can dedup the echo.
+  typed `invalid_auth`. **Return the `clientmessageid`** so t131's sweep can dedup the echo.
 - **Write-through mark-read** — `POST /api/teams/mark-read` `{ convId, msgId, ts }` (or fold
   into the reply handler): in-page `PUT {chatServiceBase}/v1/users/ME/conversations/{convId}/properties?name=consumptionhorizon`
   with `{ consumptionhorizon: "{msgId};{ts};{clientmessageid|0}" }` (VERIFY the exact
@@ -70,14 +70,14 @@ Teams mobile/desktop/badge clear too. Send is **proven live** (self-chat `48:not
 - `reduceSend` mirrors `slack-reply.ts` exactly (same composer contract) so the thread view
   is source-agnostic. `selectReplyTarget` is the single owner of where a reply lands (flat
   convId for chats; the seam is where channel-thread logic would go later).
-- The `clientmessageid` is load-bearing for t109: the sweep will re-see this sent message, so
+- The `clientmessageid` is load-bearing for t131: the sweep will re-see this sent message, so
   it must dedup by `clientmessageid` — return + persist it now.
-- Covered by ADR-0018; no new ADR.
+- Covered by ADR-0019; no new ADR.
 
 ## Out of scope
 
-- Edit/delete own messages, reactions (t110). Attachments (t111). Rich-HTML compose/render
-  (the DOMPurify task). The poll sweep + echo-dedup wiring (t109 — t108 only ensures the
+- Edit/delete own messages, reactions (t132). Attachments (t133). Rich-HTML compose/render
+  (the DOMPurify task). The poll sweep + echo-dedup wiring (t131 — t130 only ensures the
   `clientmessageid` exists). Typing indicators / presence.
 
 ## Definition of Done
@@ -85,7 +85,7 @@ Teams mobile/desktop/badge clear too. Send is **proven live** (self-chat `48:not
 - [ ] Layer 1 green; Layer 2 smoke (live self-chat send + mark-read + cleanup); Layer 3 shots.
 - [ ] `pnpm check` (touched), `typecheck`, `test`, `node --check web/server.mjs`, `chat:build`, `/` build unchanged.
 - [ ] CLAUDE.md updated (reply + mark-read + composer). No AI attribution / console debris.
-- [ ] Task → done, moved to `done/`, `t108` in commit.
+- [ ] Task → done, moved to `done/`, `t130` in commit.
 
 ## Notes
 

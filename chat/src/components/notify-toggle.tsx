@@ -24,7 +24,7 @@ function pushCapable(): boolean {
   return !!standalone
 }
 
-/** Header bell that enables/disables Web Push for this device (t125). Hidden entirely when the
+/** Header bell that enables/disables Web Push for this device (t147). Hidden entirely when the
  *  environment can't do push (no APIs or a browser tab, not an installed PWA). Reflects the live
  *  subscription state; enabling requests notification permission first. */
 export function NotifyToggle() {

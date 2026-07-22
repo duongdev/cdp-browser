@@ -1,8 +1,8 @@
-// Pure Teams message rendering for the chat app (t107/t111, ADR-0018). Mirrors core/slack-render.js:
+// Pure Teams message rendering for the chat app (t129/t133, ADR-0019). Mirrors core/slack-render.js:
 // turns a raw Teams messages-API object into the source-agnostic ReaderMessage shape the thread
 // view renders, and composes a conversation title. No I/O, no DOM — tested by teams-render.test.ts.
 //
-// SANITIZE STRATEGY (t111): Teams message `content` is site-authored HTML, and we render it RICH
+// SANITIZE STRATEGY (t133): Teams message `content` is site-authored HTML, and we render it RICH
 // (bold/italic/links/mentions/emoji/code/lists/quotes). This module is PURE and does NOT sanitize —
 // it only resolves Teams' mention/emoji encodings into stable, style-able nodes and leaves the rest
 // of the HTML (and its entities) intact. The XSS boundary is the RENDERER: sanitize-message.ts runs
@@ -49,7 +49,7 @@ const RUN = new RegExp(
 // Both carry the display name as inner text; we keep that name (any inner tags stripped, entities
 // left intact) and drop every site-authored mention attribute (id/itemid/itemscope).
 //
-// Teams splits ONE person's @mention into per-token spans (t118) — "@Glory Nguyen - Group Office [C]"
+// Teams splits ONE person's @mention into per-token spans (t140) — "@Glory Nguyen - Group Office [C]"
 // arrives as 6 adjacent Mention spans, and properties.mentions maps EVERY one of their itemids to the
 // SAME person's mri. So a RUN of adjacent same-person spans (grouped by mri, else by itemid) collapses
 // into one pill. `mentionMri` is the itemid→mri map (string keys) built by renderBody; without it each
@@ -104,7 +104,7 @@ function tagEmoji(html) {
 }
 
 // Does the rendered HTML carry anything visible (text or an image)? An empty/whitespace-only body
-// (e.g. `<p></p>`) falls back to the attachment chip, matching the pre-t111 behavior.
+// (e.g. `<p></p>`) falls back to the attachment chip, matching the pre-t133 behavior.
 function hasVisibleText(html) {
   if (/<img\b/i.test(html)) return true
   return (
@@ -115,7 +115,7 @@ function hasVisibleText(html) {
   )
 }
 
-// A card (adaptive card, deferred to t112) or file attachment → a chip placeholder.
+// A card (adaptive card, deferred to t134) or file attachment → a chip placeholder.
 function attachmentChip(message) {
   const props = message.properties || {}
   if (props.cards) return "[card]"
@@ -127,12 +127,12 @@ function attachmentChip(message) {
   return ""
 }
 
-// ---- reactions (t120) -----------------------------------------------------
+// ---- reactions (t142) -----------------------------------------------------
 // Parse `properties.emotions` — `[{ key, users: [{ mri, time, value }] }]` — into flat reaction
 // descriptors `{ key, emoji, count, mine, userMris }`. Like properties.mentions/files it may arrive
-// as a JSON STRING (the t118 trap), so parse defensively. A key with zero reactors is dropped (Teams
+// as a JSON STRING (the t140 trap), so parse defensively. A key with zero reactors is dropped (Teams
 // leaves an empty `users` row behind after a remove). `mine` is true when the viewer's oid is among
-// the mris. `userMris` carries the reactor MRIs (capped, t121) so the server can resolve them to
+// the mris. `userMris` carries the reactor MRIs (capped, t143) so the server can resolve them to
 // names for the hover tooltip; `count` stays the exact reactor total.
 const REACTOR_MRI_CAP = 25
 function parseEmotions(message, selfId) {
@@ -167,11 +167,11 @@ function parseEmotions(message, selfId) {
 }
 
 // itemid→mri map from properties.mentions ({ itemid, mri, displayName }[]); itemids normalize to
-// string keys. Drives the same-person run merge in resolveMentions (t118).
+// string keys. Drives the same-person run merge in resolveMentions (t140).
 function mentionMriMap(message) {
   let list = message.properties?.mentions
   // Teams sends properties.mentions as a JSON STRING (not a parsed array) — parse it defensively so
-  // the itemid→mri map is populated and the same-person run merge fires (t118 shipped assuming an
+  // the itemid→mri map is populated and the same-person run merge fires (t140 shipped assuming an
   // array; live data is a string, so the map was empty and mentions rendered per-token).
   if (typeof list === "string") {
     try {
@@ -189,7 +189,7 @@ function mentionMriMap(message) {
   return map
 }
 
-// ---- attachments (t119) ---------------------------------------------------
+// ---- attachments (t141) ---------------------------------------------------
 // Teams delivers three attachment shapes the plain body can't render: file uploads (in a JSON-STRING
 // `properties.files`), call recordings, and Swift cards (both as <URIObject> blocks inside `content`
 // whose inner text renders as garbage). parseAttachments turns them into flat chip descriptors the
@@ -271,14 +271,14 @@ function stripUriObjects(html) {
   return html.replace(URIOBJECT_RE, "")
 }
 
-// Render a message body to mention-resolved, entity-intact HTML (t111). Real content wins over a
+// Render a message body to mention-resolved, entity-intact HTML (t133). Real content wins over a
 // chip so a message with both text and a file keeps its words; a body-less/empty card/file falls
 // back to the chip. HTML messagetypes keep their markup (mentions + emoji normalized); a literal
 // "Text" messagetype is HTML-escaped (angle brackets stay literal) with newlines as <br>.
 function renderBody(message) {
   // Strip <URIObject> blocks (call-recording / Swift card) FIRST, before the messagetype branch —
   // these messagetypes (RichText/Media_CallRecording, RichText/Media_Card) are NOT "html", so without
-  // stripping here they hit the escape branch and leak as literal `<URIObject …>` text (t119). The
+  // stripping here they hit the escape branch and leak as literal `<URIObject …>` text (t141). The
   // chip (parseAttachments) carries their meaning.
   const content = stripUriObjects(typeof message.content === "string" ? message.content : "")
   if (!content.trim()) return attachmentChip(message)
@@ -290,7 +290,7 @@ function renderBody(message) {
 }
 
 // Teams sender identity lives in the MRI (`8:orgid:<oid>`), which `from` carries either bare or as
-// the tail of a contacts URL. Return the bare MRI — the durable id for replies/avatars (t108).
+// the tail of a contacts URL. Return the bare MRI — the durable id for replies/avatars (t130).
 function senderIdOf(from) {
   if (typeof from !== "string" || !from) return ""
   const tail = from.split("/").pop() || from

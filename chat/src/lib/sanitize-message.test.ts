@@ -87,7 +87,7 @@ describe("sanitize — images", () => {
   })
 })
 
-describe("sanitize — media (t117)", () => {
+describe("sanitize — media (t139)", () => {
   it("keeps itemtype/width/height on an image (for the media-kind CSS)", () => {
     const out = sanitize(
       '<img itemtype="http://schema.skype.com/AMSImage" src="/api/teams/media?url=x" width="200" height="150">',

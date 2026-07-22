@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-// Pagination-cursor security gate (t112, ADR-0018). The cursor is a server-fetched IN-PAGE URL
+// Pagination-cursor security gate (t134, ADR-0019). The cursor is a server-fetched IN-PAGE URL
 // carrying the skypetoken, so only an https URL under the account's own chatServiceBase is safe.
 import { isValidTeamsCursor } from "./teams-cursor"
 

@@ -48,7 +48,7 @@ const QUICK_REACTIONS: readonly { key: string; emoji: string }[] = [
   { key: "angry", emoji: "😠" },
 ]
 
-// Hover tooltip listing who reacted (t121). The viewer is "You" (first) when `mine`; the rest are
+// Hover tooltip listing who reacted (t143). The viewer is "You" (first) when `mine`; the rest are
 // the server-resolved `reactorNames`. Names can be fewer than `count` (unresolved MRIs omitted), so
 // any shortfall becomes "and N more". Empty → no title (chip still shows emoji + count).
 function reactorTitle(r: TeamsReaction): string | undefined {
@@ -60,22 +60,22 @@ function reactorTitle(r: TeamsReaction): string | undefined {
 
 interface MessageRowProps {
   message: TeamsMessage
-  /** Toggle the viewer's reaction for `key` on this message (t120). `remove` true → leave it.
+  /** Toggle the viewer's reaction for `key` on this message (t142). `remove` true → leave it.
    *  The parent (thread-view) applies the optimistic update + fires the server call. */
   onReact?: (msgId: string, key: string, emoji: string, remove: boolean) => void
-  /** Edit the viewer's OWN message (t122). The parent optimistically updates the body + `edited`
+  /** Edit the viewer's OWN message (t144). The parent optimistically updates the body + `edited`
    *  and returns the client promise, so this row keeps the inline editor open + shows an error on a
    *  rejected write. Only passed for own, non-deleted messages. */
   onEdit?: (msgId: string, text: string) => Promise<void> | void
-  /** Delete the viewer's OWN message (t122). The parent optimistically tombstones it + fires the
+  /** Delete the viewer's OWN message (t144). The parent optimistically tombstones it + fires the
    *  best-effort call. Only passed for own, non-deleted messages. */
   onDelete?: (msgId: string) => void
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
- *  sender name. `body` is rich, site-authored HTML (t111) — bold/links/mentions/emoji/code/lists,
- *  plus inline media (t117: AMS images/video via the proxy, public-CDN emoji/GIF/sticker). File /
- *  call-recording / card chips (t119) render below the body; a chips-only message shows no bubble. */
+ *  sender name. `body` is rich, site-authored HTML (t133) — bold/links/mentions/emoji/code/lists,
+ *  plus inline media (t139: AMS images/video via the proxy, public-CDN emoji/GIF/sticker). File /
+ *  call-recording / card chips (t141) render below the body; a chips-only message shows no bubble. */
 export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps) {
   const { self, deleted } = message
   const time = relativeTime(message.ts)
@@ -86,10 +86,10 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
   const canReact = !deleted && !!onReact
-  // Own, non-deleted messages get the edit/delete menu (t122). A tombstone / others' message never does.
+  // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
   const canManage = self && !deleted && (!!onEdit || !!onDelete)
 
-  // Inline edit + delete-confirm state (t122).
+  // Inline edit + delete-confirm state (t144).
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
   const [saving, setSaving] = useState(false)
@@ -214,7 +214,7 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
               deleted && "italic opacity-70",
             )}
-            // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t111)
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
             dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
             onClick={onBodyClick}
           />
@@ -262,7 +262,7 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
         </AlertDialog>
       )}
       {message.localImageUrl && (
-        // Optimistic sent-image preview (t123): a local object-URL shown until the poll replaces this
+        // Optimistic sent-image preview (t145): a local object-URL shown until the poll replaces this
         // message with the server's rendered AMSImage. Not sanitized HTML — it's our own blob URL.
         <img
           alt=""
@@ -311,7 +311,7 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
   )
 }
 
-/** The react affordance beside a bubble (t120): a smiley that reveals the six-default quick-react
+/** The react affordance beside a bubble (t142): a smiley that reveals the six-default quick-react
  *  bar. Fine pointer → the smiley fades in on bubble hover; coarse pointer → it stays visible and a
  *  tap opens the bar (no hover to rely on). An open bar closes on an outside tap or after a pick. */
 function QuickReact({
@@ -371,7 +371,7 @@ function QuickReact({
   )
 }
 
-/** The own-message action affordance beside a bubble (t122): a ⋯ button that reveals an Edit/Delete
+/** The own-message action affordance beside a bubble (t144): a ⋯ button that reveals an Edit/Delete
  *  menu. Same reveal as QuickReact — fade-in on hover for a fine pointer, always-visible for coarse —
  *  and the same outside-tap catcher to dismiss (no document listener). */
 function MessageActions({
@@ -472,7 +472,7 @@ function fileIcon(type?: string): IconSvgElement {
 const CHIP_CLASS =
   "inline-flex max-w-full items-center gap-2 rounded-lg border bg-background/60 px-2.5 py-1.5 text-left text-xs text-foreground no-underline transition-colors hover:bg-accent"
 
-/** A file / call-recording / card chip below the message body (t119). A file opens SharePoint in a
+/** A file / call-recording / card chip below the message body (t141). A file opens SharePoint in a
  *  new tab; recordings/cards show a proxied thumbnail preview (no inline playback). */
 function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
   if (a.kind === "file") {

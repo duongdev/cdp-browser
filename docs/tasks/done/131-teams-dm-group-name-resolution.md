@@ -1,8 +1,8 @@
-# 109 — teams DM / group-DM name resolution (real names, not "Direct message")
+# 131 — teams DM / group-DM name resolution (real names, not "Direct message")
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t105–t108 (creds, store, conversations, thread)
+- **Depends on:** t127–t130 (creds, store, conversations, thread)
 - **Blocks:** UI polish (labels must be right first)
 
 ## Goal
@@ -10,7 +10,7 @@
 Conversation list + thread header show **real names** for DMs (`@person`) and group-DMs
 (`@a, b, +N`) instead of the "Direct message" / "Group chat" fallback. Names resolve via
 Microsoft Graph (proven path below), cached so it's a one-time lookup per person. User
-feedback #2 after trying t108 — highest priority (can't triage without knowing who).
+feedback #2 after trying t130 — highest priority (can't triage without knowing who).
 
 ## Proven data path (probed live 2026-07-21 — use verbatim)
 
@@ -69,7 +69,7 @@ feedback #2 after trying t108 — highest priority (can't triage without knowing
 
 - Mirrors Slack's name story (`slackGroupLabel`), but Teams resolves via Graph not a workspace
   users.list. Cache is load-bearing — resolving every DM every list-load would hammer Graph.
-- Covered by ADR-0018; no new ADR. (If Graph rate-limits at scale, add a TTL later — YAGNI now.)
+- Covered by ADR-0019; no new ADR. (If Graph rate-limits at scale, add a TTL later — YAGNI now.)
 
 ## Out of scope
 
@@ -81,7 +81,7 @@ feedback #2 after trying t108 — highest priority (can't triage without knowing
 - [ ] Layer 1 green; Layer 2 smoke (live); Layer 3 shot.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/`chat:build`/`/` build unchanged.
 - [ ] CLAUDE.md updated (name resolution + `users` cache). No AI attribution / console debris.
-- [ ] Task → done, moved to `done/`, `t109` in commit.
+- [ ] Task → done, moved to `done/`, `t131` in commit.
 
 ## Notes
 

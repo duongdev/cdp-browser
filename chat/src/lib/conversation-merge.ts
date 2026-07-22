@@ -24,7 +24,7 @@ function sameConv(a: TeamsConversation, b: TeamsConversation): boolean {
   )
 }
 
-/** Merge a freshly polled first (newest) conversation page into the current list (t113, live sync).
+/** Merge a freshly polled first (newest) conversation page into the current list (t135, live sync).
  *  A matched id takes the fresh copy's fields; brand-new fresh conversations are inserted; existing
  *  conversations absent from `freshPage` (older "Load more" pages) are kept. The union is re-sorted
  *  by most-recent activity. Returns the same `existing` reference when the result is byte-identical,

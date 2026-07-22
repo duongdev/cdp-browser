@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-// Pure helpers for Teams messaging-credential extraction (t105, ADR-0018).
+// Pure helpers for Teams messaging-credential extraction (t127, ADR-0019).
 import { decodeJwtClaims, markFresh, markStale, parseMsalBearer, redact } from "./teams-creds"
 
 // Build a fake unsigned JWT with the given claims payload (signature is never verified).

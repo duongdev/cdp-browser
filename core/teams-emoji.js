@@ -1,4 +1,4 @@
-// Teams reaction ("emotion") key → display emoji (t120, ADR-0018). Teams stores reactions by a
+// Teams reaction ("emotion") key → display emoji (t142, ADR-0019). Teams stores reactions by a
 // NAMED key (`like`/`heart`/…), not a raw emoji, so the read path resolves the key to a glyph and
 // the quick-react bar offers the six defaults. Pure table — tested by teams-emoji.test.ts.
 

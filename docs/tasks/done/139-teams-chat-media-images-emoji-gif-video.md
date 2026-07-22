@@ -1,15 +1,15 @@
-# 117 — teams chat media: inline images (AMS proxy) + emoji/GIF/sticker sizing + video + lightbox
+# 139 — teams chat media: inline images (AMS proxy) + emoji/GIF/sticker sizing + video + lightbox
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t111 (rich HTML render + DOMPurify)
-- **Blocks:** t118 (files, cards, call-recording, system messages)
+- **Depends on:** t133 (rich HTML render + DOMPurify)
+- **Blocks:** t140 (files, cards, call-recording, system messages)
 
 ## Goal
 
 Inline visual media renders in the thread: AMS-hosted images/video load through an authenticated
 proxy; public-CDN emoji/GIFs/stickers render at the right size; images open in a lightbox. User ask
-("media support"). This is the inline-visual half; files/cards/call-recording/system messages are t118.
+("media support"). This is the inline-visual half; files/cards/call-recording/system messages are t140.
 
 ## PROVEN shapes + auth (probed live 2026-07-21 — use verbatim)
 
@@ -54,11 +54,11 @@ proxy; public-CDN emoji/GIFs/stickers render at the right size; images open in a
 
 ## Design notes
 
-- **New modules**: `core/teams-media.js` (pure url gate + html rewrite), `chat/src/components/image-lightbox.tsx`. Proxy endpoint in `web/server.mjs`. No new ADR (within ADR-0018; the in-page-fetch-proxy is the same CA-proof pattern as the rest).
+- **New modules**: `core/teams-media.js` (pure url gate + html rewrite), `chat/src/components/image-lightbox.tsx`. Proxy endpoint in `web/server.mjs`. No new ADR (within ADR-0019; the in-page-fetch-proxy is the same CA-proof pattern as the rest).
 - The proxy fetches in-page and returns bytes so the client `<img src="/api/teams/media?...">` loads + browser-caches normally (no giant data URLs in the DOM). LRU on the server avoids re-hitting the side-channel per scroll.
-- **Ceilings** (`ponytail:`): proxy serves the full `imgo`/`video` object (no thumbnail-view optimization, no HTTP range/seek for video — a 27s clip is small; big-video streaming + range is deferred). blurHash placeholder deferred. Call-recording (URIObject), files, cards, system messages → **t118**.
+- **Ceilings** (`ponytail:`): proxy serves the full `imgo`/`video` object (no thumbnail-view optimization, no HTTP range/seek for video — a 27s clip is small; big-video streaming + range is deferred). blurHash placeholder deferred. Call-recording (URIObject), files, cards, system messages → **t140**.
 
-## Out of scope (→ t118)
+## Out of scope (→ t140)
 
 - SharePoint file chips (`properties.files`), Swift/adaptive cards, call-recording (URIObject thumbnail + open-in-Teams), `ThreadActivity/*` system-message rendering (currently raw JSON — real gap, next task).
 
@@ -67,7 +67,7 @@ proxy; public-CDN emoji/GIFs/stickers render at the right size; images open in a
 - [ ] Layer 1 green (gate + rewrite). Layer 2 live (proxy 200 + reject). Layer 3 shots.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/chat build clean.
 - [ ] CLAUDE.md updated (media proxy + in-page AMS fetch + public-CDN media + lightbox). No AI attribution.
-- [ ] Task → done, `t117` in commit.
+- [ ] Task → done, `t139` in commit.
 
 ## Notes
 

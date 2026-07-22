@@ -8,7 +8,7 @@ interface ImageLightboxProps {
   onClose: () => void
 }
 
-/** Full-screen dimmed overlay showing one image at natural size, capped to the viewport (t117).
+/** Full-screen dimmed overlay showing one image at natural size, capped to the viewport (t139).
  *  Click the backdrop or press Esc to close. Rendered inline (position:fixed escapes the flow);
  *  a null src renders nothing. Theme-aware via the shared token palette. */
 export function ImageLightbox({ src, onClose }: ImageLightboxProps) {

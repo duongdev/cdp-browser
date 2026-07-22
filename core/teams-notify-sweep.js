@@ -1,4 +1,4 @@
-// Pure Teams push-notification planner (t125). Mirrors the Slack sweep's first-sweep seeding
+// Pure Teams push-notification planner (t147). Mirrors the Slack sweep's first-sweep seeding
 // (no cold-start spam): the server polls the conversation list on an interval and this decides
 // which conversations have a NEW incoming message worth a push. Every notification is fully
 // isolated from the CDP-browser notification store — this feeds the Teams-only push send path.

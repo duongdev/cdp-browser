@@ -123,7 +123,7 @@ async function answerCredExtraction(
   await Promise.resolve()
 }
 
-// ---- Teams cred extraction helpers (t105) ----------------------------------
+// ---- Teams cred extraction helpers (t127) ----------------------------------
 const b64url = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString("base64url")
 const fakeJwt = (claims: Record<string, unknown>) =>
   `${b64url({ alg: "none" })}.${b64url(claims)}.sig`
@@ -552,7 +552,7 @@ describe("slack cred extraction (t069)", () => {
   })
 })
 
-describe("teams messaging-cred mint (t105)", () => {
+describe("teams messaging-cred mint (t127)", () => {
   it("mints creds over a live Teams tab: bearer dump → authz → record + onTeamsCreds", async () => {
     const onTeamsCreds = vi.fn()
     const { center } = makeCenter({ onTeamsCreds })

@@ -1,4 +1,4 @@
-// Web Push subscribe helpers for the Teams chat PWA (t125). Ports the pushManager.subscribe +
+// Web Push subscribe helpers for the Teams chat PWA (t147). Ports the pushManager.subscribe +
 // register-with-server dance from src/lib/push-subscribe.ts (chat/ can't import from src/), against
 // the /api/teams/push/* endpoints. Effects sit behind a DI seam so the toggle is unit-testable.
 

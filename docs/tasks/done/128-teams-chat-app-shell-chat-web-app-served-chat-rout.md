@@ -1,39 +1,39 @@
-# 106 — teams chat app shell: chat/ web app + served /chat route + conversation-list UI
+# 128 — teams chat app shell: chat/ web app + served /chat route + conversation-list UI
 
 - **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
-- **Depends on:** t105 (cred mint + SQLite store + `GET /api/teams/conversations`)
-- **Blocks:** t107+ (message read/thread, reply, rich compose)
+- **Depends on:** t127 (cred mint + SQLite store + `GET /api/teams/conversations`)
+- **Blocks:** t129+ (message read/thread, reply, rich compose)
 
 ## Goal
 
 Stand up the **standalone Teams chat web app** as its own surface: a new `chat/` Vite app,
 served by the extended `web/server.mjs` at same-origin path **`/chat`**, whose home screen
-renders the live **conversation list** from t105's `GET /api/teams/conversations`. After
+renders the live **conversation list** from t127's `GET /api/teams/conversations`. After
 this ships, opening `<host>/chat` shows your real Teams 1:1 + group conversations (topic +
 last-message preview), with honest loading / empty / error / populated states. No message
-reading or reply yet — tapping a row is wired but inert (t107 fills the detail).
+reading or reply yet — tapping a row is wired but inert (t129 fills the detail).
 
-Epic context + the 13 locked decisions live in `docs/adr/0018-teams-chat-app.md` and the
-teams-chat-app-epic memory. This is Ring-1 UI on top of t105's data spine.
+Epic context + the 13 locked decisions live in `docs/adr/0019-teams-chat-app.md` and the
+teams-chat-app-epic memory. This is Ring-1 UI on top of t127's data spine.
 
 ## Why now
 
-t105 proved the data path (creds → DB → `/api/teams/conversations`). Nothing is visible
-yet. t106 makes the app real: a served, installable surface showing the conversation list.
+t127 proved the data path (creds → DB → `/api/teams/conversations`). Nothing is visible
+yet. t128 makes the app real: a served, installable surface showing the conversation list.
 It defines the app's structure (the flat-dir `chat/` decision) that every later UI task
 builds in, so it should land before the message/reply/compose tasks.
 
 ## Scope
 
-- **`chat/` web app** (flat dir, shares `core/` + the extended server — ADR-0018 decision 1):
+- **`chat/` web app** (flat dir, shares `core/` + the extended server — ADR-0019 decision 1):
   its own Vite entry (`chat/index.html` + `chat/src/main.tsx`), building to a dedicated
   output (e.g. `dist-chat/`) with a `pnpm chat:build` + `chat:web` script pair mirroring the
   existing `web` scripts. Reuse the existing renderer's design system (shadcn radix-nova ui,
   HugeIcons, Manrope/DM-Mono, Tailwind v4, `cn`) — share via a Vite alias into `src/` (or a
   shared `ui` path), don't fork the component library.
-- **Served at `/chat`** (same origin — ADR-0018 decision 12): `web/server.mjs` serves the
+- **Served at `/chat`** (same origin — ADR-0019 decision 12): `web/server.mjs` serves the
   built chat bundle under `/chat` (static assets + SPA `index.html` fallback), path-scoped so
   it never collides with the existing `/` browser PWA. Its PWA manifest + service worker are
   scoped to `/chat` (own `start_url`/`scope`) so it installs as a distinct app.
@@ -41,9 +41,9 @@ builds in, so it should land before the message/reply/compose tasks.
   rows show conversation label (topic, or the members for a DM) + last-message preview +
   relative time; unread hint if the shape carries it. Full **four-state coverage**
   (loading skeleton / empty / error-with-retry / populated), instant UI, kebab-case files,
-  PascalCase exports. This is the left column of the eventual list+pane; the pane is t107.
+  PascalCase exports. This is the left column of the eventual list+pane; the pane is t129.
 - Tapping a row calls an `onOpenConversation(convId)` that is wired but a no-op placeholder
-  for now (t107 renders the thread).
+  for now (t129 renders the thread).
 
 ## Acceptance criteria
 
@@ -89,14 +89,14 @@ builds in, so it should land before the message/reply/compose tasks.
   CLAUDE.md's File Structure + the web-build section.
 - **Server:** add the `/chat` static+SPA serve alongside the existing `dist/` serve; keep it
   behind the same `caps.web` world (Electron thin shell is a fast-follow, out of scope here).
-- **New ADR needed?** no — covered by ADR-0018.
+- **New ADR needed?** no — covered by ADR-0019.
 
 ## Out of scope
 
-- Message read / thread view / the list+**pane** layout (t107).
-- Reply / rich compose (t108+).
-- The thin **Electron shell** loading `/chat` (fast-follow task — keep t106 to the web surface).
-- Poll ingestion / realtime sync / unified push (t109/t113).
+- Message read / thread view / the list+**pane** layout (t129).
+- Reply / rich compose (t130+).
+- The thin **Electron shell** loading `/chat` (fast-follow task — keep t128 to the web surface).
+- Poll ingestion / realtime sync / unified push (t131/t135).
 - Auth/login UI (tailnet-gated like the existing web build; the keeper mints creds headlessly).
 
 ## Definition of Done
@@ -108,13 +108,13 @@ builds in, so it should land before the message/reply/compose tasks.
       `node --check web/server.mjs`.
 - [ ] CLAUDE.md File Structure + web-build section updated for the `chat/` app + `/chat` route.
 - [ ] No AI attribution, no console debris, no commented-out code.
-- [ ] Task closed: status → done, moved to `docs/tasks/done/`, `t106` in the commit.
+- [ ] Task closed: status → done, moved to `docs/tasks/done/`, `t128` in the commit.
 
 ## Notes
 
 - Reuse over rebuild: pull in the existing `src/components/ui/*` (shadcn radix-nova),
   `src/index.css` theme, and fonts — the chat app should look like the same product.
 - Keep the conversation-list data-fetch behind a small typed client (`chat/src/lib/…`) so
-  t107 (thread) + t109 (live sync) can extend it, not rewrite it.
+  t129 (thread) + t131 (live sync) can extend it, not rewrite it.
 - Worktree: 2-commit ship (code on feature branch, docs on main); never `git add -A`;
   `--no-verify` (rtk breaks the pre-commit hook). See the teams-chat-app-epic memory.

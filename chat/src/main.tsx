@@ -10,7 +10,7 @@ const applyTheme = () => document.documentElement.classList.toggle("dark", dark.
 applyTheme()
 dark.addEventListener("change", applyTheme)
 
-// Path-scoped service worker (ADR-0018 decision 12) — installs the chat app as a distinct
+// Path-scoped service worker (ADR-0019 decision 12) — installs the chat app as a distinct
 // PWA under /chat/ without touching the browser PWA's SW at /.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/chat/sw.js").catch(() => null)

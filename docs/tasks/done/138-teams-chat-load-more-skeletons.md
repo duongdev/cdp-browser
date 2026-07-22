@@ -1,8 +1,8 @@
-# 116 — teams chat: load-more skeletons + no flicker (list + thread)
+# 138 — teams chat: load-more skeletons + no flicker (list + thread)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t112 (paging), t114 (list infinite scroll)
+- **Depends on:** t134 (paging), t136 (list infinite scroll)
 
 ## Goal
 
@@ -42,7 +42,7 @@ next/older page loads, and make the append never shift what the user is looking 
 
 ## Out of scope
 
-- Media rendering (t117+). The 12s list poll re-sort stability (a separate concern; only if it
+- Media rendering (t139+). The 12s list poll re-sort stability (a separate concern; only if it
   visibly jumps — revisit under UI polish). Virtualization.
 
 ## Definition of Done
@@ -51,7 +51,7 @@ next/older page loads, and make the append never shift what the user is looking 
       chat build clean.
 - [ ] CLAUDE.md: only if a described behavior changes materially (skeleton is minor — a one-clause
       note on the list/thread load-more affordance is enough). No AI attribution.
-- [ ] Task → done, `t116` in commit.
+- [ ] Task → done, `t138` in commit.
 
 ## Notes
 

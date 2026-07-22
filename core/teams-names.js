@@ -1,5 +1,5 @@
 // Pure DM/group-DM name helpers for the Teams chat conversation list + thread header
-// (t109, ADR-0018). A DM/group-DM has no topic, so the row falls back to "Direct message" /
+// (t131, ADR-0019). A DM/group-DM has no topic, so the row falls back to "Direct message" /
 // "Group chat" without these — here we derive the member MRIs (from the id for a 1:1, from the
 // in-page roster fetch for a group-DM), resolve them to display names via Graph (in
 // web/server.mjs, cached by MRI), and compose a human label. This module is I/O-free: id parsing

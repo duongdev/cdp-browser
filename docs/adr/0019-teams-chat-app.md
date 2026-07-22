@@ -1,4 +1,4 @@
-# ADR-0018: Teams chat app — standalone surface on a shared extended backend
+# ADR-0019: Teams chat app — standalone surface on a shared extended backend
 
 - **Status:** Proposed
 - **Date:** 2026-07-21
@@ -33,7 +33,7 @@ Build a standalone chat app (`chat/`, working name "Teams Chat") served by the *
 Teams HTTPS traffic runs **in-page** through the keeper tab; ingestion is **poll-first**;
 push is **unified** with the existing VAPID/SW spine.
 
-The epic's decision ledger (grilled — these are the locked decisions ADR-0018 records):
+The epic's decision ledger (grilled — these are the locked decisions ADR-0019 records):
 
 1. **Structure.** New `chat/` dir (Vite web app + a thin Electron shell that loads the URL)
    served by the extended `web/server.mjs`; `core/` shared directly. **pnpm monorepo
@@ -78,7 +78,7 @@ the Teams tab** via the side-channel `Runtime.evaluate` (the browser makes its o
 authenticated `fetch`; the server only orchestrates + persists the returned JSON). Every
 call therefore originates from the browser's session + egress IP, so a CA policy binding
 tokens to the compliant device/IP can't reject them. Consequently the `teams-api` client
-(t106) is a **side-channel-driven** client (an in-page `fetch` executor over
+(t128) is a **side-channel-driven** client (an in-page `fetch` executor over
 `Runtime.evaluate` returning JSON), **not** a Node `fetch` client like `slack-api.js`. This
 divergence carries forward through the whole epic.
 
@@ -86,7 +86,7 @@ The skype token still leaves the browser and is stored server-side for v1 (neede
 Ring-2 sweep + future off-box auth), but the **live fetches never depend on it leaving** —
 they run where the token was minted.
 
-### What Ring-1 (t105) actually lands
+### What Ring-1 (t127) actually lands
 
 - `core/teams-creds.js` (pure): `parseMsalBearer(localStorageSnapshot)` finds the
   `api.spaces.skype.com` accesstoken entry (key `msal.` + `accesstoken` + the audience) →
@@ -99,7 +99,7 @@ they run where the token was minted.
   lastError }`, exposed via `onTeamsCreds` / `getTeamsCreds(tenant)` / `markTeamsCredsStale`
   (re-mint over the live tab) / `runInTeamsPage` (in-page fetch executor).
 - `core/teams-store.js` (DI `better-sqlite3` handle): creates + idempotently migrates the
-  whole schema (accounts, conversations, messages, read_state, messages_fts); t105 writes
+  whole schema (accounts, conversations, messages, read_state, messages_fts); t127 writes
   only `accounts` + `conversations` (`upsertConversations` version-gates by
   `lastUpdatedMessageVersion` and skips reserved `48:*`/self).
 - `GET /api/teams/conversations`: mints/reuses creds, fetches conversations **in-page**,

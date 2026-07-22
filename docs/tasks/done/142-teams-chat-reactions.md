@@ -1,8 +1,8 @@
-# 120 — teams chat reactions: display + add/remove (quick-react bar)
+# 142 — teams chat reactions: display + add/remove (quick-react bar)
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t108 (reply/mark-read write pattern), t113 (live-sync merge)
+- **Depends on:** t130 (reply/mark-read write pattern), t135 (live-sync merge)
 
 ## Goal
 
@@ -55,7 +55,7 @@ optimistic + live-synced.
 - [ ] Clicking the quick-react bar adds that reaction (optimistic, then confirmed); clicking my existing
       reaction chip removes it. Verified live on the self-note (`48:notes`) — add then remove, cleaned up.
 - [ ] A reaction added elsewhere appears within a poll cycle (merge detects the change).
-- [ ] `properties.emotions` as a JSON string parses correctly (no silent no-op — the t118 mention trap).
+- [ ] `properties.emotions` as a JSON string parses correctly (no silent no-op — the t140 mention trap).
 
 ## Test plan
 
@@ -85,7 +85,7 @@ optimistic + live-synced.
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/chat build clean.
 - [ ] CLAUDE.md updated (reactions: read `properties.emotions`, PUT/DELETE emotions endpoint, quick-react
       bar). No AI attribution.
-- [ ] Task → done, `t120` in commit.
+- [ ] Task → done, `t142` in commit.
 
 ## Notes
 

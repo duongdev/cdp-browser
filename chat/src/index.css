@@ -1,10 +1,10 @@
 /* Reuse the browser renderer's design system verbatim — Tailwind v4 engine, shadcn
-   radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0018 decision 1): the
+   radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0019 decision 1): the
    chat app should look like the same product. The Vite Tailwind plugin scans this build's
    module graph, so the shared ui components imported by the chat views are covered. */
 @import "../../src/index.css";
 
-/* Rich message body (t111): the sanitized Teams HTML rendered inside a message bubble. Styles use
+/* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
    currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
    preflight resets margins/list styles, so lists and block spacing are restored here. */
 .teams-message-body {
@@ -67,11 +67,11 @@
   font-weight: 500;
   background: color-mix(in oklab, currentColor 14%, transparent);
 }
-/* Inline media by kind (t117). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
+/* Inline media by kind (t139). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
    thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
    small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the
    split — the older class="emoji" tag is kept as an equivalent for text-emoji that carry no class. */
-/* Generic placeholder (t118): width/height attrs (from ensureMediaDimensions) reserve the aspect-ratio
+/* Generic placeholder (t140): width/height attrs (from ensureMediaDimensions) reserve the aspect-ratio
    box before load; the muted background fills it so the layout is stable and no content-shift flicker
    happens while scrolling before the bytes paint over it. Emoji/stickers opt out below (no bg). */
 .teams-message-body img {
@@ -81,7 +81,7 @@
   /* width + height BOTH auto so the intrinsic aspect ratio (from the width/height attrs) scales to
      fit within both max constraints, preserving the ratio. With only height:auto the attr width
      forces the width while max-height clamps the height independently → a portrait image distorts
-     to a landscape box (t118 fix). object-fit is a belt-and-suspenders. */
+     to a landscape box (t140 fix). object-fit is a belt-and-suspenders. */
   width: auto;
   height: auto;
   object-fit: contain;

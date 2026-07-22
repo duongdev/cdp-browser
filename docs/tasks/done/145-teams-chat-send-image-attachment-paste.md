@@ -1,8 +1,8 @@
-# 123 — teams chat: send an image attachment (paste from clipboard) via AMS upload
+# 145 — teams chat: send an image attachment (paste from clipboard) via AMS upload
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t108 (send), t117 (media proxy/render)
+- **Depends on:** t130 (send), t139 (media proxy/render)
 
 ## Goal
 
@@ -54,7 +54,7 @@ right token) it works. Full flow (ALL run **IN-PAGE** via the side-channel, CA-p
 - On **Send** with a pending image: read the File → base64 (FileReader) + its natural width/height →
   `POST /api/teams/upload-image` with the caption text → optimistically append an image message
   (body = an `<img>` pointing at the returned image, or a local object-URL preview) → the poll
-  reconciles to the server-rendered AMSImage (which routes through the t117 media proxy). Clear the
+  reconciles to the server-rendered AMSImage (which routes through the t139 media proxy). Clear the
   pending attachment + the text on success; on failure keep them + an honest error.
 - **`chat/src/lib/teams-client.ts`**: `uploadImage(convId, file, text?)` → base64 the file, POST,
   return `{ msgId }` (throw `TeamsApiError` on failure).
@@ -89,7 +89,7 @@ right token) it works. Full flow (ALL run **IN-PAGE** via the side-channel, CA-p
 ## Design notes
 
 - ALL upload steps run in-page (CA-proof) — the ic3 token is session/CA-bound like the skypetoken.
-- No new ADR (within ADR-0018).
+- No new ADR (within ADR-0019).
 
 ## Definition of Done
 
@@ -97,7 +97,7 @@ right token) it works. Full flow (ALL run **IN-PAGE** via the side-channel, CA-p
 - [ ] `pnpm check`(touched)/`typecheck`/`test`/`node --check web/server.mjs`/chat build clean.
 - [ ] CLAUDE.md updated (the AMS upload recipe: ic3 token + x-ms-migration/x-ms-client-version headers,
       asyncgw host, create→PUT imgpsh→send). No AI attribution.
-- [ ] Task → done, `t123` in commit.
+- [ ] Task → done, `t145` in commit.
 
 ## Notes
 

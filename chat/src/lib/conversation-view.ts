@@ -1,9 +1,9 @@
-// Pure list-shaping helpers for the conversation list (t106). No React, no I/O — the row is
-// presentation over these. Member-name resolution + HTML rendering land in t107, so for now a
+// Pure list-shaping helpers for the conversation list (t128). No React, no I/O — the row is
+// presentation over these. Member-name resolution + HTML rendering land in t129, so for now a
 // DM without a topic degrades to a kind label and the preview is tag-stripped raw content.
 import type { TeamsConversation } from "./teams-client"
 
-/** Display label: the server-resolved title (real member names, t109) if present, else the topic,
+/** Display label: the server-resolved title (real member names, t131) if present, else the topic,
  *  else a fallback keyed by conversation kind. */
 export function conversationLabel(conv: TeamsConversation): string {
   const title = conv.title?.trim()

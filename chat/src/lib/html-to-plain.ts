@@ -1,4 +1,4 @@
-// Seed the inline message editor (t122): a message `body` is rich, site-authored HTML (t111), but the
+// Seed the inline message editor (t144): a message `body` is rich, site-authored HTML (t133), but the
 // editor + the composer are plain-text only, so an edit starts from the body's visible text. Runs in
 // the node test env (no DOM), so it's a pure string transform, not DOMParser.
 //

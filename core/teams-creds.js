@@ -1,4 +1,4 @@
-// Pure helpers for Microsoft Teams messaging-credential extraction (t105, ADR-0018).
+// Pure helpers for Microsoft Teams messaging-credential extraction (t127, ADR-0019).
 // The effectful part — running Runtime.evaluate over the side-channel to dump the MSAL
 // entries and mint the skype token in-page — lives in notifications-sidechain.js; these are
 // the I/O-free parsers + the fresh/stale state machine, so they're unit-testable without a

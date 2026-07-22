@@ -1,4 +1,4 @@
-// Minimal service worker for the Teams chat app (t106, ADR-0018). Its scope is `/chat/`
+// Minimal service worker for the Teams chat app (t128, ADR-0019). Its scope is `/chat/`
 // (the script path's directory), so it never touches the browser PWA's SW at `/`.
 // Navigations are network-first with a cached `/chat/` shell fallback; same-origin static
 // assets are cache-first. The API surface and non-GET requests always hit the network.
@@ -43,7 +43,7 @@ self.addEventListener("fetch", (e) => {
   )
 })
 
-// Web Push (t125). The server sends the ADR-0018 payload
+// Web Push (t147). The server sends the ADR-0019 payload
 // { type, title, body, convId, msgId, ts, tag }. iOS revokes a userVisibleOnly subscription
 // that receives a push without showing a notification, so ALWAYS showNotification — a generic
 // fallback on any parse failure.

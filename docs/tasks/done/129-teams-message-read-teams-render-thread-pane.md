@@ -1,9 +1,9 @@
-# 107 — teams message read: /api/teams/history + teams-render + thread pane + list+pane layout
+# 129 — teams message read: /api/teams/history + teams-render + thread pane + list+pane layout
 
 - **Status:** done
 - **Mode:** HITL
-- **Depends on:** t105 (creds + store + in-page seam), t106 (chat app shell + list)
-- **Blocks:** t108 (reply), t109 (sweep/reconcile), t110+ (rich compose)
+- **Depends on:** t127 (creds + store + in-page seam), t128 (chat app shell + list)
+- **Blocks:** t130 (reply), t131 (sweep/reconcile), t132+ (rich compose)
 
 ## Goal
 
@@ -11,8 +11,8 @@ Tapping a conversation in the chat app opens a **thread view** showing its real 
 rendered from Teams' HTML (sanitized — never `innerHTML`). Introduces the **list+pane**
 layout (two-pane on wide, stacked list→thread→back on phone). Messages come from a new
 in-page (CA-proof) read endpoint, rendered by a pure `core/teams-render.js` and persisted
-to the `messages` table t105 created. Read-only in this task — reply is t108, edit/delete
-reconcile is t109, adaptive cards are t112 (a card degrades to a labelled chip here).
+to the `messages` table t127 created. Read-only in this task — reply is t130, edit/delete
+reconcile is t131, adaptive cards are t134 (a card degrades to a labelled chip here).
 
 ## Scope
 
@@ -32,7 +32,7 @@ reconcile is t109, adaptive cards are t112 (a card degrades to a labelled chip h
   `(conv_id,id)`; store `version`, `deleted`, `edited`, `content`, `ts`, sender) and
   `listMessages(db, tenant, convId, { before?, limit })` (newest-first page, cursor by ts).
   Update `oldest_synced_ts`/`newest_synced_ts` from the fetched range. Reconcile-by-version
-  (edit/delete) is t109 — here insert/replace is enough. TDD against `:memory:`.
+  (edit/delete) is t131 — here insert/replace is enough. TDD against `:memory:`.
 - **Read endpoint** — `POST /api/teams/history` `{ convId, before? }` (mirror
   `/api/slack/history`): `getTeamsCreds(tenant)` → **in-page** fetch
   `{chatServiceBase}/v1/users/ME/conversations/{convId}/messages?pageSize=30[&startTime=…]`
@@ -44,7 +44,7 @@ reconcile is t109, adaptive cards are t112 (a card degrades to a labelled chip h
   four states (loading / empty / error+retry / populated), **scroll-back** loads older on
   scroll-to-top (lazy, uses `before` cursor). Wire the **list+pane layout** in
   `chat-app.tsx`: wide ≥ breakpoint → conversation list (left) + thread (right); phone →
-  list, tap opens thread full-width with a back button. `onOpenConversation(convId)` (t106's
+  list, tap opens thread full-width with a back button. `onOpenConversation(convId)` (t128's
   inert placeholder) now selects the conversation. A small typed client method
   `fetchHistory(convId, before?)` on `chat/src/lib/teams-client.ts`.
 
@@ -75,17 +75,17 @@ reconcile is t109, adaptive cards are t112 (a card degrades to a labelled chip h
 
 - `teams-render.js` is the Teams analog of `slack-render.js` — SAME output contract
   (`ReaderMessage`) so the thread view is content-source-agnostic. Sanitize with an
-  allowlist; never assign innerHTML. Adaptive-card rendering is t112 (chip now).
-- Keep the read behind `teams-client.fetchHistory` so t109 (live sync) swaps the source
+  allowlist; never assign innerHTML. Adaptive-card rendering is t134 (chip now).
+- Keep the read behind `teams-client.fetchHistory` so t131 (live sync) swaps the source
   without touching the view.
-- Covered by ADR-0018; no new ADR.
+- Covered by ADR-0019; no new ADR.
 
 ## Out of scope
 
-- Reply / compose (t108). Edit/delete **reconcile** by version + `consumptionHorizon`
-  mark-read (t108/t109). Poll sweep + live sync + `clientmessageid` dedup (t109).
-  Reactions/rich compose (t110+). Adaptive-card rendering (t112). Eager recent-N backfill
-  of ALL conversations (t109 sweep — t107 only reads the opened conversation + scroll-back).
+- Reply / compose (t130). Edit/delete **reconcile** by version + `consumptionHorizon`
+  mark-read (t130/t131). Poll sweep + live sync + `clientmessageid` dedup (t131).
+  Reactions/rich compose (t132+). Adaptive-card rendering (t134). Eager recent-N backfill
+  of ALL conversations (t131 sweep — t129 only reads the opened conversation + scroll-back).
 
 ## Definition of Done
 
@@ -93,7 +93,7 @@ reconcile is t109, adaptive cards are t112 (a card degrades to a labelled chip h
 - [ ] `pnpm check` (touched), `pnpm typecheck`, `pnpm test`, `node --check web/server.mjs`.
 - [ ] CLAUDE.md updated (`core/teams-render.js`, the `/api/teams/history` route, the chat
       app thread view + list+pane).
-- [ ] No AI attribution / console debris. Task → done, moved to `done/`, `t107` in commit.
+- [ ] No AI attribution / console debris. Task → done, moved to `done/`, `t129` in commit.
 
 ## Notes
 

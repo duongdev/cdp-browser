@@ -1,6 +1,6 @@
 import Database from "better-sqlite3"
 import { beforeEach, describe, expect, it } from "vitest"
-// SQLite chat store (t105, ADR-0018). Exercised against an in-memory handle — no fs, no server.
+// SQLite chat store (t127, ADR-0019). Exercised against an in-memory handle — no fs, no server.
 import {
   conversationKind,
   getReadState,
@@ -92,7 +92,7 @@ describe("upsertConversations — insert / version-gated update / no-op", () => 
     const row: any = db.prepare("SELECT * FROM conversations WHERE id = ?").get("19:aaa@thread.v2")
     expect(row.last_message_version).toBe(1700000000001)
     expect(row.updated_at).toBe(5000)
-    // Both cursors initialize to the last-message ts (the anchor t107+ pages from).
+    // Both cursors initialize to the last-message ts (the anchor t129+ pages from).
     const ts = Date.parse("2024-01-01T00:00:00.000Z")
     expect(row.newest_synced_ts).toBe(ts)
     expect(row.oldest_synced_ts).toBe(ts)
@@ -119,7 +119,7 @@ describe("upsertConversations — insert / version-gated update / no-op", () => 
     expect(row.last_message_version).toBe(1700000000999)
     expect(row.last_message_preview).toBe("newer message")
     expect(row.updated_at).toBe(2000)
-    // The sync cursor is NOT clobbered by a metadata update (t107+ owns it).
+    // The sync cursor is NOT clobbered by a metadata update (t129+ owns it).
     expect(row.newest_synced_ts).toBe(Date.parse("2024-01-01T00:00:00.000Z"))
   })
 
@@ -267,7 +267,7 @@ describe("upsertAccount", () => {
   })
 })
 
-describe("users — display-name cache (t109)", () => {
+describe("users — display-name cache (t131)", () => {
   it("upserts names and reads back a mri→name map for the requested mris", () => {
     upsertUsers(db, [
       { mri: "8:orgid:AAA", displayName: "Alice" },
@@ -303,7 +303,7 @@ describe("users — display-name cache (t109)", () => {
   })
 })
 
-describe("read_state — local read on open, write-through horizon on reply (t108)", () => {
+describe("read_state — local read on open, write-through horizon on reply (t130)", () => {
   const CONV = "19:conv@unq.gbl.spaces"
 
   it("no row until a read is recorded", () => {

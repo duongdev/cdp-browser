@@ -1,13 +1,13 @@
-# 126 — teams chat: realtime via trouter (investigation → documented wall)
+# 148 — teams chat: realtime via trouter (investigation → documented wall)
 
 - **Status:** done (investigation; no code shipped — decision recorded)
 - **Mode:** research
-- **Related:** t113 (poll-first live sync), t125 (push uses the poll instead)
+- **Related:** t135 (poll-first live sync), t147 (push uses the poll instead)
 
 ## Goal
 
-Replace/augment the ~4s REST polling (t113) with Teams' realtime channel (trouter) for instant message
-delivery + to feed push (t125). User asked to "keep probing trouter hard."
+Replace/augment the ~4s REST polling (t135) with Teams' realtime channel (trouter) for instant message
+delivery + to feed push (t147). User asked to "keep probing trouter hard."
 
 ## Outcome: WALL (after 7 live probes, 2026-07-22)
 
@@ -39,7 +39,7 @@ memory; summary here.
 `reread-tap.mjs` (primary tab, still 0 msg frames).
 
 ## Decision
-- **Notifications + live sync stay on the REST poll** (t113 client poll, t125 server-poll capture). The poll
+- **Notifications + live sync stay on the REST poll** (t135 client poll, t147 server-poll capture). The poll
   is near-realtime and reliable; trouter is not worth blocking on.
 - To ever crack trouter: capture the flightproxy registration on a real working client (unfiltered, before
   its socket opens), decode the `message_loss` etag → `messagingsync` delta pull, and first confirm a
@@ -53,4 +53,4 @@ tap (no behavior change; gone on that tab's next close/navigate).
 ## Definition of Done
 - [x] Realtime mechanism identified + the wall characterized; decision recorded (poll, not trouter).
 - [x] Findings persisted to memory (`teams-trouter-realtime-findings`) for a future RE attempt.
-- [x] Task → done, `t126` in commit.
+- [x] Task → done, `t148` in commit.

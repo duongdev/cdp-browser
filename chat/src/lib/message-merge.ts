@@ -9,7 +9,7 @@ const reactionSig = (m: TeamsMessage): string =>
     .sort()
     .join("|")
 
-/** Merge a freshly polled newest history page into the current thread (t113, poll-first live sync).
+/** Merge a freshly polled newest history page into the current thread (t135, poll-first live sync).
  *  The server returns full messages, so an id collision means "incoming (server) wins" — this
  *  reconciles edits (body/edited), deletes (deleted), and collapses the optimistic-send echo (its
  *  id is the server ts) to one bubble. New ids append; the union is re-sorted oldest-first (ts asc,
@@ -20,7 +20,7 @@ const reactionSig = (m: TeamsMessage): string =>
  *  Returns the same `existing` reference when unchanged.
  *
  *  ponytail: only reconciles edits/deletes for messages inside the newest polled page — reconciling
- *  older ones needs a trouter subscription, deferred (t113 is poll-first). */
+ *  older ones needs a trouter subscription, deferred (t135 is poll-first). */
 export function mergeMessages(
   existing: TeamsMessage[],
   incoming: TeamsMessage[],
@@ -83,7 +83,7 @@ interface PendingReaction {
 }
 
 /** Re-apply the viewer's pending (optimistic) reactions on top of a freshly merged message list, so
- *  a poll whose server response hasn't propagated the reaction yet can't revert it (t121). Keyed by
+ *  a poll whose server response hasn't propagated the reaction yet can't revert it (t143). Keyed by
  *  (msgId → key → desiredMine): for each pending key it forces `mine` to `desiredMine` — add/mark-mine
  *  + bump count when desired but absent/not-mine, unmark + decrement (drop the chip at 0) when not
  *  desired but currently mine. Never mutates the input; returns the same array ref when nothing
