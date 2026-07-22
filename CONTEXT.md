@@ -108,22 +108,6 @@ _Avoid_: history entry, page visit, navigation event.
 The web server acting as the shared source of truth for **Pin**s and **Visit**s across a user's devices (ADR-0017). Web is a Sync Backend client by construction (`/api/pins*`, `/api/history*`); Electron opts in per device via `syncEnabled` + `syncServerUrl` (plaintext tailnet URL, no auth/E2E), proxying its Pin + Visit reads/writes there instead of its local `settings.json` / `history.json` and falling back to local on any network failure. First enable is server-wins.
 _Avoid_: sync server, sync service, cloud sync.
 
-**Teams Messaging Creds** (t105, ADR-0018):
-The per-tenant credential record the server mints to call the Teams messaging API — `{ tenant, userId, bearer, bearerExp, skypeToken, chatServiceBase, trouterUrl, fresh, lastError }`, keyed by AAD tenant in `credsByTenant`. Minted by reading the live Teams tab's MSAL `api.spaces.skype.com` **bearer** and exchanging it for a **Skype Token** — both never logged in full. A parallel path to the Slack creds, not a genericization.
-_Avoid_: Teams token, auth blob.
-
-**Skype Token**:
-The token that authenticates Teams messaging-service calls (header `Authentication: skypetoken=…`), minted in-page from the MSAL bearer via `POST authsvc/v1.0/authz`. Distinct from the ~1h AAD **bearer**, which only the live tab's MSAL can rotate — so a 401 re-authz (re-mints the Skype Token), never a re-scrape.
-_Avoid_: auth token, session token.
-
-**chatService base**:
-The regional Teams messaging host (`regionGtms.chatService`, e.g. `apac.ng.msg.teams.microsoft.com`) that all `/v1/users/ME/…` calls pin to. `chatsvcagg.teams.microsoft.com` is a proven 401 dead-end and is never used.
-_Avoid_: msg host, Teams API base.
-
-**Teams Chat Store**:
-The server-owned SQLite DB (`web-teams.db`, `core/teams-store.js`) that is the single source of truth for the standalone **Teams chat app** — conversations, messages, accounts, read-state (FTS-ready). Written headlessly from the in-page conversation reads; clients cache + sync from it.
-_Avoid_: chat cache, teams db.
-
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
