@@ -511,6 +511,16 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* A mention pill in the composer (PSN-92 D): an atomic (contenteditable=false), highlighted chip in
+   the coral accent so it reads as a mention while typing — distinct from plain text. */
+.composer-editor .mention {
+  padding: 0.05em 0.35em;
+  border-radius: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--ring);
+  background: color-mix(in oklab, var(--ring) 16%, transparent);
+}
 
 /* Mention-of-me (t160): the viewer's own @mention pill pops in the coral accent; the bubble itself
    also tints via message-row's mentionsMe class. Readable on both muted and primary bubbles. */

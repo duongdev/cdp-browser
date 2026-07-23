@@ -24,6 +24,13 @@ function senderKey(m: TeamsMessage): string {
   return m.senderId || m.senderName || "\0unknown"
 }
 
+/** A quoted reply is a new context, so it always opens a group (leader gap) rather than hugging the
+ *  previous bubble — otherwise a reply visually glues to the message above it (PSN-92). The rendered
+ *  body carries the Reply blockquote's itemtype. */
+export function isReplyMessage(m: TeamsMessage): boolean {
+  return m.kind !== "system" && /schema\.skype\.com\/Reply/i.test(m.body || "")
+}
+
 /** Local calendar-day bucket (YYYY-MM-DD in the viewer's timezone) — the day-boundary key. */
 function dayKey(ts: number): string {
   const d = new Date(ts)
@@ -109,7 +116,8 @@ export function buildThreadItems(
         gapped ||
         prevSystem ||
         sender !== prevSender ||
-        m.ts - prevTs > GROUP_WINDOW_MS
+        m.ts - prevTs > GROUP_WINDOW_MS ||
+        isReplyMessage(m) // a quoted reply always opens its own group (PSN-92)
       items.push({ type: "message", key: m.id, message: m, showMeta })
       prevSender = sender
     }
