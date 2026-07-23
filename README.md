@@ -185,6 +185,16 @@ Trackpad swipe left/right is supported for back/forward navigation.
 - [dnd-kit](https://dndkit.com/) — drag and drop
 - [Vite](https://vite.dev/) — build tool
 
+## Contributing
+
+Work is tracked as [Linear](https://linear.app/) issues. Each issue is developed
+in its own isolated git worktree, so multiple pieces of work can proceed in
+parallel without stepping on each other. The branch is named after the issue and
+carries a short, focused set of changes.
+
+When the work is ready, it lands as a Ready pull request against `main` — one
+issue, one PR. Keep changes atomic and update any affected docs in the same PR.
+
 ## License
 
 MIT
