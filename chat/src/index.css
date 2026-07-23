@@ -9,6 +9,80 @@
    (t152 fix). Source the shared renderer tree explicitly. */
 @source "../../src";
 
+/* Chat-only typefaces: SVN-Gilroy (Vietnamese-complete geometric sans) for UI text, Maple Mono
+   (variable) for code. Files live in chat/public/fonts/ so only the /chat build ships them; the /
+   browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base prepended by Vite. */
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-regular-italic.otf") format("opentype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-medium-italic.otf") format("opentype");
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-semibold.otf") format("opentype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-semibold-italic.otf") format("opentype");
+  font-weight: 600;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-bold-italic.otf") format("opentype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Maple Mono";
+  src: url("/fonts/maple-mono-var.ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Maple Mono";
+  src: url("/fonts/maple-mono-italic-var.ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: italic;
+  font-display: swap;
+}
+
 /* Airbnb-flavoured re-skin, chat-only (t149). Overrides the shared shadcn tokens AFTER the import
    so every ui/* component inherits without a fork; the / browser build is untouched. Warmth comes
    from geometry + whitespace + one soft shadow tier + warm-neutral surfaces, NOT full Rausch — the
@@ -58,7 +132,11 @@
 
 /* One soft shadow tier for elevated chat surfaces (popovers, menus, quick-react bar) — the shadow
    utilities the shared ui/* components already use (shadow-sm/shadow-md) rescaled to Airbnb softness. */
+/* Later @theme wins over the shared import's font tokens — the chat build recompiles Tailwind, so
+   every font-sans/font-mono utility picks these up; Manrope/DM-Mono stay as fallbacks. */
 @theme inline {
+  --font-sans: "SVN-Gilroy", "Manrope Variable", sans-serif;
+  --font-mono: "Maple Mono", "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --shadow-sm: 0 1px 2px 0 oklch(0.2 0.02 60 / 0.06), 0 2px 8px -2px oklch(0.2 0.02 60 / 0.08);
   --shadow-md: 0 4px 16px -4px oklch(0.2 0.02 60 / 0.1), 0 2px 6px -2px oklch(0.2 0.02 60 / 0.08);
 }
