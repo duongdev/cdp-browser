@@ -646,59 +646,53 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             Retry
           </Button>
         </Centered>
+      ) : state.messages.length === 0 ? (
+        <Centered>
+          <HugeiconsIcon className="size-8 text-muted-foreground" icon={InboxIcon} />
+          <p className="text-muted-foreground text-sm">No messages yet</p>
+        </Centered>
       ) : (
-        <>
-          {state.messages.length === 0 ? (
-            <Centered>
-              <HugeiconsIcon className="size-8 text-muted-foreground" icon={InboxIcon} />
-              <p className="text-muted-foreground text-sm">No messages yet</p>
-            </Centered>
-          ) : (
-            <div
-              className="thread-messages flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-3 py-3"
-              onScroll={onScroll}
-              ref={scrollRef}
-            >
-              {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
+        <div
+          className="thread-messages flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-3 py-3"
+          onScroll={onScroll}
+          ref={scrollRef}
+        >
+          {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
                   (items reversed) to show oldest→newest top→bottom. Date separators + consecutive-
                   sender grouping (t158) are computed oldest→newest by buildThreadItems, so a day's
                   separator sits above that day's first message after the reverse. Older messages
                   prepend to the array (→ end of this reversed map = the visual top). Vertical rhythm
                   is per-item margin (leader gap vs tight follower gap), not a uniform container gap. */}
-              {threadItems
-                .slice()
-                .reverse()
-                .map((item) =>
-                  item.type === "date" ? (
-                    <DateSeparator key={item.key} label={item.label} />
-                  ) : (
-                    <MessageRow
-                      command={
-                        item.message.id === focusedId ? (rowCommand ?? undefined) : undefined
-                      }
-                      focused={item.message.id === focusedId}
-                      key={item.key}
-                      message={item.message}
-                      onDelete={onDelete}
-                      onDiscardSend={onDiscardSend}
-                      onEdit={onEdit}
-                      onReact={onReact}
-                      onRetrySend={onRetrySend}
-                      showMeta={item.showMeta}
-                    />
-                  ),
-                )}
-              {loadingOlder && (
-                <div className="flex flex-col gap-2">
-                  {[0, 1, 2].map((i) => (
-                    <MessageBubbleSkeleton index={i} key={i} />
-                  ))}
-                </div>
-              )}
-              {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
+          {threadItems
+            .slice()
+            .reverse()
+            .map((item) =>
+              item.type === "date" ? (
+                <DateSeparator key={item.key} label={item.label} />
+              ) : (
+                <MessageRow
+                  command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
+                  focused={item.message.id === focusedId}
+                  key={item.key}
+                  message={item.message}
+                  onDelete={onDelete}
+                  onDiscardSend={onDiscardSend}
+                  onEdit={onEdit}
+                  onReact={onReact}
+                  onRetrySend={onRetrySend}
+                  showMeta={item.showMeta}
+                />
+              ),
+            )}
+          {loadingOlder && (
+            <div className="flex flex-col gap-2">
+              {[0, 1, 2].map((i) => (
+                <MessageBubbleSkeleton index={i} key={i} />
+              ))}
             </div>
           )}
-        </>
+          {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
+        </div>
       )}
       {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
       {composer}

@@ -1674,7 +1674,9 @@ async function sendTeamsMessageInPage(
 
 // Mint/reuse creds → in-page send → persist the echo → return the new ts. A 401 drives one
 // re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations/teamsHistory).
-async function teamsReply(convId, text) {
+// `html` (t159, composer formatting) upgrades the wire format to a RichText/Html message; the
+// plain-text fast path stays the Text send. The echo persists whichever body was sent.
+async function teamsReply(convId, text, html) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1682,12 +1684,14 @@ async function teamsReply(convId, text) {
   }
   if (!cred) return { error: "invalid_auth" }
 
-  let out = await sendTeamsMessageInPage(cred, convId, text)
+  const content = html || text
+  const messagetype = html ? "RichText/Html" : "Text"
+  let out = await sendTeamsMessageInPage(cred, convId, content, messagetype)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
     cred = notificationCenter.getTeamsCreds(cred.tenant)
     if (!cred || cred.fresh === false) return { error: "invalid_auth" }
-    out = await sendTeamsMessageInPage(cred, convId, text)
+    out = await sendTeamsMessageInPage(cred, convId, content, messagetype)
   }
   if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
 
@@ -1700,7 +1704,7 @@ async function teamsReply(convId, text) {
       ts: tsMs,
       senderId: cred.userId || null,
       senderName: cred.displayName || "",
-      body: text,
+      body: html || text,
       self: true,
       edited: false,
       deleted: false,
@@ -2471,9 +2475,12 @@ const server = http.createServer(async (req, res) => {
     // Teams chat: send a text reply IN-PAGE (t130, ADR-0019). Persists the echo, returns the
     // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/reply" && POST) {
-      const { convId, text } = await body(req)
+      const { convId, text, html } = await body(req)
       if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
-      const out = await teamsReply(convId, text)
+      // Optional composer-formatted HTML body (t159): string-typed + size-capped, else ignored.
+      const richHtml =
+        typeof html === "string" && html.trim() && html.length <= 65536 ? html : null
+      const out = await teamsReply(convId, text, richHtml)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)
