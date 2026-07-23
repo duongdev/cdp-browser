@@ -95,6 +95,8 @@ interface MessageRowProps {
   namePref?: NamePref
   /** Open the sender's profile card (t166). Present → the sender name/avatar header is clickable. */
   onOpenProfile?: (target: { userId: string; name: string }) => void
+  /** Position in the same-sender run (t169) — tightens the corners facing group neighbours. */
+  groupPos?: "solo" | "first" | "middle" | "last"
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -120,6 +122,7 @@ function ChatMessageRow({
   showMeta = true,
   namePref = FULL_NAME,
   onOpenProfile,
+  groupPos = "solo",
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -326,7 +329,9 @@ function ChatMessageRow({
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable. */}
           <div
             className={cn(
-              "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
+              // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
+              // density can shrink it and grouped runs get asymmetric corners without class soup.
+              "teams-message-body max-w-[85%] px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
               // Mention-of-me highlight (t160): a coral-tinted bubble, Slack's mention background.
               message.mentionsMe && !self && "bg-ring/12 ring-1 ring-ring/30",
@@ -336,6 +341,8 @@ function ChatMessageRow({
             )}
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
             dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
+            data-pos={groupPos}
+            data-side={self ? "self" : "other"}
             onClick={onBodyClick}
             // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
             // style grouping; the tooltip is where "when exactly?" lives now.
