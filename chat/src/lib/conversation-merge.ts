@@ -20,6 +20,9 @@ function sameConv(a: TeamsConversation, b: TeamsConversation): boolean {
     a.lastMessageVersion === b.lastMessageVersion &&
     a.lastMessageTs === b.lastMessageTs &&
     a.lastMessagePreview === b.lastMessagePreview &&
+    a.readTs === b.readTs &&
+    a.unreadSticky === b.unreadSticky &&
+    a.lastMessageFromMe === b.lastMessageFromMe &&
     a.muted === b.muted
   )
 }

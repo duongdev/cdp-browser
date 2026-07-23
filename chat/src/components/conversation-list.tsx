@@ -1,8 +1,9 @@
 import { Alert02Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { mergeConversations } from "../lib/conversation-merge"
+import { applyReadOverride, type ReadOverride } from "../lib/conversation-view"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
 import { ConversationRow } from "./conversation-row"
 
@@ -31,6 +32,11 @@ interface ConversationListProps {
   /** Fires with the loaded list (and every merge), so a deep-linked stub pane can pick up its
    *  real metadata (title etc.) once the list arrives (t150). */
   onConversations?: (conversations: TeamsConversation[]) => void
+  /** Optimistic read-state patches by conv id (t155): applied over the server rows HERE — the rows
+   *  render from this component's own state, so this is the only patch point that reaches the
+   *  screen — and echoed through `onConversations` so the app's copy agrees. A server poll can't
+   *  clobber an override (read = readTs floor, unread = forced sticky). */
+  readOverrides?: Record<string, ReadOverride>
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
@@ -41,6 +47,7 @@ export function ConversationList({
   selectedId,
   focusedId,
   onConversations,
+  readOverrides,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
@@ -66,12 +73,21 @@ export function ConversationList({
     return () => ac.abort()
   }, [load])
 
-  // Report the list upward whenever it (referentially) changes — merges keep the same ref when
-  // nothing changed, so this fires only on real updates.
+  // The rows render from THIS list with the optimistic read overrides applied (t155) — patching any
+  // other copy of the conversations never reaches the screen. applyReadOverride returns the same
+  // ref for a no-op, so the map is cheap and identity-stable when overrides don't bite.
   const conversations = state.status === "ready" ? state.conversations : null
+  const display = useMemo(
+    () =>
+      conversations ? conversations.map((c) => applyReadOverride(c, readOverrides?.[c.id])) : null,
+    [conversations, readOverrides],
+  )
+
+  // Report the override-applied list upward whenever it (referentially) changes, so the app's copy
+  // (keyboard toggle, ⌘K predicates) agrees with what's on screen.
   useEffect(() => {
-    if (conversations) onConversations?.(conversations)
-  }, [conversations, onConversations])
+    if (display) onConversations?.(display)
+  }, [display, onConversations])
 
   // Re-union page 1 into the list without disturbing the paging cursor / Load-more state (t135).
   // No-ops unless "ready"; mergeConversations returns the same ref when nothing changed, so we skip
@@ -188,7 +204,7 @@ export function ConversationList({
 
   return (
     <div className="flex flex-col gap-0.5 p-2">
-      {state.conversations.map((c) => (
+      {(display ?? []).map((c) => (
         <ConversationRow
           active={c.id === selectedId}
           conversation={c}

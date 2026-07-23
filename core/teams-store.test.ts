@@ -8,7 +8,10 @@ import {
   isReservedConversation,
   listConversations,
   listMessages,
+  markConversationRead,
+  markConversationUnread,
   migrate,
+  parseConsumptionHorizonTs,
   setLocalRead,
   setReadHorizon,
   shapeConversation,
@@ -335,5 +338,83 @@ describe("read_state — local read on open, write-through horizon on reply (t13
       localReadTs: 500,
       readHorizonTs: 500,
     })
+  })
+})
+
+describe("unread derivation over read_state (t155)", () => {
+  const CONV = "19:aaa@thread.v2"
+  const at = (isoTs: number) => new Date(isoTs).toISOString()
+  const row = () => {
+    const r = listConversations(db, TENANT).find((c) => c.id === CONV)
+    if (!r) throw new Error("conversation not found")
+    return r
+  }
+
+  it("parseConsumptionHorizonTs pulls the middle ts, null on garbage", () => {
+    expect(parseConsumptionHorizonTs("111;1784785213736;999")).toBe(1784785213736)
+    expect(parseConsumptionHorizonTs("")).toBeNull()
+    expect(parseConsumptionHorizonTs(undefined)).toBeNull()
+    expect(parseConsumptionHorizonTs("only-one-part")).toBeNull()
+  })
+
+  it("ingests properties.consumptionhorizon into read_horizon_ts + exposes readTs", () => {
+    upsertConversations(db, TENANT, [
+      conv({ lastMessage: { id: "m1", content: "hi", originalarrivaltime: at(1000) } }),
+    ])
+    expect(row().readTs).toBe(0) // no horizon on this conv fixture
+    upsertConversations(db, TENANT, [
+      conv({
+        lastUpdatedMessageVersion: 1700000000002,
+        lastMessage: { id: "m2", content: "hi", originalarrivaltime: at(2000) },
+        properties: { consumptionhorizon: "m2;1500;9" },
+      }),
+    ])
+    expect(row().readTs).toBe(1500)
+  })
+
+  it("flags last_message_from_me from the last message sender vs selfId", () => {
+    upsertConversations(
+      db,
+      TENANT,
+      [
+        conv({
+          lastMessage: {
+            id: "m1",
+            content: "hi",
+            originalarrivaltime: at(1000),
+            from: "8:orgid:me-oid",
+          },
+        }),
+      ],
+      Date.now(),
+      "me-oid",
+    )
+    expect(row().lastMessageFromMe).toBe(true)
+  })
+
+  it("mark-read forces readTs to the last ts; open (setLocalRead) also clears", () => {
+    upsertConversations(db, TENANT, [
+      conv({ lastMessage: { id: "m1", content: "hi", originalarrivaltime: at(5000) } }),
+    ])
+    markConversationRead(db, TENANT, CONV, 5000)
+    expect(row().readTs).toBe(5000)
+    expect(row().unreadSticky).toBe(false)
+  })
+
+  it("mark-unread sets a sticky sentinel that survives an advancing Teams horizon", () => {
+    upsertConversations(db, TENANT, [
+      conv({ lastMessage: { id: "m1", content: "hi", originalarrivaltime: at(5000) } }),
+    ])
+    markConversationUnread(db, TENANT, CONV)
+    expect(row().unreadSticky).toBe(true)
+    expect(row().readTs).toBe(0)
+    // A poll ingests a fresh Teams horizon past the last message — the sentinel still wins.
+    setReadHorizon(db, TENANT, CONV, 9000)
+    expect(row().unreadSticky).toBe(true)
+    expect(row().readTs).toBe(0)
+    // Opening the thread (setLocalRead) overwrites the sentinel → read again.
+    setLocalRead(db, TENANT, CONV, 5000)
+    expect(row().unreadSticky).toBe(false)
+    expect(row().readTs).toBe(9000)
   })
 })

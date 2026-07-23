@@ -82,10 +82,10 @@ self.addEventListener("notificationclick", (e) => {
           return client.focus()
         }
       }
+      // Cold tap: deep-link straight to the conversation's route (t155, workstream I's URL scheme).
+      // chat-app boots from the path; an unknown id degrades to the list.
       if (self.clients.openWindow)
-        return self.clients.openWindow(
-          convId ? `/chat?conv=${encodeURIComponent(convId)}` : "/chat",
-        )
+        return self.clients.openWindow(convId ? `/chat/c/${encodeURIComponent(convId)}` : "/chat/")
     })(),
   )
 })

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { conversationLabel, previewLine, relativeTime } from "./conversation-view"
+import {
+  applyReadOverride,
+  conversationLabel,
+  isUnread,
+  previewLine,
+  relativeTime,
+} from "./conversation-view"
 import type { TeamsConversation } from "./teams-client"
 
 const conv = (over: Partial<TeamsConversation>): TeamsConversation => ({
@@ -10,6 +16,9 @@ const conv = (over: Partial<TeamsConversation>): TeamsConversation => ({
   lastMessageVersion: 0,
   lastMessageTs: null,
   lastMessagePreview: "",
+  readTs: 0,
+  lastMessageFromMe: false,
+  unreadSticky: false,
   muted: false,
   ...over,
 })
@@ -129,5 +138,60 @@ describe("relativeTime", () => {
 
   it("returns a non-empty absolute label past a week", () => {
     expect(relativeTime(now - 30 * 86_400_000, now).length).toBeGreaterThan(0)
+  })
+})
+
+describe("isUnread (t155)", () => {
+  it("unread when the last message is newer than readTs and not own", () => {
+    expect(isUnread(conv({ lastMessageTs: 200, readTs: 100 }))).toBe(true)
+  })
+
+  it("read when readTs covers the last message", () => {
+    expect(isUnread(conv({ lastMessageTs: 200, readTs: 200 }))).toBe(false)
+    expect(isUnread(conv({ lastMessageTs: 200, readTs: 300 }))).toBe(false)
+  })
+
+  it("never unread when the last message is the viewer's own", () => {
+    expect(isUnread(conv({ lastMessageTs: 200, readTs: 0, lastMessageFromMe: true }))).toBe(false)
+  })
+
+  it("not unread with no last message ts", () => {
+    expect(isUnread(conv({ lastMessageTs: null, readTs: 0 }))).toBe(false)
+  })
+
+  it("mark-unread sentinel (server zeroes readTs) reads as unread", () => {
+    expect(isUnread(conv({ lastMessageTs: 200, readTs: 0, unreadSticky: true }))).toBe(true)
+  })
+})
+
+describe("applyReadOverride (t155)", () => {
+  it("read override raises readTs to its ts and drops the sentinel", () => {
+    const c = conv({ lastMessageTs: 200, readTs: 100 })
+    const out = applyReadOverride(c, { action: "read", ts: 200 })
+    expect(out.readTs).toBe(200)
+    expect(isUnread(out)).toBe(false)
+  })
+
+  it("read override is a no-op (same ref) once the server covers it", () => {
+    const c = conv({ lastMessageTs: 200, readTs: 300 })
+    expect(applyReadOverride(c, { action: "read", ts: 200 })).toBe(c)
+  })
+
+  it("a LATER message re-arms the dot past a read override", () => {
+    const c = conv({ lastMessageTs: 500, readTs: 0 })
+    expect(isUnread(applyReadOverride(c, { action: "read", ts: 200 }))).toBe(true)
+  })
+
+  it("unread override forces the sticky-unread shape; poll can't clobber", () => {
+    const fresh = conv({ lastMessageTs: 200, readTs: 999 }) // server says read
+    const out = applyReadOverride(fresh, { action: "unread", ts: 200 })
+    expect(out.readTs).toBe(0)
+    expect(out.unreadSticky).toBe(true)
+    expect(isUnread(out)).toBe(true)
+  })
+
+  it("no override → same ref", () => {
+    const c = conv({ lastMessageTs: 200 })
+    expect(applyReadOverride(c, undefined)).toBe(c)
   })
 })

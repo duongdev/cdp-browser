@@ -28,6 +28,7 @@ const SCHEMA = [
     last_message_version INTEGER,
     last_message_ts      INTEGER,
     last_message_preview TEXT,
+    last_message_from_me INTEGER DEFAULT 0,
     newest_synced_ts     INTEGER,
     oldest_synced_ts     INTEGER,
     muted                INTEGER DEFAULT 0,
@@ -66,8 +67,22 @@ const SCHEMA = [
   `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content='messages')`,
 ]
 
+// Columns added after t127's original schema. `CREATE TABLE IF NOT EXISTS` won't add a column to a
+// pre-existing table, so ALTER them in idempotently (swallow the "duplicate column" error on a db
+// that already has them). Keep new columns here, not in SCHEMA, so an existing db.migrate()s cleanly.
+const ADD_COLUMNS = [
+  ["conversations", "last_message_from_me", "INTEGER DEFAULT 0"], // t155
+]
+
 function migrate(db) {
   for (const stmt of SCHEMA) db.exec(stmt)
+  for (const [table, col, type] of ADD_COLUMNS) {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
+    } catch (e) {
+      if (!/duplicate column/i.test(e.message)) throw e
+    }
+  }
   return db
 }
 
@@ -94,10 +109,24 @@ function toEpochMs(iso) {
 
 const PREVIEW_CAP = 500
 
+// Teams' server-side read horizon (t155). Every Teams client (desktop/mobile/web) writes the
+// conversation's `properties.consumptionhorizon` as "{lastReadMsgId};{readTsMs};{clientVersion}"
+// — the middle field is the epoch-ms up to which the user has read ANYWHERE. Ingesting it keeps
+// the chat app's unread honest when a message is read on another device. Returns null on any
+// unparseable shape (never rewinds the horizon on garbage).
+function parseConsumptionHorizonTs(raw) {
+  if (typeof raw !== "string") return null
+  const parts = raw.split(";")
+  const ts = Number(parts[1])
+  return Number.isFinite(ts) && ts > 0 ? ts : null
+}
+
 // Pure: a raw Teams conversation object → the DB row shape (message rendering/sanitizing is
 // t129, so the preview is the raw last-message content, capped). `lastUpdatedMessageVersion`
 // drives the version gate; the last message's arrival time is the sort/anchor timestamp.
-function shapeConversation(conv, tenant) {
+// `selfId` (the signed-in oid, t155) flags whether the last message is the viewer's own — an
+// own last message never badges unread. `read_horizon_ts` carries the Teams consumptionhorizon.
+function shapeConversation(conv, tenant, selfId) {
   const last = conv.lastMessage || {}
   const content = typeof last.content === "string" ? last.content : ""
   return {
@@ -109,22 +138,33 @@ function shapeConversation(conv, tenant) {
     last_message_version: Number(conv.lastUpdatedMessageVersion) || 0,
     last_message_ts: toEpochMs(last.originalarrivaltime) ?? toEpochMs(last.composetime),
     last_message_preview: content.length > PREVIEW_CAP ? content.slice(0, PREVIEW_CAP) : content,
+    last_message_from_me: isSelfLastMessage(last.from, selfId) ? 1 : 0,
+    read_horizon_ts: parseConsumptionHorizonTs(conv.properties?.consumptionhorizon),
     muted: 0,
   }
+}
+
+// The last message's `from` MRI (`8:orgid:<oid>` or a contacts URL tail) is the viewer's own when
+// its oid tail matches the signed-in oid. Mirrors teams-render's isSelf without importing it.
+function isSelfLastMessage(from, selfId) {
+  if (!selfId || typeof from !== "string" || !from) return false
+  const sender = from.split("/").pop() || from
+  const oid = (v) => (typeof v === "string" ? v.slice(v.lastIndexOf(":") + 1) : "")
+  return sender === selfId || oid(sender) === oid(selfId)
 }
 
 // Insert new conversations, update a row only when its `lastUpdatedMessageVersion` rises
 // (no-op on equal/lower — the WHERE gate), and skip reserved/self. The newest/oldest sync
 // cursors are seeded to the last-message ts ONCE on insert and never clobbered by an update
 // (t129+ owns their advance). Returns the shaped, non-reserved rows it processed.
-function upsertConversations(db, tenant, list, now = Date.now()) {
+function upsertConversations(db, tenant, list, now = Date.now(), selfId = null) {
   const stmt = db.prepare(`
     INSERT INTO conversations
       (id, tenant, kind, topic, last_message_id, last_message_version, last_message_ts,
-       last_message_preview, newest_synced_ts, oldest_synced_ts, muted, updated_at)
+       last_message_preview, last_message_from_me, newest_synced_ts, oldest_synced_ts, muted, updated_at)
     VALUES
       (@id, @tenant, @kind, @topic, @last_message_id, @last_message_version, @last_message_ts,
-       @last_message_preview, @last_message_ts, @last_message_ts, @muted, @updated_at)
+       @last_message_preview, @last_message_from_me, @last_message_ts, @last_message_ts, @muted, @updated_at)
     ON CONFLICT(id) DO UPDATE SET
       tenant = excluded.tenant,
       kind = excluded.kind,
@@ -133,6 +173,7 @@ function upsertConversations(db, tenant, list, now = Date.now()) {
       last_message_version = excluded.last_message_version,
       last_message_ts = excluded.last_message_ts,
       last_message_preview = excluded.last_message_preview,
+      last_message_from_me = excluded.last_message_from_me,
       updated_at = excluded.updated_at
     WHERE excluded.last_message_version > conversations.last_message_version
   `)
@@ -140,8 +181,11 @@ function upsertConversations(db, tenant, list, now = Date.now()) {
   const run = db.transaction((convs) => {
     for (const conv of convs) {
       if (!conv?.id || isReservedConversation(conv.id)) continue
-      const row = shapeConversation(conv, tenant)
+      const row = shapeConversation(conv, tenant, selfId)
       stmt.run({ ...row, updated_at: now })
+      // Ingest the Teams server-side read horizon (read-elsewhere) into read_state. Monotonic
+      // (setReadHorizon MAXes), so it only ever advances — a mark-unread's local sentinel still wins.
+      if (row.read_horizon_ts != null) setReadHorizon(db, tenant, conv.id, row.read_horizon_ts)
       rows.push(row)
     }
   })
@@ -174,23 +218,37 @@ function upsertAccount(db, account, now = Date.now()) {
 function listConversations(db, tenant) {
   const rows = db
     .prepare(`
-      SELECT id, kind, topic, last_message_id, last_message_version, last_message_ts,
-             last_message_preview, muted
-      FROM conversations
-      WHERE tenant = ?
-      ORDER BY last_message_ts DESC NULLS LAST, id
+      SELECT c.id, c.kind, c.topic, c.last_message_id, c.last_message_version, c.last_message_ts,
+             c.last_message_preview, c.last_message_from_me, c.muted,
+             r.read_horizon_ts, r.local_read_ts
+      FROM conversations c
+      LEFT JOIN read_state r ON r.conv_id = c.id
+      WHERE c.tenant = ?
+      ORDER BY c.last_message_ts DESC NULLS LAST, c.id
     `)
     .all(tenant)
-  return rows.map((r) => ({
-    id: r.id,
-    kind: r.kind,
-    topic: r.topic,
-    lastMessageId: r.last_message_id,
-    lastMessageVersion: r.last_message_version,
-    lastMessageTs: r.last_message_ts,
-    lastMessagePreview: r.last_message_preview,
-    muted: !!r.muted,
-  }))
+  return rows.map((r) => {
+    // `local_read_ts === -1` is the sticky mark-unread sentinel (t155): the row stays unread even
+    // if the Teams horizon covers the last message. `readTs` is the effective read watermark the
+    // client derives unread against; the sentinel forces it to 0. Otherwise the higher of the two.
+    const sticky = r.local_read_ts === -1
+    const readTs = sticky
+      ? 0
+      : Math.max(r.read_horizon_ts || 0, r.local_read_ts > 0 ? r.local_read_ts : 0)
+    return {
+      id: r.id,
+      kind: r.kind,
+      topic: r.topic,
+      lastMessageId: r.last_message_id,
+      lastMessageVersion: r.last_message_version,
+      lastMessageTs: r.last_message_ts,
+      lastMessagePreview: r.last_message_preview,
+      lastMessageFromMe: !!r.last_message_from_me,
+      readTs,
+      unreadSticky: sticky,
+      muted: !!r.muted,
+    }
+  })
 }
 
 // Persist a page of ReaderMessages (t129, ADR-0019) into `messages`, insert-or-replace by
@@ -308,6 +366,28 @@ function setLocalRead(db, tenant, convId, ts) {
   `).run({ convId, tenant, ts: Number(ts) || 0 })
 }
 
+// Explicit mark-read (t155): force local_read_ts to `ts` (the last-message ts), clearing any
+// mark-unread sentinel. Unlike setLocalRead this is NOT monotonic — an explicit action overrides,
+// so it can drop a -1 sentinel back to a real read ts. Idempotent.
+function markConversationRead(db, tenant, convId, ts) {
+  db.prepare(`
+    INSERT INTO read_state (conv_id, tenant, local_read_ts)
+    VALUES (@convId, @tenant, @ts)
+    ON CONFLICT(conv_id) DO UPDATE SET tenant = excluded.tenant, local_read_ts = excluded.local_read_ts
+  `).run({ convId, tenant, ts: Number(ts) || 0 })
+}
+
+// Explicit mark-unread (t155): set the sticky sentinel local_read_ts = -1. The row then reads
+// unread regardless of the Teams horizon (which keeps advancing in read_state but is masked by the
+// sentinel in listConversations) until a real read (open/mark-read) overwrites it. Re-arms the to-do dot.
+function markConversationUnread(db, tenant, convId) {
+  db.prepare(`
+    INSERT INTO read_state (conv_id, tenant, local_read_ts)
+    VALUES (@convId, @tenant, -1)
+    ON CONFLICT(conv_id) DO UPDATE SET tenant = excluded.tenant, local_read_ts = -1
+  `).run({ convId, tenant })
+}
+
 function getReadState(db, convId) {
   const r = db
     .prepare("SELECT tenant, read_horizon_ts, local_read_ts FROM read_state WHERE conv_id = ?")
@@ -362,6 +442,9 @@ module.exports = {
   listMessages,
   setReadHorizon,
   setLocalRead,
+  markConversationRead,
+  markConversationUnread,
+  parseConsumptionHorizonTs,
   getReadState,
   upsertUsers,
   getUsers,

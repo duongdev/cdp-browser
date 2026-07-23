@@ -32,6 +32,7 @@ export type KeyIntent =
   | { type: "edit" } // e — edit focused own message
   | { type: "delete" } // ⌫ / Delete — delete focused own message
   | { type: "react" } // r — open reaction bar on focused message
+  | { type: "toggle-read" } // u — toggle read/unread on the focused/open conversation
 
 /** True when the event target is a text-editing surface (input/textarea/select/contenteditable).
  *  Bare-char shortcuts must be suppressed there so typing isn't hijacked. */
@@ -93,6 +94,9 @@ export function routeKey(e: KeyLike, ctx: ChatContext, pendingG: boolean): KeyIn
       return ctx.view === "thread" && ctx.isOwnMessage ? { type: "delete" } : null
     case "r":
       return ctx.view === "thread" && ctx.focusedMessageId ? { type: "react" } : null
+    case "u":
+      // Toggle read/unread on the focused (list) or open (thread) conversation.
+      return ctx.focusedConversationId ? { type: "toggle-read" } : null
     default:
       return null
   }

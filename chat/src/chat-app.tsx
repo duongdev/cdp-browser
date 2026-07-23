@@ -11,7 +11,8 @@ import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/th
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
-import type { TeamsConversation } from "./lib/teams-client"
+import { isUnread, type ReadOverride } from "./lib/conversation-view"
+import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
 
@@ -58,6 +59,9 @@ function stubConversation(id: string): TeamsConversation {
     lastMessageVersion: 0,
     lastMessageTs: null,
     lastMessagePreview: "",
+    readTs: 0,
+    lastMessageFromMe: false,
+    unreadSticky: false,
     muted: false,
   }
 }
@@ -86,23 +90,75 @@ export function ChatApp() {
   // Phone only: which surface is on screen. The thread panes stay mounted while the list shows.
   const [phoneView, setPhoneView] = useState<"list" | "thread">("list")
 
-  // The URL is the state (t150): `/chat/c/{id}` is an open conversation, `/chat/` is the list.
-  // A user-driven open pushes; a popstate-driven one replays history without re-pushing.
-  const openConversation = useCallback((conv: TeamsConversation) => {
-    setConvById((m) => (m[conv.id] === conv ? m : { ...m, [conv.id]: conv }))
-    setKeepAlive((s) => openThread(s, conv.id))
-    setPhoneView("thread")
-    const path = pathFor(conv.id)
-    if (window.location.pathname !== path) window.history.pushState(null, "", path)
+  // The live conversation list (t152): captured from the list component (override-applied, t155) so
+  // keyboard j/k has an order to walk and the palette can jump to any of them. Also feeds the
+  // late-metadata swap below.
+  const [conversations, setConversations] = useState<TeamsConversation[]>([])
+  // Latest list by ref, so patchConvRead can stay STABLE (deps []). If it depended on
+  // `conversations`, every list report would mint a new openConversationById and re-run the boot
+  // effect (URL still /chat/c/{id}) — which re-laid a "read" override in a loop that clobbered a
+  // just-made mark-unread (the iteration-2→3 bug).
+  const conversationsRef = useRef<TeamsConversation[]>([])
+  const onConversations = useCallback((list: TeamsConversation[]) => {
+    conversationsRef.current = list
+    setConversations(list)
+    // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
+    // (id only). When the list loads/merges, swap any tracked entry for the real object so the
+    // thread header picks up the resolved title. Only ids already tracked are stored.
+    setConvById((m) => {
+      let next = m
+      for (const c of list) {
+        if (m[c.id] && m[c.id] !== c) {
+          if (next === m) next = { ...m }
+          next[c.id] = c
+        }
+      }
+      return next
+    })
   }, [])
 
-  const openConversationById = useCallback((id: string, push = true) => {
-    setConvById((m) => (m[id] ? m : { ...m, [id]: stubConversation(id) }))
-    setKeepAlive((s) => openThread(s, id))
-    setPhoneView("thread")
-    const path = pathFor(id)
-    if (push && window.location.pathname !== path) window.history.pushState(null, "", path)
+  // Optimistic read-state overrides by conv id (t155). The visible rows live in ConversationList's
+  // OWN state, so the override map is passed down and applied THERE (patching the app-side copy
+  // never reached the screen — the iteration-2 bug). `patchConvRead` lays an override (instant dot
+  // change, poll-proof via applyReadOverride's max-merge) and, when `persist`, POSTs
+  // /api/teams/read-local so the server agrees (opens persist too — a kept-alive re-open has no
+  // history load to write local_read for it).
+  const [readOverrides, setReadOverrides] = useState<Record<string, ReadOverride>>({})
+  const patchConvRead = useCallback((id: string, action: "read" | "unread", persist: boolean) => {
+    const c = conversationsRef.current.find((x) => x.id === id)
+    // Fallback for a not-yet-listed conv (push deep-link): "now" covers everything currently shown.
+    const ts = c?.lastMessageTs ?? Date.now()
+    setReadOverrides((m) => ({ ...m, [id]: { action, ts } }))
+    if (persist) markReadLocal(id, action, ts)
   }, [])
+
+  // The URL is the state (t150): `/chat/c/{id}` is an open conversation, `/chat/` is the list.
+  // A user-driven open pushes; a popstate-driven one replays history without re-pushing.
+  const openConversation = useCallback(
+    (conv: TeamsConversation) => {
+      setConvById((m) => (m[conv.id] === conv ? m : { ...m, [conv.id]: conv }))
+      setKeepAlive((s) => openThread(s, conv.id))
+      setPhoneView("thread")
+      // persist=true: a kept-alive pane re-open doesn't refetch history (whose non-poll load is the
+      // other server-side read write), so the open itself must clear a mark-unread sentinel durably.
+      patchConvRead(conv.id, "read", true)
+      const path = pathFor(conv.id)
+      if (window.location.pathname !== path) window.history.pushState(null, "", path)
+    },
+    [patchConvRead],
+  )
+
+  const openConversationById = useCallback(
+    (id: string, push = true) => {
+      setConvById((m) => (m[id] ? m : { ...m, [id]: stubConversation(id) }))
+      setKeepAlive((s) => openThread(s, id))
+      setPhoneView("thread")
+      patchConvRead(id, "read", true)
+      const path = pathFor(id)
+      if (push && window.location.pathname !== path) window.history.pushState(null, "", path)
+    },
+    [patchConvRead],
+  )
 
   // Push deep-link (t147): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
   // open) arrives as an SW postMessage { type:"open-conv", convId }. Both open that conversation;
@@ -146,25 +202,16 @@ export function ChatApp() {
     return () => window.removeEventListener("popstate", onPop)
   }, [openConversationById])
 
-  // The live conversation list (t152): captured from the list component so keyboard j/k has an order
-  // to walk and the palette can jump to any of them. Also feeds the late-metadata swap below.
-  const [conversations, setConversations] = useState<TeamsConversation[]>([])
-  const onConversations = useCallback((list: TeamsConversation[]) => {
-    setConversations(list)
-    // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
-    // (id only). When the list loads/merges, swap any tracked entry for the real object so the
-    // thread header picks up the resolved title. Only ids already tracked are stored.
-    setConvById((m) => {
-      let next = m
-      for (const c of list) {
-        if (m[c.id] && m[c.id] !== c) {
-          if (next === m) next = { ...m }
-          next[c.id] = c
-        }
-      }
-      return next
-    })
-  }, [])
+  // `u` toggles the focused/open conversation's read state (t155). Read → unread, else → read.
+  // Reads the ref (not state) so the decision always sees the just-reported, override-applied list.
+  const toggleReadUnread = useCallback(
+    (id: string | null) => {
+      if (!id) return
+      const c = conversationsRef.current.find((x) => x.id === id)
+      patchConvRead(id, c && isUnread(c) ? "read" : "unread", true)
+    },
+    [patchConvRead],
+  )
 
   const backToList = useCallback(() => {
     setPhoneView("list")
@@ -261,6 +308,31 @@ export function ChatApp() {
         keys: "?",
         run: () => setOverlayOpen(true),
       },
+      {
+        id: "mark-read",
+        label: "Mark as read",
+        group: "Conversation",
+        keys: "u",
+        when: (c) => {
+          const conv = conversations.find((x) => x.id === c.focusedConversationId)
+          return !!conv && isUnread(conv)
+        },
+        run: () =>
+          ctx.focusedConversationId && patchConvRead(ctx.focusedConversationId, "read", true),
+      },
+      {
+        id: "mark-unread",
+        label: "Mark as unread",
+        group: "Conversation",
+        // No overlay `keys` hint — `u` is a single toggle documented on "Mark as read" (the overlay
+        // lists it once; both palette actions still run the toggle). Palette shows the plain label.
+        when: (c) => {
+          const conv = conversations.find((x) => x.id === c.focusedConversationId)
+          return !!conv && !isUnread(conv)
+        },
+        run: () =>
+          ctx.focusedConversationId && patchConvRead(ctx.focusedConversationId, "unread", true),
+      },
       ...jumps,
       {
         id: "msg-react",
@@ -287,7 +359,7 @@ export function ChatApp() {
         run: () => activeThreadRef.current?.command("delete"),
       },
     ])
-  }, [conversations, openConversation, backToList, view, moveListFocus])
+  }, [conversations, openConversation, backToList, view, moveListFocus, patchConvRead, ctx])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
   useEffect(() => {
@@ -360,6 +432,10 @@ export function ChatApp() {
           e.preventDefault()
           activeThreadRef.current?.command("react")
           break
+        case "toggle-read":
+          e.preventDefault()
+          toggleReadUnread(ctx.focusedConversationId ?? null)
+          break
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -375,6 +451,7 @@ export function ChatApp() {
     openConversation,
     backToList,
     clearPendingG,
+    toggleReadUnread,
   ])
 
   const threadPanes = keepAlive.mounted.map((id) => {
@@ -421,6 +498,7 @@ export function ChatApp() {
               focusedId={view === "list" ? focusedConvId : null}
               onConversations={onConversations}
               onOpenConversation={openConversation}
+              readOverrides={readOverrides}
               selectedId={keepAlive.active || null}
             />
           </div>
@@ -447,6 +525,7 @@ export function ChatApp() {
             focusedId={focusedConvId}
             onConversations={onConversations}
             onOpenConversation={openConversation}
+            readOverrides={readOverrides}
             selectedId={keepAlive.active || null}
           />
         </main>

@@ -58,8 +58,11 @@ import { planTeamsNotifications } from "../core/teams-notify-sweep.js"
 import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
 import {
   conversationKind as teamsConversationKind,
+  getReadState as teamsGetReadState,
   getUsers as teamsGetUsers,
   listConversations as teamsListConversations,
+  markConversationRead as teamsMarkConversationRead,
+  markConversationUnread as teamsMarkConversationUnread,
   migrate as teamsMigrate,
   setLocalRead as teamsSetLocalRead,
   setReadHorizon as teamsSetReadHorizon,
@@ -1088,7 +1091,13 @@ async function teamsConversations(cursor) {
   })
   // Return only THIS page's conversations (the client appends + dedups), enriched from the DB view
   // (unread/preview/muted) and t131 name resolution per page. `rows` = the page's non-reserved convs.
-  const rows = teamsUpsertConversations(teamsDb, cred.tenant, out.conversations)
+  const rows = teamsUpsertConversations(
+    teamsDb,
+    cred.tenant,
+    out.conversations,
+    Date.now(),
+    cred.userId,
+  )
   const pageIds = new Set(rows.map((r) => r.id))
   const convs = teamsListConversations(teamsDb, cred.tenant).filter((c) => pageIds.has(c.id))
   return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
@@ -1426,7 +1435,7 @@ async function fetchTeamsHistoryInPage(cred, convId, cursor) {
 
 // Mint/reuse creds → in-page history fetch → render → upsert → return { messages, cursor }. A 401
 // drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations).
-async function teamsHistory(convId, cursor) {
+async function teamsHistory(convId, cursor, poll) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1448,8 +1457,12 @@ async function teamsHistory(convId, cursor) {
   await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t143); strips userMris
   // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
   // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
+  // A background `poll` of the open thread also advances it (live-viewing = reading) EXCEPT when a
+  // mark-unread sentinel (local_read_ts = -1, t155) is armed — only a real open/explicit action
+  // clears the sentinel, so "mark unread while the thread is open" survives the 4s poll + a refresh.
   if (cursor == null && messages.length > 0) {
-    teamsSetLocalRead(teamsDb, cred.tenant, convId, messages[messages.length - 1].ts)
+    const sentinel = poll && teamsGetReadState(teamsDb, convId)?.localReadTs === -1
+    if (!sentinel) teamsSetLocalRead(teamsDb, cred.tenant, convId, messages[messages.length - 1].ts)
   }
   return { messages, cursor: out.cursor }
 }
@@ -2445,9 +2458,9 @@ const server = http.createServer(async (req, res) => {
     // renders to ReaderMessages, persists, returns { messages, cursor }. No `cursor` → first
     // page; a `cursor` (backwardLink) pages older after the SSRF gate. Web only.
     if (p === "/api/teams/history" && POST) {
-      const { convId, cursor } = await body(req)
+      const { convId, cursor, poll } = await body(req)
       if (!convId) return json(res, { error: "missing convId" }, 400)
-      const out = await teamsHistory(convId, cursor)
+      const out = await teamsHistory(convId, cursor, !!poll)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error === "bad_cursor") return json(res, out, 400)
       if (out.error) return json(res, out, 502)
@@ -2513,6 +2526,21 @@ const server = http.createServer(async (req, res) => {
       const { convId, msgId, ts } = await body(req)
       if (!convId || !msgId || ts == null) return json(res, { error: "missing fields" }, 400)
       return json(res, await teamsMarkRead(convId, msgId, ts))
+    }
+    // Teams chat: LOCAL-only read state (t155, Q9 hybrid). Writes read_state in the chat DB and
+    // NEVER touches Teams (no consumptionHorizon write) — the desktop unread survives as a to-do
+    // trail. `action`: "read" advances local_read_ts to `ts` (or clears a mark-unread sentinel);
+    // "unread" sets the sticky sentinel that re-arms the dot past an advancing Teams horizon. Web only.
+    if (p === "/api/teams/read-local" && POST) {
+      const { convId, action, ts } = await body(req)
+      if (!convId || (action !== "read" && action !== "unread"))
+        return json(res, { error: "missing fields" }, 400)
+      const cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+      const tenant = cred?.tenant
+      if (!tenant) return json(res, { error: "invalid_auth" }, 401)
+      if (action === "read") teamsMarkConversationRead(teamsDb, tenant, convId, Number(ts) || 0)
+      else teamsMarkConversationUnread(teamsDb, tenant, convId)
+      return json(res, { ok: true })
     }
     // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t142, ADR-0019). Best-effort
     // { ok } — the client is optimistic and the poll reconciles. A 401 → one re-authz + retry. Web only.

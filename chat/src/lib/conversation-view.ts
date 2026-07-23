@@ -96,6 +96,44 @@ export function previewText(rawContent: string): string {
   return quotePreview ? `↩ ${quotePreview}` : ""
 }
 
+/** Pure unread test (t155). A conversation is unread when its last message is newer than the
+ *  effective read watermark (`readTs` — the higher of the Teams consumptionHorizon and the local
+ *  read, or 0 under a mark-unread sentinel) AND the last message isn't the viewer's own send. The
+ *  `unreadSticky` sentinel forces unread even when `readTs` would otherwise cover it (server already
+ *  zeroes `readTs` in that case, so the ts check suffices; the flag is kept for an explicit read). */
+export function isUnread(conv: TeamsConversation): boolean {
+  if (conv.lastMessageFromMe) return false
+  if (conv.lastMessageTs == null) return false
+  return conv.lastMessageTs > (conv.readTs || 0)
+}
+
+/** An optimistic client-side read-state patch (t155). Applied over the server row INSIDE
+ *  ConversationList (the rows render from the list's own state, so patching any other copy never
+ *  reaches the screen): opening a thread / mark-read lays a "read" override (readTs floor at `ts` —
+ *  a LATER message still re-arms the dot), mark-unread forces the sticky-unread shape. Overrides
+ *  never expire — a "read" override is a no-op once the server readTs covers it, and an "unread"
+ *  override mirrors the server sentinel the action just wrote. */
+export interface ReadOverride {
+  action: "read" | "unread"
+  /** The last-message ts at patch time — the watermark a "read" override raises readTs to. */
+  ts: number
+}
+
+/** Apply an override to a server conversation row (pure). Returns the same reference when the
+ *  override changes nothing. */
+export function applyReadOverride(
+  conv: TeamsConversation,
+  override?: ReadOverride,
+): TeamsConversation {
+  if (!override) return conv
+  if (override.action === "read") {
+    if (conv.readTs >= override.ts && !conv.unreadSticky) return conv
+    return { ...conv, readTs: Math.max(conv.readTs, override.ts), unreadSticky: false }
+  }
+  if (conv.readTs === 0 && conv.unreadSticky) return conv
+  return { ...conv, readTs: 0, unreadSticky: true }
+}
+
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR

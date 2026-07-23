@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react"
 import { cn } from "@/lib/utils"
-import { conversationLabel, previewLine, relativeTime } from "../lib/conversation-view"
+import { conversationLabel, isUnread, previewLine, relativeTime } from "../lib/conversation-view"
 import type { TeamsConversation } from "../lib/teams-client"
 import { UserAvatar } from "./user-avatar"
 
@@ -17,6 +17,7 @@ interface ConversationRowProps {
 export function ConversationRow({ conversation, onOpen, active, focused }: ConversationRowProps) {
   const label = conversationLabel(conversation)
   const time = relativeTime(conversation.lastMessageTs)
+  const unread = isUnread(conversation)
   const ref = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -38,10 +39,29 @@ export function ConversationRow({ conversation, onOpen, active, focused }: Conve
       <UserAvatar label={label} userId={conversation.avatarUserId} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
-          <span className="truncate font-medium text-foreground">{label}</span>
-          {time && <span className="shrink-0 font-mono text-xs text-muted-foreground">{time}</span>}
+          <span
+            className={cn("truncate text-foreground", unread ? "font-semibold" : "font-medium")}
+          >
+            {label}
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5">
+            {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
+            {unread && (
+              <span
+                aria-label="Unread"
+                className="size-2 rounded-full bg-ring"
+                role="img"
+                title="Unread"
+              />
+            )}
+          </span>
         </span>
-        <span className="mt-0.5 block truncate text-sm text-muted-foreground">
+        <span
+          className={cn(
+            "mt-0.5 block truncate text-sm",
+            unread ? "text-foreground/80" : "text-muted-foreground",
+          )}
+        >
           {previewLine(conversation)}
         </span>
       </span>

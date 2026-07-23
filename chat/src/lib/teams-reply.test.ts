@@ -10,6 +10,9 @@ const conv = (over: Partial<TeamsConversation> = {}): TeamsConversation => ({
   lastMessageVersion: 0,
   lastMessageTs: null,
   lastMessagePreview: "",
+  readTs: 0,
+  lastMessageFromMe: false,
+  unreadSticky: false,
   muted: false,
   ...over,
 })

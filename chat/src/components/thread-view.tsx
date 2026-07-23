@@ -276,7 +276,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // error pane is left to the initial load. Errors are swallowed: a failed poll keeps the last-good
   // thread rather than flipping to error. Sticks to the bottom only if the user was already there.
   const poll = useCallback(() => {
-    fetchHistory(convId)
+    fetchHistory(convId, null, true)
       .then((page) => {
         const el = scrollRef.current
         // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.

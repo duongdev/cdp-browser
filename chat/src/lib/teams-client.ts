@@ -15,6 +15,13 @@ export interface TeamsConversation {
   lastMessageVersion: number
   lastMessageTs: number | null
   lastMessagePreview: string
+  /** The effective read watermark (t155): max(Teams consumptionHorizon, local read), or 0 when a
+   *  mark-unread sentinel is set. A conversation is unread when `lastMessageTs > readTs`. */
+  readTs: number
+  /** True when the last message is the viewer's own send — never badges unread (t155). */
+  lastMessageFromMe: boolean
+  /** True while an explicit mark-unread sentinel forces the row unread past the Teams horizon (t155). */
+  unreadSticky: boolean
   muted: boolean
   /** The user oid whose photo represents this row (t153): a 1:1's other member or the self chat's
    *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/teams/avatar`. */
@@ -126,13 +133,23 @@ export interface HistoryPage {
 }
 
 /** One page of a conversation's history, oldest-first after render. No `cursor` → the newest page;
- *  a `cursor` (the prior page's backwardLink) → the next older page. Throws TeamsApiError with the
+ *  a `cursor` (the prior page's backwardLink) → the next older page. `poll` marks a background
+ *  refresh of an already-open thread (t155): the server then won't let its local-read write clear a
+ *  mark-unread sentinel (only a real open/explicit action does). Throws TeamsApiError with the
  *  server's typed code. */
-export async function fetchHistory(convId: string, cursor?: string | null): Promise<HistoryPage> {
+export async function fetchHistory(
+  convId: string,
+  cursor?: string | null,
+  poll?: boolean,
+): Promise<HistoryPage> {
   const res = await fetch("/api/teams/history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(cursor ? { convId, cursor } : { convId }),
+    body: JSON.stringify({
+      convId,
+      ...(cursor ? { cursor } : {}),
+      ...(poll ? { poll: true } : {}),
+    }),
   })
   const data = (await res.json().catch(() => ({}))) as HistoryResponse
   if (!res.ok || data.error) {
@@ -321,5 +338,25 @@ export async function markRead(convId: string, msgId: string, ts: string): Promi
     })
   } catch {
     // best-effort: the desktop unread just survives as a to-do trail
+  }
+}
+
+/** Local-only read state (t155): mark a conversation read or unread in the chat DB WITHOUT writing
+ *  Teams' consumptionHorizon (Q9 hybrid — the desktop unread survives). `read` clears the dot (and
+ *  any sticky sentinel); `unread` re-arms it. Best-effort — the list is updated optimistically, so a
+ *  network error just leaves the server to reconcile on the next poll. */
+export async function markReadLocal(
+  convId: string,
+  action: "read" | "unread",
+  ts = 0,
+): Promise<void> {
+  try {
+    await fetch("/api/teams/read-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId, action, ts }),
+    })
+  } catch {
+    // best-effort: the poll reconciles
   }
 }

@@ -104,6 +104,15 @@ describe("routeKey — message actions (thread + own only)", () => {
     expect(routeKey(key("r"), { view: "thread" }, false)).toBeNull()
     expect(routeKey(key("r"), list, false)).toBeNull()
   })
+  it("u → toggle-read when a conversation is focused/open (t155)", () => {
+    expect(routeKey(key("u"), { view: "list", focusedConversationId: "c1" }, false)).toEqual({
+      type: "toggle-read",
+    })
+    expect(routeKey(key("u"), { view: "thread", focusedConversationId: "c1" }, false)).toEqual({
+      type: "toggle-read",
+    })
+    expect(routeKey(key("u"), list, false)).toBeNull()
+  })
 })
 
 describe("routeKey — Esc is never claimed", () => {
