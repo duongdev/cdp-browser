@@ -1,11 +1,11 @@
 # PSN-90 — Native chat UI enhancements (plan)
 
-Status: proposed · plan-only · 2026-07-23
+Status: grilled — decisions resolved · plan-only · 2026-07-23
 Issue: https://linear.app/withdustin/issue/PSN-90
 
 Turn the `/chat` Teams surface from "functional data spine" into a world-class,
 keyboard-first native chat app with a coherent Airbnb-flavoured design system.
-This file is the umbrella plan. Each workstream (A–H) is sized to become its own
+This file is the umbrella plan. Each workstream (A–K) is sized to become its own
 `build` task, runnable in a **separate session**. Dependencies are called out so
 they can be parallelised where safe.
 
@@ -40,8 +40,8 @@ Two-pane layout (`chat-app.tsx`, wide ≥768px), MRU keep-alive thread panes
 - **Web build only.** Electron chat shell is a fast-follow; do not gate work on it.
 - **Shared design system stays shared where it should.** The chat app imports
   `src/components/ui/*` + `src/index.css`. An Airbnb re-skin must be done as
-  **theme tokens**, not a fork, or it diverges the `/` browser build. Decide
-  scope of the re-skin (chat-only vs product-wide) — see Open Questions.
+  **theme tokens**, not a fork, or it diverges the `/` browser build. Re-skin is
+  **chat-only** (grilled #1).
 - **No new heavy deps without a real trigger** (chat-ui-lib research in
   CLAUDE.md: DOMPurify ✓ already in; react-virtuoso / frimousse / adaptivecards
   only at their trigger).
@@ -53,23 +53,24 @@ Two-pane layout (`chat-app.tsx`, wide ≥768px), MRU keep-alive thread panes
 ## Workstream A — Airbnb-flavoured design system (foundational)
 
 **Goal.** A named token layer the chat app renders through, matching the warmth
-of `~/Downloads/DESIGN-airbnb.md` (Rausch `#ff385c` accent, generous whitespace,
-single soft shadow tier, pill/rounded geometry, Cereal-like modest weights)
-without breaking the `/` browser build.
+of `~/Downloads/DESIGN-airbnb.md` (generous whitespace, single soft shadow tier,
+pill/rounded geometry, modest weights) without breaking the `/` browser build.
+Decisions: chat-only scope, keep Manrope, **subtle accent — not full Rausch**
+(warmth from space/geometry/shadow; accent reserved for focus, unread, own-message
+tint).
 
 **Approach.**
 - Define a chat-scoped theme (e.g. `chat/src/theme.css` layered after the shared
   import, or a `data-app="chat"` scope) mapping the existing shadcn CSS vars to
-  Airbnb values: `--primary` → Rausch, radius scale, one elevation shadow,
+  the Airbnb-flavoured values: subtle accent, radius scale, one elevation shadow,
   hairline borders, surface-soft. Keep the same variable names so `ui/*`
   components inherit — no component forks.
-- Map the design spec's type ramp onto the existing font stack (we keep Manrope
-  unless we license Cereal — Open Question). Spacing/rounded scale → Tailwind.
+- Map the design spec's type ramp onto Manrope. Spacing/rounded scale → Tailwind.
 - Re-skin the primitives the chat actually uses: message bubbles, conversation
   rows, composer, buttons, skeletons, list/thread headers.
 
 **Acceptance.**
-- [ ] Chat renders with Rausch accent + Airbnb geometry; `/` browser build is
+- [ ] Chat renders with the subtle accent + Airbnb geometry; `/` browser build is
       byte-unchanged (verify via a screenshot diff / manual check).
 - [ ] Tokens are documented (one short table) and referenced by name, not inline.
 - [ ] Light + dark both covered.
@@ -157,14 +158,15 @@ rewrite.
 - [ ] Four-state coverage verified on every surface.
 - [ ] No layout shift on media/reaction/edit; verified with screenshots.
 
-**Depends on:** A (so polish targets final tokens). **Parallel with** E, G.
+**Depends on:** the UI revamp (grilled #8) — runs **last**, after A + B/C/E/F/I/J/K
+land, as the integration sweep.
 
 ---
 
-## Workstream E — Threads + user avatars (feasibility → build)
+## Workstream E — User avatars
 
-**Goal.** Real participant/sender avatars (photos) and a decision on whether to
-render Teams **reply-threads** as nested/threaded UI.
+**Goal.** Real participant/sender avatars (photos). Threading is **decided flat**
+(grilled #5) — no reply-thread UI, no feasibility gate.
 
 **Feasibility to resolve at pickup.**
 - **Avatars.** Teams exposes user photos via Graph
@@ -172,15 +174,10 @@ render Teams **reply-threads** as nested/threaded UI.
   `users` cache (t131). Needs a media-proxy path like AMS (`/api/teams/avatar`)
   with an SSRF guard, and an avatar cache. Confirm the photo endpoint works with
   the existing Graph bearer; fall back to initial tiles (current behaviour).
-- **Threads.** Determine if the messaging payload carries a reply/parent linkage
-  (Teams channel replies vs flat chat). Chats are mostly flat; channels thread.
-  Decide: render a "replies" affordance or keep flat. Likely **flat for chats,
-  defer channel threading** — confirm against live data.
 
 **Acceptance.**
 - [ ] Sender + conversation avatars load real photos (proxied, cached,
       SSRF-guarded); graceful fallback to initials on miss.
-- [ ] A written feasibility note on threading with a go/no-go.
 - [ ] No layout shift; avatars reserve their box.
 
 **Depends on:** A (avatar sizing/rings). **Parallel with** B/C, D, G.
@@ -189,10 +186,10 @@ render Teams **reply-threads** as nested/threaded UI.
 
 ## Workstream F — Settings surface
 
-**Goal.** A chat-app settings sheet to customise functions/behaviours: push
-on/off (exists), density/compact mode, theme (light/dark/system), send-on-Enter
-vs Cmd+Enter, notification mutes per conversation, poll cadence (maybe),
-show/hide read receipts.
+**Goal.** A chat-app settings sheet. **v1 scope (grilled #4): theme
+(light/dark/system) + density/compact mode** — plus the existing push toggle
+relocated in. Everything else (send-key, poll cadence, read receipts) waits for a
+real ask. Per-conversation notification settings live in workstream K, not here.
 
 **Approach.**
 - Reuse the shared shadcn Sheet + the `/` build's settings patterns; persist per
@@ -202,12 +199,12 @@ show/hide read receipts.
   knobs for values that never change).
 
 **Acceptance.**
-- [ ] Settings persist across a PWA refresh (server ui-state, device-keyed).
-- [ ] Each setting visibly changes behaviour.
+- [ ] Theme + density settings persist across a PWA refresh (server ui-state,
+      device-keyed).
+- [ ] Each setting visibly changes behaviour (density flips row/bubble spacing).
 - [ ] Reachable via ⌘K + a header affordance.
 
-**Depends on:** A. **Parallel with** others. Scope of settings list is an Open
-Question (grill).
+**Depends on:** A. **Parallel with** others.
 
 ---
 
@@ -223,9 +220,10 @@ real data, not guesses. (Store already captures these server-side; a scripted
 `Runtime.evaluate` list of distinct messagetypes is the cheapest source.)
 
 **Known gaps to close (from `teams-render.js`):**
-- Adaptive cards (`properties.cards`) — currently `[card]`. Render via
-  `adaptivecards` (its documented trigger) or a curated subset (scheduling,
-  meeting-recap, approvals).
+- Adaptive cards (`properties.cards`) — currently `[card]`. **Decision (grilled
+  #7): general fallback only** — one styled generic card (title/summary text
+  extracted from the payload + an open-in-Teams affordance) for every card type;
+  no `adaptivecards` dependency.
 - Call/meeting **system events** (`ThreadActivity/*`, call started/ended,
   join/leave, recording available) — currently skipped. Render as compact,
   styled system lines (Slack/Linear-style centered meta rows).
@@ -245,9 +243,87 @@ real data, not guesses. (Store already captures these server-side; a scripted
 
 ---
 
+## Workstream I — Persisted routing (added 2026-07-23)
+
+**Goal.** Refresh (or PWA relaunch) lands back in the conversation you were in.
+
+**Approach.**
+- URL-based routing, no router lib: path `/chat/c/{convId}` (the server's
+  `serveChat` SPA fallback already serves `index.html` for any `/chat/*` path).
+  `chat-app.tsx` reads the path on boot → `activeId`; switching conversations
+  `history.pushState`s; `popstate` drives back/forward (the phone stacked
+  back button becomes a real history pop).
+- Unknown/gone convId degrades to the list, never a blank pane.
+- Keep-alive panes are unaffected — routing only picks `activeId`.
+
+**Acceptance.**
+- [ ] Refresh mid-conversation reopens that conversation (wide + phone).
+- [ ] Browser/PWA back-swipe pops thread → list on the phone layout.
+- [ ] Deep-link `/chat/c/{id}` opens directly; bad id → list.
+- [ ] Push deep-routes (unified-push task, later) can reuse the same URLs.
+
+**Depends on:** nothing. **Fully parallel.** Small, ship early.
+
+---
+
+## Workstream J — Notifications + read/unread polish (added 2026-07-23)
+
+**Goal.** The list tells the truth about what's unread, and notifications feel
+first-class.
+
+**Approach.**
+- **Unread state.** The store already tracks `read_state`
+  (`read_horizon_ts`/`local_read_ts`, monotonic); the list UI shows none of it.
+  Surface it: unread rows get weight + accent dot + count where cheap; opening a
+  thread clears it (existing local-mark + send write-through unchanged).
+  Derivation is pure (`conversation-view.ts`) and TDD'd.
+- **Explicit mark read/unread.** Row context/hover action + ⌘K action
+  ("mark unread" re-arms the to-do trail — mirror the `/` build's
+  mark-unread semantics).
+- **Notification polish.** Reuse the existing web-push pipeline; fix rough
+  edges found in audit (badge counts vs chat unread, notification tap →
+  workstream I's URL, mute honoured — per-conversation mute itself is K).
+
+**Acceptance.**
+- [ ] Unread rows visually distinct; count/dot correct against `read_state`.
+- [ ] Open thread clears unread; mark-unread re-arms it; both survive refresh.
+- [ ] Notification tap deep-routes via I's URL scheme.
+- [ ] Pure derivations tested.
+
+**Depends on:** I (deep-route URLs), A (visual tokens). **Parallel with** B/C, E, G.
+
+---
+
+## Workstream K — Labels, folders, per-conversation notification settings (added 2026-07-23)
+
+**Goal.** Organise the conversation list: **local** chat/thread labels, folder
+grouping, and per-conversation notification settings. All local to our store —
+never written back to Teams.
+
+**Approach.**
+- One `conversation_prefs` concept (SQLite table in `teams-store.js`, keyed by
+  convId): `labels` (free-form strings), `folder` (one group name), `muted`
+  (skip push/badge for this conversation). Server CRUD endpoint; pure list
+  shaping (group-by-folder, label chips, filter) in `conversation-view.ts`.
+- List renders folders as collapsible sections (ungrouped last); label chips on
+  rows; assignment via row context menu + ⌘K.
+- Mute gates the push fan-out + unread badge for that conversation (compose with
+  J's unread derivation and the existing per-device mute seam).
+
+**Acceptance.**
+- [ ] Label/folder/mute assignable from row menu + ⌘K; persist server-side;
+      shared across devices.
+- [ ] Folder sections group the list; ungrouped conversations still listed.
+- [ ] Muted conversation: no push, no unread badge contribution; still readable.
+- [ ] Pure shaping tested; no Teams write-back.
+
+**Depends on:** J (unread/mute composition), B (⌘K entries). **After** J.
+
+---
+
 ## Workstream H — "Is it world-class?" review pass (cross-cutting)
 
-Not a separate build; a **gate applied inside each of A–G**: for each area, ask
+Not a separate build; a **gate applied inside each of A–G and I–K**: for each area, ask
 "is this world-class, what UI mistakes exist, how to improve" and record the
 answer in that workstream's PR. Benchmarks: Linear (keyboard/density), Superhuman
 (speed/keyboard), Slack/Teams (chat semantics), Airbnb (warmth/whitespace).
@@ -260,13 +336,16 @@ answer in that workstream's PR. Benchmarks: Linear (keyboard/density), Superhuma
 |---|---|---|---|
 | 1 | A design system | — | Ship first; unblocks visual polish |
 | 2 | G message types | — | Fully independent, backend/pure |
-| 3 | B+C palette + keyboard | A (styling) | Share one registry; do together |
-| 4 | E avatars/threads | A | Feasibility gate inside the task |
-| 5 | F settings | A | Scope TBD (grill) |
-| 6 | D bug hunt + polish | A (+ ideally after B/C/E/F land) | Last, catches integration seams |
+| 3 | I persisted routing | — | Small, independent; ship early |
+| 4 | B+C palette + keyboard | A (styling) | Share one registry; do together |
+| 5 | E avatars | A | Photo-endpoint probe inside the task |
+| 6 | F settings (theme+density) | A | v1 scope fixed |
+| 7 | J unread + notifications | I, A | Pure derivation over read_state |
+| 8 | K labels/folders/mutes | J, B | conversation_prefs, local-only |
+| 9 | D bug hunt + polish | after the revamp lands | Last, catches integration seams |
 
-A and G can start immediately in parallel. B/C, E, F start once A's tokens land
-(or against current theme, re-skinned by A later).
+A, G, and I can start immediately in parallel. B/C, E, F start once A's tokens
+land; J after I; K after J; D last (grilled #8).
 
 ## Risks
 
@@ -290,22 +369,18 @@ A and G can start immediately in parallel. B/C, E, F start once A's tokens land
 - Voice/video, presence, typing indicators, message search UI (unless a later task).
 - Rewriting the live-sync/poll model (works; not a UI concern).
 
-## Open questions (for /grill-me)
+## Decisions (grilled, 2026-07-23)
 
-1. **Re-skin scope** — Airbnb tokens for the chat app **only**, or product-wide
-   (also the `/` browser build)? Chat-only is safer/faster.
-2. **Cereal font** — license/self-host Airbnb Cereal, or approximate with the
-   existing Manrope? (Cereal is proprietary.)
-3. **Accent semantics** — Rausch as the *self-message bubble* + primary CTA, or a
-   subtler accent so a chat doesn't read as a marketplace? Chat needs read/unread
-   and own/other contrast more than brand voltage.
-4. **Settings list** — which knobs actually matter to you (density, send-key,
-   theme, per-conv mute, read receipts, poll cadence)? Pick the real ones.
-5. **Threads** — do you want channel-style reply-threads at all, or is flat chat
-   fine (chats are flat; channels thread)?
-6. **Cmd+K reach** — chat-only palette, or should it also cross into the `/`
-   browser surface (they're separate apps at `/` and `/chat`)?
-7. **Adaptive cards depth** — full `adaptivecards` render, or a curated subset
-   (meeting recap / scheduling / approvals) + generic fallback for the rest?
-8. **Bug hunt priority** — any specific rough edges you already feel, so D
-   targets them first?
+1. **Re-skin scope** — `/chat` only. The `/` browser build stays byte-unchanged.
+2. **Font** — keep Manrope. No Cereal license.
+3. **Accent** — do NOT go full Rausch. Airbnb warmth (whitespace, geometry,
+   soft shadow) with a subtler accent; read/unread and own/other contrast win
+   over brand voltage.
+4. **Settings v1** — theme + density/compact only. More knobs added later on
+   demand.
+5. **Threads** — flat. No channel-style reply-thread UI. E drops its threading
+   feasibility gate; avatars remain its whole scope.
+6. **Cmd+K reach** — chat-only palette. No cross into the `/` surface.
+7. **Adaptive cards** — no full `adaptivecards` render; a **general fallback**
+   (styled generic card: title/summary/open-in-Teams) for all card types.
+8. **Bug hunt (D)** — deferred until after the UI revamp lands (A, then B/C/E/F/I/J/K); D runs last as the integration sweep.
