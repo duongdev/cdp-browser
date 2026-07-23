@@ -23,7 +23,9 @@ function sameConv(a: TeamsConversation, b: TeamsConversation): boolean {
     a.readTs === b.readTs &&
     a.unreadSticky === b.unreadSticky &&
     a.lastMessageFromMe === b.lastMessageFromMe &&
-    a.muted === b.muted
+    a.muted === b.muted &&
+    // t168: a mention-count change (new @me message / read) must re-render the badge.
+    a.mentionCount === b.mentionCount
   )
 }
 

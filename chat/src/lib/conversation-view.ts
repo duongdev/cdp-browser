@@ -176,6 +176,8 @@ export interface ConvPrefs {
   mutedUntil?: number | null
   /** Push through the mute when a message @mentions the viewer (t167). */
   notifyOnMention?: boolean
+  /** Local rename; null = no rename (t168). */
+  customTitle?: string | null
 }
 
 export const EMPTY_PREFS: ConvPrefs = { labels: [], folder: null, muted: false }
@@ -199,8 +201,26 @@ export function applyPrefs(
   if (!prefs) return conv
   const muted = conv.muted || isMutedNow(prefs, now)
   const hasLabels = prefs.labels.length > 0
-  if (muted === conv.muted && !hasLabels && !prefs.folder) return conv
-  return { ...conv, muted, labels: prefs.labels, folder: prefs.folder }
+  const customTitle = prefs.customTitle || undefined
+  if (muted === conv.muted && !hasLabels && !prefs.folder && !customTitle) return conv
+  return { ...conv, muted, labels: prefs.labels, folder: prefs.folder, customTitle }
+}
+
+// ── List filters (t168) ─────────────────────────────────────────────────────────────────────────
+
+/** The segmented list filter: everything / unread only / unread @me only. */
+export type ListFilter = "all" | "unread" | "mentions"
+
+/** Filter a (pref-applied) conversation list (t168). "unread" keeps unread rows; "mentions" keeps
+ *  rows with unread @me messages (`mentionCount` — a local floor). Folder grouping runs AFTER this,
+ *  so empty folders naturally drop out of the filtered view. Same ref for "all". Pure. */
+export function filterConversations(
+  conversations: TeamsConversation[],
+  filter: ListFilter,
+): TeamsConversation[] {
+  if (filter === "all") return conversations
+  if (filter === "unread") return conversations.filter(isUnread)
+  return conversations.filter((c) => (c.mentionCount ?? 0) > 0)
 }
 
 /** A folder section (or the ungrouped bucket) for the grouped list view. */

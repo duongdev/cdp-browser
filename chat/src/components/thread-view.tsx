@@ -684,11 +684,24 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />
           </Button>
         )}
-        <span className="min-w-0 flex-1 truncate px-1 font-heading font-semibold text-foreground text-sm">
-          {formatConversationLabel(
-            conversationLabel(conversation),
-            conversation,
-            namePref ?? FULL_NAME,
+        <span className="flex min-w-0 flex-1 items-baseline gap-1.5 px-1">
+          <span className="truncate font-heading font-semibold text-foreground text-sm">
+            {conversation.customTitle ||
+              formatConversationLabel(
+                conversationLabel(conversation),
+                conversation,
+                namePref ?? FULL_NAME,
+              )}
+          </span>
+          {/* Local rename (t168): the original title stays visible beside the custom one. */}
+          {conversation.customTitle && (
+            <span className="truncate text-muted-foreground text-xs">
+              {formatConversationLabel(
+                conversationLabel(conversation),
+                conversation,
+                namePref ?? FULL_NAME,
+              )}
+            </span>
           )}
         </span>
       </header>

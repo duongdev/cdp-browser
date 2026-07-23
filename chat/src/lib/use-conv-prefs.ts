@@ -83,13 +83,14 @@ function normalize(p: Record<string, ConvPrefsDto>): Record<string, ConvPrefs> {
   return out
 }
 
-/** The patch shape a mute/label/folder write sends (t156/t167). */
+/** The patch shape a mute/label/folder/rename write sends (t156/t167/t168). */
 export interface ConvPrefsPatch {
   labels?: string[]
   folder?: string | null
   muted?: boolean
   mutedUntil?: number | null
   notifyOnMention?: boolean
+  customTitle?: string | null
 }
 
 function fromDto(v: ConvPrefsDto): ConvPrefs {
@@ -99,6 +100,7 @@ function fromDto(v: ConvPrefsDto): ConvPrefs {
     muted: !!v.muted,
     mutedUntil: v.mutedUntil ?? null,
     notifyOnMention: !!v.notifyOnMention,
+    customTitle: v.customTitle ?? null,
   }
 }
 
@@ -117,5 +119,9 @@ function applyPatch(cur: ConvPrefs | undefined, next: ConvPrefsPatch): ConvPrefs
           : (base.mutedUntil ?? null),
     notifyOnMention:
       next.notifyOnMention !== undefined ? next.notifyOnMention : !!base.notifyOnMention,
+    customTitle:
+      next.customTitle !== undefined
+        ? next.customTitle?.trim() || null
+        : (base.customTitle ?? null),
   }
 }

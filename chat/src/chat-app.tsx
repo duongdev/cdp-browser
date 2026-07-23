@@ -291,12 +291,17 @@ export function ChatApp() {
   // generated per conversation; the rest are static app/message actions. Only actions that work
   // TODAY are listed — no dead entries (settings/mark-read land in later workstreams).
   const actions: ChatAction[] = useMemo(() => {
-    const jumps: ChatAction[] = conversations.slice(0, 50).map((c) => ({
-      id: `jump:${c.id}`,
-      label: c.title?.trim() || c.topic?.trim() || (c.kind === "self" ? "Notes" : "Direct message"),
-      group: "Conversation",
-      run: () => openConversation(c),
-    }))
+    const jumps: ChatAction[] = conversations.slice(0, 50).map((c) => {
+      const original =
+        c.title?.trim() || c.topic?.trim() || (c.kind === "self" ? "Notes" : "Direct message")
+      return {
+        id: `jump:${c.id}`,
+        // Local rename (t168): show "Custom (Original)" so the palette filter matches BOTH names.
+        label: c.customTitle ? `${c.customTitle} (${original})` : original,
+        group: "Conversation",
+        run: () => openConversation(c),
+      }
+    })
     return buildActions([
       { id: "go-inbox", label: "Go to inbox", group: "Navigation", keys: "g i", run: backToList },
       {
@@ -363,6 +368,19 @@ export function ChatApp() {
           // ⌘K quick toggle mutes until-unmute (t167); the row menu has the timed presets.
           const id = ctx.focusedConversationId
           if (id) patchPrefs(id, { muted: !isMutedNow(prefs[id]) })
+        },
+      },
+      // Rename chat (t168): local-only custom title; blank resets to the original.
+      {
+        id: "rename-conv",
+        label: "Rename chat…",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: () => {
+          const id = ctx.focusedConversationId
+          if (!id) return
+          const name = window.prompt("Chat name (blank to reset)", prefs[id]?.customTitle ?? "")
+          if (name !== null) patchPrefs(id, { customTitle: name.trim() || null })
         },
       },
       // Move to folder (t156). Palette-simple: prompt for a folder name (blank clears). The row menu

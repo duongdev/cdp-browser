@@ -2658,7 +2658,8 @@ const server = http.createServer(async (req, res) => {
     // keyed by convId, not tenant.
     if (p === "/api/teams/prefs" && !POST) return json(res, { prefs: teamsGetAllPrefs(teamsDb) })
     if (p === "/api/teams/prefs" && POST) {
-      const { convId, labels, folder, muted, mutedUntil, notifyOnMention } = await body(req)
+      const { convId, labels, folder, muted, mutedUntil, notifyOnMention, customTitle } =
+        await body(req)
       if (!convId) return json(res, { error: "missing fields" }, 400)
       const patch = {}
       if (labels !== undefined) patch.labels = labels
@@ -2668,6 +2669,8 @@ const server = http.createServer(async (req, res) => {
       if (mutedUntil !== undefined)
         patch.mutedUntil = mutedUntil === null ? null : Number(mutedUntil)
       if (notifyOnMention !== undefined) patch.notifyOnMention = !!notifyOnMention
+      // t168: local rename ("" / null clears back to the original title).
+      if (customTitle !== undefined) patch.customTitle = customTitle
       return json(res, { ok: true, prefs: teamsSetPrefs(teamsDb, convId, patch) })
     }
     // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t142, ADR-0019). Best-effort

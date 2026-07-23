@@ -34,6 +34,11 @@ export interface TeamsConversation {
   /** Up to the first few non-self member oids of a group chat (t161) — drives the Teams-style
    *  facepile avatar. Absent for 1:1/self (single avatar) or when the roster is unknown. */
   memberIds?: string[]
+  /** Unread @me count (t168) — a floor from locally-synced pages, not Teams' number. Server-set. */
+  mentionCount?: number
+  /** Local rename (t168): set by applyPrefs from the prefs map; the original title stays visible
+   *  as a muted subtitle. Never from the server conversation payload. */
+  customTitle?: string
 }
 
 interface ConversationsResponse {
@@ -379,6 +384,8 @@ export interface ConvPrefsDto {
   mutedUntil?: number | null
   /** Push through the mute when a message @mentions the viewer (t167). */
   notifyOnMention?: boolean
+  /** Local rename; null/absent = no rename (t168). */
+  customTitle?: string | null
 }
 
 /** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
@@ -403,6 +410,7 @@ export async function setPrefs(
     muted?: boolean
     mutedUntil?: number | null
     notifyOnMention?: boolean
+    customTitle?: string | null
   },
 ): Promise<ConvPrefsDto | null> {
   try {

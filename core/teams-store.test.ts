@@ -7,6 +7,7 @@ import {
   getPrefs,
   getReadState,
   getUsers,
+  isMutedNow,
   isReservedConversation,
   listConversations,
   listMessages,
@@ -429,17 +430,35 @@ describe("conversation prefs (t156)", () => {
     migrate(db)
   })
 
+  // The empty/default extras added by t167/t168 (timed mute, mention override, rename).
+  const EXTRAS = { mutedUntil: null, notifyOnMention: false, customTitle: null }
+
   it("defaults to empty when no row exists", () => {
-    expect(getPrefs(db, "19:x@thread.v2")).toEqual({ labels: [], folder: null, muted: false })
+    expect(getPrefs(db, "19:x@thread.v2")).toEqual({
+      labels: [],
+      folder: null,
+      muted: false,
+      ...EXTRAS,
+    })
     expect(getAllPrefs(db)).toEqual({})
   })
 
   it("setPrefs upserts and patches only provided keys", () => {
     setPrefs(db, "c1", { folder: "Work", labels: ["urgent", "team"] })
-    expect(getPrefs(db, "c1")).toEqual({ folder: "Work", labels: ["urgent", "team"], muted: false })
+    expect(getPrefs(db, "c1")).toEqual({
+      folder: "Work",
+      labels: ["urgent", "team"],
+      muted: false,
+      ...EXTRAS,
+    })
     // A partial patch keeps the untouched keys.
     setPrefs(db, "c1", { muted: true })
-    expect(getPrefs(db, "c1")).toEqual({ folder: "Work", labels: ["urgent", "team"], muted: true })
+    expect(getPrefs(db, "c1")).toEqual({
+      folder: "Work",
+      labels: ["urgent", "team"],
+      muted: true,
+      ...EXTRAS,
+    })
   })
 
   it("sanitizes labels: trim, drop empty, dedupe", () => {
@@ -457,14 +476,38 @@ describe("conversation prefs (t156)", () => {
     setPrefs(db, "c1", { folder: "Work" })
     setPrefs(db, "c2", { muted: true })
     expect(getAllPrefs(db)).toEqual({
-      c1: { labels: [], folder: "Work", muted: false },
-      c2: { labels: [], folder: null, muted: true },
+      c1: { labels: [], folder: "Work", muted: false, ...EXTRAS },
+      c2: { labels: [], folder: null, muted: true, ...EXTRAS },
     })
   })
 
   it("survives a re-migrate (idempotent, prefs kept)", () => {
     setPrefs(db, "c1", { folder: "Work", labels: ["x"], muted: true })
     migrate(db)
-    expect(getPrefs(db, "c1")).toEqual({ folder: "Work", labels: ["x"], muted: true })
+    expect(getPrefs(db, "c1")).toEqual({
+      folder: "Work",
+      labels: ["x"],
+      muted: true,
+      ...EXTRAS,
+    })
+  })
+
+  it("timed mute + notify-on-mention + rename round-trip (t167/t168)", () => {
+    setPrefs(db, "c1", { muted: true, mutedUntil: 5000, notifyOnMention: true })
+    expect(getPrefs(db, "c1")).toMatchObject({
+      muted: true,
+      mutedUntil: 5000,
+      notifyOnMention: true,
+    })
+    expect(isMutedNow(getPrefs(db, "c1"), 1000)).toBe(true)
+    expect(isMutedNow(getPrefs(db, "c1"), 9000)).toBe(false) // expired window
+    // A muted write WITHOUT an expiry clears the stale window (mute forever).
+    setPrefs(db, "c1", { muted: true })
+    expect(getPrefs(db, "c1").mutedUntil).toBe(null)
+    // Rename; blank clears.
+    setPrefs(db, "c1", { customTitle: "  Boss  " })
+    expect(getPrefs(db, "c1").customTitle).toBe("Boss")
+    setPrefs(db, "c1", { customTitle: "" })
+    expect(getPrefs(db, "c1").customTitle).toBe(null)
   })
 })

@@ -4,6 +4,7 @@ import {
   applyReadOverride,
   CHATS_FOLDER,
   conversationLabel,
+  filterConversations,
   folderLabel,
   groupByFolder,
   isMutedNow,
@@ -260,6 +261,25 @@ describe("conversation prefs shaping (t156)", () => {
     expect(expired.muted).toBe(false)
     const active = applyPrefs(c, { labels: [], folder: null, muted: true, mutedUntil: 5000 }, 1000)
     expect(active.muted).toBe(true)
+  })
+
+  it("applyPrefs lays the custom title on the row (t168)", () => {
+    const c = conv({ id: "c1", title: "Alice" })
+    const out = applyPrefs(c, { labels: [], folder: null, muted: false, customTitle: "Boss" })
+    expect(out.customTitle).toBe("Boss")
+    // No rename → same ref shortcut still holds.
+    expect(applyPrefs(c, { labels: [], folder: null, muted: false, customTitle: null })).toBe(c)
+  })
+
+  it("filterConversations: all is same-ref; unread/mentions filter (t168)", () => {
+    const rows = [
+      conv({ id: "a", lastMessageTs: 200, readTs: 0 }), // unread, no mentions
+      conv({ id: "b", lastMessageTs: 200, readTs: 300 }), // read
+      conv({ id: "c", lastMessageTs: 200, readTs: 0, mentionCount: 2 }), // unread + mentions
+    ]
+    expect(filterConversations(rows, "all")).toBe(rows)
+    expect(filterConversations(rows, "unread").map((c) => c.id)).toEqual(["a", "c"])
+    expect(filterConversations(rows, "mentions").map((c) => c.id)).toEqual(["c"])
   })
 
   it("groupByFolder: real folders alpha-first, ungrouped in a trailing Chats section (t158)", () => {

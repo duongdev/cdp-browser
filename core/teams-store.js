@@ -83,6 +83,8 @@ const ADD_COLUMNS = [
   ["conversations", "last_message_from_me", "INTEGER DEFAULT 0"], // t155
   ["conversation_prefs", "muted_until", "INTEGER"], // t167: timed mute expiry (epoch ms; NULL = forever)
   ["conversation_prefs", "notify_on_mention", "INTEGER DEFAULT 0"], // t167: push through a mute on @me
+  ["conversation_prefs", "custom_title", "TEXT"], // t168: local rename (original title stays visible)
+  ["messages", "mentions_me", "INTEGER DEFAULT 0"], // t168: @me flag persisted for the mention counter
 ]
 
 function migrate(db) {
@@ -238,6 +240,13 @@ function listConversations(db, tenant) {
       ORDER BY c.last_message_ts DESC NULLS LAST, c.id
     `)
     .all(tenant)
+  // Unread @me count (t168): messages newer than the row's effective read watermark that carry the
+  // persisted mentions_me flag. A FLOOR, not Teams' number — only locally-synced pages count (the
+  // thread poll/history writes them). One small indexed count per row; N is the list size (~dozens).
+  const mentionCount = db.prepare(`
+    SELECT COUNT(*) AS n FROM messages
+    WHERE conv_id = ? AND tenant = ? AND mentions_me = 1 AND deleted = 0 AND ts > ?
+  `)
   return rows.map((r) => {
     // `local_read_ts === -1` is the sticky mark-unread sentinel (t155): the row stays unread even
     // if the Teams horizon covers the last message. `readTs` is the effective read watermark the
@@ -258,6 +267,7 @@ function listConversations(db, tenant) {
       readTs,
       unreadSticky: sticky,
       muted: !!r.muted,
+      mentionCount: mentionCount.get(r.id, tenant, readTs)?.n || 0,
     }
   })
 }
@@ -273,9 +283,9 @@ function upsertMessages(db, tenant, convId, msgs, now = Date.now()) {
   if (list.length === 0) return
   const stmt = db.prepare(`
     INSERT INTO messages
-      (conv_id, id, tenant, version, sender_id, sender_name, ts, content, deleted, edited)
+      (conv_id, id, tenant, version, sender_id, sender_name, ts, content, deleted, edited, mentions_me)
     VALUES
-      (@conv_id, @id, @tenant, @version, @sender_id, @sender_name, @ts, @content, @deleted, @edited)
+      (@conv_id, @id, @tenant, @version, @sender_id, @sender_name, @ts, @content, @deleted, @edited, @mentions_me)
     ON CONFLICT(conv_id, id) DO UPDATE SET
       version = excluded.version,
       sender_id = excluded.sender_id,
@@ -283,7 +293,8 @@ function upsertMessages(db, tenant, convId, msgs, now = Date.now()) {
       ts = excluded.ts,
       content = excluded.content,
       deleted = excluded.deleted,
-      edited = excluded.edited
+      edited = excluded.edited,
+      mentions_me = excluded.mentions_me
   `)
   const advance = db.prepare(`
     UPDATE conversations SET
@@ -308,6 +319,7 @@ function upsertMessages(db, tenant, convId, msgs, now = Date.now()) {
         content: m.body || "",
         deleted: m.deleted ? 1 : 0,
         edited: m.edited ? 1 : 0,
+        mentions_me: m.mentionsMe ? 1 : 0,
       })
       if (ts > 0) {
         if (ts < oldest) oldest = ts
@@ -460,6 +472,7 @@ function shapePrefs(r) {
     muted: !!r.muted,
     mutedUntil: r.muted_until ?? null,
     notifyOnMention: !!r.notify_on_mention,
+    customTitle: r.custom_title || null,
   }
 }
 
@@ -467,11 +480,18 @@ function shapePrefs(r) {
 function getPrefs(db, convId) {
   const r = db
     .prepare(
-      "SELECT labels, folder, muted, muted_until, notify_on_mention FROM conversation_prefs WHERE conv_id = ?",
+      "SELECT labels, folder, muted, muted_until, notify_on_mention, custom_title FROM conversation_prefs WHERE conv_id = ?",
     )
     .get(convId)
   if (!r)
-    return { labels: [], folder: null, muted: false, mutedUntil: null, notifyOnMention: false }
+    return {
+      labels: [],
+      folder: null,
+      muted: false,
+      mutedUntil: null,
+      notifyOnMention: false,
+      customTitle: null,
+    }
   return shapePrefs(r)
 }
 
@@ -484,7 +504,7 @@ function getAllPrefs(db) {
   const map = {}
   for (const r of db
     .prepare(
-      "SELECT conv_id, labels, folder, muted, muted_until, notify_on_mention FROM conversation_prefs",
+      "SELECT conv_id, labels, folder, muted, muted_until, notify_on_mention, custom_title FROM conversation_prefs",
     )
     .all()) {
     map[r.conv_id] = shapePrefs(r)
@@ -525,13 +545,36 @@ function setPrefs(db, convId, patch) {
       : cur.notifyOnMention
         ? 1
         : 0
+  // t168: local rename. "" / whitespace clears back to the original title.
+  const customTitle =
+    patch.customTitle !== undefined
+      ? patch.customTitle
+        ? String(patch.customTitle).trim() || null
+        : null
+      : (cur.customTitle ?? null)
   db.prepare(`
-    INSERT INTO conversation_prefs (conv_id, labels, folder, muted, muted_until, notify_on_mention)
-    VALUES (@convId, @labels, @folder, @muted, @mutedUntil, @notifyOnMention)
+    INSERT INTO conversation_prefs (conv_id, labels, folder, muted, muted_until, notify_on_mention, custom_title)
+    VALUES (@convId, @labels, @folder, @muted, @mutedUntil, @notifyOnMention, @customTitle)
     ON CONFLICT(conv_id) DO UPDATE SET labels = excluded.labels, folder = excluded.folder,
-      muted = excluded.muted, muted_until = excluded.muted_until, notify_on_mention = excluded.notify_on_mention
-  `).run({ convId, labels: JSON.stringify(labels), folder, muted, mutedUntil, notifyOnMention })
-  return { labels, folder, muted: !!muted, mutedUntil, notifyOnMention: !!notifyOnMention }
+      muted = excluded.muted, muted_until = excluded.muted_until,
+      notify_on_mention = excluded.notify_on_mention, custom_title = excluded.custom_title
+  `).run({
+    convId,
+    labels: JSON.stringify(labels),
+    folder,
+    muted,
+    mutedUntil,
+    notifyOnMention,
+    customTitle,
+  })
+  return {
+    labels,
+    folder,
+    muted: !!muted,
+    mutedUntil,
+    notifyOnMention: !!notifyOnMention,
+    customTitle,
+  }
 }
 
 function parseLabels(raw) {

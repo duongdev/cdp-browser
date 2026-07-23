@@ -22,6 +22,8 @@ interface ConversationRowProps extends ComponentPropsWithoutRef<"button"> {
   focused?: boolean
   /** Name display preference (t161) — applied to 1:1 labels. */
   namePref?: NamePref
+  /** Live clock for the relative time (t168) — the list ticks it every 30s so "5m" can't go stale. */
+  now?: number
 }
 
 /** One conversation entry: avatar initial + label + last-message preview + relative time.
@@ -29,7 +31,7 @@ interface ConversationRowProps extends ComponentPropsWithoutRef<"button"> {
  *  `onContextMenu` to the real `<button>` (t156 right-click menu). */
 export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProps>(
   function ConversationRow(
-    { conversation, onOpen, active, focused, namePref, className, onClick, ...rest },
+    { conversation, onOpen, active, focused, namePref, now, className, onClick, ...rest },
     forwardedRef,
   ) {
     const label = formatConversationLabel(
@@ -37,9 +39,13 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
       conversation,
       namePref ?? FULL_NAME,
     )
-    const time = relativeTime(conversation.lastMessageTs)
+    // Local rename (t168): the custom title leads; the original stays visible, small + muted.
+    const customTitle = conversation.customTitle
+    const title = customTitle || label
+    const time = relativeTime(conversation.lastMessageTs, now)
     const unread = isUnread(conversation)
     const muted = !!conversation.muted
+    const mentions = conversation.mentionCount ?? 0
     const labels = conversation.labels ?? []
     const ref = useRef<HTMLButtonElement>(null)
     useImperativeHandle(forwardedRef, () => ref.current as HTMLButtonElement)
@@ -66,19 +72,36 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         type="button"
         {...rest}
       >
-        {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
-          <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
-        ) : (
-          <UserAvatar label={label} userId={conversation.avatarUserId} />
-        )}
+        {/* Avatar-anchored unread dot (t168): the coral dot rides the avatar's fixed box corner —
+            same spot for single + facepile — so unread state never shifts the row layout. */}
+        <span className="relative shrink-0">
+          {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
+            <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
+          ) : (
+            <UserAvatar label={label} userId={conversation.avatarUserId} />
+          )}
+          {unread && (
+            <span
+              aria-label="Unread"
+              className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-ring ring-2 ring-background"
+              role="img"
+              title="Unread"
+            />
+          )}
+        </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-1.5">
+            <span className="flex min-w-0 items-baseline gap-1.5">
               <span
                 className={cn("truncate text-foreground", unread ? "font-semibold" : "font-medium")}
               >
-                {label}
+                {title}
               </span>
+              {customTitle && (
+                <span className="hidden truncate text-[11px] text-muted-foreground sm:inline">
+                  {label}
+                </span>
+              )}
               {labels.map((l) => (
                 <span
                   className="shrink-0 rounded-full bg-muted px-1.5 py-px font-medium text-[10px] text-muted-foreground"
@@ -90,8 +113,8 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
               {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
-              {/* Mute no longer hides the unread dot (t167): the bell marks silenced delivery,
-                  the dot still reports unread — both can show. */}
+              {/* The unread dot moved onto the avatar (t168); this column keeps the mute bell and
+                  the unread-@me counter (a local floor — only synced pages count). */}
               {muted && (
                 <HugeiconsIcon
                   aria-label="Muted"
@@ -99,13 +122,13 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
                   icon={NotificationOff03Icon}
                 />
               )}
-              {unread && (
+              {mentions > 0 && (
                 <span
-                  aria-label="Unread"
-                  className="size-2 rounded-full bg-ring"
-                  role="img"
-                  title="Unread"
-                />
+                  className="rounded-full bg-ring px-1.5 py-px font-mono font-semibold text-[10px] text-background"
+                  title={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
+                >
+                  @{mentions}
+                </span>
               )}
             </span>
           </span>
