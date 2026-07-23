@@ -185,6 +185,13 @@ Trackpad swipe left/right is supported for back/forward navigation.
 - [dnd-kit](https://dndkit.com/) — drag and drop
 - [Vite](https://vite.dev/) — build tool
 
+## Working on this repo
+
+Work is tracked as Linear issues in the `cdp-browser` project. Each issue is
+developed in its own isolated git worktree, so multiple issues can progress in
+parallel without touching each other's working tree. Changes land as a Ready
+pull request against `main`, reviewed and merged from there.
+
 ## License
 
 MIT
