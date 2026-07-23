@@ -10,6 +10,7 @@ import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
+import { chatShell } from "./lib/chat-shell"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
   conversationLabel,
@@ -119,20 +120,24 @@ export function ChatApp() {
     setConversations(list)
     const { arrived, seen } = newlyArrived(seenTsRef.current, list)
     seenTsRef.current = seen
-    if (
-      arrived.length > 0 &&
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted" &&
-      !document.hasFocus()
-    ) {
+    const shell = chatShell()
+    if (arrived.length > 0 && !document.hasFocus()) {
       for (const c of arrived) {
-        const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
-        n.onclick = () => {
-          window.focus()
-          openConvRef.current(c.id)
+        if (shell) {
+          // Electron shell: fire through the native main process (CDP-Browser mechanism).
+          shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+        } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
+          n.onclick = () => {
+            window.focus()
+            openConvRef.current(c.id)
+          }
         }
       }
     }
+    // Dock badge in the Electron shell mirrors the unread count (the web PWA drives its own
+    // badge via the service worker's setAppBadge).
+    if (shell) shell.setBadge(list.filter((c) => isUnread(c)).length)
     // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
     // (id only). When the list loads/merges, swap any tracked entry for the real object so the
     // thread header picks up the resolved title. Only ids already tracked are stored.
@@ -191,6 +196,11 @@ export function ChatApp() {
     [patchConvRead],
   )
   openConvRef.current = openConversationById
+
+  // Electron shell notification click → open the conversation (main posts the convId back).
+  useEffect(() => {
+    chatShell()?.onNotificationActivate((id) => openConversationById(id))
+  }, [openConversationById])
 
   // Push deep-link (t147): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
   // open) arrives as an SW postMessage { type:"open-conv", convId }. Both open that conversation;

@@ -1,15 +1,16 @@
-// Standalone Teams Chat app — a thin Electron shell that loads the web build's
-// /chat surface from a running server. All Teams data + notifications come from
-// that server (ADR-0019); this shell only supplies a native window, dock
-// presence, and OS notifications (the renderer's Notification API bridges to
-// macOS automatically, fired foreground by chat-app.tsx when unfocused).
+// Standalone "CDP Chats" app — a thin Electron shell that loads the web build's
+// /chat surface from a running server. All Teams data comes from that server
+// (ADR-0019); this shell supplies a native window, dock presence, and OS
+// notifications fired from the main process (same mechanism as the CDP Browser
+// app — see the `chat:notify` / `chat:set-badge` handlers below), driven by the
+// renderer over the chat-preload.js bridge.
 //
 // It is a separate app from the CDP Browser (`main.js`): distinct appId, own
 // build config (electron-builder.chat.json), installed side-by-side by
 // scripts/install-local.sh. A self-contained Electron chat backend (its own CDP
 // keeper + Teams creds) is a deferred fast-follow — today the shell points at a
 // web build that owns that.
-const { app, BrowserWindow, shell, nativeTheme } = require("electron")
+const { app, BrowserWindow, Notification, ipcMain, shell, nativeTheme } = require("electron")
 const path = require("node:path")
 const fs = require("node:fs")
 const { resolveServerUrl, isExternalUrl } = require("./core/chat-shell")
@@ -33,15 +34,20 @@ function writeConfig(patch) {
 }
 
 const config = readConfig()
-// Precedence: CHAT_SERVER_URL env > stored config > localhost dev default.
+// Precedence: CHAT_SERVER_URL env > stored config > prod tailnet default.
 const SERVER_URL = resolveServerUrl(
   process.env.CHAT_SERVER_URL,
   config.serverUrl,
-  "http://localhost:7800",
+  "https://portal.dp.dustin.one",
 )
 const CHAT_URL = `${SERVER_URL}/chat/`
 
 let win
+
+// Retain shown Notification objects: Electron/V8 garbage-collects a Notification with no
+// live reference and the collected object never delivers its `click` event (same guard as
+// main.js). Held until the user clicks or it closes.
+const liveNotifications = new Set()
 
 function createWindow() {
   const bounds = config.bounds || {}
@@ -52,10 +58,13 @@ function createWindow() {
     y: bounds.y,
     minWidth: 380,
     minHeight: 480,
-    title: "Teams Chat",
+    title: "CDP Chats",
     titleBarStyle: "hiddenInset",
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#0a0a0a" : "#ffffff",
-    webPreferences: { contextIsolation: true },
+    webPreferences: {
+      contextIsolation: true,
+      preload: path.join(__dirname, "chat-preload.js"),
+    },
   })
   win.loadURL(CHAT_URL)
 
@@ -77,6 +86,31 @@ function createWindow() {
   win.on("resize", saveBounds)
   win.on("move", saveBounds)
 }
+
+// Renderer → main notification bridge (chat-preload.js). Mirrors main.js: a held
+// Notification whose click shows/focuses the window and posts the convId back so the
+// renderer opens that conversation.
+ipcMain.on("chat:notify", (_e, { title, body, convId } = {}) => {
+  if (!Notification.isSupported()) return
+  const n = new Notification({ title: title || "CDP Chats", body: body || "" })
+  liveNotifications.add(n)
+  const cleanup = () => liveNotifications.delete(n)
+  n.on("click", () => {
+    cleanup()
+    if (win && !win.isDestroyed()) {
+      win.show()
+      win.focus()
+      win.webContents.send("chat:notification-activate", convId)
+    }
+  })
+  n.on("close", cleanup)
+  n.show()
+})
+
+// Dock badge mirrors the unread count (0 clears it). macOS.
+ipcMain.on("chat:set-badge", (_e, count) => {
+  if (typeof app.setBadgeCount === "function") app.setBadgeCount(Number(count) || 0)
+})
 
 app.whenReady().then(() => {
   createWindow()

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build both apps and install them into /Applications:
 #   • CDP Browser  — the full browser (main.js)
-#   • Teams Chat   — the standalone chat shell (chat-main.js), points at a web
-#                    server's /chat (set CHAT_SERVER_URL before first launch).
+#   • CDP Chats    — the standalone chat shell (chat-main.js), points at a web
+#                    server's /chat (set CHAT_SERVER_URL to override the default).
 # Both are unsigned, unpacked .app bundles (electron-builder --dir) — no dmg/zip.
 # Quarantine is stripped so Gatekeeper doesn't block the locally-built bundles.
 set -euo pipefail
@@ -39,9 +39,9 @@ echo "==> Building CDP Browser.app…"
 npm run dist:dir
 install_app "CDP Browser" "release"
 
-echo "==> Building Teams Chat.app…"
+echo "==> Building CDP Chats.app…"
 npm run dist:chat:dir
-install_app "Teams Chat" "release-chat"
+install_app "CDP Chats" "release-chat"
 
 echo "==> Done."
-echo "    Launch:  open -a \"CDP Browser\"   /   open -a \"Teams Chat\""
+echo "    Launch:  open -a \"CDP Browser\"   /   open -a \"CDP Chats\""

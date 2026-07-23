@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B2538"></stop>
+      <stop offset="1" stop-color="#0A1020"></stop>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"></stop>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"></stop>
+    </linearGradient>
+    <clipPath id="tileClip"><rect x="56" y="56" width="912" height="912" rx="208" ry="208"></rect></clipPath>
+  </defs>
+
+  <!-- macOS squircle tile (shared with CDP Browser for family consistency) -->
+  <rect x="56" y="56" width="912" height="912" rx="208" ry="208" fill="url(#tile)"></rect>
+  <g clip-path="url(#tileClip)">
+    <rect x="56" y="56" width="912" height="912" rx="208" ry="208" fill="url(#gloss)"></rect>
+  </g>
+
+  <!-- Chat speech bubble: white body + downward tail -->
+  <path fill="#ffffff" d="M300 656 L300 792 L436 664 Z"></path>
+  <rect x="216" y="248" width="592" height="432" rx="120" ry="120" fill="#ffffff"></rect>
+
+  <!-- Typing dots (coral accent — distinguishes it from the browser's blue) -->
+  <circle cx="372" cy="464" r="50" fill="#FB6A5A"></circle>
+  <circle cx="512" cy="464" r="50" fill="#FB6A5A"></circle>
+  <circle cx="652" cy="464" r="50" fill="#FB6A5A"></circle>
+</svg>
