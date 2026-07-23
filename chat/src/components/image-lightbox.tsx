@@ -76,10 +76,24 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
     return { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) }
   }, [])
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault()
-    setZoom((z) => zoomAround(z, localPoint(e), z.scale * (1 - e.deltaY * WHEEL_STEP), viewport()))
-  }
+  // Wheel zoom rides a NON-PASSIVE native listener (t170): React root-attaches `wheel` passively,
+  // so a React onWheel's preventDefault silently fails and the page behind the overlay scrolls
+  // while zooming. Image stages only — a video stage has no wheel behavior.
+  const isVideoRef = useRef(isVideo)
+  isVideoRef.current = isVideo
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (isVideoRef.current) return
+      e.preventDefault()
+      setZoom((z) =>
+        zoomAround(z, localPoint(e), z.scale * (1 - e.deltaY * WHEEL_STEP), viewport()),
+      )
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    return () => el.removeEventListener("wheel", onWheel)
+  }, [localPoint, viewport])
 
   const onDoubleClick = (e: React.MouseEvent) => {
     setZoom((z) => zoomAround(z, localPoint(e), isZoomed(z) ? 1 : DOUBLE_TAP, viewport()))
@@ -131,7 +145,7 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
       }
 
   // Image stages get the pan/zoom pointer handlers; a video stage leaves pointers to the native
-  // controls and only closes on a backdrop click.
+  // controls and only closes on a backdrop click. (Wheel zoom is the native listener above.)
   const stageHandlers = isVideo
     ? { onClick: onStageClick }
     : {
@@ -141,7 +155,6 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
         onPointerDown,
         onPointerMove,
         onPointerUp: endPointer,
-        onWheel,
       }
 
   return (
