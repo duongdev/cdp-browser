@@ -12,12 +12,15 @@ import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
+  conversationLabel,
   isUnread,
   knownFolders,
   navigableConversations,
+  previewLine,
   type ReadOverride,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
+import { newlyArrived } from "./lib/notify-new"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
@@ -105,9 +108,31 @@ export function ChatApp() {
   // effect (URL still /chat/c/{id}) — which re-laid a "read" override in a loop that clobbered a
   // just-made mark-unread (the iteration-2→3 bug).
   const conversationsRef = useRef<TeamsConversation[]>([])
+  // Desktop notifications for new incoming messages (PSN-91). The list poll is the signal source;
+  // `seenTsRef` tracks the last-seen ts per conversation so `newlyArrived` fires once per message.
+  // Only when the window is unfocused (backgrounded) — an open, focused app doesn't need a toast.
+  // `openConvRef` lets a notification click jump to the conversation (set after openConversationById).
+  const seenTsRef = useRef<Map<string, number>>(new Map())
+  const openConvRef = useRef<(id: string) => void>(() => {})
   const onConversations = useCallback((list: TeamsConversation[]) => {
     conversationsRef.current = list
     setConversations(list)
+    const { arrived, seen } = newlyArrived(seenTsRef.current, list)
+    seenTsRef.current = seen
+    if (
+      arrived.length > 0 &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted" &&
+      !document.hasFocus()
+    ) {
+      for (const c of arrived) {
+        const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
+        n.onclick = () => {
+          window.focus()
+          openConvRef.current(c.id)
+        }
+      }
+    }
     // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
     // (id only). When the list loads/merges, swap any tracked entry for the real object so the
     // thread header picks up the resolved title. Only ids already tracked are stored.
@@ -165,6 +190,7 @@ export function ChatApp() {
     },
     [patchConvRead],
   )
+  openConvRef.current = openConversationById
 
   // Push deep-link (t147): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
   // open) arrives as an SW postMessage { type:"open-conv", convId }. Both open that conversation;

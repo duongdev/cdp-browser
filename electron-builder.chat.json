@@ -1,0 +1,12 @@
+{
+  "appId": "dev.duong.cdp-chat",
+  "productName": "Teams Chat",
+  "extraMetadata": { "main": "chat-main.js" },
+  "mac": {
+    "category": "public.app-category.productivity",
+    "icon": "build/icon.icns",
+    "target": ["dmg", "zip"]
+  },
+  "files": ["chat-main.js", "core/chat-shell.js", "!core/**/*.test.*"],
+  "directories": { "output": "release-chat" }
+}

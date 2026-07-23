@@ -30,6 +30,9 @@
     "format": "biome format --write .",
     "dist": "vite build && electron-builder --mac",
     "dist:dir": "vite build && electron-builder --mac --dir",
+    "chat:dev": "CHAT_SERVER_URL=${CHAT_SERVER_URL:-http://localhost:7800} electron chat-main.js",
+    "dist:chat": "electron-builder --mac --config electron-builder.chat.json",
+    "dist:chat:dir": "electron-builder --mac --dir --config electron-builder.chat.json",
     "install:local": "bash scripts/install-local.sh",
     "prepare": "husky"
   },
