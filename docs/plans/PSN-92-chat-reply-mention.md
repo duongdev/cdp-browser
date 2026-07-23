@@ -80,10 +80,11 @@ pickup).
 2. **Render-side fallback**: in `core/teams-render.js`, when the reply
    blockquote's `<strong>` text is empty or the literal "Display Name", resolve
    the author from `itemprop="mri" itemid` (oid → users cache); the viewer's own
-   oid renders "(You)". Applies retroactively to old broken quotes in our app.
+   oid renders the real name too (decision 4 — no "(You)" special case in
+   quotes). Applies retroactively to old broken quotes in our app.
 3. Tests: pure render tests for the fallback (named strong kept, placeholder
-   replaced, self → "(You)"); live self-chat verification that a fresh send
-   carries the real name.
+   replaced, self resolved to real name); live self-chat verification that a
+   fresh send carries the real name.
 
 Acceptance: new sends store the real name (verified via live payload read);
 old broken quotes show the real name / "(You)" in `/chat`.
@@ -101,8 +102,9 @@ old broken quotes show the real name / "(You)" in `/chat`.
    Preview text = plain-text body, truncated like Teams (~120 chars).
 4. Optimistic bubble renders the quote immediately (already works — body HTML
    passes through the existing blockquote render path).
-5. Nice-to-have (same session if cheap): click a quote block → scroll to the
-   original message if loaded, brief highlight.
+5. Click a quote block → scroll to the original message if loaded, brief
+   highlight (in scope per decision 3; if the original isn't in the loaded
+   pages, no-op — don't fetch-walk history for it).
 
 Acceptance: hover → Reply → chip appears → send lands in real Teams as a proper
 quoted reply (self-chat live test); Esc/✕ cancels; TDD on the builder.
@@ -121,7 +123,8 @@ self-chat verification renders both quotes in real Teams).
 1. **Candidates**: new `POST /api/teams/roster {convId}` — in-page
    `GET /v1/threads/{id}` → member mris → names via users cache + one Graph
    `getByIds` batch for misses (same seam as t131). In-memory TTL cache per
-   conversation; 1:1s synthesize the two members without a thread fetch.
+   conversation; 1:1s synthesize the two members (other person + self, decision
+   2 — dropdown shows in 1:1s too) without a thread fetch.
 2. **Composer**: typing `@` opens a dropdown (filter as you type, ↑↓/↵/Esc,
    Vietnamese-diacritic-safe filtering via the existing fold helper); selecting
    inserts a non-editable mention pill (`contenteditable=false` span) into the
@@ -143,13 +146,12 @@ self-chat + payload read); pure tests on encoding + candidate filtering.
 
 1. Client-side post-sanitize DOM pass (pure helper in `chat/src/lib/`): apply
    `formatName(…, namePref)` to `.mention` pill text and reply-quote author
-   `<strong>` text; the viewer's own mention/quote renders per current
-   self-display convention ("(You)" for quotes; mention pill keeps "@you"
-   highlight behavior).
+   `<strong>` text; the viewer's own quote shows the real name (decision 4);
+   mention pill keeps the "@you" highlight behavior.
 2. Hover tooltip: sender names (message rows, thread header, quote authors,
-   mention pills) show the raw full name in a Radix tooltip when the Names
-   setting shortens it (pref ≠ full). Reactor `title` attrs upgraded to the
-   same tooltip.
+   mention pills) show the raw full name in a Radix tooltip **only when the
+   Names setting shortens it** (pref ≠ full, decision 5). Reactor `title` attrs
+   upgraded to the same tooltip.
 
 Acceptance: with Names = first/regex, mentions + quotes shorten consistently;
 hover reveals full raw name; with Names = full, no tooltip noise.
@@ -195,7 +197,7 @@ smallest, ships the visible bug fix, and creates the quote-author seam E needs.
   `/chat` is DM/group-DM-focused, so this is edge, not core.
 - **Old quotes elsewhere**: colleagues' Teams keeps showing "Display Name" for
   already-sent messages; only future sends are fixed for them (content is
-  immutable without editing each message).
+  immutable without editing each message). Accepted (grilled 2026-07-23).
 - **contenteditable pills**: caret behavior around non-editable spans is
   fiddly (deletion, IME); keep the pill atomic (single backspace removes it)
   and test with Vietnamese Telex.
@@ -207,18 +209,15 @@ smallest, ships the visible bug fix, and creates the quote-author seam E needs.
 - Mention notifications plumbing (already handled by `mentionsMe`, t160).
 - Reply threading UI beyond quote blocks (Teams chat has no real threads).
 
-## Open questions (grill)
+## Decisions (grilled 2026-07-23)
 
-1. **Multi-reply UX (C)**: Teams desktop replies quote one message; "reply to
-   multiple" there is select-multiple → stacked quotes in one send. Is C's
-   spec "stack N quote chips above the composer, send once with N blockquotes"?
-   Or a different gesture (e.g. shift-click range)?
-2. **Mention candidates in 1:1 DMs (D)**: include the other person + yourself,
-   or suppress the dropdown entirely in 1:1s (Teams shows it, but it's mostly
-   noise)?
-3. **Quote click-to-jump (B5)**: in scope if cheap, or drop it from this epic?
-4. **Self name in quotes (A/E)**: when someone quotes *you*, render "(You)"
-   (matches the rest of the app) or your real name? Screenshot caption suggests
-   either is acceptable — pick one.
-5. **Tooltip scope (E)**: only when Names setting shortens (pref ≠ full), or
-   always show the raw-name tooltip (covers org-suffix truncation by CSS too)?
+1. **Multi-reply UX (C)**: confirmed — stack N quote chips above the composer,
+   one send carrying N blockquotes (Teams' select-multiple behavior).
+2. **Mention candidates in 1:1 DMs (D)**: show the dropdown (other person +
+   self).
+3. **Quote click-to-jump (B5)**: in scope — scroll to the original + brief
+   highlight when loaded.
+4. **Self name in quotes (A/E)**: real name, not "(You)".
+5. **Tooltip scope (E)**: only when the Names setting shortens (pref ≠ full).
+6. **Historical quotes in colleagues' Teams**: accepted as unfixable; only
+   future sends carry the real name for them.
