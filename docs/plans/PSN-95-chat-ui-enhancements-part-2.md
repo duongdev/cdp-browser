@@ -1,6 +1,6 @@
 # PSN-95 — Chat UI enhancements part 2 (plan)
 
-Status: draft — open questions pending grill · plan-only · 2026-07-23
+Status: grilled — decisions resolved · plan-only · 2026-07-23
 Issue: https://linear.app/withdustin/issue/PSN-95
 
 Part 2 of the `/chat` polish epic (part 1 = PSN-90, t149–t157). Scope: lightbox
@@ -175,11 +175,11 @@ times.
   rendered as the row/header title with the original resolved title beneath in
   smaller muted text. Edit via context menu + ⌘K ("Rename chat"). Search/⌘K
   jump matches both names.
-- **Mention indicator**: `@` badge when the conversation has unread messages
+- **Mention counter**: numeric badge (grilled #1) counting unread messages
   with `mentionsMe` — computed from the local `messages` table
   (`ts > readTs AND mentions_me`), which needs `mentions_me` persisted as a
-  message column at upsert (today it's render-time only). Count is a floor
-  (local pages only) — display form pending grill (`@` boolean vs number).
+  message column at upsert (today it's render-time only). Count is a known
+  local floor (only polled pages counted).
 - **Filters**: segmented control (All / Unread / Mentions) above the list,
   composing with folders; pure predicate in `conversation-view.ts`;
   keyboard + ⌘K accessible; j/k walks the filtered order.
@@ -267,7 +267,30 @@ Suggested order: A → B, C, D in any order → E → F → G.
 - Unified push pipeline merge (separate task).
 - Electron chat shell.
 
-## Open questions (grill)
+## Decisions (grilled 2026-07-23)
 
-Tracked in the Linear grill comment; folded back here as **Decisions** after
-answers.
+1. **Mention indicator**: numeric counter (accepted local-floor caveat — counts
+   only locally-known pages).
+2. **Mute presets**: For 1h / 8h / 24h / Until I unmute.
+3. **Notify-on-mention while muted**: per-conversation toggle (opt-in per chat,
+   no global default flip).
+4. **Muted row look**: keep `opacity-60` dim; bell-off glyph next to timestamp;
+   unread dot moves to avatar and survives mute.
+5. **Avatar unread indicator**: dot at top-right corner of the fixed avatar box
+   (same position for single + facepile); right-side dot removed; semibold
+   title stays.
+6. **Custom titles**: server `conversation_prefs` (shared across devices, like
+   labels/folders); edit via context menu + ⌘K "Rename chat".
+7. **Filters**: segmented All / Unread / Mentions above the list; filtered view
+   keeps folder grouping, empty folders hidden.
+8. **Video**: lightbox playback for inline AMS chat clips only; recordings stay
+   SharePoint link-out (t162 rule).
+9. **PDF**: inline preview out of scope; SharePoint link-out remains.
+10. **Download**: button in lightbox chrome only (image + video).
+11. **Profile dialog**: fields as proposed (mail, jobTitle, department,
+    officeLocation, phones, big avatar, "Message" open-DM); presence
+    best-effort probe at build.
+12. **Stagger**: ~100ms per message, cap ~5 staggered (rest instant), own sends
+    never stagger, reduced-motion disables.
+
+Process: one PR for plan + build (no split); branch/PR renamed to convention.
