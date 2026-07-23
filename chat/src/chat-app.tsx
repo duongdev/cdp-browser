@@ -1,7 +1,13 @@
-import { Settings02Icon } from "@hugeicons/core-free-icons"
+import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  ReloadIcon,
+  Settings02Icon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
@@ -10,14 +16,18 @@ import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
+import { chatShell } from "./lib/chat-shell"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
+  conversationLabel,
   isUnread,
   knownFolders,
   navigableConversations,
+  previewLine,
   type ReadOverride,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
+import { newlyArrived } from "./lib/notify-new"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
@@ -36,19 +46,70 @@ function useIsWide() {
   return wide
 }
 
-function AppHeader({ onOpenSettings }: { onOpenSettings: () => void }) {
+function HeaderButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+}: {
+  label: string
+  icon: typeof Settings02Icon
+  onClick: () => void
+  disabled?: boolean
+}) {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-border border-b px-4">
-      <h1 className="font-heading font-semibold text-foreground text-sm">Teams Chat</h1>
-      <Button
-        aria-label="Settings"
-        className="ml-auto text-muted-foreground"
-        onClick={onOpenSettings}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <HugeiconsIcon className="size-4" icon={Settings02Icon} />
-      </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={label}
+          className="text-muted-foreground"
+          disabled={disabled}
+          onClick={onClick}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <HugeiconsIcon className="size-4" icon={icon} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function AppHeader({
+  onOpenSettings,
+  canBack,
+  canForward,
+}: {
+  onOpenSettings: () => void
+  canBack: boolean
+  canForward: boolean
+}) {
+  // Electron-only browser-style nav. Reload force-fetches a fresh build (main); back/forward walk
+  // the SPA history directly (window.history — Electron's navigationHistory ignores pushState).
+  const shell = chatShell()
+  return (
+    <header className="titlebar flex h-12 shrink-0 items-center justify-end gap-0.5 border-border border-b px-4">
+      <TooltipProvider delayDuration={300}>
+        <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
+        {shell && (
+          <>
+            <HeaderButton icon={ReloadIcon} label="Refresh" onClick={() => shell.reload()} />
+            <HeaderButton
+              disabled={!canBack}
+              icon={ArrowLeft01Icon}
+              label="Back"
+              onClick={() => window.history.back()}
+            />
+            <HeaderButton
+              disabled={!canForward}
+              icon={ArrowRight01Icon}
+              label="Forward"
+              onClick={() => window.history.forward()}
+            />
+          </>
+        )}
+      </TooltipProvider>
     </header>
   )
 }
@@ -105,9 +166,35 @@ export function ChatApp() {
   // effect (URL still /chat/c/{id}) — which re-laid a "read" override in a loop that clobbered a
   // just-made mark-unread (the iteration-2→3 bug).
   const conversationsRef = useRef<TeamsConversation[]>([])
+  // Desktop notifications for new incoming messages (PSN-91). The list poll is the signal source;
+  // `seenTsRef` tracks the last-seen ts per conversation so `newlyArrived` fires once per message.
+  // Only when the window is unfocused (backgrounded) — an open, focused app doesn't need a toast.
+  // `openConvRef` lets a notification click jump to the conversation (set after openConversationById).
+  const seenTsRef = useRef<Map<string, number>>(new Map())
+  const openConvRef = useRef<(id: string) => void>(() => {})
   const onConversations = useCallback((list: TeamsConversation[]) => {
     conversationsRef.current = list
     setConversations(list)
+    const { arrived, seen } = newlyArrived(seenTsRef.current, list)
+    seenTsRef.current = seen
+    const shell = chatShell()
+    if (arrived.length > 0 && !document.hasFocus()) {
+      for (const c of arrived) {
+        if (shell) {
+          // Electron shell: fire through the native main process (CDP-Browser mechanism).
+          shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+        } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
+          n.onclick = () => {
+            window.focus()
+            openConvRef.current(c.id)
+          }
+        }
+      }
+    }
+    // Dock badge in the Electron shell mirrors the unread count (the web PWA drives its own
+    // badge via the service worker's setAppBadge).
+    if (shell) shell.setBadge(list.filter((c) => isUnread(c)).length)
     // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
     // (id only). When the list loads/merges, swap any tracked entry for the real object so the
     // thread header picks up the resolved title. Only ids already tracked are stored.
@@ -138,6 +225,25 @@ export function ChatApp() {
     if (persist) markReadLocal(id, action, ts)
   }, [])
 
+  // Renderer-owned back/forward for the Electron header (PSN-91). Electron's webContents
+  // navigationHistory doesn't count same-document pushState entries, so the SPA routes are walked
+  // with window.history and enable/disable is tracked by a self-managed index stamped into
+  // history.state (the History API has no canGoForward). `pushPath` is the single push seam.
+  const navIdx = useRef(0)
+  const navMax = useRef(0)
+  const [canNav, setCanNav] = useState({ back: false, forward: false })
+  useEffect(() => {
+    // Stamp the base entry so popstate can read a position back to it.
+    window.history.replaceState({ idx: 0 }, "")
+  }, [])
+  const pushPath = useCallback((path: string) => {
+    if (window.location.pathname === path) return
+    navIdx.current += 1
+    navMax.current = navIdx.current
+    window.history.pushState({ idx: navIdx.current }, "", path)
+    setCanNav({ back: navIdx.current > 0, forward: false })
+  }, [])
+
   // The URL is the state (t150): `/chat/c/{id}` is an open conversation, `/chat/` is the list.
   // A user-driven open pushes; a popstate-driven one replays history without re-pushing.
   const openConversation = useCallback(
@@ -148,10 +254,9 @@ export function ChatApp() {
       // persist=true: a kept-alive pane re-open doesn't refetch history (whose non-poll load is the
       // other server-side read write), so the open itself must clear a mark-unread sentinel durably.
       patchConvRead(conv.id, "read", true)
-      const path = pathFor(conv.id)
-      if (window.location.pathname !== path) window.history.pushState(null, "", path)
+      pushPath(pathFor(conv.id))
     },
-    [patchConvRead],
+    [patchConvRead, pushPath],
   )
 
   const openConversationById = useCallback(
@@ -160,11 +265,16 @@ export function ChatApp() {
       setKeepAlive((s) => openThread(s, id))
       setPhoneView("thread")
       patchConvRead(id, "read", true)
-      const path = pathFor(id)
-      if (push && window.location.pathname !== path) window.history.pushState(null, "", path)
+      if (push) pushPath(pathFor(id))
     },
-    [patchConvRead],
+    [patchConvRead, pushPath],
   )
+  openConvRef.current = openConversationById
+
+  // Electron shell notification click → open the conversation (main posts the convId back).
+  useEffect(() => {
+    chatShell()?.onNotificationActivate((id) => openConversationById(id))
+  }, [openConversationById])
 
   // Push deep-link (t147): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
   // open) arrives as an SW postMessage { type:"open-conv", convId }. Both open that conversation;
@@ -199,7 +309,11 @@ export function ChatApp() {
   useEffect(() => {
     const route = parsePath(window.location.pathname)
     if (route) openConversationById(route.convId, false)
-    const onPop = () => {
+    const onPop = (e: PopStateEvent) => {
+      // Track position from the stamped index so the header's back/forward can enable correctly.
+      const idx = (e.state as { idx?: number } | null)?.idx ?? 0
+      navIdx.current = idx
+      setCanNav({ back: idx > 0, forward: idx < navMax.current })
       const r = parsePath(window.location.pathname)
       if (r) openConversationById(r.convId, false)
       else setPhoneView("list")
@@ -221,8 +335,8 @@ export function ChatApp() {
 
   const backToList = useCallback(() => {
     setPhoneView("list")
-    if (window.location.pathname !== "/chat/") window.history.pushState(null, "", "/chat/")
-  }, [])
+    pushPath("/chat/")
+  }, [pushPath])
 
   // ── Keyboard-first navigation (t152) ────────────────────────────────────────────────────────
   // List cursor + the active thread pane's handle + its reported focused message. The list cursor
@@ -269,6 +383,28 @@ export function ChatApp() {
     [navConversations],
   )
 
+  // Switch the OPEN conversation by delta (⌥↑/⌥↓): walk the visible list order from the current
+  // active/focused row and open its neighbor. Works from the thread view too.
+  const switchConversation = useCallback(
+    (delta: 1 | -1) => {
+      if (navConversations.length === 0) return
+      const cur = keepAlive.active ?? focusedConvId
+      const i = cur ? navConversations.findIndex((c) => c.id === cur) : -1
+      const next = i === -1 ? 0 : Math.min(navConversations.length - 1, Math.max(0, i + delta))
+      openConversation(navConversations[next])
+    },
+    [navConversations, keepAlive.active, focusedConvId, openConversation],
+  )
+
+  // Open the Nth visible conversation (⌘1..⌘9). Out-of-range indexes are a no-op.
+  const openConvByIndex = useCallback(
+    (n: number) => {
+      const conv = navConversations[n - 1]
+      if (conv) openConversation(conv)
+    },
+    [navConversations, openConversation],
+  )
+
   const clearPendingG = useCallback(() => {
     pendingG.current = false
     if (gTimer.current) clearTimeout(gTimer.current)
@@ -312,9 +448,39 @@ export function ChatApp() {
         run: () => (view === "list" ? moveListFocus(-1) : activeThreadRef.current?.focusPrev()),
       },
       {
+        id: "conv-next",
+        label: "Next conversation",
+        group: "Navigation",
+        keys: "⌥↓",
+        run: () => switchConversation(1),
+      },
+      {
+        id: "conv-prev",
+        label: "Previous conversation",
+        group: "Navigation",
+        keys: "⌥↑",
+        run: () => switchConversation(-1),
+      },
+      {
+        id: "jump-index",
+        label: "Jump to conversation 1–9",
+        group: "Navigation",
+        keys: "⌘1–9",
+        run: () => openConvByIndex(1),
+      },
+      {
+        id: "focus-input",
+        label: "Focus message input",
+        group: "Message",
+        keys: "i",
+        when: (c) => c.view === "thread",
+        run: () => activeThreadRef.current?.focusComposer(),
+      },
+      {
         id: "open-settings",
         label: "Open settings",
         group: "App",
+        keys: "⌘,",
         run: () => setSettingsOpen(true),
       },
       {
@@ -418,6 +584,8 @@ export function ChatApp() {
     ctx,
     prefs,
     patchPrefs,
+    switchConversation,
+    openConvByIndex,
   ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
@@ -495,6 +663,26 @@ export function ChatApp() {
           e.preventDefault()
           toggleReadUnread(ctx.focusedConversationId ?? null)
           break
+        case "focus-composer":
+          e.preventDefault()
+          activeThreadRef.current?.focusComposer()
+          break
+        case "settings":
+          e.preventDefault()
+          setSettingsOpen((v) => !v)
+          break
+        case "conv-next":
+          e.preventDefault()
+          switchConversation(1)
+          break
+        case "conv-prev":
+          e.preventDefault()
+          switchConversation(-1)
+          break
+        case "conv-index":
+          e.preventDefault()
+          openConvByIndex(intent.index)
+          break
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -511,7 +699,23 @@ export function ChatApp() {
     backToList,
     clearPendingG,
     toggleReadUnread,
+    switchConversation,
+    openConvByIndex,
   ])
+
+  // In the Electron shell (window.chatShell present), flag the root so the CSS can turn the top
+  // headers into a window-drag region + clear the macOS traffic lights (chat/src/index.css).
+  useEffect(() => {
+    if (chatShell()) document.documentElement.classList.add("is-electron")
+  }, [])
+
+  // Report the current SPA path to the Electron shell so the next launch reopens this conversation.
+  useEffect(() => {
+    chatShell()?.routeChanged(keepAlive.active ? pathFor(keepAlive.active) : "/chat/")
+  }, [keepAlive.active])
+
+  // "Reconnecting…" banner: the background list poll flips this on failure and back on success.
+  const [online, setOnline] = useState(true)
 
   // Name display preference (t161), derived once per settings change and threaded to every
   // person-name render (rows, thread header, sender names, reactor tooltips).
@@ -552,6 +756,13 @@ export function ChatApp() {
         open={settingsOpen}
         settings={settings}
       />
+      {!online && (
+        <div className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div className="rounded-full bg-foreground/85 px-3 py-1 text-background text-xs shadow-md backdrop-blur">
+            Reconnecting…
+          </div>
+        </div>
+      )}
     </>
   )
 
@@ -559,12 +770,17 @@ export function ChatApp() {
     return (
       <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
         <aside className="flex w-80 shrink-0 flex-col border-border border-r">
-          <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
+          <AppHeader
+            canBack={canNav.back}
+            canForward={canNav.forward}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
               collapsedFolders={collapsed}
               focusedId={view === "list" ? focusedConvId : null}
               namePref={namePref}
+              onConnectionChange={setOnline}
               onConversations={onConversations}
               onOpenConversation={openConversation}
               onPatchPrefs={patchPrefs}
@@ -591,12 +807,17 @@ export function ChatApp() {
   return (
     <div className="flex h-[var(--app-h,100dvh)] w-full flex-col bg-background">
       <div className={cn("flex min-h-0 flex-1 flex-col", phoneView === "thread" && "hidden")}>
-        <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
+        <AppHeader
+          canBack={canNav.back}
+          canForward={canNav.forward}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
             collapsedFolders={collapsed}
             focusedId={focusedConvId}
             namePref={namePref}
+            onConnectionChange={setOnline}
             onConversations={onConversations}
             onOpenConversation={openConversation}
             onPatchPrefs={patchPrefs}

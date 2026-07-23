@@ -1,5 +1,6 @@
 import { Cancel01Icon, ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
+import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
@@ -16,6 +17,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { isPointerFine, usePointerCoarse } from "@/hooks/use-pointer-coarse"
+import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
 import { cn } from "@/lib/utils"
 import type {
   ChatDensity,
@@ -25,6 +28,7 @@ import type {
   ChatSettings,
   ChatTheme,
 } from "../lib/chat-settings"
+import { chatShell } from "../lib/chat-shell"
 import { formatName } from "../lib/display-name"
 import { NotifyToggle } from "./notify-toggle"
 
@@ -80,13 +84,15 @@ function FontSelect<T extends string>({
   value,
   options,
   onChange,
+  onOpenChange,
 }: {
   value: T
   options: { id: T; label: string; fontFamily: string }[]
   onChange: (v: T) => void
+  onOpenChange?: (open: boolean) => void
 }) {
   return (
-    <Select onValueChange={(v) => onChange(v as T)} value={value}>
+    <Select onOpenChange={onOpenChange} onValueChange={(v) => onChange(v as T)} value={value}>
       <SelectTrigger
         className="w-full"
         style={{ fontFamily: options.find((o) => o.id === value)?.fontFamily }}
@@ -138,8 +144,15 @@ function Segmented<T extends string>({
   )
 }
 
+const LEAVE_CLOSE_MS = 500
+
 /** Chat settings drawer (t154): theme + density, plus the relocated push toggle. Persists per device
- *  in server ui-state via useChatSettings. Opened from the header gear + the ⌘K "Open settings". */
+ *  in server ui-state via useChatSettings. Opened from the header gear + the ⌘K "Open settings".
+ *
+ *  Non-modal, no-overlay, mouse-leave auto-close — same UX as the CDP Browser settings drawer (t049,
+ *  applied to web + electron here per PSN-91): flick the cursor off the panel and it dismisses (fine
+ *  pointer only, via `shouldArmLeaveTimer`); a coarse pointer dismisses via the X or a scrim tap. Any
+ *  keydown inside "commits" the drawer so it stops auto-closing while you're editing a field. */
 export function SettingsSheet({
   open,
   onOpenChange,
@@ -151,15 +164,73 @@ export function SettingsSheet({
   settings: ChatSettings
   onUpdate: (partial: Partial<ChatSettings>) => void
 }) {
+  const pointerCoarse = usePointerCoarse()
+  // Electron shell: the server the app loads /chat from, editable here (web build hides this).
+  const shell = chatShell()
+  const [serverUrl, setServerUrlInput] = useState("")
+  const [serverSaved, setServerSaved] = useState("")
+  useEffect(() => {
+    if (open && shell)
+      shell.getServerUrl().then((u) => {
+        setServerUrlInput(u)
+        setServerSaved(u)
+      })
+  }, [open, shell])
+  // A portaled Select (Font pickers) opens off-panel — suppress the leave-timer while it's open.
+  const [selectOpen, setSelectOpen] = useState(false)
+  // Once the user interacts via keyboard, stop auto-closing on mouse-leave (they're committed).
+  const [committed, setCommitted] = useState(false)
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const clearLeaveTimer = () => clearTimeout(leaveTimer.current)
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      clearLeaveTimer()
+      setCommitted(false)
+    }
+    onOpenChange(next)
+  }
+
   return (
-    <Sheet onOpenChange={onOpenChange} open={open}>
-      <SheetContent className="w-80 gap-0" showCloseButton={false}>
+    <Sheet modal={false} onOpenChange={handleOpenChange} open={open}>
+      {/* Coarse-pointer dismiss: no hover on a finger, so a scrim tap replaces mouse-leave. */}
+      {open && pointerCoarse && (
+        <button
+          aria-label="Close settings"
+          className="fixed inset-0 z-40 cursor-default bg-transparent"
+          onClick={() => handleOpenChange(false)}
+          tabIndex={-1}
+          type="button"
+        />
+      )}
+      <SheetContent
+        className="w-80 gap-0"
+        onInteractOutside={(e) => {
+          // Keep open when interacting with a Select popover it spawned (portals outside the panel).
+          const target = e.target as HTMLElement | null
+          if (target?.closest('[data-slot="select-content"],[data-radix-popper-content-wrapper]'))
+            e.preventDefault()
+        }}
+        onKeyDownCapture={() => {
+          clearLeaveTimer()
+          setCommitted(true)
+        }}
+        onMouseEnter={clearLeaveTimer}
+        onMouseLeave={() => {
+          // Read the pointer live so a Magic-Keyboard detach flips to the coarse branch with no reload.
+          if (!shouldArmLeaveTimer({ pointerFine: isPointerFine(), committed, selectOpen })) return
+          clearLeaveTimer()
+          leaveTimer.current = setTimeout(() => handleOpenChange(false), LEAVE_CLOSE_MS)
+        }}
+        showCloseButton={false}
+        showOverlay={false}
+      >
         <SheetHeader className="flex-row items-center justify-between">
           <div>
             <SheetTitle>Settings</SheetTitle>
             <SheetDescription>Saved per device.</SheetDescription>
           </div>
-          <Button onClick={() => onOpenChange(false)} size="icon-sm" variant="ghost">
+          <Button onClick={() => handleOpenChange(false)} size="icon-sm" variant="ghost">
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
             <span className="sr-only">Close</span>
           </Button>
@@ -218,6 +289,7 @@ export function SettingsSheet({
             <Label className="text-[13px]">Font</Label>
             <FontSelect
               onChange={(font) => onUpdate({ font })}
+              onOpenChange={setSelectOpen}
               options={FONT_OPTIONS}
               value={settings.font}
             />
@@ -227,6 +299,7 @@ export function SettingsSheet({
             <Label className="text-[13px]">Code font</Label>
             <FontSelect
               onChange={(mono) => onUpdate({ mono })}
+              onOpenChange={setSelectOpen}
               options={MONO_OPTIONS}
               value={settings.mono}
             />
@@ -239,6 +312,31 @@ export function SettingsSheet({
             </div>
             <NotifyToggle />
           </div>
+
+          {/* Server URL — Electron shell only (the web build is served by its own origin). */}
+          {shell && (
+            <div className="space-y-2 border-border/60 border-t pt-3">
+              <Label className="text-[13px]">Server</Label>
+              <div className="flex gap-1.5">
+                <input
+                  className="min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 py-1.5 text-[13px] outline-none focus:ring-1 focus:ring-ring"
+                  onChange={(e) => setServerUrlInput(e.target.value)}
+                  placeholder="https://…"
+                  spellCheck={false}
+                  value={serverUrl}
+                />
+                <Button
+                  disabled={!serverUrl.trim() || serverUrl.trim() === serverSaved}
+                  onClick={() => shell.setServerUrl(serverUrl.trim())}
+                  size="sm"
+                  variant="secondary"
+                >
+                  Save
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Reloads the app to this server.</p>
+            </div>
+          )}
         </div>
       </SheetContent>
     </Sheet>

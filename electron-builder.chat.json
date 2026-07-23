@@ -1,0 +1,12 @@
+{
+  "appId": "dev.duong.cdp-chats",
+  "productName": "CDP Chats",
+  "extraMetadata": { "main": "chat-main.js" },
+  "mac": {
+    "category": "public.app-category.productivity",
+    "icon": "build/chat-icon.icns",
+    "target": ["dmg", "zip"]
+  },
+  "files": ["chat-main.js", "chat-preload.js", "core/chat-shell.js", "!core/**/*.test.*"],
+  "directories": { "output": "release-chat" }
+}
