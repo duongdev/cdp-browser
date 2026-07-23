@@ -193,11 +193,42 @@ export interface ReplyRef {
   time: number
 }
 
+/** One per-token @mention entry sent to the server (PSN-92 D). */
+export interface MentionRef {
+  itemid: number
+  mri: string
+  displayName: string
+}
+
+/** A conversation member for the @-mention dropdown (PSN-92 D). */
+export interface RosterMember {
+  mri: string
+  name: string
+}
+
+/** Fetch the conversation roster for the @-mention dropdown. Returns [] on any error (the dropdown
+ *  just shows nothing rather than blocking the composer). Web only. */
+export async function fetchRoster(convId: string): Promise<RosterMember[]> {
+  try {
+    const res = await fetch("/api/teams/roster", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId }),
+    })
+    if (!res.ok) return []
+    const data = (await res.json()) as { members?: RosterMember[] }
+    return Array.isArray(data.members) ? data.members : []
+  } catch {
+    return []
+  }
+}
+
 export async function sendReply(
   convId: string,
   text: string,
   html?: string | null,
   quotes?: ReplyRef[],
+  mentions?: MentionRef[],
 ): Promise<SendReplyResult> {
   const res = await fetch("/api/teams/reply", {
     method: "POST",
@@ -207,6 +238,7 @@ export async function sendReply(
       text,
       ...(html ? { html } : {}),
       ...(quotes && quotes.length ? { quotes } : {}),
+      ...(mentions && mentions.length ? { mentions } : {}),
     }),
   })
   const data = (await res.json().catch(() => ({}))) as SendReplyResult & { error?: string }

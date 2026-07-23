@@ -14,8 +14,11 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { pickFile } from "../lib/image-attach"
+import { filterRoster, mentionQuery } from "../lib/mention"
 import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
+import { fetchRoster, type RosterMember } from "../lib/teams-client"
 
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
 export interface ComposerHandle {
@@ -37,6 +40,10 @@ interface ComposerProps {
   quotes?: { id: string; authorName: string; preview: string; onCancel: () => void }[]
   /** Escape in the editor — clears the reply targets (only wired when `quotes` is non-empty). */
   onEscape?: () => void
+  /** The conversation id — drives the @-mention roster fetch (PSN-92 D). */
+  convId?: string
+  /** Name display preference (t161) — the visible text of a mention pill respects it. */
+  namePref?: NamePref
 }
 
 // Formatting toolbar actions → document.execCommand. Deprecated but universal, zero-dep — the lazy
@@ -62,12 +69,20 @@ export function Composer({
   autoFocus = false,
   quotes,
   onEscape,
+  convId,
+  namePref = FULL_NAME,
 }: ComposerProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [hasContent, setHasContent] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [pendingUrl, setPendingUrl] = useState<string | null>(null)
+
+  // @-mention autocomplete (PSN-92 D): the roster is lazy-loaded on the first `@`; `menu` holds the
+  // open dropdown's filtered candidates + the highlighted index.
+  const roster = useRef<RosterMember[]>([])
+  const rosterLoaded = useRef(false)
+  const [menu, setMenu] = useState<{ items: RosterMember[]; active: number } | null>(null)
 
   useImperativeHandle(ref, () => ({ focus: () => editorRef.current?.focus() }), [])
 
@@ -78,8 +93,75 @@ export function Composer({
     if (el) el.innerHTML = ""
     setHasContent(false)
     setPendingFile(null)
+    setMenu(null)
+    roster.current = []
+    rosterLoaded.current = false
     if (autoFocus) el?.focus()
   }, [resetKey])
+
+  // The plain text of the current text node up to the caret — enough to spot an `@query` (a query
+  // never spans a whitespace, so it stays inside one text node).
+  const textBeforeCaret = (): string => {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return ""
+    const { startContainer, startOffset } = sel.getRangeAt(0)
+    return (startContainer.textContent ?? "").slice(0, startOffset)
+  }
+
+  // Recompute the mention dropdown from the caret. Lazy-loads the roster on the first `@`.
+  const syncMentionMenu = () => {
+    const q = mentionQuery(textBeforeCaret())
+    if (!q) {
+      setMenu(null)
+      return
+    }
+    if (!rosterLoaded.current) {
+      rosterLoaded.current = true
+      if (convId)
+        fetchRoster(convId).then((members) => {
+          roster.current = members
+          // Re-filter with whatever the caret query is now (the user may have typed on).
+          const cur = mentionQuery(textBeforeCaret())
+          if (cur) setMenu({ items: filterRoster(members, cur.query), active: 0 })
+        })
+    }
+    setMenu({ items: filterRoster(roster.current, q.query), active: 0 })
+  }
+
+  // Replace the typed `@query` with a non-editable mention pill + a trailing space.
+  const insertMention = (m: RosterMember) => {
+    const el = editorRef.current
+    const sel = window.getSelection()
+    if (!el || !sel || sel.rangeCount === 0) return
+    const range = sel.getRangeAt(0)
+    const node = range.startContainer
+    const offset = range.startOffset
+    const q = mentionQuery((node.textContent ?? "").slice(0, offset))
+    if (!q) return
+    const del = document.createRange()
+    del.setStart(node, q.at)
+    del.setEnd(node, offset)
+    del.deleteContents()
+
+    const pill = document.createElement("span")
+    pill.className = "mention"
+    pill.setAttribute("data-mri", m.mri)
+    pill.setAttribute("data-name", m.name)
+    pill.setAttribute("contenteditable", "false")
+    pill.textContent = `@${formatName(m.name, namePref)}`
+    del.insertNode(pill)
+    const space = document.createTextNode(" ")
+    pill.after(space)
+
+    const after = document.createRange()
+    after.setStartAfter(space)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+
+    setMenu(null)
+    setHasContent(!!readEditor().text)
+  }
 
   // Object-URL thumbnail preview — images only; a non-image file shows a chip, not a thumbnail.
   useEffect(() => {
@@ -128,19 +210,39 @@ export function Composer({
     <div className="shrink-0 px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       <div
         className={cn(
-          "rounded-2xl border border-input bg-card shadow-sm transition-shadow",
+          "relative rounded-2xl border border-input bg-card shadow-sm transition-shadow",
           "focus-within:border-ring/40 focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/25",
         )}
       >
+        {menu && menu.items.length > 0 && (
+          <div className="absolute bottom-full left-2 z-50 mb-1 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
+            {menu.items.map((m, i) => (
+              <button
+                className={cn(
+                  "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm",
+                  i === menu.active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                )}
+                // Keep the editor selection: a mousedown would blur + collapse it before the click.
+                key={m.mri}
+                onClick={() => insertMention(m)}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setMenu((cur) => cur && { ...cur, active: i })}
+                type="button"
+              >
+                <span className="truncate">{formatName(m.name, namePref)}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {quotes && quotes.length > 0 && (
-          <div className="flex flex-col gap-1 px-3 pt-3">
+          <div className="flex flex-col items-start gap-1 px-3 pt-3">
             {quotes.map((q) => (
               <div
-                className="flex items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5"
+                className="flex w-fit max-w-full items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5"
                 key={q.id}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-ring text-xs">{q.authorName}</div>
+                <div className="min-w-0 max-w-[20rem]">
+                  <div className="truncate font-medium text-ring text-xs">{q.authorName}</div>
                   <div className="truncate text-muted-foreground text-xs">{q.preview}</div>
                 </div>
                 <button
@@ -196,8 +298,36 @@ export function Composer({
           data-placeholder="Type a message…"
           onBlur={() => onFocusChange(false)}
           onFocus={() => onFocusChange(true)}
-          onInput={() => setHasContent(!!readEditor().text)}
+          onInput={() => {
+            setHasContent(!!readEditor().text)
+            syncMentionMenu()
+          }}
           onKeyDown={(e) => {
+            // Mention dropdown steals the nav/commit keys while open (PSN-92 D).
+            if (menu && menu.items.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault()
+                setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length })
+                return
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault()
+                setMenu(
+                  (m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length },
+                )
+                return
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault()
+                insertMention(menu.items[menu.active])
+                return
+              }
+              if (e.key === "Escape") {
+                e.preventDefault()
+                setMenu(null)
+                return
+              }
+            }
             if (e.key === "Enter") {
               const action = enterKeyAction({
                 shift: e.shiftKey,

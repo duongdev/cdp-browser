@@ -35,6 +35,7 @@ import {
   deleteMessage,
   editMessage,
   fetchHistory,
+  type MentionRef,
   markRead,
   type ReplyRef,
   react,
@@ -474,7 +475,10 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   }, [])
   // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
   const retryPayloads = useRef<
-    Map<string, { out: OutgoingMessage; file: File | null; quotes: ReplyRef[] }>
+    Map<
+      string,
+      { out: OutgoingMessage; file: File | null; quotes: ReplyRef[]; mentions: MentionRef[] }
+    >
   >(new Map())
   const localSeq = useRef(0)
   // Stale in-flight sends don't leak across a conversation reset.
@@ -504,7 +508,13 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // placeholder for the server id (resolveLocalSend collapses a poll-delivered echo); failure marks
   // the bubble with the typed code. Never touches the composer.
   const runSend = useCallback(
-    (localId: string, out: OutgoingMessage, file: File | null, quotes: ReplyRef[] = []) => {
+    (
+      localId: string,
+      out: OutgoingMessage,
+      file: File | null,
+      quotes: ReplyRef[] = [],
+      mentions: MentionRef[] = [],
+    ) => {
       const target = replyTarget
       if (!target) return
       const op = file
@@ -513,7 +523,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             file,
             out.text,
           ).then((r) => r.msgId)
-        : sendReply(target.convId, out.text, out.html, quotes).then((r) => r.ts)
+        : sendReply(target.convId, out.text, out.html, quotes, mentions).then((r) => r.ts)
       op.then((id) => {
         retryPayloads.current.delete(localId)
         setState((s) =>
@@ -541,26 +551,27 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const onComposerSend = useCallback(
     (raw: OutgoingMessage, file: File | null) => {
       if (!replyTarget) return
-      // A quoted reply (PSN-92 B/C) rides the same send: prepend one Reply blockquote per target to the
-      // body HTML (forcing a RichText/Html send) so both the optimistic bubble and Teams render the
-      // quotes. A file send can't carry inline HTML, so quotes only apply to the text/rich path.
-      let out = raw
+      // A quoted reply (PSN-92 B/C) prepends one Reply blockquote per target; an @mention (PSN-92 D)
+      // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send. A file
+      // send can't carry inline HTML, so quotes/mentions only apply to the text/rich path. The optimistic
+      // bubble uses the DISPLAY body (mentions as one pill) — the poll reconciles to the server render.
+      const mentions = file ? [] : (raw.mentions ?? [])
+      const wireBody = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
+      const dispBody = raw.displayHtml ?? wireBody
+      let sendHtml: string | null = raw.html
+      let optimisticHtml: string = raw.displayHtml ?? raw.html ?? textToHtml(raw.text)
       let quotes: ReplyRef[] = []
       if (quoteTargets.length > 0 && !file) {
-        // Native reply body: <p>-wrapped text (Teams wraps the reply body) so the wire matches.
-        const bodyHtml = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
-        const body = buildReplyBody(
-          quoteTargets.map((m) => ({
-            msgId: m.id,
-            authorMri: m.senderId || "",
-            // Real name in the wire (decision 4 — quotes never say "(You)"); the render applies the
-            // Names setting. A self message's senderName is its stamped imdisplayname (workstream A).
-            authorName: m.senderName || "",
-            previewHtml: quotePreviewHtml(m.body),
-          })),
-          bodyHtml,
-        )
-        out = { text: raw.text, html: body }
+        const meta = quoteTargets.map((m) => ({
+          msgId: m.id,
+          authorMri: m.senderId || "",
+          // Real name in the wire (decision 4 — quotes never say "(You)"); the render applies the
+          // Names setting. A self message's senderName is its stamped imdisplayname (workstream A).
+          authorName: m.senderName || "",
+          previewHtml: quotePreviewHtml(m.body),
+        }))
+        sendHtml = buildReplyBody(meta, wireBody)
+        optimisticHtml = buildReplyBody(meta, dispBody)
         // qtdMsgs references — makes Teams render a NATIVE reply (clickable), not just a blockquote.
         quotes = quoteTargets.map((m) => ({
           messageId: Number(m.id),
@@ -569,15 +580,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         }))
       }
       setQuoteTargets([])
+      const out: OutgoingMessage = { ...raw, html: sendHtml }
       const localId = `local:${++localSeq.current}:${Date.now()}`
-      retryPayloads.current.set(localId, { out, file, quotes })
+      retryPayloads.current.set(localId, { out, file, quotes, mentions })
       const isImage = file?.type.startsWith("image/") ?? false
       appendSent({
         id: localId,
         ts: Date.now(),
         senderId: "",
         senderName: "You",
-        body: out.html ?? textToHtml(out.text),
+        body: optimisticHtml,
         self: true,
         edited: false,
         deleted: false,
@@ -595,7 +607,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               }
           : {}),
       })
-      runSend(localId, out, file, quotes)
+      runSend(localId, out, file, quotes, mentions)
     },
     [replyTarget, appendSent, runSend, quoteTargets],
   )
@@ -615,7 +627,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             }
           : s,
       )
-      runSend(localId, payload.out, payload.file, payload.quotes)
+      runSend(localId, payload.out, payload.file, payload.quotes, payload.mentions)
     },
     [runSend],
   )
@@ -701,6 +713,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const composer = replyTarget ? (
     <Composer
       autoFocus={visible && !coarse}
+      convId={convId}
+      namePref={namePref ?? FULL_NAME}
       onEscape={() => setQuoteTargets([])}
       onFocusChange={(f) => {
         composerFocusedRef.current = f

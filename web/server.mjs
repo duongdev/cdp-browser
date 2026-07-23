@@ -1299,6 +1299,63 @@ async function resolveTeamsNamesInPage(oids) {
   return res && typeof res === "object" ? res : {}
 }
 
+// ---- mention roster (PSN-92 D) --------------------------------------------
+// Conversation members → [{ mri, name }] for the composer's @-mention dropdown. A 1:1 id encodes both
+// members (no fetch); a group/thread reads /v1/threads/{id}. Names resolve cache-first + one Graph
+// batch (same seam as titles). Cached per conversation with a short TTL — a roster rarely changes and
+// the dropdown must feel instant. Best-effort: name misses drop that member rather than fail.
+const teamsRosterCache = new Map()
+const TEAMS_ROSTER_TTL_MS = 5 * 60 * 1000
+
+async function teamsRoster(convId) {
+  const cached = teamsRosterCache.get(convId)
+  if (cached && Date.now() - cached.at < TEAMS_ROSTER_TTL_MS) return { members: cached.members }
+
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  const selfMri = `8:orgid:${cred.userId || ""}`
+  let mris = []
+  if (/@unq\.gbl\.spaces$/.test(convId) && convId.includes("_")) {
+    mris = [...teamsOtherMrisFromId(convId, selfMri), selfMri] // 1:1 — id encodes both members
+  } else if (/^19:/.test(convId)) {
+    const rosters = await fetchTeamsGroupRostersInPage(cred, [convId])
+    mris = rosters[convId] || []
+    if (!mris.includes(selfMri)) mris.push(selfMri)
+  } else {
+    mris = [selfMri]
+  }
+  mris = [...new Set(mris.filter(Boolean))]
+
+  const nameByMri = new Map()
+  try {
+    for (const [mri, name] of teamsGetUsers(teamsDb, mris)) nameByMri.set(mri, name)
+    const misses = mris.filter((m) => !nameByMri.has(m))
+    if (misses.length) {
+      const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+      const resolved = []
+      for (const m of misses) {
+        const n = oidMap[teamsOidFromMri(m)]
+        if (n) {
+          nameByMri.set(m, n)
+          resolved.push({ mri: m, displayName: n })
+        }
+      }
+      if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+    }
+  } catch (e) {
+    console.error("[web] teams roster name resolution failed:", e.message)
+  }
+
+  const members = mris.map((mri) => ({ mri, name: nameByMri.get(mri) || "" })).filter((m) => m.name)
+  teamsRosterCache.set(convId, { at: Date.now(), members })
+  return { members }
+}
+
 // Attach a `title` to each conversation: topic'd convs keep their topic (composeTitle passes it
 // through); topic-less DMs/group-DMs resolve member names (id-derived for a 1:1, roster-fetched
 // for a group-DM), hitting the cache first and Graph-resolving only the misses in one batch.
@@ -1759,7 +1816,7 @@ async function sendTeamsMessageInPage(
 // re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations/teamsHistory).
 // `html` (t159, composer formatting) upgrades the wire format to a RichText/Html message; the
 // plain-text fast path stays the Text send. The echo persists whichever body was sent.
-async function teamsReply(convId, text, html, quoteRefs = []) {
+async function teamsReply(convId, text, html, quoteRefs = [], mentions = []) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1771,21 +1828,23 @@ async function teamsReply(convId, text, html, quoteRefs = []) {
   const messagetype = html ? "RichText/Html" : "Text"
   // A quoted reply carries `qtdMsgs` (+ formatVariant/hasValidMsgReferences) so Teams renders it as a
   // native reply, not just inline blockquote markup (PSN-92, live-verified against a real reply's wire).
-  const properties = quoteRefs.length
-    ? {
-        qtdMsgs: quoteRefs.map((q) => ({
-          messageId: q.messageId,
-          sender: q.sender,
-          time: q.time,
-          message: null,
-          validationResult: "Valid",
-          sharedRefId: null,
-          replyChainId: null,
-        })),
-        formatVariant: "TEAMS",
-        hasValidMsgReferences: true,
-      }
-    : {}
+  const properties = {}
+  if (quoteRefs.length) {
+    properties.qtdMsgs = quoteRefs.map((q) => ({
+      messageId: q.messageId,
+      sender: q.sender,
+      time: q.time,
+      message: null,
+      validationResult: "Valid",
+      sharedRefId: null,
+      replyChainId: null,
+    }))
+    properties.formatVariant = "TEAMS"
+    properties.hasValidMsgReferences = true
+  }
+  // @mentions ride as a JSON-STRING `properties.mentions` (per-token, live-verified) so recipients
+  // get a real mention (PSN-92 D). Teams' own wire keeps this as a string, not a nested array.
+  if (mentions.length) properties.mentions = JSON.stringify(mentions)
   let out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
@@ -2575,7 +2634,7 @@ const server = http.createServer(async (req, res) => {
     // Teams chat: send a text reply IN-PAGE (t130, ADR-0019). Persists the echo, returns the
     // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/reply" && POST) {
-      const { convId, text, html, quotes } = await body(req)
+      const { convId, text, html, quotes, mentions } = await body(req)
       if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
       // Optional composer-formatted HTML body (t159): string-typed + size-capped, else ignored.
       const richHtml = typeof html === "string" && html.trim() && html.length <= 65536 ? html : null
@@ -2593,7 +2652,29 @@ const server = http.createServer(async (req, res) => {
               time: Number(q.time ?? q.messageId),
             }))
         : []
-      const out = await teamsReply(convId, text, richHtml, refs)
+      // @mention tokens (PSN-92 D): shape-guard each per-token entry before it rides properties.mentions.
+      const ments = Array.isArray(mentions)
+        ? mentions
+            .filter((m) => m && Number.isFinite(Number(m.itemid)) && typeof m.mri === "string")
+            .slice(0, 200)
+            .map((m) => ({
+              "@type": "http://schema.skype.com/Mention",
+              itemid: Number(m.itemid),
+              mri: m.mri,
+              mentionType: "person",
+              displayName: String(m.displayName ?? ""),
+            }))
+        : []
+      const out = await teamsReply(convId, text, richHtml, refs, ments)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: conversation roster for the @-mention dropdown (PSN-92 D). Web only.
+    if (p === "/api/teams/roster" && POST) {
+      const { convId } = await body(req)
+      if (!convId) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsRoster(convId)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)
