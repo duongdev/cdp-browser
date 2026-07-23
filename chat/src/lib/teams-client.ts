@@ -375,6 +375,10 @@ export interface ConvPrefsDto {
   labels: string[]
   folder: string | null
   muted: boolean
+  /** Timed-mute expiry, epoch ms; null/absent = muted forever while `muted` (t167). */
+  mutedUntil?: number | null
+  /** Push through the mute when a message @mentions the viewer (t167). */
+  notifyOnMention?: boolean
 }
 
 /** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
@@ -393,7 +397,13 @@ export async function fetchPrefs(signal?: AbortSignal): Promise<Record<string, C
  *  conversation's full prefs after the write (or null on failure — the caller stays optimistic). */
 export async function setPrefs(
   convId: string,
-  patch: { labels?: string[]; folder?: string | null; muted?: boolean },
+  patch: {
+    labels?: string[]
+    folder?: string | null
+    muted?: boolean
+    mutedUntil?: number | null
+    notifyOnMention?: boolean
+  },
 ): Promise<ConvPrefsDto | null> {
   try {
     const res = await fetch("/api/teams/prefs", {

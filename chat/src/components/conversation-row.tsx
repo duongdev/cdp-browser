@@ -90,21 +90,22 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
               {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
-              {muted ? (
+              {/* Mute no longer hides the unread dot (t167): the bell marks silenced delivery,
+                  the dot still reports unread — both can show. */}
+              {muted && (
                 <HugeiconsIcon
                   aria-label="Muted"
                   className="size-3.5 text-muted-foreground"
                   icon={NotificationOff03Icon}
                 />
-              ) : (
-                unread && (
-                  <span
-                    aria-label="Unread"
-                    className="size-2 rounded-full bg-ring"
-                    role="img"
-                    title="Unread"
-                  />
-                )
+              )}
+              {unread && (
+                <span
+                  aria-label="Unread"
+                  className="size-2 rounded-full bg-ring"
+                  role="img"
+                  title="Unread"
+                />
               )}
             </span>
           </span>

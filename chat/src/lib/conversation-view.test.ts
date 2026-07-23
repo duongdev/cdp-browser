@@ -6,6 +6,7 @@ import {
   conversationLabel,
   folderLabel,
   groupByFolder,
+  isMutedNow,
   isUnread,
   knownFolders,
   knownLabels,
@@ -234,13 +235,31 @@ describe("conversation prefs shaping (t156)", () => {
     expect(applyPrefs(c, undefined)).toBe(c)
   })
 
-  it("isUnread is false for a muted conversation (mute wins)", () => {
+  it("isUnread SURVIVES mute (t167 — mute silences delivery only)", () => {
     const c = applyPrefs(conv({ lastMessageTs: 100, readTs: 0 }), {
       labels: [],
       folder: null,
       muted: true,
     })
-    expect(isUnread(c)).toBe(false)
+    expect(c.muted).toBe(true)
+    expect(isUnread(c)).toBe(true)
+  })
+
+  it("isMutedNow: forever, future window, expired window (t167)", () => {
+    const base = { labels: [], folder: null }
+    expect(isMutedNow({ ...base, muted: true }, 1000)).toBe(true) // no expiry = forever
+    expect(isMutedNow({ ...base, muted: true, mutedUntil: 2000 }, 1000)).toBe(true)
+    expect(isMutedNow({ ...base, muted: true, mutedUntil: 500 }, 1000)).toBe(false) // expired
+    expect(isMutedNow({ ...base, muted: false, mutedUntil: 2000 }, 1000)).toBe(false)
+    expect(isMutedNow(undefined, 1000)).toBe(false)
+  })
+
+  it("applyPrefs reads an expired timed mute as unmuted (t167)", () => {
+    const c = conv({ id: "c1", muted: false })
+    const expired = applyPrefs(c, { labels: [], folder: null, muted: true, mutedUntil: 500 }, 1000)
+    expect(expired.muted).toBe(false)
+    const active = applyPrefs(c, { labels: [], folder: null, muted: true, mutedUntil: 5000 }, 1000)
+    expect(active.muted).toBe(true)
   })
 
   it("groupByFolder: real folders alpha-first, ungrouped in a trailing Chats section (t158)", () => {

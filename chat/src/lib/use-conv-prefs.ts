@@ -50,15 +50,12 @@ export function useConvPrefs() {
 
   // Patch one conversation's prefs: optimistic local update, then POST; the server returns the row's
   // full prefs which we fold back in (authoritative — e.g. sanitized labels).
-  const patch = useCallback(
-    (convId: string, next: { labels?: string[]; folder?: string | null; muted?: boolean }) => {
-      setPrefsState((m) => ({ ...m, [convId]: applyPatch(m[convId], next) }))
-      setPrefs(convId, next).then((row) => {
-        if (row) setPrefsState((m) => ({ ...m, [convId]: fromDto(row) }))
-      })
-    },
-    [],
-  )
+  const patch = useCallback((convId: string, next: ConvPrefsPatch) => {
+    setPrefsState((m) => ({ ...m, [convId]: applyPatch(m[convId], next) }))
+    setPrefs(convId, next).then((row) => {
+      if (row) setPrefsState((m) => ({ ...m, [convId]: fromDto(row) }))
+    })
+  }, [])
 
   const toggleFolderCollapsed = useCallback(
     (folder: string) => {
@@ -86,18 +83,39 @@ function normalize(p: Record<string, ConvPrefsDto>): Record<string, ConvPrefs> {
   return out
 }
 
-function fromDto(v: ConvPrefsDto): ConvPrefs {
-  return { labels: v.labels ?? [], folder: v.folder ?? null, muted: !!v.muted }
+/** The patch shape a mute/label/folder write sends (t156/t167). */
+export interface ConvPrefsPatch {
+  labels?: string[]
+  folder?: string | null
+  muted?: boolean
+  mutedUntil?: number | null
+  notifyOnMention?: boolean
 }
 
-function applyPatch(
-  cur: ConvPrefs | undefined,
-  next: { labels?: string[]; folder?: string | null; muted?: boolean },
-): ConvPrefs {
+function fromDto(v: ConvPrefsDto): ConvPrefs {
+  return {
+    labels: v.labels ?? [],
+    folder: v.folder ?? null,
+    muted: !!v.muted,
+    mutedUntil: v.mutedUntil ?? null,
+    notifyOnMention: !!v.notifyOnMention,
+  }
+}
+
+function applyPatch(cur: ConvPrefs | undefined, next: ConvPrefsPatch): ConvPrefs {
   const base = cur ?? EMPTY_PREFS
   return {
     labels: next.labels ?? base.labels,
     folder: next.folder !== undefined ? next.folder : base.folder,
     muted: next.muted !== undefined ? next.muted : base.muted,
+    // Mirror the server rule (t167): a muted write without an expiry clears any stale window.
+    mutedUntil:
+      next.muted !== undefined
+        ? (next.mutedUntil ?? null)
+        : next.mutedUntil !== undefined
+          ? next.mutedUntil
+          : (base.mutedUntil ?? null),
+    notifyOnMention:
+      next.notifyOnMention !== undefined ? next.notifyOnMention : !!base.notifyOnMention,
   }
 }

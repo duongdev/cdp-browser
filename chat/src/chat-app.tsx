@@ -13,6 +13,7 @@ import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
+  isMutedNow,
   isUnread,
   knownFolders,
   navigableConversations,
@@ -353,14 +354,15 @@ export function ChatApp() {
       // Per-conversation mute (t156). Label flips with the focused conversation's current state.
       {
         id: "mute-conv",
-        label: prefs[ctx.focusedConversationId ?? ""]?.muted
+        label: isMutedNow(prefs[ctx.focusedConversationId ?? ""])
           ? "Unmute conversation"
           : "Mute conversation",
         group: "Conversation",
         when: (c) => !!c.focusedConversationId,
         run: () => {
+          // ⌘K quick toggle mutes until-unmute (t167); the row menu has the timed presets.
           const id = ctx.focusedConversationId
-          if (id) patchPrefs(id, { muted: !prefs[id]?.muted })
+          if (id) patchPrefs(id, { muted: !isMutedNow(prefs[id]) })
         },
       },
       // Move to folder (t156). Palette-simple: prompt for a folder name (blank clears). The row menu

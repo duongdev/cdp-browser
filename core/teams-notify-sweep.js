@@ -47,6 +47,18 @@ function isSelfSender(from, selfId) {
   return !!s && !!self && s === self
 }
 
+// Whether the message content @mentions the signed-in user (t167). A mention tag carries the
+// target's MRI/oid (`<span itemid="8:orgid:{oid}" itemtype="…/Mention">` or legacy `<at id=…>`),
+// and a bare directory oid appears in chat content essentially only inside those tags — so a
+// substring check on the normalized self oid is the whole test.
+// ponytail: substring heuristic, not a mention-span parse; upgrade to teams-render's resolveMentions
+// if a false positive ever shows up in practice.
+function mentionsSelf(content, selfId) {
+  const self = oidFromMri(typeof selfId === "string" ? selfId : "")
+  if (!self || typeof content !== "string" || !content) return false
+  return content.toLowerCase().includes(self.toLowerCase())
+}
+
 // Only plain-text and rich-HTML messages are real chat content. Media cards, call events, and
 // ThreadActivity/* control messages are not a chat someone typed — no push.
 function isRealChatMessage(messagetype) {
@@ -96,6 +108,8 @@ function planTeamsNotifications({ conversations, state, selfId } = {}) {
       ts,
       senderName: last.imdisplayname || "",
       preview: plainText(last.content),
+      // @me flag (t167): lets the send path push through a mute when notify-on-mention is set.
+      mentionsMe: mentionsSelf(last.content, selfId),
     })
   }
 
@@ -103,4 +117,4 @@ function planTeamsNotifications({ conversations, state, selfId } = {}) {
   return { notifications, state: { watermarks, seeded: true } }
 }
 
-module.exports = { planTeamsNotifications, plainText }
+module.exports = { planTeamsNotifications, plainText, mentionsSelf }

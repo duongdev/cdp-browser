@@ -81,6 +81,8 @@ const SCHEMA = [
 // that already has them). Keep new columns here, not in SCHEMA, so an existing db.migrate()s cleanly.
 const ADD_COLUMNS = [
   ["conversations", "last_message_from_me", "INTEGER DEFAULT 0"], // t155
+  ["conversation_prefs", "muted_until", "INTEGER"], // t167: timed mute expiry (epoch ms; NULL = forever)
+  ["conversation_prefs", "notify_on_mention", "INTEGER DEFAULT 0"], // t167: push through a mute on @me
 ]
 
 function migrate(db) {
@@ -443,36 +445,58 @@ function getUsers(db, mris) {
 // LOCAL labels / folder / mute per conversation — never written to Teams. Shared across devices
 // (server-side, not device-keyed). `labels` persists as a JSON string array.
 
-// One conversation's prefs, or the empty default (no row = no labels, no folder, not muted).
-function getPrefs(db, convId) {
-  const r = db
-    .prepare("SELECT labels, folder, muted FROM conversation_prefs WHERE conv_id = ?")
-    .get(convId)
-  if (!r) return { labels: [], folder: null, muted: false }
+// Whether a pref row is muted RIGHT NOW (t167): muted with no expiry = forever; a `mutedUntil` in
+// the future = still muted; past = the mute has expired (treated unmuted — no cleanup write needed,
+// the predicate is the truth). Pure; mirrored in chat/src/lib/conversation-view.ts.
+function isMutedNow(prefs, now = Date.now()) {
+  if (!prefs || !prefs.muted) return false
+  return prefs.mutedUntil == null || now < prefs.mutedUntil
+}
+
+function shapePrefs(r) {
   return {
     labels: parseLabels(r.labels),
     folder: r.folder || null,
     muted: !!r.muted,
+    mutedUntil: r.muted_until ?? null,
+    notifyOnMention: !!r.notify_on_mention,
   }
 }
 
-// Every conversation's prefs → Map(convId → {labels, folder, muted}). The client fetches this once
-// on boot + after each write, holds it alongside the list, and re-applies over polled rows (so a
-// poll can't clobber a pref). Empty folder/label rows are still returned (the write may have cleared
-// them) — the client treats an all-empty pref as "ungrouped, no labels, unmuted".
+// One conversation's prefs, or the empty default (no row = no labels, no folder, not muted).
+function getPrefs(db, convId) {
+  const r = db
+    .prepare(
+      "SELECT labels, folder, muted, muted_until, notify_on_mention FROM conversation_prefs WHERE conv_id = ?",
+    )
+    .get(convId)
+  if (!r)
+    return { labels: [], folder: null, muted: false, mutedUntil: null, notifyOnMention: false }
+  return shapePrefs(r)
+}
+
+// Every conversation's prefs → Map(convId → {labels, folder, muted, mutedUntil, notifyOnMention}).
+// The client fetches this once on boot + after each write, holds it alongside the list, and
+// re-applies over polled rows (so a poll can't clobber a pref). Empty folder/label rows are still
+// returned (the write may have cleared them) — the client treats an all-empty pref as "ungrouped,
+// no labels, unmuted".
 function getAllPrefs(db) {
   const map = {}
   for (const r of db
-    .prepare("SELECT conv_id, labels, folder, muted FROM conversation_prefs")
+    .prepare(
+      "SELECT conv_id, labels, folder, muted, muted_until, notify_on_mention FROM conversation_prefs",
+    )
     .all()) {
-    map[r.conv_id] = { labels: parseLabels(r.labels), folder: r.folder || null, muted: !!r.muted }
+    map[r.conv_id] = shapePrefs(r)
   }
   return map
 }
 
 // Patch a conversation's prefs (upsert). Only the provided keys change; the rest keep their stored
 // value (COALESCE against the existing row). `labels` (array) is stored as JSON; `folder` ("" → null
-// to un-file); `muted` (bool → 0/1). Returns the row's full prefs after the write.
+// to un-file); `muted` (bool → 0/1); `mutedUntil` (t167: epoch ms or null = forever — setting
+// `muted` without it clears any old expiry so "mute forever" can't inherit a stale window);
+// `notifyOnMention` (bool → 0/1). Returns the row's full prefs after the write.
 function setPrefs(db, convId, patch) {
   const cur = getPrefs(db, convId)
   const labels = patch.labels !== undefined ? sanitizeLabels(patch.labels) : cur.labels
@@ -483,12 +507,31 @@ function setPrefs(db, convId, patch) {
         : null
       : cur.folder
   const muted = patch.muted !== undefined ? (patch.muted ? 1 : 0) : cur.muted ? 1 : 0
+  const mutedUntil =
+    patch.muted !== undefined
+      ? Number.isFinite(patch.mutedUntil)
+        ? patch.mutedUntil
+        : null
+      : patch.mutedUntil !== undefined
+        ? Number.isFinite(patch.mutedUntil)
+          ? patch.mutedUntil
+          : null
+        : (cur.mutedUntil ?? null)
+  const notifyOnMention =
+    patch.notifyOnMention !== undefined
+      ? patch.notifyOnMention
+        ? 1
+        : 0
+      : cur.notifyOnMention
+        ? 1
+        : 0
   db.prepare(`
-    INSERT INTO conversation_prefs (conv_id, labels, folder, muted)
-    VALUES (@convId, @labels, @folder, @muted)
-    ON CONFLICT(conv_id) DO UPDATE SET labels = excluded.labels, folder = excluded.folder, muted = excluded.muted
-  `).run({ convId, labels: JSON.stringify(labels), folder, muted })
-  return { labels, folder, muted: !!muted }
+    INSERT INTO conversation_prefs (conv_id, labels, folder, muted, muted_until, notify_on_mention)
+    VALUES (@convId, @labels, @folder, @muted, @mutedUntil, @notifyOnMention)
+    ON CONFLICT(conv_id) DO UPDATE SET labels = excluded.labels, folder = excluded.folder,
+      muted = excluded.muted, muted_until = excluded.muted_until, notify_on_mention = excluded.notify_on_mention
+  `).run({ convId, labels: JSON.stringify(labels), folder, muted, mutedUntil, notifyOnMention })
+  return { labels, folder, muted: !!muted, mutedUntil, notifyOnMention: !!notifyOnMention }
 }
 
 function parseLabels(raw) {
@@ -519,6 +562,7 @@ module.exports = {
   getPrefs,
   getAllPrefs,
   setPrefs,
+  isMutedNow,
   isReservedConversation,
   conversationKind,
   shapeConversation,

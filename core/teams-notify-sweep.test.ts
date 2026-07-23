@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { planTeamsNotifications } from "./teams-notify-sweep"
+import { mentionsSelf, planTeamsNotifications } from "./teams-notify-sweep"
 
 const SELF = "self-oid-123"
 const selfFrom = `8:orgid:${SELF}`
@@ -47,6 +47,7 @@ describe("planTeamsNotifications", () => {
         ts: 2000,
         senderName: "Alice",
         preview: "ping",
+        mentionsMe: false,
       },
     ])
     expect(state.watermarks["19:a@unq.gbl.spaces"]).toBe(2000)
@@ -138,5 +139,36 @@ describe("planTeamsNotifications", () => {
     })
     expect(notifications[0].preview.length).toBeLessThanOrEqual(141) // 140 + ellipsis
     expect(notifications[0].preview.endsWith("…")).toBe(true)
+  })
+
+  it("stamps mentionsMe when the content carries the self oid (t167)", () => {
+    const state0 = { watermarks: {}, seeded: true }
+    const { notifications } = planTeamsNotifications({
+      conversations: [
+        conv("19:a@unq.gbl.spaces", {
+          ts: 2000,
+          content: `<p><span itemtype="http://schema.skype.com/Mention" itemid="8:orgid:${SELF}">Me</span> look</p>`,
+        }),
+      ],
+      state: state0,
+      selfId: SELF,
+    })
+    expect(notifications[0].mentionsMe).toBe(true)
+  })
+})
+
+describe("mentionsSelf (t167)", () => {
+  it("true when the self oid appears in a mention tag, case-insensitive", () => {
+    expect(mentionsSelf(`<at id="8:orgid:${SELF.toUpperCase()}">Me</at> hi`, SELF)).toBe(true)
+  })
+
+  it("false for other-oid content, empty content, or no selfId", () => {
+    expect(mentionsSelf("<p>hello other-oid-456</p>", SELF)).toBe(false)
+    expect(mentionsSelf("", SELF)).toBe(false)
+    expect(mentionsSelf("<p>x</p>", "")).toBe(false)
+  })
+
+  it("accepts an 8:orgid: MRI selfId (normalized to the oid)", () => {
+    expect(mentionsSelf(`<at id="8:orgid:${SELF}">Me</at>`, `8:orgid:${SELF}`)).toBe(true)
   })
 })

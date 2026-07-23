@@ -61,6 +61,7 @@ import {
   getAllPrefs as teamsGetAllPrefs,
   getReadState as teamsGetReadState,
   getUsers as teamsGetUsers,
+  isMutedNow as teamsIsMutedNow,
   listConversations as teamsListConversations,
   markConversationRead as teamsMarkConversationRead,
   markConversationUnread as teamsMarkConversationUnread,
@@ -1213,10 +1214,18 @@ async function teamsNotifySweep() {
     teamsNotifyState = state
     saveTeamsNotifyState()
   }
-  if (notifications.length > 0)
-    console.log(`[teams-push] ${notifications.length} new -> ${teamsPushSubs.length} sub(s)`)
-  for (const n of notifications)
-    await sendTeamsPush(buildTeamsPushPayload(n, convMap.get(n.convId)))
+  // Per-conversation mute gate (t167): a muted-now conversation sends no push — unless its
+  // notify-on-mention override is on AND the message @mentions the signed-in user. The unread
+  // state is untouched (mute silences delivery only, grill decision #1/#3).
+  const prefsByConv = teamsGetAllPrefs(teamsDb)
+  const deliverable = notifications.filter((n) => {
+    const p = prefsByConv[n.convId]
+    if (!teamsIsMutedNow(p)) return true
+    return !!(p.notifyOnMention && n.mentionsMe)
+  })
+  if (deliverable.length > 0)
+    console.log(`[teams-push] ${deliverable.length} new -> ${teamsPushSubs.length} sub(s)`)
+  for (const n of deliverable) await sendTeamsPush(buildTeamsPushPayload(n, convMap.get(n.convId)))
 }
 
 // Poll every 10s. Single-flight so a slow in-page fetch can't stack overlapping sweeps.
@@ -2649,12 +2658,16 @@ const server = http.createServer(async (req, res) => {
     // keyed by convId, not tenant.
     if (p === "/api/teams/prefs" && !POST) return json(res, { prefs: teamsGetAllPrefs(teamsDb) })
     if (p === "/api/teams/prefs" && POST) {
-      const { convId, labels, folder, muted } = await body(req)
+      const { convId, labels, folder, muted, mutedUntil, notifyOnMention } = await body(req)
       if (!convId) return json(res, { error: "missing fields" }, 400)
       const patch = {}
       if (labels !== undefined) patch.labels = labels
       if (folder !== undefined) patch.folder = folder
       if (muted !== undefined) patch.muted = muted
+      // t167: timed mute + notify-on-mention. `mutedUntil` is epoch ms or null (forever).
+      if (mutedUntil !== undefined)
+        patch.mutedUntil = mutedUntil === null ? null : Number(mutedUntil)
+      if (notifyOnMention !== undefined) patch.notifyOnMention = !!notifyOnMention
       return json(res, { ok: true, prefs: teamsSetPrefs(teamsDb, convId, patch) })
     }
     // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t142, ADR-0019). Best-effort
