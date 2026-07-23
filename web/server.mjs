@@ -1759,7 +1759,7 @@ async function sendTeamsMessageInPage(
 // re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations/teamsHistory).
 // `html` (t159, composer formatting) upgrades the wire format to a RichText/Html message; the
 // plain-text fast path stays the Text send. The echo persists whichever body was sent.
-async function teamsReply(convId, text, html) {
+async function teamsReply(convId, text, html, quoteRefs = []) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1769,12 +1769,29 @@ async function teamsReply(convId, text, html) {
 
   const content = html || text
   const messagetype = html ? "RichText/Html" : "Text"
-  let out = await sendTeamsMessageInPage(cred, convId, content, messagetype)
+  // A quoted reply carries `qtdMsgs` (+ formatVariant/hasValidMsgReferences) so Teams renders it as a
+  // native reply, not just inline blockquote markup (PSN-92, live-verified against a real reply's wire).
+  const properties = quoteRefs.length
+    ? {
+        qtdMsgs: quoteRefs.map((q) => ({
+          messageId: q.messageId,
+          sender: q.sender,
+          time: q.time,
+          message: null,
+          validationResult: "Valid",
+          sharedRefId: null,
+          replyChainId: null,
+        })),
+        formatVariant: "TEAMS",
+        hasValidMsgReferences: true,
+      }
+    : {}
+  let out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
     cred = notificationCenter.getTeamsCreds(cred.tenant)
     if (!cred || cred.fresh === false) return { error: "invalid_auth" }
-    out = await sendTeamsMessageInPage(cred, convId, content, messagetype)
+    out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   }
   if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
 
@@ -2558,11 +2575,25 @@ const server = http.createServer(async (req, res) => {
     // Teams chat: send a text reply IN-PAGE (t130, ADR-0019). Persists the echo, returns the
     // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/reply" && POST) {
-      const { convId, text, html } = await body(req)
+      const { convId, text, html, quotes } = await body(req)
       if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
       // Optional composer-formatted HTML body (t159): string-typed + size-capped, else ignored.
       const richHtml = typeof html === "string" && html.trim() && html.length <= 65536 ? html : null
-      const out = await teamsReply(convId, text, richHtml)
+      // Quoted-message references (PSN-92 B/C): shape-guard each so a proper native reply carries
+      // `qtdMsgs` (Teams renders it as a real reply — clickable jump — not just inline blockquote).
+      const refs = Array.isArray(quotes)
+        ? quotes
+            .filter(
+              (q) => q && Number.isFinite(Number(q.messageId)) && typeof q.sender === "string",
+            )
+            .slice(0, 10)
+            .map((q) => ({
+              messageId: Number(q.messageId),
+              sender: q.sender,
+              time: Number(q.time ?? q.messageId),
+            }))
+        : []
+      const out = await teamsReply(convId, text, richHtml, refs)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

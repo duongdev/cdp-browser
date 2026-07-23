@@ -15,7 +15,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { pickFile } from "../lib/image-attach"
-import { type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
+import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
 export interface ComposerHandle {
@@ -114,6 +114,16 @@ export function Composer({
 
   const canSend = hasContent || !!pendingFile
 
+  // Is the caret inside a list item of THIS editor? Then Enter must add/exit a bullet (native), not
+  // send — otherwise a list can't grow past one item (PSN-92).
+  const caretInListItem = (): boolean => {
+    const sel = window.getSelection()
+    const node = sel?.anchorNode
+    const el = node ? (node.nodeType === 1 ? (node as Element) : node.parentElement) : null
+    const li = el?.closest("li") ?? null
+    return !!li && !!editorRef.current?.contains(li)
+  }
+
   return (
     <div className="shrink-0 px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       <div
@@ -188,9 +198,17 @@ export function Composer({
           onFocus={() => onFocusChange(true)}
           onInput={() => setHasContent(!!readEditor().text)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              doSend()
+            if (e.key === "Enter") {
+              const action = enterKeyAction({
+                shift: e.shiftKey,
+                meta: e.metaKey || e.ctrlKey,
+                inListItem: caretInListItem(),
+              })
+              if (action === "send") {
+                e.preventDefault()
+                doSend()
+              }
+              // "default" → the browser adds/exits a list item or inserts a soft break.
             } else if (e.key === "Escape" && quotes && quotes.length > 0) {
               e.preventDefault()
               onEscape?.()

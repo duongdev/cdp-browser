@@ -96,7 +96,9 @@ export function buildReplyBlockquote(quote: ReplyQuote): string {
   )
 }
 
-/** Concatenate stacked quotes (selection order) ahead of the reply body — the multi-reply wire form. */
+/** Concatenate stacked quotes (selection order) ahead of the reply body — the multi-reply wire form.
+ *  A newline separates the blockquotes from the body, matching Teams' native reply markup. */
 export function buildReplyBody(quotes: ReplyQuote[], bodyHtml: string): string {
-  return quotes.map(buildReplyBlockquote).join("") + bodyHtml
+  const blocks = quotes.map(buildReplyBlockquote).join("\n")
+  return blocks ? `${blocks}\n${bodyHtml}` : bodyHtml
 }

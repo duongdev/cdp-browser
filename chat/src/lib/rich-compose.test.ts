@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest"
-import { cleanEditorHtml, outgoingFromEditor } from "./rich-compose"
+import { cleanEditorHtml, enterKeyAction, outgoingFromEditor } from "./rich-compose"
+
+describe("enterKeyAction", () => {
+  it("sends on plain Enter outside a list", () => {
+    expect(enterKeyAction({ shift: false, meta: false, inListItem: false })).toBe("send")
+  })
+  it("defers to the browser inside a list item (so Enter adds a new item)", () => {
+    expect(enterKeyAction({ shift: false, meta: false, inListItem: true })).toBe("default")
+  })
+  it("defers on Shift+Enter (soft line break)", () => {
+    expect(enterKeyAction({ shift: true, meta: false, inListItem: false })).toBe("default")
+  })
+  it("always sends on Cmd/Ctrl+Enter, even in a list", () => {
+    expect(enterKeyAction({ shift: false, meta: true, inListItem: true })).toBe("send")
+  })
+})
 
 describe("cleanEditorHtml — outgoing allowlist", () => {
   it("keeps formatting tags and drops their attributes", () => {

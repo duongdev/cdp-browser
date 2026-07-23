@@ -64,6 +64,21 @@ export function textToHtml(text: string): string {
     .replace(/\n/g, "<br>")
 }
 
+/** What the Enter key does in the composer. Enter sends (the chat default), BUT inside a list it must
+ *  add / exit a list item (native contenteditable behavior) — otherwise a bulleted/numbered list can
+ *  never grow past one item (PSN-92). Shift+Enter is a soft line break; Cmd/Ctrl+Enter always sends,
+ *  so a list-only message is still sendable from the keyboard. Pure — the DOM check is the caller's. */
+export function enterKeyAction(o: {
+  shift: boolean
+  meta: boolean
+  inListItem: boolean
+}): "send" | "default" {
+  if (o.meta) return "send"
+  if (o.shift) return "default"
+  if (o.inListItem) return "default"
+  return "send"
+}
+
 export interface OutgoingMessage {
   /** Visible plain text — the optimistic bubble + the Text-send body. Empty = nothing to send. */
   text: string

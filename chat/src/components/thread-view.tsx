@@ -36,6 +36,7 @@ import {
   editMessage,
   fetchHistory,
   markRead,
+  type ReplyRef,
   react,
   sendReply,
   TeamsApiError,
@@ -472,7 +473,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     composerRef.current?.focus()
   }, [])
   // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
-  const retryPayloads = useRef<Map<string, { out: OutgoingMessage; file: File | null }>>(new Map())
+  const retryPayloads = useRef<
+    Map<string, { out: OutgoingMessage; file: File | null; quotes: ReplyRef[] }>
+  >(new Map())
   const localSeq = useRef(0)
   // Stale in-flight sends don't leak across a conversation reset.
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
@@ -501,7 +504,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // placeholder for the server id (resolveLocalSend collapses a poll-delivered echo); failure marks
   // the bubble with the typed code. Never touches the composer.
   const runSend = useCallback(
-    (localId: string, out: OutgoingMessage, file: File | null) => {
+    (localId: string, out: OutgoingMessage, file: File | null, quotes: ReplyRef[] = []) => {
       const target = replyTarget
       if (!target) return
       const op = file
@@ -510,7 +513,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             file,
             out.text,
           ).then((r) => r.msgId)
-        : sendReply(target.convId, out.text, out.html).then((r) => r.ts)
+        : sendReply(target.convId, out.text, out.html, quotes).then((r) => r.ts)
       op.then((id) => {
         retryPayloads.current.delete(localId)
         setState((s) =>
@@ -542,7 +545,10 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       // body HTML (forcing a RichText/Html send) so both the optimistic bubble and Teams render the
       // quotes. A file send can't carry inline HTML, so quotes only apply to the text/rich path.
       let out = raw
+      let quotes: ReplyRef[] = []
       if (quoteTargets.length > 0 && !file) {
+        // Native reply body: <p>-wrapped text (Teams wraps the reply body) so the wire matches.
+        const bodyHtml = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
         const body = buildReplyBody(
           quoteTargets.map((m) => ({
             msgId: m.id,
@@ -552,13 +558,19 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             authorName: m.senderName || "",
             previewHtml: quotePreviewHtml(m.body),
           })),
-          raw.html ?? textToHtml(raw.text),
+          bodyHtml,
         )
         out = { text: raw.text, html: body }
+        // qtdMsgs references — makes Teams render a NATIVE reply (clickable), not just a blockquote.
+        quotes = quoteTargets.map((m) => ({
+          messageId: Number(m.id),
+          sender: m.senderId || "",
+          time: Number(m.id),
+        }))
       }
       setQuoteTargets([])
       const localId = `local:${++localSeq.current}:${Date.now()}`
-      retryPayloads.current.set(localId, { out, file })
+      retryPayloads.current.set(localId, { out, file, quotes })
       const isImage = file?.type.startsWith("image/") ?? false
       appendSent({
         id: localId,
@@ -583,7 +595,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               }
           : {}),
       })
-      runSend(localId, out, file)
+      runSend(localId, out, file, quotes)
     },
     [replyTarget, appendSent, runSend, quoteTargets],
   )
@@ -603,7 +615,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             }
           : s,
       )
-      runSend(localId, payload.out, payload.file)
+      runSend(localId, payload.out, payload.file, payload.quotes)
     },
     [runSend],
   )

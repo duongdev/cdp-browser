@@ -184,15 +184,30 @@ export interface SendReplyResult {
 /** Send a reply to a conversation (t130). `html` (t159, composer formatting) upgrades the send to
  *  a `RichText/Html` message; without it the wire format stays the plain Text send. Throws
  *  TeamsApiError with the server's typed code so the failed bubble can show honest copy. */
+export interface ReplyRef {
+  /** The quoted message's id (epoch ms). */
+  messageId: number
+  /** The quoted author's bare MRI. */
+  sender: string
+  /** The quoted message's arrival time (== its id). */
+  time: number
+}
+
 export async function sendReply(
   convId: string,
   text: string,
   html?: string | null,
+  quotes?: ReplyRef[],
 ): Promise<SendReplyResult> {
   const res = await fetch("/api/teams/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, text, ...(html ? { html } : {}) }),
+    body: JSON.stringify({
+      convId,
+      text,
+      ...(html ? { html } : {}),
+      ...(quotes && quotes.length ? { quotes } : {}),
+    }),
   })
   const data = (await res.json().catch(() => ({}))) as SendReplyResult & { error?: string }
   if (!res.ok || data.error) {
