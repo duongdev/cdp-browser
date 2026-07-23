@@ -270,7 +270,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // cap hit → too far back. The blockquote carries no conversation ref, so the walk stays here.
   const walkToMessage = useCallback(
     async (id: string) => {
+      if (loadingOlderRef.current) return // a page load is already in flight
       setJumpToast("Finding the message…")
+      loadingOlderRef.current = true // block the top-sentinel loadOlder from double-fetching
       try {
         for (let i = 0; i < MAX_JUMP_PAGES; i++) {
           const cursor = olderCursor.current
@@ -309,6 +311,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         setJumpToast("Message too far back")
       } catch {
         setJumpToast("Couldn't load the original message")
+      } finally {
+        loadingOlderRef.current = false
       }
     },
     [convId, scrollToMsg],
@@ -758,6 +762,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     setFocusedId(null)
     setRowCommand(null)
     setQuoteTargets([])
+    setHighlightId(null)
+    setJumpToast(null)
   }, [convId])
 
   // Report the focused message (id + own-ness) up so chat-app's palette/keys context stays honest.
