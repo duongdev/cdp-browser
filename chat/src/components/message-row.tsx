@@ -30,6 +30,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
+import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -51,8 +52,9 @@ const QUICK_REACTIONS: readonly { key: string; emoji: string }[] = [
 // Hover tooltip listing who reacted (t143). The viewer is "You" (first) when `mine`; the rest are
 // the server-resolved `reactorNames`. Names can be fewer than `count` (unresolved MRIs omitted), so
 // any shortfall becomes "and N more". Empty → no title (chip still shows emoji + count).
-function reactorTitle(r: TeamsReaction): string | undefined {
-  const shown = r.mine ? ["You", ...(r.reactorNames ?? [])] : (r.reactorNames ?? [])
+function reactorTitle(r: TeamsReaction, pref: NamePref): string | undefined {
+  const names = (r.reactorNames ?? []).map((n) => formatName(n, pref))
+  const shown = r.mine ? ["You", ...names] : names
   if (shown.length === 0) return undefined
   const hidden = r.count - shown.length
   return hidden > 0 ? `${shown.join(", ")} and ${hidden} more` : shown.join(", ")
@@ -89,6 +91,8 @@ interface MessageRowProps {
    *  (`false`) — same sender within 5min, same day — shows only the bubble, tight against the prior.
    *  Defaults true, so any caller not passing it renders the full (pre-grouping) row. */
   showMeta?: boolean
+  /** Name display preference (t161) — applied to the sender header + reactor tooltips. */
+  namePref?: NamePref
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -112,6 +116,7 @@ function ChatMessageRow({
   focused,
   command,
   showMeta = true,
+  namePref = FULL_NAME,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -239,7 +244,9 @@ function ChatMessageRow({
             label={message.senderName}
             userId={message.senderId}
           />
-          <span className="font-semibold text-foreground text-xs">{message.senderName}</span>
+          <span className="font-semibold text-foreground text-xs">
+            {formatName(message.senderName ?? "", namePref)}
+          </span>
         </span>
       )}
       {hasBody && editing && (
@@ -377,7 +384,7 @@ function ChatMessageRow({
               disabled={!onReact}
               key={r.key}
               onClick={() => toggleChip(r)}
-              title={reactorTitle(r)}
+              title={reactorTitle(r, namePref)}
               type="button"
             >
               <span aria-hidden>{r.emoji}</span>

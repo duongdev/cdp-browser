@@ -19,12 +19,17 @@ export type ChatFont =
   | "roboto"
   | "system"
 export type ChatMono = "maple" | "anthropic-mono" | "dm-mono" | "geist-mono" | "system-mono"
+// Name display preference (t161): how person names render (see display-name.ts formatName).
+export type ChatNameDisplay = "full" | "first" | "regex"
 
 export interface ChatSettings {
   theme: ChatTheme
   density: ChatDensity
   font: ChatFont
   mono: ChatMono
+  nameDisplay: ChatNameDisplay
+  /** The strip pattern for nameDisplay "regex"; ignored otherwise. */
+  nameRegex: string
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -32,6 +37,8 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   density: "comfortable",
   font: "svn-gilroy",
   mono: "maple",
+  nameDisplay: "full",
+  nameRegex: "",
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
@@ -40,6 +47,8 @@ export const CHAT_THEME_BASE = "chatTheme"
 export const CHAT_DENSITY_BASE = "chatDensity"
 export const CHAT_FONT_BASE = "chatFont"
 export const CHAT_MONO_BASE = "chatMono"
+export const CHAT_NAME_DISPLAY_BASE = "chatNameDisplay"
+export const CHAT_NAME_REGEX_BASE = "chatNameRegex"
 
 const THEMES: ChatTheme[] = ["system", "light", "dark"]
 const DENSITIES: ChatDensity[] = ["comfortable", "compact"]
@@ -79,6 +88,18 @@ function parseMono(raw: unknown): ChatMono {
     : DEFAULT_CHAT_SETTINGS.mono
 }
 
+const NAME_DISPLAYS: ChatNameDisplay[] = ["full", "first", "regex"]
+
+function parseNameDisplay(raw: unknown): ChatNameDisplay {
+  return typeof raw === "string" && (NAME_DISPLAYS as string[]).includes(raw)
+    ? (raw as ChatNameDisplay)
+    : DEFAULT_CHAT_SETTINGS.nameDisplay
+}
+
+function parseNameRegex(raw: unknown): string {
+  return typeof raw === "string" ? raw : ""
+}
+
 export function deviceKey(base: string, deviceId: string): string {
   return `${base}_${deviceId}`
 }
@@ -90,6 +111,8 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
     density: parseDensity(ui[deviceKey(CHAT_DENSITY_BASE, deviceId)]),
     font: parseFont(ui[deviceKey(CHAT_FONT_BASE, deviceId)]),
     mono: parseMono(ui[deviceKey(CHAT_MONO_BASE, deviceId)]),
+    nameDisplay: parseNameDisplay(ui[deviceKey(CHAT_NAME_DISPLAY_BASE, deviceId)]),
+    nameRegex: parseNameRegex(ui[deviceKey(CHAT_NAME_REGEX_BASE, deviceId)]),
   }
 }
 
@@ -104,6 +127,10 @@ export function writeChatSettings(
   if (partial.density !== undefined) out[deviceKey(CHAT_DENSITY_BASE, deviceId)] = partial.density
   if (partial.font !== undefined) out[deviceKey(CHAT_FONT_BASE, deviceId)] = partial.font
   if (partial.mono !== undefined) out[deviceKey(CHAT_MONO_BASE, deviceId)] = partial.mono
+  if (partial.nameDisplay !== undefined)
+    out[deviceKey(CHAT_NAME_DISPLAY_BASE, deviceId)] = partial.nameDisplay
+  if (partial.nameRegex !== undefined)
+    out[deviceKey(CHAT_NAME_REGEX_BASE, deviceId)] = partial.nameRegex
   return out
 }
 

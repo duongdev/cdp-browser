@@ -17,7 +17,15 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
-import type { ChatDensity, ChatFont, ChatMono, ChatSettings, ChatTheme } from "../lib/chat-settings"
+import type {
+  ChatDensity,
+  ChatFont,
+  ChatMono,
+  ChatNameDisplay,
+  ChatSettings,
+  ChatTheme,
+} from "../lib/chat-settings"
+import { formatName } from "../lib/display-name"
 import { NotifyToggle } from "./notify-toggle"
 
 const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = [
@@ -30,6 +38,15 @@ const DENSITY_OPTIONS: { id: ChatDensity; label: string }[] = [
   { id: "comfortable", label: "Comfortable" },
   { id: "compact", label: "Compact" },
 ]
+
+const NAME_OPTIONS: { id: ChatNameDisplay; label: string }[] = [
+  { id: "full", label: "Full name" },
+  { id: "first", label: "First name" },
+  { id: "regex", label: "Custom" },
+]
+
+// A live preview name so the regex mode is verifiable without leaving the sheet.
+const NAME_PREVIEW = "Careen Tan - Group Office [C]"
 
 // Each option previews itself in its own font (fontFamily) so the picker shows the actual typeface.
 const FONT_OPTIONS: { id: ChatFont; label: string; fontFamily: string }[] = [
@@ -167,6 +184,34 @@ export function SettingsSheet({
               options={DENSITY_OPTIONS}
               value={settings.density}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-[13px]">Names</Label>
+            <Segmented
+              cols={3}
+              onChange={(nameDisplay) => onUpdate({ nameDisplay })}
+              options={NAME_OPTIONS}
+              value={settings.nameDisplay}
+            />
+            {settings.nameDisplay === "regex" && (
+              <input
+                className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 font-mono text-[13px] outline-none focus:ring-1 focus:ring-ring"
+                onChange={(e) => onUpdate({ nameRegex: e.target.value })}
+                placeholder="Strip pattern, e.g.  - .*$"
+                spellCheck={false}
+                value={settings.nameRegex}
+              />
+            )}
+            {settings.nameDisplay !== "full" && (
+              <p className="text-[11px] text-muted-foreground">
+                {NAME_PREVIEW} →{" "}
+                {formatName(NAME_PREVIEW, {
+                  mode: settings.nameDisplay,
+                  regex: settings.nameRegex,
+                })}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">

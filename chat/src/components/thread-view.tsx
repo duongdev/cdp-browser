@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
+import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
 import {
   applyPendingReactions,
   applyReaction,
@@ -138,13 +139,15 @@ interface ThreadViewProps {
   /** Reports the keyboard-focused message up so chat-app's palette/keys context stays in sync (t152).
    *  Only the visible pane should be wired. */
   onFocusChange?: (focus: ThreadFocus | null) => void
+  /** Name display preference (t161) — applied to the header label + sender names. */
+  namePref?: NamePref
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
 export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
-  { conversation, onBack, visible = true, onFocusChange },
+  { conversation, onBack, visible = true, onFocusChange, namePref },
   ref,
 ) {
   const [state, setState] = useState<State>({ status: "loading" })
@@ -680,7 +683,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           </Button>
         )}
         <span className="min-w-0 flex-1 truncate px-1 font-heading font-semibold text-foreground text-sm">
-          {conversationLabel(conversation)}
+          {formatConversationLabel(
+            conversationLabel(conversation),
+            conversation,
+            namePref ?? FULL_NAME,
+          )}
         </span>
       </header>
 
@@ -729,6 +736,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     focused={item.message.id === focusedId}
                     key={item.key}
                     message={item.message}
+                    namePref={namePref}
                     onDelete={onDelete}
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}

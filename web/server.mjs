@@ -1351,6 +1351,14 @@ async function teamsResolveTitles(cred, convs) {
         : c.kind === "oneOnOne"
           ? teamsOidFromMri((mrisByConv.get(c.id) || [])[0] || "") || undefined
           : undefined,
+    // Group facepile (t161): the first few non-self member oids, for the composite avatar.
+    memberIds:
+      c.kind === "group"
+        ? (mrisByConv.get(c.id) || [])
+            .map(teamsOidFromMri)
+            .filter((oid) => oid && oid !== teamsOidFromMri(cred.userId || ""))
+            .slice(0, 3)
+        : undefined,
   }))
 }
 
@@ -2478,8 +2486,7 @@ const server = http.createServer(async (req, res) => {
       const { convId, text, html } = await body(req)
       if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
       // Optional composer-formatted HTML body (t159): string-typed + size-capped, else ignored.
-      const richHtml =
-        typeof html === "string" && html.trim() && html.length <= 65536 ? html : null
+      const richHtml = typeof html === "string" && html.trim() && html.length <= 65536 ? html : null
       const out = await teamsReply(convId, text, richHtml)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)

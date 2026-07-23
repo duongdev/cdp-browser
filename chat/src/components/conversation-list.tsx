@@ -13,6 +13,7 @@ import {
   groupByFolder,
   type ReadOverride,
 } from "../lib/conversation-view"
+import type { NamePref } from "../lib/display-name"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
 import { ConversationRow } from "./conversation-row"
 import { ConversationRowMenu } from "./conversation-row-menu"
@@ -58,6 +59,8 @@ interface ConversationListProps {
     convId: string,
     patch: { labels?: string[]; folder?: string | null; muted?: boolean },
   ) => void
+  /** Name display preference (t161) — applied to 1:1 row labels. */
+  namePref?: NamePref
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
@@ -73,6 +76,7 @@ export function ConversationList({
   collapsedFolders,
   onToggleFolder,
   onPatchPrefs,
+  namePref,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
@@ -243,6 +247,7 @@ export function ConversationList({
         conversation={c}
         focused={c.id === focusedId}
         key={c.id}
+        namePref={namePref}
         onOpen={onOpenConversation}
       />
     )

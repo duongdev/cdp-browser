@@ -27,7 +27,19 @@ describe("readChatSettings", () => {
       density: "compact",
       font: "anthropic-sans",
       mono: "dm-mono",
+      nameDisplay: "full",
+      nameRegex: "",
     })
+  })
+
+  it("reads the name display slots (t161)", () => {
+    const ui = {
+      chatNameDisplay_device_abc: "first",
+      chatNameRegex_device_abc: " - .*$",
+    }
+    const s = readChatSettings(ui, DEV)
+    expect(s.nameDisplay).toBe("first")
+    expect(s.nameRegex).toBe(" - .*$")
   })
 
   it("ignores another device's slots", () => {

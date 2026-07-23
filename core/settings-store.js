@@ -70,6 +70,9 @@ const DEVICE_KEY_PREFIXES = [
   "chatMono_",
   // t156 chat app per-device folder collapse state: JSON array of collapsed folder names.
   "chatFolders_",
+  // t161 chat app per-device name display preference: mode + custom strip regex.
+  "chatNameDisplay_",
+  "chatNameRegex_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

@@ -9,8 +9,9 @@ import {
 } from "react"
 import { cn } from "@/lib/utils"
 import { conversationLabel, isUnread, previewLine, relativeTime } from "../lib/conversation-view"
+import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
 import type { TeamsConversation } from "../lib/teams-client"
-import { UserAvatar } from "./user-avatar"
+import { FacepileAvatar, UserAvatar } from "./user-avatar"
 
 interface ConversationRowProps extends ComponentPropsWithoutRef<"button"> {
   conversation: TeamsConversation
@@ -19,6 +20,8 @@ interface ConversationRowProps extends ComponentPropsWithoutRef<"button"> {
   /** Keyboard cursor (t152): draws the coral --ring + scrolls into view. Distinct from `active`
    *  (the open thread) — the keyboard cursor can hover a row before Enter opens it. */
   focused?: boolean
+  /** Name display preference (t161) — applied to 1:1 labels. */
+  namePref?: NamePref
 }
 
 /** One conversation entry: avatar initial + label + last-message preview + relative time.
@@ -26,10 +29,14 @@ interface ConversationRowProps extends ComponentPropsWithoutRef<"button"> {
  *  `onContextMenu` to the real `<button>` (t156 right-click menu). */
 export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProps>(
   function ConversationRow(
-    { conversation, onOpen, active, focused, className, onClick, ...rest },
+    { conversation, onOpen, active, focused, namePref, className, onClick, ...rest },
     forwardedRef,
   ) {
-    const label = conversationLabel(conversation)
+    const label = formatConversationLabel(
+      conversationLabel(conversation),
+      conversation,
+      namePref ?? FULL_NAME,
+    )
     const time = relativeTime(conversation.lastMessageTs)
     const unread = isUnread(conversation)
     const muted = !!conversation.muted
@@ -59,7 +66,11 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         type="button"
         {...rest}
       >
-        <UserAvatar label={label} userId={conversation.avatarUserId} />
+        {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
+          <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
+        ) : (
+          <UserAvatar label={label} userId={conversation.avatarUserId} />
+        )}
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2">
             <span className="flex min-w-0 items-center gap-1.5">

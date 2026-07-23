@@ -31,6 +31,9 @@ export interface TeamsConversation {
   /** The user oid whose photo represents this row (t153): a 1:1's other member or the self chat's
    *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/teams/avatar`. */
   avatarUserId?: string
+  /** Up to the first few non-self member oids of a group chat (t161) — drives the Teams-style
+   *  facepile avatar. Absent for 1:1/self (single avatar) or when the roster is unknown. */
+  memberIds?: string[]
 }
 
 interface ConversationsResponse {

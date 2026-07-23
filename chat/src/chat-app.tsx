@@ -17,6 +17,7 @@ import {
   navigableConversations,
   type ReadOverride,
 } from "./lib/conversation-view"
+import type { NamePref } from "./lib/display-name"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
@@ -513,6 +514,13 @@ export function ChatApp() {
     toggleReadUnread,
   ])
 
+  // Name display preference (t161), derived once per settings change and threaded to every
+  // person-name render (rows, thread header, sender names, reactor tooltips).
+  const namePref = useMemo<NamePref>(
+    () => ({ mode: settings.nameDisplay, regex: settings.nameRegex }),
+    [settings.nameDisplay, settings.nameRegex],
+  )
+
   const threadPanes = keepAlive.mounted.map((id) => {
     const conv = convById[id]
     if (!conv) return null
@@ -521,6 +529,7 @@ export function ChatApp() {
       <ThreadView
         conversation={conv}
         key={id}
+        namePref={namePref}
         onBack={isWide ? undefined : backToList}
         onFocusChange={isActive ? setThreadFocus : undefined}
         ref={isActive ? activeThreadRef : undefined}
@@ -556,6 +565,7 @@ export function ChatApp() {
             <ConversationList
               collapsedFolders={collapsed}
               focusedId={view === "list" ? focusedConvId : null}
+              namePref={namePref}
               onConversations={onConversations}
               onOpenConversation={openConversation}
               onPatchPrefs={patchPrefs}
@@ -587,6 +597,7 @@ export function ChatApp() {
           <ConversationList
             collapsedFolders={collapsed}
             focusedId={focusedConvId}
+            namePref={namePref}
             onConversations={onConversations}
             onOpenConversation={openConversation}
             onPatchPrefs={patchPrefs}

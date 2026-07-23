@@ -14,6 +14,35 @@ interface UserAvatarProps {
  *  Graph photo (`/api/teams/avatar`), the img fades in absolutely on top — same fixed box, so a
  *  load/miss never shifts layout. A 204 (no photo) or any error keeps the initials (the img's
  *  `onError`, since a 204 has no decodable body). Photos are proxied + cached server-side. */
+/** Teams-style composite avatar for a group chat (t161): the first two members' photos as two
+ *  overlapping circles inside the same fixed box a single avatar uses — no layout shift, initials
+ *  fallback per circle. */
+export function FacepileAvatar({
+  memberIds,
+  label,
+  className,
+}: {
+  memberIds: string[]
+  label: string
+  className?: string
+}) {
+  const [a, b] = memberIds
+  return (
+    <span aria-label={label} className={cn("relative size-10 shrink-0", className)}>
+      <UserAvatar
+        className="absolute top-0 left-0 size-7 text-[11px]"
+        label={label.split(",")[0]?.trim() || label}
+        userId={a}
+      />
+      <UserAvatar
+        className="absolute right-0 bottom-0 size-7 text-[11px] ring-2 ring-background"
+        label={label.split(",")[1]?.trim() || label}
+        userId={b}
+      />
+    </span>
+  )
+}
+
 export function UserAvatar({ userId, label, className }: UserAvatarProps) {
   const [failed, setFailed] = useState(false)
 
