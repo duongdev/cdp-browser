@@ -28,7 +28,7 @@ export function FacepileAvatar({
 }) {
   const [a, b] = memberIds
   return (
-    <span aria-label={label} className={cn("relative size-10 shrink-0", className)}>
+    <span aria-label={label} className={cn("relative size-10 shrink-0", className)} role="img">
       <UserAvatar
         className="absolute top-0 left-0 size-7 text-[11px]"
         label={label.split(",")[0]?.trim() || label}

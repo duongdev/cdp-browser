@@ -598,10 +598,10 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // survives while you read but clears on the next open when nothing new arrived.
   const [lastReadTs, setLastReadTs] = useState<number | null>(conversation.readTs || null)
   const prevVisible = useRef(visible)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-capture only on the visibility flip
   useEffect(() => {
     if (visible && !prevVisible.current) setLastReadTs(conversation.readTs || null)
     prevVisible.current = visible
-    // biome-ignore lint/correctness/useExhaustiveDependencies: re-capture only on the visibility flip
   }, [visible])
 
   // Time separators + consecutive-sender grouping + New marker (t158 → t160), computed oldest→
