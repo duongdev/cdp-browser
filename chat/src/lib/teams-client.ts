@@ -86,16 +86,20 @@ export interface TeamsReaction {
 }
 
 /** One rendered message (server's `teams-render.toReaderMessages` output). `ts` is epoch ms;
- *  `body` is already sanitized plain text — the view renders it as a text node, never innerHTML. */
+ *  `body` is rich site-authored HTML (sanitized at the render boundary). A `kind: "system"` message
+ *  (t151) is a meeting/group event line (member add/remove, call ended, rename…) — it carries only
+ *  `id`/`ts`/`kind`/`body` (a short plain string) and none of the sender/self/reaction fields. */
 export interface TeamsMessage {
   id: string
   ts: number
-  senderId: string
-  senderName: string
+  /** Present + `"system"` for a system-event line (t151); absent for a normal chat message. */
+  kind?: "system"
+  senderId?: string
+  senderName?: string
   body: string
-  self: boolean
-  edited: boolean
-  deleted: boolean
+  self?: boolean
+  edited?: boolean
+  deleted?: boolean
   /** File / recording / card chips (t141); absent when the message has none. */
   attachments?: TeamsAttachment[]
   /** Reaction chips (t142); absent when the message has none. */

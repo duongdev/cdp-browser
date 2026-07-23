@@ -168,3 +168,29 @@
   border-radius: 6px;
   background: var(--muted);
 }
+
+/* Dark-mode carry-over guard (t151): Teams ships some bodies (email-style messages, quoted replies)
+   with hardcoded light background/text. The fix is at the sanitizer — sanitize-message.ts drops
+   `style`/`bgcolor`/`color` (and `style` isn't allowlisted anyway), so no presentational background
+   survives into the DOM to fight dark mode. No CSS override is needed once the attrs are gone. */
+
+/* Generic adaptive-card fallback block (t151, grilled #7): a bordered card with an extracted title +
+   summary — NO native AdaptiveCards render, no actions. Reads on both the muted and primary bubble. */
+.teams-message-body .teams-card {
+  display: block;
+  margin: 0.15em 0;
+  padding: 0.5em 0.65em;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+}
+.teams-message-body .teams-card-title {
+  display: block;
+  font-weight: 600;
+}
+.teams-message-body .teams-card-body {
+  display: block;
+  margin-top: 0.15em;
+  opacity: 0.85;
+  font-size: 0.95em;
+}

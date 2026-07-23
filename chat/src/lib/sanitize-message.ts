@@ -58,6 +58,13 @@ function purifier(): typeof DOMPurify {
       node.setAttribute("target", "_blank")
       node.setAttribute("rel", "noopener noreferrer")
     }
+    // Dark-mode carry-over guard (t151): strip any color-forcing attrs Teams ships on email-style /
+    // quoted bodies so a hardcoded light background/text can't survive into dark mode. `style` is
+    // already outside ALLOWED_ATTR (so DOMPurify drops it), but bgcolor/color are legacy presentational
+    // attrs — remove them defensively; a CSS override in index.css is the second layer.
+    for (const attr of ["style", "bgcolor", "color", "background"]) {
+      if (node.hasAttribute?.(attr)) node.removeAttribute(attr)
+    }
     if (node.tagName === "IMG") node.setAttribute("loading", "lazy")
     // AMS video arrives with no `controls` attr — force it so the clip is playable inline (t139).
     if (node.tagName === "VIDEO") {

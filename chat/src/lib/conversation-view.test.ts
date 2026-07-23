@@ -54,9 +54,62 @@ describe("previewLine", () => {
     )
   })
 
-  it("falls back when the preview is empty or tag-only", () => {
+  it("falls back when the preview is empty", () => {
     expect(previewLine(conv({ lastMessagePreview: "" }))).toBe("No messages yet")
-    expect(previewLine(conv({ lastMessagePreview: "<img src='x'>" }))).toBe("No messages yet")
+  })
+
+  // t151: an inline image becomes a 📷 token — including a tag the store's 500-char cap truncated
+  // mid-attribute (the live "okay… <img it…" leak); an emoji img keeps its alt char.
+  it("turns inline images into a 📷 token", () => {
+    expect(previewLine(conv({ lastMessagePreview: "<img src='x'>" }))).toBe("📷")
+    expect(
+      previewLine(
+        conv({
+          lastMessagePreview:
+            '<p>okay - this was all I asked <img itemtype="http://schema.skype.com/AMSImage" src="https://as-api.asm.skype.com/v1/objects/x/views/imgo"',
+        }),
+      ),
+    ).toBe("okay - this was all I asked 📷")
+    expect(
+      previewLine(
+        conv({
+          lastMessagePreview:
+            'yes <img itemtype="http://schema.skype.com/Emoji" alt="😄" src="e.png"> done',
+        }),
+      ),
+    ).toBe("yes 😄 done")
+  })
+
+  // t151: the raw last-message content can be a quoted reply, a system event, or a card — the preview
+  // must be clean plain text for every shape (mirrors core/teams-render.js previewText).
+  it("drops a quoted-reply blockquote, keeping the replier's own words", () => {
+    const raw =
+      '<p>on it</p><blockquote itemscope itemtype="http://schema.skype.com/Reply"><p itemprop="preview">the original</p></blockquote>'
+    expect(previewLine(conv({ lastMessagePreview: raw }))).toBe("on it")
+  })
+
+  it("reduces system events and cards to clean labels", () => {
+    expect(previewLine(conv({ lastMessagePreview: '<ended/><partlist count="3"/>' }))).toBe(
+      "Call ended",
+    )
+    expect(
+      previewLine(conv({ lastMessagePreview: "<topicupdate><value>Sprint</value></topicupdate>" })),
+    ).toBe('Renamed to "Sprint"')
+    expect(
+      previewLine(
+        conv({ lastMessagePreview: '<URIObject type="SWIFT.1"><Title>Deploy</Title></URIObject>' }),
+      ),
+    ).toBe("Deploy")
+    expect(
+      previewLine(
+        conv({
+          lastMessagePreview: "<meetingpolicyupdated><value>x</value></meetingpolicyupdated>",
+        }),
+      ),
+    ).toBe("No messages yet")
+    expect(
+      previewLine(conv({ lastMessagePreview: '{\\"scopeId\\":\\"a\\",\\"callId\\":\\"b\\"}' })),
+    ).toBe("No messages yet")
   })
 })
 

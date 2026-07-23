@@ -76,8 +76,16 @@ interface MessageRowProps {
  *  sender name. `body` is rich, site-authored HTML (t133) — bold/links/mentions/emoji/code/lists,
  *  plus inline media (t139: AMS images/video via the proxy, public-CDN emoji/GIF/sticker). File /
  *  call-recording / card chips (t141) render below the body; a chips-only message shows no bubble. */
-export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps) {
-  const { self, deleted } = message
+/** Renders one thread row. A system-event line (t151) is a distinct render with no bubble/hooks, so
+ *  it's dispatched to `SystemRow` here (before `ChatMessageRow`'s hooks) to keep hook order stable. */
+export function MessageRow(props: MessageRowProps) {
+  if (props.message.kind === "system") return <SystemRow body={props.message.body} />
+  return <ChatMessageRow {...props} />
+}
+
+function ChatMessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps) {
+  const self = !!message.self
+  const deleted = !!message.deleted
   const time = relativeTime(message.ts)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -162,7 +170,7 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
 
   return (
     <div className={cn("flex flex-col gap-0.5", self ? "items-end" : "items-start")}>
-      {!self && (
+      {!self && !!message.senderName && (
         <span className="px-1 font-medium text-muted-foreground text-xs">{message.senderName}</span>
       )}
       {hasBody && editing && (
@@ -307,6 +315,18 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
         {message.edited && !deleted && <span className="ml-1">(edited)</span>}
       </span>
       <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
+    </div>
+  )
+}
+
+/** A system-event line (t151): centered, muted, small — Slack/Linear-style meta row for member
+ *  add/remove, call ended, rename, app added. Plain text, never HTML. */
+function SystemRow({ body }: { body: string }) {
+  return (
+    <div className="flex justify-center py-0.5">
+      <span className="rounded-full bg-muted/50 px-3 py-0.5 text-center text-muted-foreground text-xs">
+        {body}
+      </span>
     </div>
   )
 }
