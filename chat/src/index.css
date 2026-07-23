@@ -459,12 +459,15 @@
   background: transparent;
   cursor: auto;
 }
+/* AMS video renders as a poster frame (no inline controls, t165) that opens the lightbox on tap.
+   The play glyph is a CSS overlay so the sanitized markup stays a bare <video> (no injected DOM). */
 .teams-message-body video {
   display: block;
   max-width: 100%;
   max-height: 360px;
   border-radius: 6px;
   background: var(--muted);
+  cursor: zoom-in;
 }
 
 /* Dark-mode carry-over guard (t151): Teams ships some bodies (email-style messages, quoted replies)

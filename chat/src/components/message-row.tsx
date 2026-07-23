@@ -34,7 +34,7 @@ import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
-import { ImageLightbox } from "./image-lightbox"
+import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
@@ -124,7 +124,7 @@ function ChatMessageRow({
   const pending = !!message.pending
   const failed = message.failed != null
   const unconfirmed = pending || failed
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
   const attachments = message.attachments ?? []
@@ -212,15 +212,19 @@ function ChatMessageRow({
     onReact?.(message.id, key, emoji, false)
   }
 
-  // A tap on a content image (not an emoji/sticker) opens the lightbox with that image's src.
-  // Delegated off the body so it covers every img the sanitized HTML produced.
+  // A tap on a content image (not an emoji/sticker) or an inline video opens the lightbox with that
+  // media. Delegated off the body so it covers every img/video the sanitized HTML produced.
   function onBodyClick(e: MouseEvent<HTMLDivElement>) {
     const el = e.target as HTMLElement
-    if (el.tagName !== "IMG") return
-    const itemtype = el.getAttribute("itemtype") || ""
-    if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
-    const src = (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src
-    if (src) setLightboxSrc(src)
+    if (el.tagName === "IMG") {
+      const itemtype = el.getAttribute("itemtype") || ""
+      if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
+      const src = (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src
+      if (src) setLightboxMedia({ src, kind: "image" })
+    } else if (el.tagName === "VIDEO") {
+      const src = (el as HTMLVideoElement).currentSrc || (el as HTMLVideoElement).src
+      if (src) setLightboxMedia({ src, kind: "video" })
+    }
   }
 
   return (
@@ -424,7 +428,7 @@ function ChatMessageRow({
       {!unconfirmed && message.edited && !deleted && (
         <span className="px-1 font-mono text-[10px] text-muted-foreground">(edited)</span>
       )}
-      <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
+      <ImageLightbox media={lightboxMedia} onClose={() => setLightboxMedia(null)} />
     </div>
   )
 }

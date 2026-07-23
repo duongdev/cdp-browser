@@ -1,4 +1,4 @@
-import { Cancel01Icon } from "@hugeicons/core-free-icons"
+import { Cancel01Icon, Download04Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import {
@@ -19,24 +19,34 @@ import {
   zoomAround,
 } from "../lib/lightbox-zoom"
 
+/** What the lightbox is showing. `kind` picks the surface: a zoomable image or a native video
+ *  player. Downloads use `src` directly (same-origin proxy → forced save). */
+export interface LightboxMedia {
+  src: string
+  kind: "image" | "video"
+}
+
 interface ImageLightboxProps {
-  /** The image src to show full-screen, or null when closed. */
-  src: string | null
+  /** The media to show full-screen, or null when closed. */
+  media: LightboxMedia | null
   onClose: () => void
 }
 
 const WHEEL_STEP = 0.0025 // scale delta per wheel px
 const DOUBLE_TAP = 2.5 // scale a double-click/tap jumps to
 
-/** Full-screen dimmed overlay showing one image, capped to the viewport (t139), now with
- *  pinch/wheel/double-click zoom + pan and a smooth open/close animation (t164).
- *  Rendered inline (position:fixed escapes the flow); a null src animates the overlay out.
- *  Theme-aware via the shared token palette. */
-export function ImageLightbox({ src, onClose }: ImageLightboxProps) {
-  return <AnimatePresence>{src && <LightboxSurface onClose={onClose} src={src} />}</AnimatePresence>
+/** Full-screen dimmed overlay showing one image (zoom/pan, t164) or a video (native controls, t165),
+ *  with a smooth open/close animation and a download affordance. Rendered inline (position:fixed
+ *  escapes the flow); a null media animates the overlay out. Theme-aware via the shared tokens. */
+export function ImageLightbox({ media, onClose }: ImageLightboxProps) {
+  return (
+    <AnimatePresence>
+      {media && <LightboxSurface media={media} onClose={onClose} />}
+    </AnimatePresence>
+  )
 }
 
-function LightboxSurface({ src, onClose }: { src: string; onClose: () => void }) {
+function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: () => void }) {
   const reduce = useReducedMotion()
   const [zoom, setZoom] = useState<ZoomState>(IDENTITY)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -46,6 +56,7 @@ function LightboxSurface({ src, onClose }: { src: string; onClose: () => void })
   const pinchPrev = useRef<[Point, Point] | null>(null)
   // Whether the current single-pointer gesture has moved (a drag) — suppresses the close-on-release.
   const dragged = useRef(false)
+  const isVideo = media.kind === "video"
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -119,6 +130,20 @@ function LightboxSurface({ src, onClose }: { src: string; onClose: () => void })
         exit: { opacity: 0, scale: 0.96 },
       }
 
+  // Image stages get the pan/zoom pointer handlers; a video stage leaves pointers to the native
+  // controls and only closes on a backdrop click.
+  const stageHandlers = isVideo
+    ? { onClick: onStageClick }
+    : {
+        onClick: onStageClick,
+        onDoubleClick,
+        onPointerCancel: endPointer,
+        onPointerDown,
+        onPointerMove,
+        onPointerUp: endPointer,
+        onWheel,
+      }
+
   return (
     <motion.div
       animate={{ opacity: 1 }}
@@ -127,45 +152,61 @@ function LightboxSurface({ src, onClose }: { src: string; onClose: () => void })
       initial={{ opacity: 0 }}
       transition={{ duration: reduce ? 0.1 : 0.16 }}
     >
-      <button
-        aria-label="Close"
-        className="absolute top-3 right-3 z-10 flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
-        onClick={onClose}
-        type="button"
-      >
-        <HugeiconsIcon className="size-5" icon={Cancel01Icon} />
-      </button>
+      <div className="absolute top-3 right-3 z-10 flex gap-2">
+        <a
+          aria-label="Download"
+          className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          download={isVideo ? "teams-video" : "teams-image"}
+          href={media.src}
+          rel="noopener noreferrer"
+        >
+          <HugeiconsIcon className="size-5" icon={Download04Icon} />
+        </a>
+        <button
+          aria-label="Close"
+          className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          onClick={onClose}
+          type="button"
+        >
+          <HugeiconsIcon className="size-5" icon={Cancel01Icon} />
+        </button>
+      </div>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: standard lightbox stage (pan/zoom/close). */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: Esc closes (the keydown listener above). */}
       <div
         className="flex size-full touch-none select-none items-center justify-center overflow-hidden"
-        onClick={onStageClick}
-        onDoubleClick={onDoubleClick}
-        onPointerCancel={endPointer}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
-        onWheel={onWheel}
         ref={stageRef}
+        {...stageHandlers}
       >
-        {/* Outer card owns the open/close scale+fade; inner img holds the live zoom transform, so
-            the two never fight over `transform`. */}
+        {/* Outer card owns the open/close scale+fade; inner media holds its own transform/controls,
+            so the two never fight over `transform`. */}
         <motion.div
           className="flex max-h-full max-w-full items-center justify-center"
           transition={{ duration: reduce ? 0.1 : 0.18, ease: "easeOut" }}
           {...cardAnim}
         >
-          <img
-            alt=""
-            className="max-h-full max-w-full rounded-md object-contain"
-            draggable={false}
-            src={src}
-            style={{
-              transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
-              transformOrigin: "0 0",
-              cursor: isZoomed(zoom) ? "grab" : "zoom-in",
-            }}
-          />
+          {isVideo ? (
+            // biome-ignore lint/a11y/useMediaCaption: user-authored chat clip, no caption track available.
+            <video
+              autoPlay
+              className="max-h-full max-w-full rounded-md"
+              controls
+              onClick={(e) => e.stopPropagation()}
+              src={media.src}
+            />
+          ) : (
+            <img
+              alt=""
+              className="max-h-full max-w-full rounded-md object-contain"
+              draggable={false}
+              src={media.src}
+              style={{
+                transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
+                transformOrigin: "0 0",
+                cursor: isZoomed(zoom) ? "grab" : "zoom-in",
+              }}
+            />
+          )}
         </motion.div>
       </div>
     </motion.div>

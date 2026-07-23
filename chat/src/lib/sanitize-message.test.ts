@@ -107,13 +107,16 @@ describe("sanitize — media (t139)", () => {
     expect(out).toContain('src="https://media1.giphy.com/media/x/giphy.gif"')
   })
 
-  it("keeps a video with its src and forces controls", () => {
+  it("keeps a video as a tap-to-expand poster (no inline controls, t165)", () => {
     const out = sanitize(
       '<video src="/api/teams/media?url=vid" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT27S">',
     )
     expect(out).toContain("<video")
     expect(out).toContain('src="/api/teams/media?url=vid"')
-    expect(out).toContain("controls")
+    // Inline controls are dropped — playback moves to the lightbox; the poster gets .teams-video.
+    expect(out).not.toContain("controls")
+    expect(out).toContain("teams-video")
+    expect(out).toContain('preload="metadata"')
   })
 
   it("still strips a script even next to media", () => {
