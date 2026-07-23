@@ -102,9 +102,17 @@ old broken quotes show the real name / "(You)" in `/chat`.
    Preview text = plain-text body, truncated like Teams (~120 chars).
 4. Optimistic bubble renders the quote immediately (already works — body HTML
    passes through the existing blockquote render path).
-5. Click a quote block → scroll to the original message if loaded, brief
-   highlight (in scope per decision 3; if the original isn't in the loaded
-   pages, no-op — don't fetch-walk history for it).
+5. Click a quote block → scroll to the original message + brief highlight
+   (decision 3). If the original isn't loaded, **bounded fetch-walk** (decision
+   7): page backward through the existing t134 cursor chain until the message
+   appears, capped at ~5 pages (~500 msgs), loading state on the quote block
+   while walking; `flex-col-reverse` prepend keeps the viewport still. Cap hit
+   → toast "Message too far back"; cursor exhausted (thread start reached, id
+   never found — e.g. a forwarded/pasted quote whose original lives in another
+   chat; the blockquote carries no conversation reference, only the message id
+   + author mri) → toast "Original message isn't in this chat". No
+   jump-to-anchor API exists on the msg service (t129: `startTime` unreliable),
+   so the cursor walk is the only honest path, always same-conversation only.
 
 Acceptance: hover → Reply → chip appears → send lands in real Teams as a proper
 quoted reply (self-chat live test); Esc/✕ cancels; TDD on the builder.
@@ -221,3 +229,8 @@ smallest, ships the visible bug fix, and creates the quote-author seam E needs.
 5. **Tooltip scope (E)**: only when the Names setting shortens (pref ≠ full).
 6. **Historical quotes in colleagues' Teams**: accepted as unfixable; only
    future sends carry the real name for them.
+7. **Jump to an unloaded original (B5)**: bounded backward cursor-walk (~5
+   pages cap) with loading state; past the cap → "Message too far back" toast.
+   Never unbounded. Cursor exhausted without a hit (quote forwarded/pasted from
+   another chat — blockquote has no conversation reference) → "Original message
+   isn't in this chat" toast; the walk never leaves the current conversation.
