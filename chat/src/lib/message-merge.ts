@@ -52,6 +52,37 @@ export function mergeMessages(
   return changed ? { messages, changed: true } : { messages: existing, changed: false }
 }
 
+/** Resolve a pending optimistic send (t159): swap the local placeholder id for the server-confirmed
+ *  id/ts and clear the pending flag. If the server copy already arrived via a poll (id collision),
+ *  the placeholder is dropped instead — never two bubbles for one message. Unknown localId → same
+ *  array ref (send raced a conversation reset). */
+export function resolveLocalSend(
+  messages: TeamsMessage[],
+  localId: string,
+  serverId: string,
+  serverTs: number,
+): TeamsMessage[] {
+  const local = messages.find((m) => m.id === localId)
+  if (!local) return messages
+  if (messages.some((m) => m.id === serverId)) return messages.filter((m) => m.id !== localId)
+  return messages.map((m) =>
+    m.id === localId
+      ? { ...m, id: serverId, ts: serverTs, pending: undefined, failed: undefined }
+      : m,
+  )
+}
+
+/** Mark a pending optimistic send as failed (t159): the bubble stays with a retry affordance instead
+ *  of blocking the composer. Unknown localId → same array ref. */
+export function markSendFailed(
+  messages: TeamsMessage[],
+  localId: string,
+  code: string,
+): TeamsMessage[] {
+  if (!messages.some((m) => m.id === localId)) return messages
+  return messages.map((m) => (m.id === localId ? { ...m, pending: undefined, failed: code } : m))
+}
+
 /** Optimistically toggle the viewer's own reaction for one key, returning the new reactions array
  *  (never mutates the input). `remove` false → I join the key (new key if absent); true → I leave it
  *  (the key is dropped when I was the only reactor). A no-op re-add of my existing reaction returns

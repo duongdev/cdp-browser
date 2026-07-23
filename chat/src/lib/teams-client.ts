@@ -15,7 +15,25 @@ export interface TeamsConversation {
   lastMessageVersion: number
   lastMessageTs: number | null
   lastMessagePreview: string
+  /** The effective read watermark (t155): max(Teams consumptionHorizon, local read), or 0 when a
+   *  mark-unread sentinel is set. A conversation is unread when `lastMessageTs > readTs`. */
+  readTs: number
+  /** True when the last message is the viewer's own send — never badges unread (t155). */
+  lastMessageFromMe: boolean
+  /** True while an explicit mark-unread sentinel forces the row unread past the Teams horizon (t155). */
+  unreadSticky: boolean
   muted: boolean
+  /** Local labels applied to this row (t156): set by applyPrefs from the prefs map, not the server
+   *  conversation payload. Absent until prefs merge. */
+  labels?: string[]
+  /** Local folder this row is filed under (t156): set by applyPrefs. null/absent = ungrouped. */
+  folder?: string | null
+  /** The user oid whose photo represents this row (t153): a 1:1's other member or the self chat's
+   *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/teams/avatar`. */
+  avatarUserId?: string
+  /** Up to the first few non-self member oids of a group chat (t161) — drives the Teams-style
+   *  facepile avatar. Absent for 1:1/self (single avatar) or when the roster is unknown. */
+  memberIds?: string[]
 }
 
 interface ConversationsResponse {
@@ -86,23 +104,35 @@ export interface TeamsReaction {
 }
 
 /** One rendered message (server's `teams-render.toReaderMessages` output). `ts` is epoch ms;
- *  `body` is already sanitized plain text — the view renders it as a text node, never innerHTML. */
+ *  `body` is rich site-authored HTML (sanitized at the render boundary). A `kind: "system"` message
+ *  (t151) is a meeting/group event line (member add/remove, call ended, rename…) — it carries only
+ *  `id`/`ts`/`kind`/`body` (a short plain string) and none of the sender/self/reaction fields. */
 export interface TeamsMessage {
   id: string
   ts: number
-  senderId: string
-  senderName: string
+  /** Present + `"system"` for a system-event line (t151); absent for a normal chat message. */
+  kind?: "system"
+  senderId?: string
+  senderName?: string
   body: string
-  self: boolean
-  edited: boolean
-  deleted: boolean
+  self?: boolean
+  edited?: boolean
+  deleted?: boolean
   /** File / recording / card chips (t141); absent when the message has none. */
   attachments?: TeamsAttachment[]
   /** Reaction chips (t142); absent when the message has none. */
   reactions?: TeamsReaction[]
+  /** The viewer is @mentioned in this message (t160) — drives the highlight tint. Server-set. */
+  mentionsMe?: boolean
   /** Client-only optimistic image preview (t145): a local object-URL shown until the poll replaces
    *  this message with the server's rendered AMSImage. Never set by the server. */
   localImageUrl?: string
+  /** Client-only (t159): an optimistic send still in flight — id is a `local:` placeholder until the
+   *  server confirms (resolveLocalSend). Never set by the server. */
+  pending?: boolean
+  /** Client-only (t159): the typed error code of a failed send — the bubble renders a retry/discard
+   *  affordance instead of blocking the composer. Never set by the server. */
+  failed?: string
 }
 
 interface HistoryResponse {
@@ -119,13 +149,23 @@ export interface HistoryPage {
 }
 
 /** One page of a conversation's history, oldest-first after render. No `cursor` → the newest page;
- *  a `cursor` (the prior page's backwardLink) → the next older page. Throws TeamsApiError with the
+ *  a `cursor` (the prior page's backwardLink) → the next older page. `poll` marks a background
+ *  refresh of an already-open thread (t155): the server then won't let its local-read write clear a
+ *  mark-unread sentinel (only a real open/explicit action does). Throws TeamsApiError with the
  *  server's typed code. */
-export async function fetchHistory(convId: string, cursor?: string | null): Promise<HistoryPage> {
+export async function fetchHistory(
+  convId: string,
+  cursor?: string | null,
+  poll?: boolean,
+): Promise<HistoryPage> {
   const res = await fetch("/api/teams/history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(cursor ? { convId, cursor } : { convId }),
+    body: JSON.stringify({
+      convId,
+      ...(cursor ? { cursor } : {}),
+      ...(poll ? { poll: true } : {}),
+    }),
   })
   const data = (await res.json().catch(() => ({}))) as HistoryResponse
   if (!res.ok || data.error) {
@@ -141,13 +181,18 @@ export interface SendReplyResult {
   clientmessageid: string
 }
 
-/** Send a text reply to a conversation (t130). Throws TeamsApiError with the server's typed code
- *  on failure so the composer can retain the draft and show honest copy. */
-export async function sendReply(convId: string, text: string): Promise<SendReplyResult> {
+/** Send a reply to a conversation (t130). `html` (t159, composer formatting) upgrades the send to
+ *  a `RichText/Html` message; without it the wire format stays the plain Text send. Throws
+ *  TeamsApiError with the server's typed code so the failed bubble can show honest copy. */
+export async function sendReply(
+  convId: string,
+  text: string,
+  html?: string | null,
+): Promise<SendReplyResult> {
   const res = await fetch("/api/teams/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, text }),
+    body: JSON.stringify({ convId, text, ...(html ? { html } : {}) }),
   })
   const data = (await res.json().catch(() => ({}))) as SendReplyResult & { error?: string }
   if (!res.ok || data.error) {
@@ -302,6 +347,45 @@ export async function uploadFile(
   return { msgId: data.msgId }
 }
 
+/** Local conversation prefs (t156): labels / folder / mute. Local to the chat store, shared across
+ *  devices, never written to Teams. Mirror of the server's teams-store shape. */
+export interface ConvPrefsDto {
+  labels: string[]
+  folder: string | null
+  muted: boolean
+}
+
+/** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
+ *  app holds it beside the list and re-applies over polls. Best-effort — a failure yields {}. */
+export async function fetchPrefs(signal?: AbortSignal): Promise<Record<string, ConvPrefsDto>> {
+  try {
+    const res = await fetch("/api/teams/prefs", { signal })
+    const data = (await res.json().catch(() => ({}))) as { prefs?: Record<string, ConvPrefsDto> }
+    return data.prefs ?? {}
+  } catch {
+    return {}
+  }
+}
+
+/** Patch one conversation's prefs (t156). Only the provided keys change server-side. Returns the
+ *  conversation's full prefs after the write (or null on failure — the caller stays optimistic). */
+export async function setPrefs(
+  convId: string,
+  patch: { labels?: string[]; folder?: string | null; muted?: boolean },
+): Promise<ConvPrefsDto | null> {
+  try {
+    const res = await fetch("/api/teams/prefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId, ...patch }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { prefs?: ConvPrefsDto }
+    return data.prefs ?? null
+  } catch {
+    return null
+  }
+}
+
 /** Write-through mark-read (t130, Q9 hybrid): push the conversation's read horizon to Teams.
  *  Best-effort — the server never fails this, and a network error here must never surface, so
  *  it swallows everything. Called after a successful reply (and on an explicit mark-read). */
@@ -314,5 +398,25 @@ export async function markRead(convId: string, msgId: string, ts: string): Promi
     })
   } catch {
     // best-effort: the desktop unread just survives as a to-do trail
+  }
+}
+
+/** Local-only read state (t155): mark a conversation read or unread in the chat DB WITHOUT writing
+ *  Teams' consumptionHorizon (Q9 hybrid — the desktop unread survives). `read` clears the dot (and
+ *  any sticky sentinel); `unread` re-arms it. Best-effort — the list is updated optimistically, so a
+ *  network error just leaves the server to reconcile on the next poll. */
+export async function markReadLocal(
+  convId: string,
+  action: "read" | "unread",
+  ts = 0,
+): Promise<void> {
+  try {
+    await fetch("/api/teams/read-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId, action, ts }),
+    })
+  } catch {
+    // best-effort: the poll reconciles
   }
 }

@@ -47,14 +47,15 @@ COPY web ./web
 COPY core/*.js ./core/
 COPY inject ./inject
 
-# Teams chat state (SQLite store, push subs, notify watermark) lives in the persistent /data
-# volume like settings/notifications, so they survive redeploys (subs don't need re-subscribing).
+# ALL stateful files (chat SQLite store, settings, pins/history, notifications, push subs, Slack
+# registry/sweep state) live under the persistent /data volume so a redeploy never wipes
+# folders/labels/read-state/pins (t163). One DATA_DIR var routes every default there — the two
+# legacy SETTINGS_PATH/NOTIFS_PATH keep the /data/settings.json filenames the existing volume
+# already holds (DATA_DIR alone would rename them to web-settings.json and orphan the old data).
 ENV PORT=7800 \
+    DATA_DIR=/data \
     SETTINGS_PATH=/data/settings.json \
-    NOTIFS_PATH=/data/notifications.json \
-    TEAMS_DB_PATH=/data/web-teams.db \
-    TEAMS_PUSH_SUBS_PATH=/data/teams-push-subs.json \
-    TEAMS_NOTIFY_STATE_PATH=/data/teams-notify-state.json
+    NOTIFS_PATH=/data/notifications.json
 
 # Persisted settings/notifications live in /data; run unprivileged.
 RUN mkdir -p /data && addgroup -S app && adduser -S app -G app && chown -R app /data /app

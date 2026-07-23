@@ -1,8 +1,360 @@
 /* Reuse the browser renderer's design system verbatim — Tailwind v4 engine, shadcn
    radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0019 decision 1): the
-   chat app should look like the same product. The Vite Tailwind plugin scans this build's
-   module graph, so the shared ui components imported by the chat views are covered. */
+   chat app should look like the same product. */
 @import "../../src/index.css";
+/* Chat-only extra UI font choices (Settings → Font). Variable woff2 via fontsource, all subsets
+   (Inter/Roboto include Vietnamese; Geist is Latin-only and falls back per-glyph). */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/roboto";
+
+/* Tailwind v4 auto-detects sources from the Vite ROOT, which is `chat/` for this build — the shared
+   ui/* components live OUTSIDE it, so utilities used only there (dialog overlay/positioning,
+   sr-only, cmdk group selectors) were never generated and the ⌘K dialog rendered unstyled/unhidden
+   (t152 fix). Source the shared renderer tree explicitly. */
+@source "../../src";
+
+/* Chat-only typefaces (selectable in Settings → Font). Files live in chat/public/fonts/ so only the
+   /chat build ships them; the / browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base
+   prepended by Vite.
+
+   SVN-Gilroy metric-override: the OTFs' native metrics leave the text riding high in its line box
+   (no USE_TYPO_METRICS bit + inflated usWinAscent 1066 on Blink; and even the hhea 800/250 WebKit
+   uses reserves 0.25em of empty descent under cap-only titles while leaving only 0.10em above the
+   0.70em cap, so short titles sit high). Override to center the CAP BLOCK: ascent−capHeight ==
+   descent, i.e. 0.90 − 0.70 == 0.20 → ascent 90% / descent 20% / gap 0. Caps/x-height land centered
+   on every browser; descenders spill ~0.01em into the leading and Vietnamese stacked accents (~0.9em)
+   fit under the 0.90 ascent without clipping. Applied to every face so weights stay aligned. */
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-regular-italic.otf") format("opentype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-medium-italic.otf") format("opentype");
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-semibold.otf") format("opentype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-semibold-italic.otf") format("opentype");
+  font-weight: 600;
+  font-style: italic;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "SVN-Gilroy";
+  src: url("/fonts/svn-gilroy-bold-italic.otf") format("opentype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Maple Mono";
+  src: url("/fonts/maple-mono-var.ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Maple Mono";
+  src: url("/fonts/maple-mono-italic-var.ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Anthropic type family (Sans / Serif / Mono), Latin-only woff2 (no Vietnamese glyphs — the sans/serif
+   fall back to SVN-Gilroy per-glyph, and the mono to DM Mono, so Vietnamese still renders). One weight
+   axis per file (@300–@900 for sans/serif, @400 for mono). */
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@300.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@800.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@900.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@300.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@800.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@900.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Mono";
+  src: url("/fonts/anthropic/AnthropicMono@400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Runtime-switchable font stacks (Settings → Font). The base :root value is the default
+   (SVN-Gilroy / Maple Mono); a data-font / data-mono attribute on <html> swaps the stack. These feed
+   the Tailwind font tokens below via `@theme inline`, so `font-sans`/`font-heading`/`font-mono`
+   utilities AND the body default all follow the live selection. Anthropic sans/serif keep SVN-Gilroy
+   as the Vietnamese fallback. */
+:root {
+  --chat-font-sans: "SVN-Gilroy", "Manrope Variable", sans-serif;
+  --chat-font-mono: "Maple Mono", "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-font="anthropic-sans"] {
+  --chat-font-sans: "Anthropic Sans", "SVN-Gilroy", "Manrope Variable", sans-serif;
+}
+:root[data-font="anthropic-serif"] {
+  --chat-font-sans: "Anthropic Serif", "SVN-Gilroy", Georgia, serif;
+}
+:root[data-font="manrope"] {
+  --chat-font-sans: "Manrope Variable", sans-serif;
+}
+:root[data-font="inter"] {
+  --chat-font-sans: "Inter Variable", "SVN-Gilroy", sans-serif;
+}
+:root[data-font="geist"] {
+  --chat-font-sans: "Geist Variable", "SVN-Gilroy", sans-serif;
+}
+:root[data-font="roboto"] {
+  --chat-font-sans: "Roboto Variable", "SVN-Gilroy", sans-serif;
+}
+/* The device's native UI font — SF Pro on Apple, Segoe on Windows, Roboto on Android. Zero bytes. */
+:root[data-font="system"] {
+  --chat-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+:root[data-mono="anthropic-mono"] {
+  --chat-font-mono: "Anthropic Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-mono="dm-mono"] {
+  --chat-font-mono: "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-mono="geist-mono"] {
+  --chat-font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* The device's native monospace — SF Mono on Apple, Consolas on Windows. Zero bytes. */
+:root[data-mono="system-mono"] {
+  --chat-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Airbnb-flavoured re-skin, chat-only (t149). Overrides the shared shadcn tokens AFTER the import
+   so every ui/* component inherits without a fork; the / browser build is untouched. Warmth comes
+   from geometry + whitespace + one soft shadow tier + warm-neutral surfaces, NOT full Rausch — the
+   coral accent is reserved for focus rings, unread, and the own-message bubble tint. Manrope stays.
+   Safe to scope on bare :root/.dark: the chat app is served standalone at /chat, never sharing a DOM
+   with the / build. */
+:root {
+  --radius: 0.85rem;
+  /* Warm-neutral surfaces (a low-chroma ~70° hue reads as paper, not clinical grey). */
+  --background: oklch(0.995 0.003 80);
+  --card: oklch(1 0.002 80);
+  --popover: oklch(1 0.002 80);
+  --secondary: oklch(0.965 0.005 80);
+  --muted: oklch(0.965 0.006 80);
+  --accent: oklch(0.965 0.006 80);
+  /* Warm ink for text + the own-message bubble (subtle warmth, not black). */
+  --foreground: oklch(0.24 0.01 60);
+  --primary: oklch(0.27 0.012 40);
+  --primary-foreground: oklch(0.985 0.004 80);
+  --muted-foreground: oklch(0.53 0.012 60);
+  --accent-foreground: oklch(0.27 0.012 40);
+  --secondary-foreground: oklch(0.27 0.012 40);
+  /* Hairline borders + a warm coral focus/unread accent. */
+  --border: oklch(0.9 0.006 70);
+  --input: oklch(0.9 0.006 70);
+  --ring: oklch(0.64 0.19 15);
+}
+
+.dark {
+  --radius: 0.85rem;
+  --background: oklch(0.17 0.006 60);
+  --card: oklch(0.21 0.007 60);
+  --popover: oklch(0.21 0.007 60);
+  --secondary: oklch(0.27 0.008 60);
+  --muted: oklch(0.27 0.008 60);
+  --accent: oklch(0.27 0.008 60);
+  --foreground: oklch(0.97 0.004 80);
+  --primary: oklch(0.9 0.006 70);
+  --primary-foreground: oklch(0.22 0.008 60);
+  --muted-foreground: oklch(0.7 0.01 70);
+  --accent-foreground: oklch(0.97 0.004 80);
+  --secondary-foreground: oklch(0.97 0.004 80);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.64 0.19 15);
+}
+
+/* One soft shadow tier for elevated chat surfaces (popovers, menus, quick-react bar) — the shadow
+   utilities the shared ui/* components already use (shadow-sm/shadow-md) rescaled to Airbnb softness. */
+/* Later @theme wins over the shared import's font tokens — the chat build recompiles Tailwind, so
+   every font-sans/font-heading/font-mono utility picks these up. `inline` substitutes the var
+   reference into the utilities, so overriding --chat-font-* at runtime (data-font/data-mono) swaps
+   the actual font without a rebuild. */
+@theme inline {
+  --font-sans: var(--chat-font-sans);
+  --font-heading: var(--chat-font-sans);
+  --font-mono: var(--chat-font-mono);
+  --shadow-sm: 0 1px 2px 0 oklch(0.2 0.02 60 / 0.06), 0 2px 8px -2px oklch(0.2 0.02 60 / 0.08);
+  --shadow-md: 0 4px 16px -4px oklch(0.2 0.02 60 / 0.1), 0 2px 6px -2px oklch(0.2 0.02 60 / 0.08);
+}
+
+/* Compact density (t154): tightens the conversation-list rows + thread message spacing/padding and
+   nudges the body font down a notch. Driven by data-density="compact" on the root (useChatSettings).
+   Marker classes (.conv-row, .thread-messages) + the semantic .teams-message-body win by ordering —
+   this block is after the shared import, so equal-specificity utility classes are overridden. */
+[data-density="compact"] .conv-row {
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+  gap: 0.6rem;
+}
+[data-density="compact"] .thread-messages {
+  gap: 0.2rem;
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+}
+[data-density="compact"] .teams-message-body {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+}
 
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
    currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
@@ -113,4 +465,56 @@
   max-height: 360px;
   border-radius: 6px;
   background: var(--muted);
+}
+
+/* Dark-mode carry-over guard (t151): Teams ships some bodies (email-style messages, quoted replies)
+   with hardcoded light background/text. The fix is at the sanitizer — sanitize-message.ts drops
+   `style`/`bgcolor`/`color` (and `style` isn't allowlisted anyway), so no presentational background
+   survives into the DOM to fight dark mode. No CSS override is needed once the attrs are gone. */
+
+/* Generic adaptive-card fallback block (t151, grilled #7): a bordered card with an extracted title +
+   summary — NO native AdaptiveCards render, no actions. Reads on both the muted and primary bubble. */
+.teams-message-body .teams-card {
+  display: block;
+  margin: 0.15em 0;
+  padding: 0.5em 0.65em;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+}
+.teams-message-body .teams-card-title {
+  display: block;
+  font-weight: 600;
+}
+.teams-message-body .teams-card-body {
+  display: block;
+  margin-top: 0.15em;
+  opacity: 0.85;
+  font-size: 0.95em;
+}
+
+/* Rich composer editor (t159): the contenteditable mirrors the message-body list/spacing resets so
+   what you type previews like it will render. font-size ≥16px is already on inputs globally for iOS
+   no-zoom; the contenteditable gets it from text-base. */
+.composer-editor ul,
+.composer-editor ol {
+  margin: 0.25em 0;
+  padding-left: 1.25em;
+}
+.composer-editor ul {
+  list-style: disc;
+}
+.composer-editor ol {
+  list-style: decimal;
+}
+.composer-editor a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Mention-of-me (t160): the viewer's own @mention pill pops in the coral accent; the bubble itself
+   also tints via message-row's mentionsMe class. Readable on both muted and primary bubbles. */
+.teams-message-body .mention-self {
+  font-weight: 600;
+  background: color-mix(in oklab, var(--ring) 22%, transparent);
 }

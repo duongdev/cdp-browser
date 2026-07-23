@@ -62,6 +62,17 @@ const DEVICE_KEY_PREFIXES = [
   "qualityTier_",
   "inputTransport_",
   "latencyHud_",
+  // t154 chat app per-device settings: theme (system/light/dark) + density (comfortable/compact).
+  "chatTheme_",
+  "chatDensity_",
+  // chat app per-device font selection: UI typeface + code typeface.
+  "chatFont_",
+  "chatMono_",
+  // t156 chat app per-device folder collapse state: JSON array of collapsed folder names.
+  "chatFolders_",
+  // t161 chat app per-device name display preference: mode + custom strip regex.
+  "chatNameDisplay_",
+  "chatNameRegex_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

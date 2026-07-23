@@ -16,7 +16,7 @@ import {
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { type MouseEvent, useLayoutEffect, useRef, useState } from "react"
+import { type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,11 +30,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
-import { relativeTime } from "../lib/conversation-view"
+import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
 import { ImageLightbox } from "./image-lightbox"
+import { UserAvatar } from "./user-avatar"
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
 // DEFAULT_REACTIONS — a frozen, closed set, kept local so the browser build needn't import the CJS
@@ -51,11 +52,19 @@ const QUICK_REACTIONS: readonly { key: string; emoji: string }[] = [
 // Hover tooltip listing who reacted (t143). The viewer is "You" (first) when `mine`; the rest are
 // the server-resolved `reactorNames`. Names can be fewer than `count` (unresolved MRIs omitted), so
 // any shortfall becomes "and N more". Empty → no title (chip still shows emoji + count).
-function reactorTitle(r: TeamsReaction): string | undefined {
-  const shown = r.mine ? ["You", ...(r.reactorNames ?? [])] : (r.reactorNames ?? [])
+function reactorTitle(r: TeamsReaction, pref: NamePref): string | undefined {
+  const names = (r.reactorNames ?? []).map((n) => formatName(n, pref))
+  const shown = r.mine ? ["You", ...names] : names
   if (shown.length === 0) return undefined
   const hidden = r.count - shown.length
   return hidden > 0 ? `${shown.join(", ")} and ${hidden} more` : shown.join(", ")
+}
+
+/** A keyboard command targeted at the focused row (t152). The `nonce` changes on each dispatch so a
+ *  repeat of the same key re-fires the effect. chat-app → thread-view → the focused MessageRow. */
+export interface RowCommand {
+  type: "edit" | "delete" | "react"
+  nonce: number
 }
 
 interface MessageRowProps {
@@ -70,24 +79,60 @@ interface MessageRowProps {
   /** Delete the viewer's OWN message (t144). The parent optimistically tombstones it + fires the
    *  best-effort call. Only passed for own, non-deleted messages. */
   onDelete?: (msgId: string) => void
+  /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
+  onRetrySend?: (msgId: string) => void
+  /** Discard a failed optimistic send — removes the bubble (t159). */
+  onDiscardSend?: (msgId: string) => void
+  /** Keyboard focus (t152): draws a ring + scrolls into view. */
+  focused?: boolean
+  /** A keyboard command aimed at this row when it's focused (t152). Only acted on when `focused`. */
+  command?: RowCommand
+  /** Group leader (t158): show the avatar/name header + timestamp and a larger top gap. A follower
+   *  (`false`) — same sender within 5min, same day — shows only the bubble, tight against the prior.
+   *  Defaults true, so any caller not passing it renders the full (pre-grouping) row. */
+  showMeta?: boolean
+  /** Name display preference (t161) — applied to the sender header + reactor tooltips. */
+  namePref?: NamePref
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
  *  sender name. `body` is rich, site-authored HTML (t133) — bold/links/mentions/emoji/code/lists,
  *  plus inline media (t139: AMS images/video via the proxy, public-CDN emoji/GIF/sticker). File /
  *  call-recording / card chips (t141) render below the body; a chips-only message shows no bubble. */
-export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps) {
-  const { self, deleted } = message
-  const time = relativeTime(message.ts)
+/** Renders one thread row. A system-event line (t151) is a distinct render with no bubble/hooks, so
+ *  it's dispatched to `SystemRow` here (before `ChatMessageRow`'s hooks) to keep hook order stable. */
+export function MessageRow(props: MessageRowProps) {
+  if (props.message.kind === "system") return <SystemRow body={props.message.body} />
+  return <ChatMessageRow {...props} />
+}
+
+function ChatMessageRow({
+  message,
+  onReact,
+  onEdit,
+  onDelete,
+  onRetrySend,
+  onDiscardSend,
+  focused,
+  command,
+  showMeta = true,
+  namePref = FULL_NAME,
+}: MessageRowProps) {
+  const self = !!message.self
+  const deleted = !!message.deleted
+  // An optimistic send in flight / failed (t159): muted bubble, no react/manage until confirmed.
+  const pending = !!message.pending
+  const failed = message.failed != null
+  const unconfirmed = pending || failed
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
-  const canReact = !deleted && !!onReact
+  const canReact = !deleted && !unconfirmed && !!onReact
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
-  const canManage = self && !deleted && (!!onEdit || !!onDelete)
+  const canManage = self && !deleted && !unconfirmed && (!!onEdit || !!onDelete)
 
   // Inline edit + delete-confirm state (t144).
   const [editing, setEditing] = useState(false)
@@ -96,6 +141,7 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
   const [editErr, setEditErr] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
 
   // Auto-grow the editor up to a cap (mirrors the composer); re-measure on each keystroke.
   // biome-ignore lint/correctness/useExhaustiveDependencies: draft is the deliberate re-measure trigger
@@ -141,6 +187,23 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
     }
   }
 
+  // Keyboard focus (t152): scroll the focused row into view (nearest — no jump when already shown).
+  useEffect(() => {
+    if (focused) rowRef.current?.scrollIntoView({ block: "nearest" })
+  }, [focused])
+
+  // Act on a keyboard command aimed at this row while it's focused (t152). The nonce re-fires the
+  // effect on a repeat key. `e`/`r`/`⌫` route through the SAME inline flows a click would — edit
+  // opens the editor, delete opens the AlertDialog confirm (never bypassed), react opens the bar.
+  const cmdNonce = command?.nonce
+  // biome-ignore lint/correctness/useExhaustiveDependencies: nonce is the deliberate re-fire trigger
+  useEffect(() => {
+    if (!focused || !command) return
+    if (command.type === "edit" && canManage && onEdit) startEdit()
+    else if (command.type === "delete" && canManage && onDelete) setConfirmOpen(true)
+    else if (command.type === "react" && canReact) setPickerOpen(true)
+  }, [cmdNonce])
+
   // Clicking a chip toggles my own reaction for that key (mine → remove, else join).
   const toggleChip = (r: TeamsReaction) => onReact?.(message.id, r.key, r.emoji, r.mine)
   // Tapping a quick-bar emoji adds it (a re-tap of one I already made is a no-op upstream).
@@ -161,9 +224,30 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
   }
 
   return (
-    <div className={cn("flex flex-col gap-0.5", self ? "items-end" : "items-start")}>
-      {!self && (
-        <span className="px-1 font-medium text-muted-foreground text-xs">{message.senderName}</span>
+    <div
+      className={cn(
+        "flex flex-col gap-0.5 rounded-2xl",
+        self ? "items-end" : "items-start",
+        // Vertical rhythm (t158): a group leader opens with a larger gap (≈16px) so distinct groups
+        // read as blocks; a follower hugs the prior bubble (≈2px) for a tight Slack-style run.
+        showMeta ? "mt-4 first:mt-0" : "mt-0.5",
+        // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
+        // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
+        focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
+      )}
+      ref={rowRef}
+    >
+      {showMeta && !self && !!message.senderName && (
+        <span className="flex items-center gap-1.5 px-1">
+          <UserAvatar
+            className="size-5 text-[10px]"
+            label={message.senderName}
+            userId={message.senderId}
+          />
+          <span className="font-semibold text-foreground text-xs">
+            {formatName(message.senderName ?? "", namePref)}
+          </span>
+        </span>
       )}
       {hasBody && editing && (
         <div className="flex w-full max-w-[85%] flex-col gap-1 self-end">
@@ -210,13 +294,20 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable. */}
           <div
             className={cn(
-              "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
+              "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
+              // Mention-of-me highlight (t160): a coral-tinted bubble, Slack's mention background.
+              message.mentionsMe && !self && "bg-ring/12 ring-1 ring-ring/30",
               deleted && "italic opacity-70",
+              pending && "opacity-60",
+              failed && "opacity-70 ring-1 ring-destructive/40",
             )}
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
             dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
             onClick={onBodyClick}
+            // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
+            // style grouping; the tooltip is where "when exactly?" lives now.
+            title={new Date(message.ts).toLocaleString()}
           />
           {(canReact || canManage) && (
             <div className="flex shrink-0 items-center gap-0.5">
@@ -293,7 +384,7 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
               disabled={!onReact}
               key={r.key}
               onClick={() => toggleChip(r)}
-              title={reactorTitle(r)}
+              title={reactorTitle(r, namePref)}
               type="button"
             >
               <span aria-hidden>{r.emoji}</span>
@@ -302,11 +393,58 @@ export function MessageRow({ message, onReact, onEdit, onDelete }: MessageRowPro
           ))}
         </div>
       )}
-      <span className="px-1 font-mono text-[10px] text-muted-foreground">
-        {time}
-        {message.edited && !deleted && <span className="ml-1">(edited)</span>}
-      </span>
+      {/* Optimistic send status (t159): a quiet "Sending…" while in flight; a failed send keeps the
+          bubble with honest copy + retry/discard instead of blocking the composer. */}
+      {pending && <span className="px-1 text-[10px] text-muted-foreground">Sending…</span>}
+      {failed && (
+        <span className="flex items-center gap-2 px-1 text-[11px] text-destructive">
+          {sendErrorCopy(message.failed ?? "")}
+          {onRetrySend && (
+            <button
+              className="font-semibold underline underline-offset-2"
+              onClick={() => onRetrySend(message.id)}
+              type="button"
+            >
+              Retry
+            </button>
+          )}
+          {onDiscardSend && (
+            <button
+              className="text-muted-foreground underline underline-offset-2"
+              onClick={() => onDiscardSend(message.id)}
+              type="button"
+            >
+              Discard
+            </button>
+          )}
+        </span>
+      )}
+      {/* No inline timestamps (t160, Messenger grouping) — separators + the bubble tooltip carry
+          the time. The "(edited)" marker stays; it's meaning, not chrome. */}
+      {!unconfirmed && message.edited && !deleted && (
+        <span className="px-1 font-mono text-[10px] text-muted-foreground">(edited)</span>
+      )}
       <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
+    </div>
+  )
+}
+
+// Failed-send copy (t159) — honest and specific where we can be, generic otherwise.
+function sendErrorCopy(code: string): string {
+  if (code === "invalid_auth")
+    return "Not sent — Teams sign-in expired; it refreshes when the Teams tab reloads."
+  if (code === "rate_limited") return "Not sent — Teams is rate-limiting."
+  return "Not sent."
+}
+
+/** A system-event line (t151): centered, muted, small — Slack/Linear-style meta row for member
+ *  add/remove, call ended, rename, app added. Plain text, never HTML. */
+function SystemRow({ body }: { body: string }) {
+  return (
+    <div className="flex justify-center py-0.5">
+      <span className="rounded-full bg-muted/50 px-3 py-0.5 text-center text-muted-foreground text-xs">
+        {body}
+      </span>
     </div>
   )
 }
@@ -492,23 +630,40 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
   }
 
   if (a.kind === "recording") {
-    return (
-      <span className={cn(CHIP_CLASS, "cursor-default")}>
+    // A finished recording carries a SharePoint playback url (t162) → the chip opens it in a new tab
+    // (browser SSO, like a file). Thumbnail with a play overlay when present, a play glyph otherwise.
+    const inner = (
+      <>
         {a.thumbnailUrl ? (
-          <img
-            alt=""
-            className="size-9 shrink-0 rounded object-cover"
-            loading="lazy"
-            src={a.thumbnailUrl}
-          />
+          <span className="relative size-9 shrink-0">
+            <img
+              alt=""
+              className="size-9 rounded object-cover"
+              loading="lazy"
+              src={a.thumbnailUrl}
+            />
+            <HugeiconsIcon
+              className="absolute inset-0 m-auto size-4 text-white drop-shadow"
+              icon={PlayCircleIcon}
+            />
+          </span>
         ) : (
           <HugeiconsIcon className="size-5 shrink-0 text-muted-foreground" icon={PlayCircleIcon} />
         )}
-        <span className="flex items-center gap-1">
-          <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={PlayCircleIcon} />
-          Call recording
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-medium">{a.title || "Call recording"}</span>
+          <span className="text-[11px] text-muted-foreground">
+            {a.url ? "Play recording" : "Recording"}
+          </span>
         </span>
-      </span>
+      </>
+    )
+    return a.url ? (
+      <a className={CHIP_CLASS} href={a.url} rel="noopener noreferrer" target="_blank">
+        {inner}
+      </a>
+    ) : (
+      <span className={cn(CHIP_CLASS, "cursor-default")}>{inner}</span>
     )
   }
 

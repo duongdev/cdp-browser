@@ -1,20 +1,34 @@
 import {
   Alert02Icon,
+  ArrowDown01Icon,
   ArrowLeft01Icon,
-  Attachment01Icon,
-  Cancel01Icon,
-  File01Icon,
   InboxIcon,
   ReloadIcon,
-  SentIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { Button } from "@/components/ui/button"
+import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { pickFile } from "../lib/image-attach"
-import { applyPendingReactions, applyReaction, mergeMessages } from "../lib/message-merge"
+import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
+import {
+  applyPendingReactions,
+  applyReaction,
+  markSendFailed,
+  mergeMessages,
+  resolveLocalSend,
+} from "../lib/message-merge"
+import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
 import {
   deleteMessage,
   editMessage,
@@ -28,8 +42,10 @@ import {
   uploadFile,
   uploadImage,
 } from "../lib/teams-client"
-import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
-import { MessageRow } from "./message-row"
+import { selectReplyTarget } from "../lib/teams-reply"
+import { buildThreadItems } from "../lib/thread-group"
+import { Composer, type ComposerHandle } from "./composer"
+import { MessageRow, type RowCommand } from "./message-row"
 
 // Live sync (t135, poll-first): cadence for re-fetching the newest history page while this pane is
 // the visible one and the tab is foregrounded.
@@ -95,6 +111,24 @@ type State =
   | { status: "error"; message: string }
   | { status: "ready"; messages: TeamsMessage[] }
 
+/** The focused message the thread reports up (t152) — id + own-ness, for the palette/keys context. */
+export interface ThreadFocus {
+  id: string
+  isOwn: boolean
+}
+
+/** Imperative keyboard API the active pane exposes to chat-app (t152). Only the active+visible pane's
+ *  handle is driven; message focus lives here (per pane) so each thread keeps its own cursor. */
+export interface ThreadHandle {
+  focusNext: () => void
+  focusPrev: () => void
+  getFocused: () => ThreadFocus | null
+  /** Dispatch a keyboard command (edit/delete/react) at the focused message's row. */
+  command: (type: RowCommand["type"]) => void
+  /** True while the composer or inline editor holds focus — chat-app suppresses bare-key shortcuts. */
+  isComposerFocused: () => boolean
+}
+
 interface ThreadViewProps {
   conversation: TeamsConversation
   /** Back to the list — shown on the phone (stacked), hidden in the wide two-pane. */
@@ -102,12 +136,20 @@ interface ThreadViewProps {
   /** Whether this pane is the on-screen one (t132). Inactive panes stay mounted (fetch + scroll
    *  preserved) but hidden via display:none, so switching conversations is instant. Defaults true. */
   visible?: boolean
+  /** Reports the keyboard-focused message up so chat-app's palette/keys context stays in sync (t152).
+   *  Only the visible pane should be wired. */
+  onFocusChange?: (focus: ThreadFocus | null) => void
+  /** Name display preference (t161) — applied to the header label + sender names. */
+  namePref?: NamePref
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
-export function ThreadView({ conversation, onBack, visible = true }: ThreadViewProps) {
+export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
+  { conversation, onBack, visible = true, onFocusChange, namePref },
+  ref,
+) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): the server returns an opaque `backwardLink` cursor with each page;
   // null means there is no older page. `hasMore` mirrors "cursor is non-null" for the affordance.
@@ -124,6 +166,12 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // merge setState. Cleared per conversation switch below.
   const pendingReactions = useRef<PendingReactions>(new Map())
   const convId = conversation.id
+
+  // Keyboard message focus (t152): the id of the focused message row + the command dispatched to it.
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const [rowCommand, setRowCommand] = useState<RowCommand | null>(null)
+  // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
+  const composerFocusedRef = useRef(false)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -218,9 +266,38 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     return () => io.disconnect()
   }, [canLoadOlder])
 
+  // Scroll-to-bottom FAB (t160): visible whenever the viewport is off the bottom. Floating
+  // separator (t160): while scrolling, the topmost-passed date/time separator's label floats as a
+  // sticky pill (flex-col-reverse breaks CSS position:sticky, so this is a scroll-driven overlay),
+  // fading out shortly after the scroll rests.
+  const [offBottom, setOffBottom] = useState(false)
+  const [floatingSep, setFloatingSep] = useState<string | null>(null)
+  const floatingHideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current
-    if (el) savedScrollTop.current = el.scrollTop
+    if (!el) return
+    savedScrollTop.current = el.scrollTop
+    setOffBottom(Math.abs(el.scrollTop) > THREAD_BOTTOM_SLACK)
+    // Topmost visible-or-passed separator: among rendered separator pills, the one closest above
+    // the container's top edge names the period the viewport is currently in.
+    const containerTop = el.getBoundingClientRect().top
+    let best: { top: number; label: string } | null = null
+    for (const sep of el.querySelectorAll<HTMLElement>("[data-thread-sep]")) {
+      const top = sep.getBoundingClientRect().top
+      if (top <= containerTop + 40 && (!best || top > best.top)) {
+        best = { top, label: sep.dataset.threadSep || "" }
+      }
+    }
+    setFloatingSep(best?.label || null)
+    clearTimeout(floatingHideTimer.current)
+    floatingHideTimer.current = setTimeout(() => setFloatingSep(null), 1200)
+  }, [])
+  useEffect(() => () => clearTimeout(floatingHideTimer.current), [])
+
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
 
   // Restore scroll when this pane becomes visible again (t132). display:none resets the container's
@@ -237,7 +314,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // error pane is left to the initial load. Errors are swallowed: a failed poll keeps the last-good
   // thread rather than flipping to error. Sticks to the bottom only if the user was already there.
   const poll = useCallback(() => {
-    fetchHistory(convId)
+    fetchHistory(convId, null, true)
       .then((page) => {
         const el = scrollRef.current
         // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
@@ -378,42 +455,26 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     [convId],
   )
 
-  // Composer (t130, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
-  // optimistically appends the message and write-through marks the conversation read on Teams.
-  // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
+  // Composer (t130 → t159): optimistic + non-blocking. A send appends a pending bubble immediately
+  // and the input stays live + focused; failure marks the bubble (retry/discard) instead of freezing
+  // the composer. The reply target is chosen by the single policy owner (selectReplyTarget).
   const replyTarget = selectReplyTarget(conversation)
-  const [send, setSend] = useState<SendState>({ phase: "idle", draft: "" })
-  // A pasted/picked attachment staged for send (t145 image, t146 any file): held until Send uploads
-  // it (or the ✕ clears it). An image routes to uploadImage; any other file routes to uploadFile.
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
-  const pendingIsImage = pendingFile?.type.startsWith("image/") ?? false
-  const taRef = useRef<HTMLTextAreaElement>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
-  // Reset the composer when the conversation changes (a half-typed draft / staged file doesn't leak).
+  const composerRef = useRef<ComposerHandle>(null)
+  const coarse = usePointerCoarse()
+  // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
+  const retryPayloads = useRef<Map<string, { out: OutgoingMessage; file: File | null }>>(new Map())
+  const localSeq = useRef(0)
+  // Stale in-flight sends don't leak across a conversation reset.
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
   useEffect(() => {
-    setSend({ phase: "idle", draft: "" })
-    setPendingFile(null)
+    retryPayloads.current = new Map()
   }, [convId])
-  // Object-URL thumbnail preview — images only; a non-image file shows a chip, not a thumbnail.
+
+  // Re-focus the composer whenever this pane is (re)shown on a keyboard layout — incl. while the
+  // history is still loading (t159 item 8). A coarse pointer never auto-focuses (keyboard pop).
   useEffect(() => {
-    if (!pendingFile?.type.startsWith("image/")) {
-      setPendingUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(pendingFile)
-    setPendingUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [pendingFile])
-  // Auto-grow the textarea up to a cap; height resets to measure the real scrollHeight each edit.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: send.draft is the deliberate re-measure trigger
-  useLayoutEffect(() => {
-    const el = taRef.current
-    if (!el) return
-    el.style.height = "auto"
-    el.style.height = `${Math.min(el.scrollHeight, 128)}px`
-  }, [send.draft])
+    if (visible && !coarse) composerRef.current?.focus()
+  }, [visible, coarse])
 
   // Append a just-sent optimistic message + pin to the bottom (flex-col-reverse: 0 is the newest).
   const appendSent = useCallback((sent: TeamsMessage) => {
@@ -426,169 +487,186 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
     })
   }, [])
 
-  const doSend = useCallback(() => {
-    if (!replyTarget || send.phase === "sending") return
-    const text = send.draft.trim()
-
-    // Attachment send (t145 image, t146 file): an upload can carry an optional caption, so its draft
-    // can be empty — it bypasses reduceSend's non-empty guard. On success the poll reconciles the
-    // optimistic bubble to the server-rendered message; on failure the file + caption stay for retry.
-    if (pendingFile) {
-      const file = pendingFile
-      const isImage = file.type.startsWith("image/")
-      setSend({ phase: "sending", draft: send.draft })
-      const upload = isImage
-        ? uploadImage(replyTarget.convId, file, text)
-        : uploadFile(replyTarget.convId, file, text)
-      upload
-        .then((out) => {
-          setPendingFile(null)
-          setSend({ phase: "idle", draft: "" })
-          appendSent({
-            id: out.msgId,
-            ts: Number(out.msgId) || Date.now(),
-            senderId: "",
-            senderName: "You",
-            body: text,
-            self: true,
-            edited: false,
-            deleted: false,
-            // Image → own object URL for the optimistic bubble (revoked with the pending preview);
-            // file → a chip descriptor. Either is replaced by the server's rendered message on the
-            // next poll (the chip gains its clickable SharePoint url then).
-            ...(isImage
-              ? { localImageUrl: URL.createObjectURL(file) }
-              : {
-                  attachments: [
-                    { kind: "file", name: file.name || "file", type: pendingExt(file.name) },
-                  ],
-                }),
-          })
-          markRead(replyTarget.convId, out.msgId, out.msgId)
-        })
-        .catch((e) => {
-          const code = e instanceof TeamsApiError ? e.code : "network_error"
-          setSend((s) => reduceSend(s, { type: "fail", code }))
-        })
-      return
-    }
-
-    const next = reduceSend(send, { type: "send" })
-    setSend(next)
-    if (next.phase !== "sending") return
-    sendReply(replyTarget.convId, text)
-      .then((out) => {
-        setSend((s) => reduceSend(s, { type: "ok" }))
-        appendSent({
-          id: out.ts,
-          ts: Number(out.ts) || Date.now(),
-          senderId: "",
-          senderName: "You",
-          body: text,
-          self: true,
-          edited: false,
-          deleted: false,
-        })
+  // Fire (or re-fire, on retry) the server send for one optimistic bubble. Success swaps the local
+  // placeholder for the server id (resolveLocalSend collapses a poll-delivered echo); failure marks
+  // the bubble with the typed code. Never touches the composer.
+  const runSend = useCallback(
+    (localId: string, out: OutgoingMessage, file: File | null) => {
+      const target = replyTarget
+      if (!target) return
+      const op = file
+        ? (file.type.startsWith("image/") ? uploadImage : uploadFile)(
+            target.convId,
+            file,
+            out.text,
+          ).then((r) => r.msgId)
+        : sendReply(target.convId, out.text, out.html).then((r) => r.ts)
+      op.then((id) => {
+        retryPayloads.current.delete(localId)
+        setState((s) =>
+          s.status === "ready"
+            ? {
+                status: "ready",
+                messages: resolveLocalSend(s.messages, localId, id, Number(id) || Date.now()),
+              }
+            : s,
+        )
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
-        markRead(replyTarget.convId, out.ts, out.ts)
-      })
-      .catch((e) => {
+        markRead(target.convId, id, id)
+      }).catch((e) => {
         const code = e instanceof TeamsApiError ? e.code : "network_error"
-        setSend((s) => reduceSend(s, { type: "fail", code }))
+        setState((s) =>
+          s.status === "ready"
+            ? { status: "ready", messages: markSendFailed(s.messages, localId, code) }
+            : s,
+        )
       })
-  }, [send, replyTarget, pendingFile, appendSent])
-
-  const composer = (
-    <div className="shrink-0 border-border border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-      {send.phase === "failed" && (
-        <p className="pb-1.5 text-destructive text-xs">{sendErrorCopy(send.code)}</p>
-      )}
-      {(pendingUrl || (pendingFile && !pendingIsImage)) && (
-        <div className="pb-2">
-          <div className="relative inline-block">
-            {pendingUrl ? (
-              <img
-                alt="Attachment preview"
-                className="size-16 rounded-md border border-border object-cover"
-                src={pendingUrl}
-              />
-            ) : (
-              <div className="flex max-w-[16rem] items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
-                <HugeiconsIcon
-                  className="size-4 shrink-0 text-muted-foreground"
-                  icon={File01Icon}
-                />
-                <span className="truncate text-sm">{pendingFile?.name || "file"}</span>
-              </div>
-            )}
-            <button
-              aria-label="Remove attachment"
-              className="-right-1.5 -top-1.5 absolute flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent"
-              disabled={send.phase === "sending"}
-              onClick={() => setPendingFile(null)}
-              type="button"
-            >
-              <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-            </button>
-          </div>
-        </div>
-      )}
-      <div className="flex items-end gap-2">
-        <input
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) setPendingFile(f)
-            e.target.value = "" // allow re-picking the same file
-          }}
-          ref={fileRef}
-          type="file"
-        />
-        <Button
-          aria-label="Attach file"
-          disabled={send.phase === "sending"}
-          onClick={() => fileRef.current?.click()}
-          size="icon"
-          variant="ghost"
-        >
-          <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
-        </Button>
-        <textarea
-          className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
-          disabled={send.phase === "sending"}
-          onChange={(e) => setSend(reduceSend(send, { type: "edit", draft: e.target.value }))}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              doSend()
-            }
-          }}
-          onPaste={(e) => {
-            const file = pickFile(e.clipboardData?.items)
-            if (file) {
-              e.preventDefault()
-              setPendingFile(file)
-            }
-          }}
-          placeholder="Type a message…"
-          ref={taRef}
-          rows={1}
-          value={send.draft}
-        />
-        <Button
-          aria-label={send.phase === "failed" ? "Retry send" : "Send"}
-          disabled={send.phase === "sending" || (!send.draft.trim() && !pendingFile)}
-          onClick={doSend}
-          size="icon"
-        >
-          <HugeiconsIcon className="size-4" icon={SentIcon} />
-        </Button>
-      </div>
-      {send.phase === "sending" && (
-        <p className="pt-1 text-[11px] text-muted-foreground">Sending…</p>
-      )}
-    </div>
+    },
+    [replyTarget],
   )
+
+  const onComposerSend = useCallback(
+    (out: OutgoingMessage, file: File | null) => {
+      if (!replyTarget) return
+      const localId = `local:${++localSeq.current}:${Date.now()}`
+      retryPayloads.current.set(localId, { out, file })
+      const isImage = file?.type.startsWith("image/") ?? false
+      appendSent({
+        id: localId,
+        ts: Date.now(),
+        senderId: "",
+        senderName: "You",
+        body: out.html ?? textToHtml(out.text),
+        self: true,
+        edited: false,
+        deleted: false,
+        pending: true,
+        // Image → own object URL for the optimistic bubble; file → a chip descriptor. Either is
+        // replaced by the server's rendered message on the next poll (the chip gains its clickable
+        // SharePoint url then).
+        ...(file
+          ? isImage
+            ? { localImageUrl: URL.createObjectURL(file) }
+            : {
+                attachments: [
+                  { kind: "file", name: file.name || "file", type: pendingExt(file.name) },
+                ],
+              }
+          : {}),
+      })
+      runSend(localId, out, file)
+    },
+    [replyTarget, appendSent, runSend],
+  )
+
+  // Retry a failed optimistic send in place (t159): back to pending, same payload, same bubble.
+  const onRetrySend = useCallback(
+    (localId: string) => {
+      const payload = retryPayloads.current.get(localId)
+      if (!payload) return
+      setState((s) =>
+        s.status === "ready"
+          ? {
+              status: "ready",
+              messages: s.messages.map((m) =>
+                m.id === localId ? { ...m, pending: true, failed: undefined } : m,
+              ),
+            }
+          : s,
+      )
+      runSend(localId, payload.out, payload.file)
+    },
+    [runSend],
+  )
+
+  const onDiscardSend = useCallback((localId: string) => {
+    retryPayloads.current.delete(localId)
+    setState((s) =>
+      s.status === "ready"
+        ? { status: "ready", messages: s.messages.filter((m) => m.id !== localId) }
+        : s,
+    )
+  }, [])
+
+  // Focusable (non-system) messages in visual order (oldest→newest). System lines aren't focusable.
+  const messages = state.status === "ready" ? state.messages : null
+  const focusable = useMemo(() => (messages ?? []).filter((m) => m.kind !== "system"), [messages])
+
+  // Last-read watermark for the "New" separator (t160, Slack semantics): captured when the thread
+  // opens (the conversation prop still carries the PRE-open readTs — chat-app lays its "read"
+  // override after storing the row) and re-captured on each keep-alive re-show, so the marker
+  // survives while you read but clears on the next open when nothing new arrived.
+  const [lastReadTs, setLastReadTs] = useState<number | null>(conversation.readTs || null)
+  const prevVisible = useRef(visible)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-capture only on the visibility flip
+  useEffect(() => {
+    if (visible && !prevVisible.current) setLastReadTs(conversation.readTs || null)
+    prevVisible.current = visible
+  }, [visible])
+
+  // Time separators + consecutive-sender grouping + New marker (t158 → t160), computed oldest→
+  // newest; the render reverses for flex-col-reverse.
+  const threadItems = useMemo(
+    () => buildThreadItems(messages ?? [], Date.now(), lastReadTs),
+    [messages, lastReadTs],
+  )
+
+  // Reset the keyboard cursor when the conversation changes (a stale id doesn't leak across panes).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
+  useEffect(() => {
+    setFocusedId(null)
+    setRowCommand(null)
+  }, [convId])
+
+  // Report the focused message (id + own-ness) up so chat-app's palette/keys context stays honest.
+  const focused = focusable.find((m) => m.id === focusedId) ?? null
+  useEffect(() => {
+    if (!visible) return
+    onFocusChange?.(focused ? { id: focused.id, isOwn: !!focused.self } : null)
+  }, [visible, focused, onFocusChange])
+
+  const moveFocus = useCallback(
+    (delta: 1 | -1) => {
+      setFocusedId((cur) => {
+        if (focusable.length === 0) return cur
+        const i = cur ? focusable.findIndex((m) => m.id === cur) : -1
+        // From no-focus: `next` starts at the newest (last), `prev` at the newest too — j/k both enter
+        // at the bottom, the natural reading position in a bottom-anchored thread.
+        if (i === -1) return focusable[focusable.length - 1].id
+        const next = Math.min(focusable.length - 1, Math.max(0, i + delta))
+        return focusable[next].id
+      })
+    },
+    [focusable],
+  )
+
+  useImperativeHandle(
+    ref,
+    (): ThreadHandle => ({
+      focusNext: () => moveFocus(1),
+      focusPrev: () => moveFocus(-1),
+      getFocused: () => (focused ? { id: focused.id, isOwn: !!focused.self } : null),
+      command: (type) => {
+        // A command with no focused row is a no-op — chat-app gates on getFocused() anyway.
+        if (!focusedId) return
+        setRowCommand({ type, nonce: Date.now() })
+      },
+      isComposerFocused: () => composerFocusedRef.current,
+    }),
+    [moveFocus, focused, focusedId],
+  )
+
+  const composer = replyTarget ? (
+    <Composer
+      autoFocus={visible && !coarse}
+      onFocusChange={(f) => {
+        composerFocusedRef.current = f
+      }}
+      onSend={onComposerSend}
+      ref={composerRef}
+      resetKey={convId}
+    />
+  ) : null
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-background", !visible && "hidden")}>
@@ -605,11 +683,17 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
           </Button>
         )}
         <span className="min-w-0 flex-1 truncate px-1 font-heading font-semibold text-foreground text-sm">
-          {conversationLabel(conversation)}
+          {formatConversationLabel(
+            conversationLabel(conversation),
+            conversation,
+            namePref ?? FULL_NAME,
+          )}
         </span>
       </header>
 
       {state.status === "loading" ? (
+        // The composer renders (and focuses) during the history load too (t159 item 8) — you can
+        // start typing before the messages land.
         <ThreadSkeleton />
       ) : state.status === "error" ? (
         <Centered>
@@ -620,52 +704,115 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
             Retry
           </Button>
         </Centered>
+      ) : state.messages.length === 0 ? (
+        <Centered>
+          <HugeiconsIcon className="size-8 text-muted-foreground" icon={InboxIcon} />
+          <p className="text-muted-foreground text-sm">No messages yet</p>
+        </Centered>
       ) : (
-        <>
-          {state.messages.length === 0 ? (
-            <Centered>
-              <HugeiconsIcon className="size-8 text-muted-foreground" icon={InboxIcon} />
-              <p className="text-muted-foreground text-sm">No messages yet</p>
-            </Centered>
-          ) : (
-            <div
-              className="flex min-h-0 flex-1 flex-col-reverse gap-2 overflow-y-auto overscroll-contain px-3 py-3"
-              onScroll={onScroll}
-              ref={scrollRef}
-            >
-              {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
-                  to show oldest→newest top→bottom. Older messages prepend to the array (→ end of this
-                  reversed map = the visual top), and the loading skeleton + sentinel sit above them. */}
-              {state.messages
-                .slice()
-                .reverse()
-                .map((m) => (
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div
+            className="thread-messages flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-3 py-3"
+            onScroll={onScroll}
+            ref={scrollRef}
+          >
+            {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
+                  (items reversed) to show oldest→newest top→bottom. Time separators + consecutive-
+                  sender grouping (t158/t160) are computed oldest→newest by buildThreadItems, so a
+                  period's separator sits above its first message after the reverse. Older messages
+                  prepend to the array (→ end of this reversed map = the visual top). Vertical rhythm
+                  is per-item margin (leader gap vs tight follower gap), not a uniform container gap. */}
+            {threadItems
+              .slice()
+              .reverse()
+              .map((item) =>
+                item.type === "date" ? (
+                  <DateSeparator key={item.key} label={item.label} />
+                ) : item.type === "new" ? (
+                  <NewSeparator key={item.key} />
+                ) : (
                   <MessageRow
-                    key={m.id}
-                    message={m}
+                    command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
+                    focused={item.message.id === focusedId}
+                    key={item.key}
+                    message={item.message}
+                    namePref={namePref}
                     onDelete={onDelete}
+                    onDiscardSend={onDiscardSend}
                     onEdit={onEdit}
                     onReact={onReact}
+                    onRetrySend={onRetrySend}
+                    showMeta={item.showMeta}
                   />
+                ),
+              )}
+            {loadingOlder && (
+              <div className="flex flex-col gap-2">
+                {[0, 1, 2].map((i) => (
+                  <MessageBubbleSkeleton index={i} key={i} />
                 ))}
-              {loadingOlder && [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
-              {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
-            </div>
-          )}
-          {replyTarget && composer}
-        </>
+              </div>
+            )}
+            {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
+          </div>
+          {/* Floating current-period pill (t160): flex-col-reverse breaks position:sticky, so the
+              topmost-passed separator's label floats here while scrolling, then fades. */}
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 transition-opacity duration-300",
+              floatingSep ? "opacity-100" : "opacity-0",
+            )}
+          >
+            <span className="rounded-full border border-border bg-popover px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground shadow-sm">
+              {floatingSep}
+            </span>
+          </div>
+          {/* Scroll-to-bottom FAB (t160): appears whenever the viewport is off the bottom. */}
+          <Button
+            aria-label="Scroll to bottom"
+            className={cn(
+              "absolute right-4 bottom-3 z-10 rounded-full shadow-md transition-all duration-200",
+              offBottom
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-2 opacity-0",
+            )}
+            onClick={jumpToBottom}
+            size="icon"
+            variant="secondary"
+          >
+            <HugeiconsIcon className="size-4" icon={ArrowDown01Icon} />
+          </Button>
+        </div>
       )}
+      {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
+      {composer}
+    </div>
+  )
+})
+
+// A centered time separator (t158 → t160): a new calendar day ("Today 2:30 PM") or a ≥20-min idle
+// gap ("2:30 PM"), Messenger-style. Pill, muted. `data-thread-sep` feeds the floating-pill overlay.
+function DateSeparator({ label }: { label: string }) {
+  return (
+    <div className="flex justify-center pt-4 pb-2" data-thread-sep={label}>
+      <span className="rounded-full bg-muted/60 px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground">
+        {label}
+      </span>
     </div>
   )
 }
 
-// Composer failure copy — honest and specific where we can be, generic otherwise.
-function sendErrorCopy(code: string): string {
-  if (code === "invalid_auth")
-    return "Teams sign-in expired — it refreshes when the Teams tab reloads. Your message is kept; retry in a moment."
-  if (code === "rate_limited")
-    return "Teams is rate-limiting. Your message is kept — retry in a moment."
-  return "Could not send. Your message is kept — retry."
+// The Slack-style last-read marker (t160): a coral hairline + "New" chip before the first unread
+// message, computed once per open (buildThreadItems' lastReadTs).
+function NewSeparator() {
+  return (
+    <div className="flex items-center gap-2 pt-3 pb-1">
+      <div className="h-px flex-1 bg-ring/50" />
+      <span className="font-semibold text-[10px] text-ring uppercase tracking-wide">New</span>
+      <div className="h-px flex-1 bg-ring/50" />
+    </div>
+  )
 }
 
 // One placeholder bubble matching ThreadSkeleton's row (label chip + bubble), alternating side by

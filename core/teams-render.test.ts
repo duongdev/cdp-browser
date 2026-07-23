@@ -3,7 +3,9 @@ import {
   composeTitle,
   parseAttachments,
   parseEmotions,
+  previewText,
   renderBody,
+  systemEventText,
   toReaderMessages,
 } from "./teams-render"
 
@@ -151,10 +153,6 @@ describe("renderBody — mention run merging (t140)", () => {
 })
 
 describe("renderBody — card / attachment chip", () => {
-  it("returns [card] when properties.cards is present and no text", () => {
-    expect(renderBody(msg({ content: "", properties: { cards: "[{...}]" } }))).toBe("[card]")
-  })
-
   it("returns [attachment: name] from the first attachment when no text", () => {
     expect(renderBody(msg({ content: "", attachments: [{ name: "budget.xlsx" }] }))).toBe(
       "[attachment: budget.xlsx]",
@@ -166,9 +164,270 @@ describe("renderBody — card / attachment chip", () => {
       "<p>see file</p>",
     )
   })
+})
 
-  it("falls to a chip when the HTML has no visible text", () => {
-    expect(renderBody(msg({ content: "<p></p>", properties: { cards: "[{}]" } }))).toBe("[card]")
+// t151 (grilled #7): an AdaptiveCard `properties.cards` (a JSON string) with no rendered body degrades
+// to a styled generic card block — title + summary text extracted best-effort, NO adaptivecards dep,
+// no card actions. Malformed/empty cards → a bare "Card" block. Real body text still wins over it.
+describe("renderBody — adaptive-card generic fallback", () => {
+  const cardMsg = (cards, over = {}) => msg({ content: "", properties: { cards }, ...over })
+
+  it("extracts title + body text from an AdaptiveCard JSON string", () => {
+    const cards = JSON.stringify([
+      {
+        content: {
+          type: "AdaptiveCard",
+          body: [
+            { type: "TextBlock", text: "Deployment Succeeded" },
+            { type: "TextBlock", text: "env: prod" },
+          ],
+        },
+      },
+    ])
+    expect(renderBody(cardMsg(cards))).toBe(
+      '<span class="teams-card"><span class="teams-card-title">Deployment Succeeded</span><span class="teams-card-body">env: prod</span></span>',
+    )
+  })
+
+  it("strips markdown-ish markup and escapes HTML in extracted card text", () => {
+    const cards = JSON.stringify([
+      { content: { body: [{ text: "**Alert** <x>" }, { text: "see [here](http://x)" }] } },
+    ])
+    expect(renderBody(cardMsg(cards))).toBe(
+      '<span class="teams-card"><span class="teams-card-title">Alert &lt;x&gt;</span><span class="teams-card-body">see here</span></span>',
+    )
+  })
+
+  it("degrades a valid-but-textless card to a bare Card block", () => {
+    expect(renderBody(cardMsg(JSON.stringify([{ content: {} }])))).toBe(
+      '<span class="teams-card"><span class="teams-card-title">Card</span></span>',
+    )
+  })
+
+  it("renders nothing for a malformed (unparseable) cards prop", () => {
+    // A card we can't parse leaves no chip and no card block — the message renders empty rather than
+    // fabricating a bogus "Card" out of garbage.
+    expect(renderBody(cardMsg("{not json"))).toBe("")
+  })
+
+  it("prefers real body text over the card block", () => {
+    const cards = JSON.stringify([{ content: { body: [{ text: "ignored" }] } }])
+    expect(renderBody(cardMsg(cards, { content: "<p>here</p>" }))).toBe("<p>here</p>")
+  })
+})
+
+// t151: any non-html messagetype whose content is unrecognized XML markup must not leak as escaped
+// raw payload — a quiet "[unsupported: type]" chip instead. A plain "Text" body stays escaped.
+describe("renderBody — unsupported non-html fallback", () => {
+  it("does not leak raw XML from an unknown non-html messagetype", () => {
+    expect(
+      renderBody(
+        msg({ messagetype: "RichText/Media_Unknown", content: "<weird><foo>bar</foo></weird>" }),
+      ),
+    ).toBe("[unsupported: RichText/Media_Unknown]")
+  })
+
+  it("still escapes a plain Text body (not treated as unsupported)", () => {
+    expect(renderBody(msg({ messagetype: "Text", content: "a < b" }))).toBe("a &lt; b")
+  })
+
+  it("escapes a non-html body that isn't XML-ish", () => {
+    expect(renderBody(msg({ messagetype: "RichText/Media_Unknown", content: "just text" }))).toBe(
+      "just text",
+    )
+  })
+})
+
+// t151: system-event → compact line. Built from the LIVE-enumerated shapes (Event/Call, ThreadActivity/*).
+describe("systemEventText (t151)", () => {
+  const sysMsg = (over) => ({ properties: {}, ...over })
+
+  it("summarizes an ended call with its participant count", () => {
+    expect(
+      systemEventText(
+        sysMsg({
+          messagetype: "Event/Call",
+          content: '<ended/><partlist alt="" count="10"><part/></partlist>',
+        }),
+      ),
+    ).toBe("Call ended · 10 people")
+  })
+
+  it("summarizes a 1-person ended call", () => {
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "Event/Call", content: '<ended/><partlist count="1"/>' }),
+      ),
+    ).toBe("Call ended · 1 person")
+  })
+
+  it("skips a bare meeting placeholder (no <ended/>)", () => {
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "Event/Call", content: "<partlist></partlist><meetingDetails/>" }),
+      ),
+    ).toBeNull()
+  })
+
+  it("names members joining from the event JSON friendlyname", () => {
+    const content = JSON.stringify({
+      eventtime: 1,
+      members: [{ id: "8:x", friendlyname: "Haiyang" }],
+    })
+    expect(systemEventText(sysMsg({ messagetype: "ThreadActivity/MemberJoined", content }))).toBe(
+      "Haiyang joined",
+    )
+  })
+
+  it("reads a self-removal DeleteMember as 'left'", () => {
+    const content =
+      "<deletemember><target>8:orgid:a</target><initiator>8:orgid:a</initiator></deletemember>"
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "ThreadActivity/DeleteMember", imdisplayname: "Bob", content }),
+      ),
+    ).toBe("Bob left")
+  })
+
+  it("reads a DeleteMember of another as 'removed a member'", () => {
+    const content =
+      "<deletemember><target>8:orgid:a</target><initiator>8:orgid:b</initiator></deletemember>"
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "ThreadActivity/DeleteMember", imdisplayname: "Bob", content }),
+      ),
+    ).toBe("Bob removed a member")
+  })
+
+  it("renders a topic rename with the new name", () => {
+    const content = "<topicupdate><value>Sprint Planning</value></topicupdate>"
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "ThreadActivity/TopicUpdate", imdisplayname: "Ann", content }),
+      ),
+    ).toBe('Ann renamed the conversation to "Sprint Planning"')
+  })
+
+  it("renders an app-added event with the app name", () => {
+    const content = "<AddCustomApp><targetName>Polls</targetName></AddCustomApp>"
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "ThreadActivity/AddCustomApp", imdisplayname: "Al", content }),
+      ),
+    ).toBe("Al added the Polls app")
+  })
+
+  it("returns null for low-signal / unknown subtypes", () => {
+    expect(
+      systemEventText(
+        sysMsg({ messagetype: "ThreadActivity/MeetingPolicyUpdated", content: "<x/>" }),
+      ),
+    ).toBeNull()
+    expect(
+      systemEventText(sysMsg({ messagetype: "ThreadActivity/PinnedItemsUpdate", content: "{}" })),
+    ).toBeNull()
+    expect(
+      systemEventText(sysMsg({ messagetype: "RichText/Media_CallTranscript", content: "{}" })),
+    ).toBeNull()
+  })
+
+  it("falls back to a generic actor when imdisplayname is absent", () => {
+    const content = "<addmember><target>8:x</target></addmember>"
+    expect(systemEventText(sysMsg({ messagetype: "ThreadActivity/AddMember", content }))).toBe(
+      "Someone added a member",
+    )
+  })
+})
+
+// t151: the conversation-list preview must be clean plain text for EVERY enumerated last-message shape.
+describe("previewText (t151)", () => {
+  it("keeps a plain HTML message's text", () => {
+    expect(previewText("<p>hello team</p>")).toBe("hello team")
+  })
+
+  it("drops a quoted-reply blockquote and keeps the replier's own words", () => {
+    const content =
+      '<p>Yeah, agentName is showing Agent.</p><blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="1"><strong itemprop="mri">Haiyang</strong><p itemprop="preview">Looks like passed through</p></blockquote>'
+    expect(previewText(content)).toBe("Yeah, agentName is showing Agent.")
+  })
+
+  it("reduces a reply with no added text to the reply glyph + quoted preview", () => {
+    const content =
+      '<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="1"><p itemprop="preview">original text</p></blockquote>'
+    expect(previewText(content)).toBe("↩ original text")
+  })
+
+  it("reduces an ended-call payload to 'Call ended'", () => {
+    expect(previewText('<ended/><partlist count="3"></partlist>')).toBe("Call ended")
+  })
+
+  it("reduces a topic-update payload to the rename line", () => {
+    expect(previewText("<topicupdate><value>New Topic</value></topicupdate>")).toBe(
+      'Renamed to "New Topic"',
+    )
+  })
+
+  it("reduces a member-change payload to a generic line", () => {
+    expect(previewText("<deletemember><target>8:x</target></deletemember>")).toBe(
+      "Membership changed",
+    )
+  })
+
+  it("reduces a SWIFT card to its Title", () => {
+    expect(
+      previewText('<URIObject type="SWIFT.1"><Title>Deployment Succeeded</Title></URIObject>'),
+    ).toBe("Deployment Succeeded")
+  })
+
+  it("reduces a call recording to a label", () => {
+    expect(
+      previewText('<URIObject type="Video.2/CallRecording.1"><Title>Standup</Title></URIObject>'),
+    ).toBe("Call recording")
+  })
+
+  it("returns empty for a noise system payload", () => {
+    expect(
+      previewText("<meetingpolicyupdated><value>ChatEnabled</value></meetingpolicyupdated>"),
+    ).toBe("")
+  })
+
+  it("returns empty for a call-transcript JSON pointer (no leak)", () => {
+    expect(previewText('{\\"scopeId\\":\\"abc\\",\\"callId\\":\\"def\\"}')).toBe("")
+  })
+
+  it("returns empty for empty content", () => {
+    expect(previewText("")).toBe("")
+    expect(previewText(null)).toBe("")
+  })
+
+  it("decodes entities and collapses whitespace", () => {
+    expect(previewText("<p>a &amp; b\n  c</p>")).toBe("a & b c")
+  })
+
+  // t151 iteration 3: an inline image becomes a 📷 token — including a tag the store's 500-char
+  // PREVIEW_CAP truncated mid-attribute (the live "okay… <img it…" leak — an unterminated tag that
+  // the plain `<[^>]+>` strip can't remove); an emoji img keeps its alt char instead.
+  it("turns an inline image into a 📷 token", () => {
+    expect(
+      previewText('<p>see <img itemtype="http://schema.skype.com/AMSImage" src="x"></p>'),
+    ).toBe("see 📷")
+    expect(previewText('<img src="x">')).toBe("📷")
+  })
+
+  it("tokenizes an img tag truncated mid-attribute by the preview cap", () => {
+    expect(
+      previewText('<p>okay - this was all I asked <img itemtype="http://schema.skype.com/AMSIm'),
+    ).toBe("okay - this was all I asked 📷")
+  })
+
+  it("keeps an emoji img's alt char instead of the 📷 token", () => {
+    expect(
+      previewText('yes <img itemtype="http://schema.skype.com/Emoji" alt="😄" src="e.png"> ok'),
+    ).toBe("yes 😄 ok")
+  })
+
+  it("drops any other tag truncated mid-attribute (no partial-markup leak)", () => {
+    expect(previewText('<p>done</p><a href="https://x.test/very/long/pa')).toBe("done")
   })
 })
 
@@ -244,6 +503,38 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
     ])
   })
 
+  it("extracts a finished recording's title + SharePoint playback url (t162)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/0-ea/views/thumbnail_small"><RecordingStatus status="Success"></RecordingStatus><Title>Trainer Squad Standup</Title><a href="https://fwdgroup-my.sharepoint.com/:v:/g/personal/x/IQabc">Play</a></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      {
+        kind: "recording",
+        title: "Trainer Squad Standup",
+        thumbnailUrl:
+          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-ea%2Fviews%2Fthumbnail_small",
+        url: "https://fwdgroup-my.sharepoint.com/:v:/g/personal/x/IQabc",
+      },
+    ])
+  })
+
+  it("falls back to the onedriveForBusinessVideo item url when the anchor href is empty (t162)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1"><RecordingStatus status="Success"></RecordingStatus><Title>Sync</Title><a href="">Play</a><RecordingContent><item type="onedriveForBusinessVideo" uri="https://fwdgroup-my.sharepoint.com/:v:/g/personal/y/IQdef" /></RecordingContent></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      {
+        kind: "recording",
+        title: "Sync",
+        url: "https://fwdgroup-my.sharepoint.com/:v:/g/personal/y/IQdef",
+      },
+    ])
+  })
+
+  it("drops an in-progress recording chunk (ChunkFinished/Initial → no chip) (t162)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1"><RecordingStatus status="ChunkFinished"></RecordingStatus><Title>Sync</Title><a href="">Play</a></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([])
+  })
+
   it("extracts a Swift card with its Title and proxied AMS thumbnail", () => {
     const content =
       '<URIObject type="SWIFT.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/card-thumb/views/imgpsh"><Title>Weekly digest</Title><Swift b64="eyto="></Swift></URIObject>'
@@ -303,6 +594,27 @@ describe("toReaderMessages — attachments", () => {
   it("omits attachments when there are none", () => {
     const out = toReaderMessages([msg({ id: "1", content: "<p>plain</p>" })], "ME")
     expect(out[0].attachments).toBeUndefined()
+  })
+
+  it("keeps the finished recording but skips the in-progress chunk rows (t162)", () => {
+    const rec = (status, href) =>
+      `<URIObject type="Video.2/CallRecording.1"><RecordingStatus status="${status}"></RecordingStatus><Title>Standup</Title><a href="${href}">Play</a></URIObject>`
+    const out = toReaderMessages(
+      [
+        { id: "1", messagetype: "RichText/Media_CallRecording", content: rec("Initial", "") },
+        { id: "2", messagetype: "RichText/Media_CallRecording", content: rec("ChunkFinished", "") },
+        {
+          id: "3",
+          messagetype: "RichText/Media_CallRecording",
+          content: rec("Success", "https://sp/play"),
+        },
+      ],
+      "ME",
+    )
+    expect(out.map((m) => m.id)).toEqual(["3"])
+    expect(out[0].attachments).toEqual([
+      { kind: "recording", title: "Standup", url: "https://sp/play" },
+    ])
   })
 })
 
@@ -430,15 +742,54 @@ describe("toReaderMessages", () => {
     expect(out[0].ts).toBe(Date.parse("2024-01-01T00:01:00.000Z"))
   })
 
-  it("filters ThreadActivity/* system messages", () => {
+  it("renders a recognized ThreadActivity as a system line (t151)", () => {
     const out = toReaderMessages(
       [
         msg({ id: "1", content: "<p>real</p>" }),
-        msg({ id: "sys", messagetype: "ThreadActivity/AddMember", content: "" }),
+        msg({
+          id: "sys",
+          messagetype: "ThreadActivity/AddMember",
+          imdisplayname: "Alice",
+          content: "<addmember><target>8:orgid:x</target></addmember>",
+        }),
+      ],
+      "ME",
+    )
+    const sys = out.find((m) => m.id === "sys")
+    expect(sys).toMatchObject({ kind: "system", body: "Alice added a member" })
+    expect(out.find((m) => m.id === "1")).toMatchObject({ body: "<p>real</p>" })
+  })
+
+  it("still skips a low-signal ThreadActivity subtype (t151)", () => {
+    const out = toReaderMessages(
+      [
+        msg({ id: "1", content: "<p>real</p>" }),
+        msg({
+          id: "sys",
+          messagetype: "ThreadActivity/MeetingPolicyUpdated",
+          content: "<meetingpolicyupdated><value>ChatEnabled</value></meetingpolicyupdated>",
+        }),
       ],
       "ME",
     )
     expect(out.map((m) => m.id)).toEqual(["1"])
+  })
+
+  it("does not carry self/edited/reaction fields on a system message", () => {
+    const [sys] = toReaderMessages(
+      [
+        msg({
+          id: "s",
+          messagetype: "ThreadActivity/TopicUpdate",
+          content: "<topicupdate><value>New</value></topicupdate>",
+        }),
+      ],
+      "ME",
+    )
+    expect(sys.kind).toBe("system")
+    expect(sys.self).toBeUndefined()
+    expect(sys.reactions).toBeUndefined()
+    expect(sys.attachments).toBeUndefined()
   })
 
   it("marks a deleted message and shows the tombstone body", () => {
@@ -466,6 +817,11 @@ describe("toReaderMessages", () => {
     const out = toReaderMessages([msg({ from: "8:orgid:ME" })], "ME")
     expect(out[0].self).toBe(true)
   })
+
+  it("leaves senderName empty when Teams omits imdisplayname — never 'Unknown' (t151)", () => {
+    const out = toReaderMessages([msg({ imdisplayname: undefined })], "ME")
+    expect(out[0].senderName).toBe("")
+  })
 })
 
 describe("composeTitle", () => {
@@ -475,5 +831,61 @@ describe("composeTitle", () => {
   it("falls back by kind", () => {
     expect(composeTitle({ topic: null, kind: "oneOnOne" })).toBe("Direct message")
     expect(composeTitle({ topic: "  ", kind: "group" })).toBe("Group chat")
+  })
+})
+
+// t160: a mention of the signed-in user gets `mention-self` (renderer highlights it), and the
+// message carries `mentionsMe` so the row can tint without re-parsing the HTML.
+describe("renderBody — self-mention highlight (t160)", () => {
+  const span = (id, text) =>
+    `<span itemscope itemtype="http://schema.skype.com/Mention" itemid="${id}">${text}</span>`
+  const selfOid = "f89854b7-bc31-430f-ad88-723752d1c7dd"
+
+  it("marks an itemtype mention of the viewer (mri oid match)", () => {
+    const content = `<p>ping ${span(0, "Dustin Do")}</p>`
+    const mentions = [{ itemid: 0, mri: `8:orgid:${selfOid}` }]
+    expect(renderBody(msg({ content, properties: { mentions } }), `8:orgid:${selfOid}`)).toBe(
+      '<p>ping <span class="mention mention-self">@Dustin Do</span></p>',
+    )
+  })
+
+  it("marks a legacy <at> mention of the viewer", () => {
+    expect(renderBody(msg({ content: `<at id="8:orgid:${selfOid}">Dustin</at>` }), selfOid)).toBe(
+      '<span class="mention mention-self">@Dustin</span>',
+    )
+  })
+
+  it("leaves other people's mentions unmarked", () => {
+    const content = span(0, "Alice")
+    const mentions = [{ itemid: 0, mri: "8:orgid:someone-else" }]
+    expect(renderBody(msg({ content, properties: { mentions } }), `8:orgid:${selfOid}`)).toBe(
+      '<span class="mention">@Alice</span>',
+    )
+  })
+
+  it("toReaderMessages stamps mentionsMe on a self-mentioning message only", () => {
+    const mentions = [{ itemid: 0, mri: `8:orgid:${selfOid}` }]
+    const list = [
+      {
+        id: "1",
+        originalarrivaltime: "2026-07-23T01:00:00.000Z",
+        from: "https://x/contacts/8:orgid:other",
+        imdisplayname: "Alice",
+        messagetype: "RichText/Html",
+        content: `<p>hey ${span(0, "Dustin")}</p>`,
+        properties: { mentions },
+      },
+      {
+        id: "2",
+        originalarrivaltime: "2026-07-23T01:01:00.000Z",
+        from: "https://x/contacts/8:orgid:other",
+        imdisplayname: "Alice",
+        messagetype: "RichText/Html",
+        content: "<p>no mention</p>",
+      },
+    ]
+    const out = toReaderMessages(list, `8:orgid:${selfOid}`)
+    expect(out[0].mentionsMe).toBe(true)
+    expect(out[1].mentionsMe).toBeUndefined()
   })
 })

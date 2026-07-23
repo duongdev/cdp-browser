@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 // Pure DM/group-DM name helpers (t131, ADR-0019). No CDP, no network — the effectful roster +
 // Graph resolution lives in web/server.mjs; these are the id parsers + title composer.
-import { composeTitle, oidFromMri, otherMrisFromId } from "./teams-names"
+import { composeTitle, normalizeUserOid, oidFromMri, otherMrisFromId } from "./teams-names"
 
 const SELF = "8:orgid:AAA"
 const OTHER = "8:orgid:BBB"
@@ -49,6 +49,23 @@ describe("oidFromMri", () => {
   it("returns the input when it has no prefix, and '' for non-strings", () => {
     expect(oidFromMri("AAA")).toBe("AAA")
     expect(oidFromMri(null)).toBe("")
+  })
+})
+
+describe("normalizeUserOid", () => {
+  const UUID = "623d9d09-8883-43fc-a957-17a73b5ee4f3"
+  it("accepts a bare uuid", () => {
+    expect(normalizeUserOid(UUID)).toBe(UUID)
+  })
+  it("strips the 8:orgid: prefix and accepts the uuid", () => {
+    expect(normalizeUserOid(`8:orgid:${UUID}`)).toBe(UUID)
+  })
+  it("rejects a non-uuid / url / garbage (SSRF guard)", () => {
+    expect(normalizeUserOid("https://evil.com/x")).toBe("")
+    expect(normalizeUserOid("../../etc/passwd")).toBe("")
+    expect(normalizeUserOid("48:notes")).toBe("")
+    expect(normalizeUserOid("")).toBe("")
+    expect(normalizeUserOid(null)).toBe("")
   })
 })
 
