@@ -1,0 +1,368 @@
+// Server-owned SQLite chat store for the Teams chat app (t127, ADR-0019). The single source
+// of truth for chat state; clients keep a light cache and sync over the existing SSE/WS
+// (mirrors ADR-0017 pins/history). The `better-sqlite3` handle is injected — this module has
+// no `require("better-sqlite3")`, so it's testable against an in-memory (`:memory:`) db and
+// the native module is only loaded by the web server (never bundled into Electron; Electron
+// is a shell that loads the served URL). See ADR-0019.
+//
+// t127 creates the WHOLE schema (so later tasks never migrate) but only WRITES `accounts` +
+// `conversations`. `messages`, `read_state`, and the FTS index ship as migration-only.
+
+// The full schema. `CREATE … IF NOT EXISTS` makes migrate() idempotent (safe to run on
+// every boot). Cursor columns (newest_synced_ts / oldest_synced_ts) let t129+ page a
+// conversation forward + backward, both resumable across restarts.
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS accounts (
+    tenant            TEXT PRIMARY KEY,
+    user_id           TEXT,
+    display_name      TEXT,
+    chat_service_base TEXT,
+    updated_at        INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS conversations (
+    id                   TEXT PRIMARY KEY,
+    tenant               TEXT,
+    kind                 TEXT,
+    topic                TEXT,
+    last_message_id      TEXT,
+    last_message_version INTEGER,
+    last_message_ts      INTEGER,
+    last_message_preview TEXT,
+    newest_synced_ts     INTEGER,
+    oldest_synced_ts     INTEGER,
+    muted                INTEGER DEFAULT 0,
+    updated_at           INTEGER
+  )`,
+  // Written t129+ — schema only for now.
+  `CREATE TABLE IF NOT EXISTS messages (
+    conv_id     TEXT,
+    id          TEXT,
+    tenant      TEXT,
+    version     INTEGER,
+    sender_id   TEXT,
+    sender_name TEXT,
+    ts          INTEGER,
+    content     TEXT,
+    deleted     INTEGER DEFAULT 0,
+    edited      INTEGER DEFAULT 0,
+    PRIMARY KEY (conv_id, id)
+  )`,
+  // Written t130+ — schema only for now.
+  `CREATE TABLE IF NOT EXISTS read_state (
+    conv_id         TEXT PRIMARY KEY,
+    tenant          TEXT,
+    read_horizon_ts INTEGER,
+    local_read_ts   INTEGER
+  )`,
+  // Display-name cache keyed by MRI (t131). DMs/group-DMs carry no topic, so their title is
+  // built from member names resolved via Graph — cached here so it's a one-time lookup per person
+  // (name resolution is the expensive part; a re-render must not re-hit Graph).
+  `CREATE TABLE IF NOT EXISTS users (
+    mri          TEXT PRIMARY KEY,
+    display_name TEXT,
+    updated_at   INTEGER
+  )`,
+  // Populated later (search is a deferred default) — external-content FTS over `messages`.
+  `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content='messages')`,
+]
+
+function migrate(db) {
+  for (const stmt of SCHEMA) db.exec(stmt)
+  return db
+}
+
+// Reserved conversations to skip. Teams uses the `48:` namespace for non-chat threads:
+// `48:notes` (the self "chat with yourself" / "Notes"), `48:notifications`, `48:mentions`. Only
+// `48:notes` is a real chat (it has a lastMessage), so it enters the store; the others never do.
+function isReservedConversation(id) {
+  return typeof id === "string" && id.startsWith("48:") && id !== "48:notes"
+}
+
+// `48:notes` is the self chat; 1:1 chat ids end `@unq.gbl.spaces`; group chats are `…@thread.v2`.
+// Everything else that isn't reserved is treated as a group thread.
+function conversationKind(id) {
+  if (id === "48:notes") return "self"
+  return typeof id === "string" && id.includes("@unq.gbl.spaces") ? "oneOnOne" : "group"
+}
+
+// ISO-8601 (Teams `originalarrivaltime` / `composetime`) → epoch ms, or null.
+function toEpochMs(iso) {
+  if (!iso) return null
+  const t = Date.parse(iso)
+  return Number.isFinite(t) ? t : null
+}
+
+const PREVIEW_CAP = 500
+
+// Pure: a raw Teams conversation object → the DB row shape (message rendering/sanitizing is
+// t129, so the preview is the raw last-message content, capped). `lastUpdatedMessageVersion`
+// drives the version gate; the last message's arrival time is the sort/anchor timestamp.
+function shapeConversation(conv, tenant) {
+  const last = conv.lastMessage || {}
+  const content = typeof last.content === "string" ? last.content : ""
+  return {
+    id: conv.id,
+    tenant,
+    kind: conversationKind(conv.id),
+    topic: conv.threadProperties?.topic || null,
+    last_message_id: conv.lastUpdatedMessageId || last.id || null,
+    last_message_version: Number(conv.lastUpdatedMessageVersion) || 0,
+    last_message_ts: toEpochMs(last.originalarrivaltime) ?? toEpochMs(last.composetime),
+    last_message_preview: content.length > PREVIEW_CAP ? content.slice(0, PREVIEW_CAP) : content,
+    muted: 0,
+  }
+}
+
+// Insert new conversations, update a row only when its `lastUpdatedMessageVersion` rises
+// (no-op on equal/lower — the WHERE gate), and skip reserved/self. The newest/oldest sync
+// cursors are seeded to the last-message ts ONCE on insert and never clobbered by an update
+// (t129+ owns their advance). Returns the shaped, non-reserved rows it processed.
+function upsertConversations(db, tenant, list, now = Date.now()) {
+  const stmt = db.prepare(`
+    INSERT INTO conversations
+      (id, tenant, kind, topic, last_message_id, last_message_version, last_message_ts,
+       last_message_preview, newest_synced_ts, oldest_synced_ts, muted, updated_at)
+    VALUES
+      (@id, @tenant, @kind, @topic, @last_message_id, @last_message_version, @last_message_ts,
+       @last_message_preview, @last_message_ts, @last_message_ts, @muted, @updated_at)
+    ON CONFLICT(id) DO UPDATE SET
+      tenant = excluded.tenant,
+      kind = excluded.kind,
+      topic = excluded.topic,
+      last_message_id = excluded.last_message_id,
+      last_message_version = excluded.last_message_version,
+      last_message_ts = excluded.last_message_ts,
+      last_message_preview = excluded.last_message_preview,
+      updated_at = excluded.updated_at
+    WHERE excluded.last_message_version > conversations.last_message_version
+  `)
+  const rows = []
+  const run = db.transaction((convs) => {
+    for (const conv of convs) {
+      if (!conv?.id || isReservedConversation(conv.id)) continue
+      const row = shapeConversation(conv, tenant)
+      stmt.run({ ...row, updated_at: now })
+      rows.push(row)
+    }
+  })
+  run(list || [])
+  return rows
+}
+
+// Upsert the single signed-in account (t127 writes this alongside conversations). Keyed by
+// tenant so a multi-account switcher slots in later without a schema change (decision 11).
+function upsertAccount(db, account, now = Date.now()) {
+  db.prepare(`
+    INSERT INTO accounts (tenant, user_id, display_name, chat_service_base, updated_at)
+    VALUES (@tenant, @user_id, @display_name, @chat_service_base, @updated_at)
+    ON CONFLICT(tenant) DO UPDATE SET
+      user_id = excluded.user_id,
+      display_name = COALESCE(excluded.display_name, accounts.display_name),
+      chat_service_base = excluded.chat_service_base,
+      updated_at = excluded.updated_at
+  `).run({
+    tenant: account.tenant,
+    user_id: account.userId || null,
+    display_name: account.displayName || null,
+    chat_service_base: account.chatServiceBase || null,
+    updated_at: now,
+  })
+}
+
+// The conversation list for a tenant, newest-first — the shape the /api/teams/conversations
+// route returns and t128's list UI reads.
+function listConversations(db, tenant) {
+  const rows = db
+    .prepare(`
+      SELECT id, kind, topic, last_message_id, last_message_version, last_message_ts,
+             last_message_preview, muted
+      FROM conversations
+      WHERE tenant = ?
+      ORDER BY last_message_ts DESC NULLS LAST, id
+    `)
+    .all(tenant)
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    topic: r.topic,
+    lastMessageId: r.last_message_id,
+    lastMessageVersion: r.last_message_version,
+    lastMessageTs: r.last_message_ts,
+    lastMessagePreview: r.last_message_preview,
+    muted: !!r.muted,
+  }))
+}
+
+// Persist a page of ReaderMessages (t129, ADR-0019) into `messages`, insert-or-replace by
+// (conv_id, id) so a re-fetch or an edit overwrites in place. Bodies are pre-rendered plain text
+// (teams-render), so `content` holds display text — no re-sanitizing on read. `version` is stored
+// when the caller carries it (t131 reconcile gate); ReaderMessage v1 omits it → null. Advances the
+// conversation's sync cursors to span the page (oldest down, newest up) so paging resumes across
+// restarts. `msgs` is the toReaderMessages output; empty is a no-op.
+function upsertMessages(db, tenant, convId, msgs, now = Date.now()) {
+  const list = Array.isArray(msgs) ? msgs.filter((m) => m?.id) : []
+  if (list.length === 0) return
+  const stmt = db.prepare(`
+    INSERT INTO messages
+      (conv_id, id, tenant, version, sender_id, sender_name, ts, content, deleted, edited)
+    VALUES
+      (@conv_id, @id, @tenant, @version, @sender_id, @sender_name, @ts, @content, @deleted, @edited)
+    ON CONFLICT(conv_id, id) DO UPDATE SET
+      version = excluded.version,
+      sender_id = excluded.sender_id,
+      sender_name = excluded.sender_name,
+      ts = excluded.ts,
+      content = excluded.content,
+      deleted = excluded.deleted,
+      edited = excluded.edited
+  `)
+  const advance = db.prepare(`
+    UPDATE conversations SET
+      newest_synced_ts = MAX(COALESCE(newest_synced_ts, 0), @newest),
+      oldest_synced_ts = MIN(COALESCE(oldest_synced_ts, @oldest), @oldest),
+      updated_at = @now
+    WHERE id = @convId AND tenant = @tenant
+  `)
+  const run = db.transaction((rows) => {
+    let oldest = Number.POSITIVE_INFINITY
+    let newest = Number.NEGATIVE_INFINITY
+    for (const m of rows) {
+      const ts = Number(m.ts) || 0
+      stmt.run({
+        conv_id: convId,
+        id: String(m.id),
+        tenant,
+        version: Number.isFinite(m.version) ? m.version : null,
+        sender_id: m.senderId || null,
+        sender_name: m.senderName || null,
+        ts,
+        content: m.body || "",
+        deleted: m.deleted ? 1 : 0,
+        edited: m.edited ? 1 : 0,
+      })
+      if (ts > 0) {
+        if (ts < oldest) oldest = ts
+        if (ts > newest) newest = ts
+      }
+    }
+    if (Number.isFinite(oldest) && Number.isFinite(newest)) {
+      advance.run({ convId, tenant, oldest, newest, now })
+    }
+  })
+  run(list)
+}
+
+// A conversation's stored messages, newest-first (the thread view reverses for display). `before`
+// is a ts cursor (exclusive) for lazy older-page loads; `limit` caps the page (default 30). Bodies
+// are already rendered plain text. `self` is NOT stored — the caller recomputes it against the
+// signed-in account when this backs a response (t130); v1 fetches self fresh from toReaderMessages.
+function listMessages(db, tenant, convId, opts = {}) {
+  const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.floor(opts.limit) : 30
+  const before = Number.isFinite(opts.before) ? opts.before : null
+  const rows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, content, deleted, edited
+      FROM messages
+      WHERE conv_id = @convId AND tenant = @tenant
+        AND (@before IS NULL OR ts < @before)
+      ORDER BY ts DESC, id DESC
+      LIMIT @limit
+    `)
+    .all({ convId, tenant, before, limit })
+  return rows.map((r) => ({
+    id: r.id,
+    ts: r.ts,
+    version: r.version,
+    senderId: r.sender_id,
+    senderName: r.sender_name,
+    body: r.content,
+    edited: !!r.edited,
+    deleted: !!r.deleted,
+  }))
+}
+
+// ---- read state (t130, ADR-0019) ------------------------------------------
+// Q9 hybrid: `local_read_ts` advances when a conversation is OPENED (a local read — no Teams
+// write), `read_horizon_ts` advances on a write-through mark-read (a reply or explicit action
+// that also pushed the consumptionHorizon to Teams). Both are monotonic (MAX guard) so a
+// stale/older ts never rewinds the horizon. Written independently — one call never clobbers the
+// other's column.
+
+function setReadHorizon(db, tenant, convId, ts) {
+  db.prepare(`
+    INSERT INTO read_state (conv_id, tenant, read_horizon_ts)
+    VALUES (@convId, @tenant, @ts)
+    ON CONFLICT(conv_id) DO UPDATE SET
+      tenant = excluded.tenant,
+      read_horizon_ts = MAX(COALESCE(read_state.read_horizon_ts, 0), excluded.read_horizon_ts)
+  `).run({ convId, tenant, ts: Number(ts) || 0 })
+}
+
+function setLocalRead(db, tenant, convId, ts) {
+  db.prepare(`
+    INSERT INTO read_state (conv_id, tenant, local_read_ts)
+    VALUES (@convId, @tenant, @ts)
+    ON CONFLICT(conv_id) DO UPDATE SET
+      tenant = excluded.tenant,
+      local_read_ts = MAX(COALESCE(read_state.local_read_ts, 0), excluded.local_read_ts)
+  `).run({ convId, tenant, ts: Number(ts) || 0 })
+}
+
+function getReadState(db, convId) {
+  const r = db
+    .prepare("SELECT tenant, read_horizon_ts, local_read_ts FROM read_state WHERE conv_id = ?")
+    .get(convId)
+  if (!r) return null
+  return { tenant: r.tenant, readHorizonTs: r.read_horizon_ts, localReadTs: r.local_read_ts }
+}
+
+// ---- user display-name cache (t131, ADR-0019) -----------------------------
+// Insert-or-update names keyed by MRI. `list` is [{ mri, displayName }]; rows missing either
+// field are skipped (a Graph miss shouldn't cache a blank name). Empty list is a no-op.
+function upsertUsers(db, list, now = Date.now()) {
+  const rows = (Array.isArray(list) ? list : []).filter((u) => u?.mri && u?.displayName)
+  if (rows.length === 0) return
+  const stmt = db.prepare(`
+    INSERT INTO users (mri, display_name, updated_at)
+    VALUES (@mri, @display_name, @updated_at)
+    ON CONFLICT(mri) DO UPDATE SET
+      display_name = excluded.display_name,
+      updated_at = excluded.updated_at
+  `)
+  const run = db.transaction((us) => {
+    for (const u of us) stmt.run({ mri: u.mri, display_name: u.displayName, updated_at: now })
+  })
+  run(rows)
+}
+
+// The cached names for a set of MRIs → Map(mri → displayName). Only the hits are present, so the
+// caller diffs the requested MRIs against the map keys to find the misses to resolve. Empty list
+// → empty map (no query).
+function getUsers(db, mris) {
+  const map = new Map()
+  const ids = Array.isArray(mris) ? mris.filter(Boolean) : []
+  if (ids.length === 0) return map
+  const placeholders = ids.map(() => "?").join(",")
+  const rows = db
+    .prepare(`SELECT mri, display_name FROM users WHERE mri IN (${placeholders})`)
+    .all(ids)
+  for (const r of rows) map.set(r.mri, r.display_name)
+  return map
+}
+
+module.exports = {
+  migrate,
+  isReservedConversation,
+  conversationKind,
+  shapeConversation,
+  upsertConversations,
+  upsertAccount,
+  listConversations,
+  upsertMessages,
+  listMessages,
+  setReadHorizon,
+  setLocalRead,
+  getReadState,
+  upsertUsers,
+  getUsers,
+}

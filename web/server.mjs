@@ -12,6 +12,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs"
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
+import Database from "better-sqlite3"
 import webpush from "web-push"
 import WebSocket, { WebSocketServer } from "ws"
 import { atomicWriteFileSync } from "../core/atomic-write.js"
@@ -43,10 +44,36 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
+import { buildAmsImageContent } from "../core/teams-ams.js"
+import { isValidTeamsCursor } from "../core/teams-cursor.js"
+import { buildTeamsFilePayload } from "../core/teams-files.js"
+import { isValidAmsUrl, rewriteMediaHtml } from "../core/teams-media.js"
+import {
+  composeTitle as teamsComposeTitle,
+  oidFromMri as teamsOidFromMri,
+  otherMrisFromId as teamsOtherMrisFromId,
+} from "../core/teams-names.js"
+import { planTeamsNotifications } from "../core/teams-notify-sweep.js"
+import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
+import {
+  conversationKind as teamsConversationKind,
+  getUsers as teamsGetUsers,
+  listConversations as teamsListConversations,
+  migrate as teamsMigrate,
+  setLocalRead as teamsSetLocalRead,
+  setReadHorizon as teamsSetReadHorizon,
+  upsertAccount as teamsUpsertAccount,
+  upsertConversations as teamsUpsertConversations,
+  upsertMessages as teamsUpsertMessages,
+  upsertUsers as teamsUpsertUsers,
+} from "../core/teams-store.js"
 import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = join(HERE, "..", "dist")
+// Standalone Teams chat app (t128, ADR-0019) — a second built bundle served at the
+// same-origin path /chat, path-scoped so it never shadows the / browser PWA above.
+const DIST_CHAT = join(HERE, "..", "dist-chat")
 const PORT = Number(process.env.PORT || 7800)
 const SETTINGS_PATH = process.env.SETTINGS_PATH || join(HERE, "..", "web-settings.json")
 const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notifications.json")
@@ -178,6 +205,38 @@ const savePushSubs = () => {
     atomicWriteFileSync(SUBS_PATH, JSON.stringify(pushSubs, null, 2))
   } catch (e) {
     console.error("[web] savePushSubs failed:", e.message)
+  }
+}
+
+// ---- Teams push (t147) ----------------------------------------------------
+// Fully isolated from the CDP-browser push spine above: its own subscription store + send
+// path, so a Teams-chat subscriber and its every-new-message pushes never touch the existing
+// notification delivery. Capture is a server-side REST poll (trouter realtime is a dead end),
+// mirroring the Slack sweep — see teamsNotifySweep + core/teams-notify-sweep.js.
+const TEAMS_PUSH_SUBS_PATH =
+  process.env.TEAMS_PUSH_SUBS_PATH || join(HERE, "..", "teams-push-subs.json")
+const TEAMS_NOTIFY_STATE_PATH =
+  process.env.TEAMS_NOTIFY_STATE_PATH || join(HERE, "..", "teams-notify-state.json")
+let teamsPushSubs = loadJson(TEAMS_PUSH_SUBS_PATH, [])
+if (!Array.isArray(teamsPushSubs)) teamsPushSubs = []
+// { watermarks: { convId: lastNotifiedTs }, seeded } — persisted so a restart resumes from the
+// watermark instead of re-seeding (which would drop every message that arrived while down).
+let teamsNotifyState = (() => {
+  const s = loadJson(TEAMS_NOTIFY_STATE_PATH, null)
+  return s && typeof s === "object" && s.watermarks ? s : { watermarks: {}, seeded: false }
+})()
+const saveTeamsPushSubs = () => {
+  try {
+    atomicWriteFileSync(TEAMS_PUSH_SUBS_PATH, JSON.stringify(teamsPushSubs, null, 2))
+  } catch (e) {
+    console.error("[web] saveTeamsPushSubs failed:", e.message)
+  }
+}
+const saveTeamsNotifyState = () => {
+  try {
+    atomicWriteFileSync(TEAMS_NOTIFY_STATE_PATH, JSON.stringify(teamsNotifyState))
+  } catch (e) {
+    console.error("[web] saveTeamsNotifyState failed:", e.message)
   }
 }
 
@@ -578,6 +637,15 @@ function applyBatch(items) {
   for (const c of items || []) if (c?.method) send(c.method, c.params)
 }
 
+// ---- Teams chat store (t127, ADR-0019) ------------------------------------
+// Server-owned SQLite = the single source of truth for Teams chat state (ADR-0019). Web build
+// only — Electron is a shell that loads the served URL, so the native module is never bundled
+// there (not in package.json build.files). t127 writes accounts + conversations; the rest of
+// the schema ships migration-only. Lives next to the settings file.
+const TEAMS_DB_PATH = process.env.TEAMS_DB_PATH || join(HERE, "..", "web-teams.db")
+const teamsDb = new Database(TEAMS_DB_PATH)
+teamsMigrate(teamsDb)
+
 // ---- notification side-channel (shared core, headless) --------------------
 // The whole lifecycle + store lives in notifications-sidechain.js; the server
 // injects only its effects (capture-script reads, /json target list, the
@@ -605,6 +673,21 @@ const notificationCenter = createNotificationCenter({
   onCreds: (rec) => {
     console.log(`[web] slack creds ready: ${rec.teamId} (${rec.name})`)
     sweepScheduler.request(rec.teamId, rec)
+  },
+  // Teams messaging creds minted from a live Teams tab (t127, ADR-0019). Record the account
+  // identity so the chat DB knows this signed-in tenant. Passing this callback is what turns on
+  // the Teams cred path in the side-channel — Electron never does, so it structurally stubs.
+  onTeamsCreds: (rec) => {
+    console.log(`[web] teams creds ready: tenant=${rec.tenant} base=${rec.chatServiceBase}`)
+    try {
+      teamsUpsertAccount(teamsDb, {
+        tenant: rec.tenant,
+        userId: rec.userId,
+        chatServiceBase: rec.chatServiceBase,
+      })
+    } catch (e) {
+      console.error("[web] teams account upsert failed:", e.message)
+    }
   },
   // The Slack hijack (t064) is demoted to a "sweep now" trigger (ADR-0011): a fired
   // notification means something happened, so sweep that workspace immediately for the
@@ -940,14 +1023,1046 @@ setInterval(() => {
   checkSlackHealthAlerts()
 }, 15_000)
 
+// ---- Teams conversation list (t127/t134, ADR-0019) ------------------------
+// CA-proof: the conversations GET runs IN-PAGE via the side-channel (the browser's own
+// authenticated fetch), never a server-side fetch. Pin to the minted chatServiceBase —
+// chatsvcagg.teams.microsoft.com is a proven 401 dead-end. First page = the base URL; older
+// pages = the previous response's `_metadata.backwardLink` (an opaque syncState cursor), fetched
+// verbatim after the security gate (isValidTeamsCursor) confirms it stays under our chatServiceBase.
+// Returns { conversations, cursor } (cursor = next backwardLink or null) or a typed { error }.
+async function fetchTeamsConversationsInPage(cred, cursor) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  let url
+  if (cursor) {
+    // SSRF gate: the cursor is a server-fetched IN-PAGE URL carrying the skypetoken.
+    if (!isValidTeamsCursor(cursor, cred.chatServiceBase)) return { error: "bad_cursor" }
+    url = cursor
+  } else {
+    url = `${cred.chatServiceBase}/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=50&startTime=1`
+  }
+  // The skype token auths the msg service via `Authentication: skypetoken=…` (NOT a Bearer).
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return await r.json()
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.error) return { error: result.error }
+  return {
+    conversations: Array.isArray(result.conversations) ? result.conversations : [],
+    cursor: result._metadata?.backwardLink || null,
+  }
+}
+
+// Mint/reuse creds → in-page conversations fetch → upsert → return the DB view. A 401 in-page
+// drives a single re-authz (markTeamsCredsStale re-mints over the live tab) and one retry, then
+// a hard typed invalid_auth. The keeper tab is load-bearing: only its MSAL rotates the bearer.
+async function teamsConversations(cursor) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds() // no fresh cred yet — mint over a live Teams tab
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await fetchTeamsConversationsInPage(cred, cursor)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth") // re-authz (one retry)
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await fetchTeamsConversationsInPage(cred, cursor)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  teamsUpsertAccount(teamsDb, {
+    tenant: cred.tenant,
+    userId: cred.userId,
+    chatServiceBase: cred.chatServiceBase,
+  })
+  // Return only THIS page's conversations (the client appends + dedups), enriched from the DB view
+  // (unread/preview/muted) and t131 name resolution per page. `rows` = the page's non-reserved convs.
+  const rows = teamsUpsertConversations(teamsDb, cred.tenant, out.conversations)
+  const pageIds = new Set(rows.map((r) => r.id))
+  const convs = teamsListConversations(teamsDb, cred.tenant).filter((c) => pageIds.has(c.id))
+  return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
+}
+
+// ---- Teams push notifications (t147) --------------------------------------
+// Server-side poll → push, fully isolated from the CDP-browser notification path. Scope is every
+// new incoming chat message; the pure planner (core/teams-notify-sweep.js) does the seeding +
+// self/system/reserved skipping + watermark bookkeeping.
+
+// Raw last-message arrival time → epoch ms (mirrors teams-store's private toEpochMs).
+function teamsLastMessageTs(last) {
+  const t = Date.parse(last?.originalarrivaltime || last?.composetime || "")
+  return Number.isFinite(t) ? t : null
+}
+
+// Send a Teams push to every Teams subscription; prune the ones that come back gone (404/410).
+async function sendTeamsPush(payload) {
+  if (teamsPushSubs.length === 0) return
+  const data = JSON.stringify(payload)
+  const dead = []
+  await Promise.all(
+    teamsPushSubs.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub, data, pushSendOptions())
+      } catch (e) {
+        if (e.statusCode === 404 || e.statusCode === 410) dead.push(sub.endpoint)
+        else console.error("[teams-push] send failed:", e.statusCode, e.body || e.message)
+      }
+    }),
+  )
+  if (dead.length > 0) {
+    teamsPushSubs = teamsPushSubs.filter((s) => !dead.includes(s.endpoint))
+    saveTeamsPushSubs()
+  }
+}
+
+// The SHARED PAYLOAD CONTRACT the SW consumes (exact field names). title = sender for a 1:1/self,
+// else "{sender} · {topic}" when the group has a topic (topic-less group → just the sender).
+function buildTeamsPushPayload(n, rawConv) {
+  const topic = rawConv?.threadProperties?.topic
+  const sender = n.senderName || "Teams"
+  const isGroup = teamsConversationKind(n.convId) === "group"
+  const title = isGroup && topic ? `${sender} · ${topic}` : sender
+  return {
+    type: "teams",
+    title,
+    body: n.preview,
+    convId: n.convId,
+    msgId: n.msgId,
+    ts: n.ts,
+    tag: n.convId,
+  }
+}
+
+// One capture tick: fetch the RAW conversation page in-page, plan the notifications, send them,
+// persist the advanced watermark. No work if nobody's subscribed or there's no Teams cred.
+async function teamsNotifySweep() {
+  if (teamsPushSubs.length === 0) return
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds() // mint over a live Teams tab, like teamsConversations
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return
+
+  let out = await fetchTeamsConversationsInPage(cred) // raw lastMessage fields, first page only
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return
+    out = await fetchTeamsConversationsInPage(cred)
+  }
+  if (out.error) return
+
+  const convMap = new Map()
+  const conversations = []
+  for (const c of out.conversations) {
+    const last = c?.lastMessage
+    if (!c?.id || !last) continue
+    convMap.set(c.id, c)
+    conversations.push({
+      id: c.id,
+      lastMessage: {
+        id: last.id,
+        from: last.from,
+        imdisplayname: last.imdisplayname,
+        content: last.content,
+        ts: teamsLastMessageTs(last),
+        messagetype: last.messagetype,
+      },
+    })
+  }
+
+  const { notifications, state } = planTeamsNotifications({
+    conversations,
+    state: teamsNotifyState,
+    selfId: cred.userId,
+  })
+  if (state !== teamsNotifyState) {
+    teamsNotifyState = state
+    saveTeamsNotifyState()
+  }
+  if (notifications.length > 0)
+    console.log(`[teams-push] ${notifications.length} new -> ${teamsPushSubs.length} sub(s)`)
+  for (const n of notifications)
+    await sendTeamsPush(buildTeamsPushPayload(n, convMap.get(n.convId)))
+}
+
+// Poll every 10s. Single-flight so a slow in-page fetch can't stack overlapping sweeps.
+let teamsNotifyInFlight = false
+setInterval(() => {
+  if (teamsNotifyInFlight) return
+  teamsNotifyInFlight = true
+  teamsNotifySweep()
+    .catch((e) => console.error("[teams-push] sweep failed:", e.message))
+    .finally(() => {
+      teamsNotifyInFlight = false
+    })
+}, 10_000)
+
+// ---- DM / group-DM name resolution (t131, ADR-0019) -----------------------
+// A DM/group-DM has no topic, so its title is built from member display names. CA-proof like the
+// rest: the roster + Graph fetches run IN-PAGE. Names are cached by MRI so a re-render is a cache
+// hit — resolution only fires for MRIs seen for the first time. Best-effort throughout: any fetch
+// failure degrades a conversation to its kind fallback and NEVER fails the list.
+
+// Batch every group-DM roster in ONE in-page call: the 1:1 id already encodes its members, but a
+// group-DM's members come from /v1/threads/{id}. Returns { convId: [mri, …] }; a per-thread miss
+// just omits that id (→ the group falls back to "Group chat").
+async function fetchTeamsGroupRostersInPage(cred, convIds) {
+  if (!cred.chatServiceBase || convIds.length === 0) return {}
+  const script = `(async () => {
+    const ids = ${JSON.stringify(convIds)}
+    const out = {}
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const r = await fetch(${JSON.stringify(cred.chatServiceBase)} + "/v1/threads/" + encodeURIComponent(id) + "?view=msnp24Equivalent", {
+          headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+        })
+        if (!r.ok) return
+        const j = await r.json()
+        out[id] = (Array.isArray(j.members) ? j.members : []).map((m) => m && m.id).filter(Boolean)
+      } catch (e) {}
+    }))
+    return out
+  })()`
+  const res = await notificationCenter.runInTeamsPage(script)
+  return res && typeof res === "object" ? res : {}
+}
+
+// Resolve MRIs → names in ONE Graph getByIds batch, IN-PAGE. The Graph bearer is read from the
+// page's own MSAL cache (the accesstoken entry scoped to graph.microsoft.com) — a localStorage
+// read, not a network call, so CA doesn't apply; the POST is the browser's own authenticated
+// request. Returns { oid: displayName }; any failure → {} (all misses stay unresolved).
+async function resolveTeamsNamesInPage(oids) {
+  if (oids.length === 0) return {}
+  const script = `(async () => {
+    try {
+      let key = null
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
+      }
+      if (!key) return {}
+      let bearer = ""
+      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return {} }
+      if (!bearer) return {}
+      const r = await fetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + bearer, "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: ${JSON.stringify(oids)}, types: ["user"] }),
+      })
+      if (!r.ok) return {}
+      const j = await r.json()
+      const out = {}
+      for (const u of (Array.isArray(j.value) ? j.value : [])) {
+        if (u && u.id && u.displayName) out[u.id] = u.displayName
+      }
+      return out
+    } catch (e) { return {} }
+  })()`
+  const res = await notificationCenter.runInTeamsPage(script)
+  return res && typeof res === "object" ? res : {}
+}
+
+// Attach a `title` to each conversation: topic'd convs keep their topic (composeTitle passes it
+// through); topic-less DMs/group-DMs resolve member names (id-derived for a 1:1, roster-fetched
+// for a group-DM), hitting the cache first and Graph-resolving only the misses in one batch.
+async function teamsResolveTitles(cred, convs) {
+  const selfMri = `8:orgid:${cred.userId || ""}`
+  const hasSelf = convs.some((c) => c.kind === "self")
+  const mrisByConv = new Map()
+  const groupDmIds = []
+  for (const c of convs) {
+    if (c.topic && c.topic.trim()) continue // topic wins — no name resolution needed
+    if (c.kind === "oneOnOne") mrisByConv.set(c.id, teamsOtherMrisFromId(c.id, selfMri))
+    else if (c.kind === "group") groupDmIds.push(c.id) // self chat's title is selfName-only
+  }
+
+  const cache = new Map()
+  try {
+    if (groupDmIds.length) {
+      const rosters = await fetchTeamsGroupRostersInPage(cred, groupDmIds)
+      for (const id of groupDmIds) {
+        mrisByConv.set(
+          id,
+          (rosters[id] || []).filter((m) => m !== selfMri),
+        )
+      }
+    }
+    const needed = new Set()
+    for (const mris of mrisByConv.values()) for (const m of mris) needed.add(m)
+    // Resolve self's own display name in the same batch when a self chat is present, so its
+    // "{selfName} (You)" title works even without cred.displayName.
+    if (hasSelf && cred.userId) needed.add(selfMri)
+    const cached = teamsGetUsers(teamsDb, [...needed])
+    for (const [mri, name] of cached) cache.set(mri, name)
+    const misses = [...needed].filter((m) => !cache.has(m))
+    if (misses.length) {
+      const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+      const resolved = []
+      for (const m of misses) {
+        const name = oidMap[teamsOidFromMri(m)]
+        if (name) {
+          resolved.push({ mri: m, displayName: name })
+          cache.set(m, name)
+        }
+      }
+      if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+    }
+  } catch (e) {
+    console.error("[web] teams name resolution failed:", e.message) // degrade to fallback labels
+  }
+
+  const selfName = cred.displayName || cache.get(selfMri) || ""
+  return convs.map((c) => ({
+    ...c,
+    title: teamsComposeTitle({
+      kind: c.kind,
+      topic: c.topic,
+      memberNames: (mrisByConv.get(c.id) || []).map((m) => cache.get(m)).filter(Boolean),
+      selfName,
+    }),
+  }))
+}
+
+// Resolve each reaction's reactor MRIs → display names for the hover tooltip (t143), reusing the
+// SAME cache-first + one-Graph-batch path as teamsResolveTitles. The viewer's own MRI is excluded
+// (the client renders it as "You"); `userMris` is stripped from the payload, leaving `reactorNames`
+// (names only, best-effort — an unresolved MRI is just omitted). Mutates `messages` in place. Cache-
+// warm: once a reactor is known, a repeat poll adds no Graph latency (the misses set is empty).
+async function attachTeamsReactorNames(cred, messages) {
+  const selfOid = cred.userId || ""
+  const isSelfMri = (mri) => teamsOidFromMri(mri) === selfOid
+  const needed = new Set()
+  for (const m of messages)
+    for (const r of m.reactions || [])
+      for (const mri of r.userMris || []) if (!isSelfMri(mri)) needed.add(mri)
+
+  const nameByMri = new Map()
+  if (needed.size) {
+    try {
+      const cached = teamsGetUsers(teamsDb, [...needed])
+      for (const [mri, name] of cached) nameByMri.set(mri, name)
+      const misses = [...needed].filter((m) => !nameByMri.has(m))
+      if (misses.length) {
+        const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+        const resolved = []
+        for (const m of misses) {
+          const name = oidMap[teamsOidFromMri(m)]
+          if (name) {
+            resolved.push({ mri: m, displayName: name })
+            nameByMri.set(m, name)
+          }
+        }
+        if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+      }
+    } catch (e) {
+      console.error("[web] teams reactor name resolution failed:", e.message) // degrade to no names
+    }
+  }
+
+  for (const m of messages)
+    for (const r of m.reactions || []) {
+      const names = (r.userMris || [])
+        .filter((mri) => !isSelfMri(mri))
+        .map((mri) => nameByMri.get(mri))
+        .filter(Boolean)
+      r.userMris = undefined
+      if (names.length) r.reactorNames = names
+    }
+}
+
+// ---- Teams conversation history (t129/t134, ADR-0019) ---------------------
+// CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. First page = the
+// base URL; older pages = the previous response's `_metadata.backwardLink` (an opaque syncState
+// cursor), fetched verbatim after the security gate (isValidTeamsCursor) confirms it stays under
+// our chatServiceBase. Returns { messages: raw[], cursor } or a typed { error }.
+async function fetchTeamsHistoryInPage(cred, convId, cursor) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  let url
+  if (cursor) {
+    // SSRF gate: the cursor is a server-fetched IN-PAGE URL carrying the skypetoken.
+    if (!isValidTeamsCursor(cursor, cred.chatServiceBase)) return { error: "bad_cursor" }
+    url = cursor
+  } else {
+    url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages?pageSize=30&view=msnp24Equivalent&startTime=1`
+  }
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return await r.json()
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.error) return { error: result.error }
+  return {
+    messages: Array.isArray(result.messages) ? result.messages : [],
+    cursor: result._metadata?.backwardLink || null,
+  }
+}
+
+// Mint/reuse creds → in-page history fetch → render → upsert → return { messages, cursor }. A 401
+// drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations).
+async function teamsHistory(convId, cursor) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await fetchTeamsHistoryInPage(cred, convId, cursor)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await fetchTeamsHistoryInPage(cred, convId, cursor)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const messages = teamsToReaderMessages(out.messages, cred.userId)
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
+  await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t143); strips userMris
+  // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
+  // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
+  if (cursor == null && messages.length > 0) {
+    teamsSetLocalRead(teamsDb, cred.tenant, convId, messages[messages.length - 1].ts)
+  }
+  return { messages, cursor: out.cursor }
+}
+
+// ---- Teams AMS media proxy (t139, ADR-0019) -------------------------------
+// AMS media (images/video) 401s from a server-side or no-cors fetch — it loads ONLY from an
+// IN-PAGE fetch with the skypetoken header (like teamsHistory). So the proxy fetches the object
+// through the side-channel and serves the decoded bytes. The in-page reader is FileReader (a data
+// URL) — NOT String.fromCharCode over the byte array, which stack-overflows on a real image. An
+// LRU (the object id is immutable) avoids re-hitting the side-channel on every scroll.
+// ponytail: serves the whole imgo/video object by value over CDP — no thumbnail view, no HTTP
+// range/seek. Fine for chat-sized media; add streaming+range if a large video ever stutters (t140+).
+const TEAMS_MEDIA_CACHE = new Map() // url -> { ct, buf }
+const TEAMS_MEDIA_CACHE_MAX = 64
+
+function teamsMediaCacheGet(url) {
+  const hit = TEAMS_MEDIA_CACHE.get(url)
+  if (!hit) return null
+  TEAMS_MEDIA_CACHE.delete(url) // re-insert marks most-recently-used
+  TEAMS_MEDIA_CACHE.set(url, hit)
+  return hit
+}
+
+function teamsMediaCacheSet(url, entry) {
+  TEAMS_MEDIA_CACHE.set(url, entry)
+  while (TEAMS_MEDIA_CACHE.size > TEAMS_MEDIA_CACHE_MAX) {
+    TEAMS_MEDIA_CACHE.delete(TEAMS_MEDIA_CACHE.keys().next().value) // evict oldest
+  }
+}
+
+async function fetchTeamsMediaInPage(cred, url) {
+  // AMS objects auth with `Authorization: skype_token {sk}` — NOT the msg-service's
+  // `Authentication: skypetoken=` form (that 401s for cross-region/other-user AMS objects; only
+  // same-region ones happen to accept it). Proven live against the running tenant (t139).
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        headers: { Authorization: "skype_token " + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      const blob = await r.blob()
+      const dataUrl = await new Promise((resolve, reject) => {
+        const fr = new FileReader()
+        fr.onload = () => resolve(fr.result)
+        fr.onerror = () => reject(fr.error)
+        fr.readAsDataURL(blob)
+      })
+      return { ct: blob.type || r.headers.get("content-type") || "application/octet-stream", dataUrl }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Mint/reuse creds → in-page media fetch → decode the data URL to bytes. A 401 drives one re-authz
+// + retry (mirrors teamsHistory), then a typed invalid_auth. Returns { ct, buf } or { error }.
+async function teamsMedia(url) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await fetchTeamsMediaInPage(cred, url)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await fetchTeamsMediaInPage(cred, url)
+  }
+  if (out.error) return { error: out.error }
+
+  // Split the `data:{ct};base64,{b64}` the in-page FileReader produced → raw bytes.
+  const comma = typeof out.dataUrl === "string" ? out.dataUrl.indexOf(",") : -1
+  if (comma === -1) return { error: "bad_data_url" }
+  return {
+    ct: out.ct || "application/octet-stream",
+    buf: Buffer.from(out.dataUrl.slice(comma + 1), "base64"),
+  }
+}
+
+// ---- Teams reply + mark-read (t130, ADR-0019) -----------------------------
+// CA-proof like the list/history: the send runs IN-PAGE via the side-channel (the browser's own
+// authenticated POST). A random 18-digit clientmessageid dedups server-side; Teams echoes back
+// the message's OriginalArrivalTime, which IS the message id (epoch ms). No leading zero.
+function randomClientMessageId() {
+  let id = String(1 + Math.floor(Math.random() * 9))
+  for (let i = 1; i < 18; i++) id += Math.floor(Math.random() * 10)
+  return id
+}
+
+// Shared by the text reply (t130), the image send (t145), and the file send (t146): the reply
+// passes plain text with messagetype "Text", the media paths pass the pre-built HTML with
+// "RichText/Html". `properties` carries the message extras — the file send passes a JSON-string
+// `files` there so Teams renders the SharePoint chip; every other caller omits it (→ {}).
+async function sendTeamsMessageInPage(
+  cred,
+  convId,
+  content,
+  messagetype = "Text",
+  properties = {},
+) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages`
+  const clientmessageid = randomClientMessageId()
+  const payload = {
+    content,
+    messagetype,
+    contenttype: "text",
+    clientmessageid,
+    imdisplayname: cred.displayName || "",
+    properties,
+  }
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "POST",
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (r.status !== 201 && !r.ok) return { error: "http_" + r.status }
+      const j = await r.json().catch(() => ({}))
+      return { OriginalArrivalTime: j.OriginalArrivalTime }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.error) return { error: result.error }
+  return { OriginalArrivalTime: result.OriginalArrivalTime, clientmessageid }
+}
+
+// Mint/reuse creds → in-page send → persist the echo → return the new ts. A 401 drives one
+// re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations/teamsHistory).
+async function teamsReply(convId, text) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await sendTeamsMessageInPage(cred, convId, text)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await sendTeamsMessageInPage(cred, convId, text)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  // Persist the sent echo (self) so a re-fetch/reconnect shows it without a round-trip.
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: text,
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, ts, clientmessageid: out.clientmessageid }
+}
+
+// Best-effort write-through mark-read (Q9 hybrid): push the consumptionHorizon to Teams IN-PAGE
+// and advance the stored read_horizon_ts. NEVER throws / fails a caller — the reply already
+// succeeded; a failed horizon write just leaves the desktop unread as a to-do trail. The exact
+// PUT verb/path/body is confirmed live by the keeper tab (see task t130 return notes).
+async function markTeamsReadInPage(cred, convId, msgId, ts) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/properties?name=consumptionhorizon`
+  const horizon = `${msgId};${ts};0`
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "PUT",
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify({ consumptionhorizon: horizon }))},
+      })
+      return { status: r.status, ok: r.ok }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+async function teamsMarkRead(convId, msgId, ts) {
+  const cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (cred) {
+    try {
+      await markTeamsReadInPage(cred, convId, msgId, ts)
+      teamsSetReadHorizon(teamsDb, cred.tenant, convId, ts)
+    } catch (e) {
+      console.error("[web] teams mark-read failed:", e.message)
+    }
+  }
+  return { ok: true }
+}
+
+// ---- Teams reactions (t142, ADR-0019) -------------------------------------
+// CA-proof like reply/mark-read: PUT (add) or DELETE (remove) the message's emotions property
+// IN-PAGE. Proven live 2026-07-22: PUT/DELETE `{chatServiceBase}/…/messages/{msgId}/properties?
+// name=emotions` with body `{"emotions":{"key":"<key>","value":<Date.now()>}}` → 200; PUT adds the
+// self mri, DELETE removes it (the key row stays with users:[], which the read path then drops).
+async function reactTeamsInPage(cred, convId, msgId, key, remove) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages/${encodeURIComponent(msgId)}/properties?name=emotions`
+  const payload = { emotions: { key, value: Date.now() } }
+  const method = remove ? "DELETE" : "PUT"
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: ${JSON.stringify(method)},
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+// Mint/reuse creds → in-page react → best-effort { ok }. A 401 drives one re-authz + retry, then a
+// typed invalid_auth (mirrors teamsReply). The optimistic client already updated; the next poll
+// reconciles the true count, so any non-auth error just surfaces as a swallowed { error }.
+async function teamsReact(convId, msgId, key, remove) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await reactTeamsInPage(cred, convId, msgId, key, remove)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await reactTeamsInPage(cred, convId, msgId, key, remove)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+  return { ok: true }
+}
+
+// ---- Teams edit + delete own message (t144, ADR-0019) ---------------------
+// CA-proof like reply/react: PUT (edit) or DELETE (delete) the message IN-PAGE. Proven live
+// 2026-07-22: PUT `{chatServiceBase}/…/messages/{msgId}` body {content:"<p>…</p>",
+// messagetype:"RichText/Html", contenttype:"text"} → 200 (sets properties.edittime); DELETE the same
+// URL → 200 (sets properties.deletetime + blanks content). The read path turns those into the
+// existing `edited` flag / `deleted` tombstone, so no store write is needed — the next poll's history
+// fetch carries the truth (like teamsReact).
+// The edit sends RichText/Html, so the plain text must be HTML-escaped and newline→<br> before it's
+// wrapped — the reply path sends messagetype:"Text" (no escaping), so it can't be reused verbatim.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+async function editTeamsInPage(cred, convId, msgId, text) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages/${encodeURIComponent(msgId)}`
+  const payload = {
+    content: `<p>${escapeHtml(text).replace(/\n/g, "<br>")}</p>`,
+    messagetype: "RichText/Html",
+    contenttype: "text",
+  }
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "PUT",
+        headers: {
+          Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
+          "Content-Type": "application/json",
+        },
+        body: ${JSON.stringify(JSON.stringify(payload))},
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+async function deleteTeamsInPage(cred, convId, msgId) {
+  if (!cred.chatServiceBase) return { error: "no_base" }
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages/${encodeURIComponent(msgId)}`
+  const script = `(async () => {
+    try {
+      const r = await fetch(${JSON.stringify(url)}, {
+        method: "DELETE",
+        headers: { Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)} },
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
+}
+
+// Mint/reuse creds → in-page edit/delete → best-effort { ok }. A 401 drives one re-authz + retry,
+// then a typed invalid_auth (mirrors teamsReact).
+async function teamsEdit(convId, msgId, text) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await editTeamsInPage(cred, convId, msgId, text)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await editTeamsInPage(cred, convId, msgId, text)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+  return { ok: true }
+}
+
+async function teamsDelete(convId, msgId) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let out = await deleteTeamsInPage(cred, convId, msgId)
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await deleteTeamsInPage(cred, convId, msgId)
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+  return { ok: true }
+}
+
+// ---- Teams send image attachment (t145, ADR-0019) -------------------------
+// CA-proof like reply/edit: the whole AMS upload runs IN-PAGE (the ic3 token is session/CA-bound like
+// the skypetoken). Proven live 2026-07-22: read the ic3.teams.office.com MSAL access token + the
+// api.spaces bearer → authz for the skypetoken/base/amsV2 → POST {amsV2}/v1/objects/ (create) → PUT
+// …/content/imgpsh (bytes) → send a RichText/Html message with the AMSImage <img> (display view imgo).
+// The load-bearing headers are `x-ms-migration: True` + `x-ms-client-version` — without them AMS
+// falls back to the UA and 400s.
+// ponytail: hardcoded AMS build id — AMS accepts it now; if it starts 400ing on a stale version,
+// extract the live Teams build version from the page (window.__ or the MSAL app metadata).
+const TEAMS_AMS_CLIENT_VERSION = "1415/26061118216"
+
+// Create the AMS object + upload the raw bytes IN-PAGE. Returns { objId, host } (host = the amsV2
+// display origin the sent <img> points at) or a typed { error }. A missing ic3/api.spaces token or a
+// 401 on create/upload → invalid_auth (the caller drives one re-authz + retry, like teamsReply).
+async function createTeamsAmsObjectInPage(convId, filename, base64) {
+  const script = `(async () => {
+    try {
+      // The AMS auth (ic3) + the bearer to mint sk/base/amsV2 (api.spaces) both live in the page's
+      // MSAL cache — a localStorage read, not a network call, so CA doesn't apply.
+      let sb = null, ic3 = null
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("ic3.teams.office.com")) {
+          try { const j = JSON.parse(localStorage.getItem(k)); if (j && j.secret) ic3 = j.secret } catch (e) {}
+        }
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.toLowerCase().includes("api.spaces.skype.com")) {
+          try { const j = JSON.parse(localStorage.getItem(k)); if (j && j.secret) sb = j.secret } catch (e) {}
+        }
+      }
+      if (!ic3 || !sb) return { error: "invalid_auth" }
+      const az = await (await fetch("https://teams.microsoft.com/api/authsvc/v1.0/authz", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sb, "Content-Type": "application/json" },
+        body: "{}",
+      })).json()
+      const host = ((az.regionGtms && az.regionGtms.amsV2) || "https://as-prod.asyncgw.teams.microsoft.com").replace(/\\/$/, "")
+      const amsH = {
+        Authorization: "Bearer " + ic3,
+        "x-ms-migration": "True",
+        "x-ms-client-version": ${JSON.stringify(TEAMS_AMS_CLIENT_VERSION)},
+      }
+      const cr = await fetch(host + "/v1/objects/", {
+        method: "POST",
+        headers: { ...amsH, "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "pish/image", permissions: { [${JSON.stringify(convId)}]: ["read"] }, sharingMode: "Inline", filename: ${JSON.stringify(filename)} }),
+      })
+      if (cr.status === 401) return { error: "invalid_auth" }
+      const cj = await cr.json().catch(() => ({}))
+      const objId = cj.id || null
+      if (!objId) return { error: "http_" + cr.status }
+      const bytes = Uint8Array.from(atob(${JSON.stringify(base64)}), (c) => c.charCodeAt(0))
+      const up = await fetch(host + "/v1/objects/" + objId + "/content/imgpsh", {
+        method: "PUT",
+        headers: { ...amsH, "Content-Type": "application/octet-stream" },
+        body: bytes,
+      })
+      if (up.status === 401) return { error: "invalid_auth" }
+      if (up.status !== 201 && !up.ok) return { error: "http_" + up.status }
+      return { objId, host }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Mint/reuse creds → in-page AMS create+upload → build the AMSImage content → in-page send. A 401 on
+// either half drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsReply).
+// Returns { ok, msgId } (msgId = OriginalArrivalTime, which is the message id/ts).
+async function teamsUploadImage({ convId, filename, base64, width, height, text }) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let content = null
+  const run = async () => {
+    const ams = await createTeamsAmsObjectInPage(convId, filename, base64)
+    if (ams.error) return ams
+    content = buildAmsImageContent({
+      host: ams.host,
+      objId: ams.objId,
+      width,
+      height,
+      caption: text,
+    })
+    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html")
+  }
+
+  let out = await run()
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await run()
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  // Persist the sent echo (self) so a re-fetch/reconnect shows it before the real history lands. The
+  // AMS src is rewritten to the media proxy so the stored copy renders authenticated (like the read
+  // path's toReaderMessages).
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: rewriteMediaHtml(content),
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, msgId: ts }
+}
+
+// Upload the raw bytes to the user's SharePoint drive + mint a share link, all IN-PAGE (CA-proof
+// like the AMS image path). Returns { driveItem:{id, sharepointIds}, shareUrl, myHost, userPath } or
+// a typed { error }. The SharePoint bearer + host are read from the page's MSAL cache; a missing
+// token or a 401 on any SharePoint call → invalid_auth (the caller drives one re-authz + retry).
+async function uploadTeamsFileInPage(filename, base64) {
+  const script = `(async () => {
+    try {
+      // The SharePoint bearer + host live in the page's MSAL cache — a localStorage read, not a
+      // network call, so CA doesn't apply. The token's target scope names the -my.sharepoint.com host.
+      let sp = null, myHost = null
+      const rx = /https?:\\/\\/([a-z0-9-]+-my\\.sharepoint\\.com)/
+      for (const k of Object.keys(localStorage)) {
+        if (!(k.startsWith("msal.") && k.includes("accesstoken"))) continue
+        try {
+          const j = JSON.parse(localStorage.getItem(k))
+          const m = j && j.target && String(j.target).match(rx)
+          if (m && j.secret) { sp = j.secret; myHost = m[1]; break }
+        } catch (e) {}
+      }
+      if (!sp || !myHost) return { error: "invalid_auth" }
+      const bearer = { Authorization: "Bearer " + sp }
+      // me/drive → webUrl carries /personal/{userPath}/Documents; pull the {userPath} segment out.
+      const drv = await fetch("https://" + myHost + "/_api/v2.0/me/drive", {
+        headers: { ...bearer, Accept: "application/json" },
+      })
+      if (drv.status === 401) return { error: "invalid_auth" }
+      const dj = await drv.json().catch(() => ({}))
+      const parts = String(dj.webUrl || "").split("/personal/")
+      const userPath = parts.length > 1 ? parts[1].split("/")[0] : ""
+      if (!userPath) return { error: "http_" + drv.status }
+      // Scenario headers mirror Teams' own composer upload.
+      const scen = { scenario: "ShareUploadFile", scenariotype: "AUO" }
+      const bytes = Uint8Array.from(atob(${JSON.stringify(base64)}), (c) => c.charCodeAt(0))
+      const put = await fetch(
+        "https://" + myHost + "/_api/v2.0/drive/root:/Microsoft Teams Chat Files/" +
+          encodeURIComponent(${JSON.stringify(filename)}) + ":/content",
+        {
+          method: "PUT",
+          headers: { ...bearer, ...scen, "Content-Type": "application/octet-stream" },
+          body: bytes,
+        },
+      )
+      if (put.status === 401) return { error: "invalid_auth" }
+      if (put.status !== 201 && !put.ok) return { error: "http_" + put.status }
+      const item = await put.json().catch(() => ({}))
+      if (!item || !item.id) return { error: "http_" + put.status }
+      const link = await fetch(
+        "https://" + myHost + "/_api/v2.0/drive/items/" + encodeURIComponent(item.id) + "/createLink",
+        {
+          method: "POST",
+          headers: { ...bearer, ...scen, "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "view", scope: "organization" }),
+        },
+      )
+      if (link.status === 401) return { error: "invalid_auth" }
+      if (link.status !== 201 && !link.ok) return { error: "http_" + link.status }
+      const lj = await link.json().catch(() => ({}))
+      const shareUrl = lj && lj.link && lj.link.webUrl
+      if (!shareUrl) return { error: "http_" + link.status }
+      return {
+        driveItem: { id: item.id, sharepointIds: item.sharepointIds || null },
+        shareUrl, myHost, userPath,
+      }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Mint/reuse creds → in-page SharePoint upload+share → build the file descriptor → in-page send with
+// properties.files. A 401 on either half drives one re-authz + retry, then a hard typed invalid_auth
+// (mirrors teamsUploadImage). Returns { ok, msgId } (msgId = OriginalArrivalTime = the message id/ts).
+async function teamsUploadFile({ convId, filename, base64, text }) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  // A caption rides as the message content (RichText/Html) above the file chip; empty → no bubble.
+  const caption = text && String(text).trim() ? escapeHtml(text).replace(/\n/g, "<br>") : ""
+  const run = async () => {
+    const up = await uploadTeamsFileInPage(filename, base64)
+    if (up.error) return up
+    const fileObj = buildTeamsFilePayload({
+      myHost: up.myHost,
+      userPath: up.userPath,
+      driveItem: up.driveItem,
+      shareUrl: up.shareUrl,
+      filename,
+    })
+    return await sendTeamsMessageInPage(cred, convId, caption, "RichText/Html", {
+      files: JSON.stringify([fileObj]),
+    })
+  }
+
+  let out = await run()
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await run()
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  // Persist the sent echo (self) so a re-fetch shows the caption before the live poll lands. The file
+  // chip isn't persisted — the store keeps only the body — so it re-derives from the next poll's
+  // properties.files (like the image echo, whose <img> lives in its stored body).
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: caption,
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, msgId: ts }
+}
+
 // ---- HTTP routing ---------------------------------------------------------
 const BODY_LIMIT = 1024 * 1024 // 1 MB — guards against memory exhaustion; CDP payloads are tiny
-const body = (req) =>
+// A pasted screenshot as base64 JSON dwarfs 1 MB, so the image-upload route reads with a larger cap
+// (t145). Still bounded to guard memory — Teams itself rejects larger inline images.
+const IMAGE_BODY_LIMIT = 24 * 1024 * 1024 // 24 MB
+// A non-image file upload (t146) rides base64 too; cap it larger — ~30 MB of file is ~40 MB encoded.
+const FILE_BODY_LIMIT = 40 * 1024 * 1024 // 40 MB
+const body = (req, limit = BODY_LIMIT) =>
   new Promise((resolve, reject) => {
     let b = ""
     req.on("data", (c) => {
       b += c
-      if (b.length > BODY_LIMIT) {
+      if (b.length > limit) {
         req.destroy()
         reject(new Error("request body too large"))
       }
@@ -998,6 +2113,22 @@ function serveStatic(req, res, pathname) {
     return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(m)
   }
   res.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream" })
+  createReadStream(file).pipe(res)
+}
+
+// Serve the built Teams chat app (t128) under /chat: static assets stream, and any deep link
+// falls back to the SPA index. Rooted at DIST_CHAT and prefix-stripped so it can never reach
+// into DIST (the / build) or above the output dir.
+function serveChat(req, res, pathname) {
+  const sub = pathname.replace(/^\/chat/, "") || "/"
+  const rel = normalize(sub).replace(/^(\.\.[/\\])+/, "")
+  let file = join(DIST_CHAT, rel === "/" ? "index.html" : rel)
+  if (!existsSync(file) || !file.startsWith(DIST_CHAT)) file = join(DIST_CHAT, "index.html") // SPA fallback
+  if (!existsSync(file)) return res.writeHead(404).end("build the chat app: pnpm chat:build")
+  const type = file.endsWith(".webmanifest")
+    ? "application/manifest+json"
+    : MIME[extname(file)] || "application/octet-stream"
+  res.writeHead(200, { "Content-Type": type })
   createReadStream(file).pipe(res)
 }
 
@@ -1220,6 +2351,137 @@ const server = http.createServer(async (req, res) => {
       if (!out?.ok) return json(res, { error: out?.error || "send_failed" }, 502)
       return json(res, { ok: true, ts: out.ts })
     }
+    // Teams chat: the authenticated conversation list (t127/t134, ADR-0019). Mints creds via the
+    // keeper tab, fetches a page IN-PAGE (CA-proof), upserts into the chat DB, returns the page +
+    // a `cursor` (backwardLink) for the next older page. POST so the opaque cursor URL rides the
+    // body, never a query. Web build only (Electron has no scrapable Teams creds path).
+    if (p === "/api/teams/conversations" && POST) {
+      const { cursor } = await body(req)
+      const out = await teamsConversations(cursor)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error === "bad_cursor") return json(res, out, 400)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: one conversation's message history (t129/t134, ADR-0019). Fetches IN-PAGE,
+    // renders to ReaderMessages, persists, returns { messages, cursor }. No `cursor` → first
+    // page; a `cursor` (backwardLink) pages older after the SSRF gate. Web only.
+    if (p === "/api/teams/history" && POST) {
+      const { convId, cursor } = await body(req)
+      if (!convId) return json(res, { error: "missing convId" }, 400)
+      const out = await teamsHistory(convId, cursor)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error === "bad_cursor") return json(res, out, 400)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: send a text reply IN-PAGE (t130, ADR-0019). Persists the echo, returns the
+    // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/reply" && POST) {
+      const { convId, text } = await body(req)
+      if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsReply(convId, text)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: AMS media proxy (t139, ADR-0019). The rendered <img>/<video> src points here;
+    // the server fetches the authenticated AMS object IN-PAGE (CA-proof — a server-side fetch 401s)
+    // and serves the raw bytes so the browser caches them normally (no data URLs in the DOM). The
+    // response is plaintext binary (never E2E-sealed — an <img> src can't decrypt), SSRF-gated by
+    // isValidAmsUrl, LRU-cached. Web only. GET so it slots straight into an <img>/<video> src.
+    if (p === "/api/teams/media" && !POST) {
+      const target = url.searchParams.get("url") || ""
+      if (!isValidAmsUrl(target)) return res.writeHead(400).end("bad url")
+      const hit = teamsMediaCacheGet(target) || (await teamsMedia(target))
+      if (hit.error) return res.writeHead(502).end(hit.error)
+      // Only ever serve image/video bytes on our origin — never render an arbitrary content-type
+      // (nosniff + an explicit allowlist so a non-media AMS object can't become same-origin HTML; t139 review).
+      if (!/^(image|video)\//.test(hit.ct || "")) return res.writeHead(502).end("bad media type")
+      teamsMediaCacheSet(target, hit)
+      return res
+        .writeHead(200, {
+          "Content-Type": hit.ct,
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "public, max-age=604800, immutable",
+        })
+        .end(hit.buf)
+    }
+    // Teams chat: write-through mark-read (t130, Q9 hybrid). Best-effort — always { ok } even
+    // if the horizon write fails, so it can't undo a successful reply. Web only.
+    if (p === "/api/teams/mark-read" && POST) {
+      const { convId, msgId, ts } = await body(req)
+      if (!convId || !msgId || ts == null) return json(res, { error: "missing fields" }, 400)
+      return json(res, await teamsMarkRead(convId, msgId, ts))
+    }
+    // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t142, ADR-0019). Best-effort
+    // { ok } — the client is optimistic and the poll reconciles. A 401 → one re-authz + retry. Web only.
+    if (p === "/api/teams/react" && POST) {
+      const { convId, msgId, key, remove } = await body(req)
+      if (!convId || !msgId || !key) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsReact(convId, msgId, key, !!remove)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: edit the viewer's OWN message IN-PAGE (t144, ADR-0019). PUT new RichText/Html
+    // content; the read path turns properties.edittime into the "(edited)" flag. A 401 → one
+    // re-authz + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/edit" && POST) {
+      const { convId, msgId, text } = await body(req)
+      if (!convId || !msgId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsEdit(convId, msgId, text)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: delete the viewer's OWN message IN-PAGE (t144, ADR-0019). DELETE blanks content +
+    // sets properties.deletetime, which the read path renders as the tombstone. A 401 → one re-authz
+    // + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/delete" && POST) {
+      const { convId, msgId } = await body(req)
+      if (!convId || !msgId) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsDelete(convId, msgId)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: upload a pasted/picked image + post it inline IN-PAGE (t145, ADR-0019). One atomic
+    // endpoint: create the AMS object → PUT the bytes → send the AMSImage message. Reads with the
+    // larger body cap (a base64 screenshot dwarfs 1 MB). A 401 → one re-authz + retry → typed
+    // invalid_auth. Web only.
+    if (p === "/api/teams/upload-image" && POST) {
+      const { convId, filename, base64, contentType, width, height, text } = await body(
+        req,
+        IMAGE_BODY_LIMIT,
+      )
+      if (!convId || !base64) return json(res, { error: "missing fields" }, 400)
+      if (contentType && !String(contentType).startsWith("image/"))
+        return json(res, { error: "not_image" }, 400)
+      const out = await teamsUploadImage({
+        convId,
+        filename: filename || "image.png",
+        base64,
+        width,
+        height,
+        text,
+      })
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: upload a pasted/picked non-image file to SharePoint + post it as a chip IN-PAGE
+    // (t146, ADR-0019). One atomic endpoint: PUT the bytes to the drive → createLink → send the
+    // properties.files message. Larger body cap than the image route (files run bigger). A 401 →
+    // one re-authz + retry → typed invalid_auth. Web only.
+    if (p === "/api/teams/upload-file" && POST) {
+      const { convId, filename, base64, text } = await body(req, FILE_BODY_LIMIT)
+      if (!convId || !base64) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsUploadFile({ convId, filename: filename || "file", base64, text })
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
     // Web Push subscriptions — PWA-installed iOS 16.4+. The public key is non-secret;
     // the client uses it as `applicationServerKey` for pushManager.subscribe.
     if (p === "/api/notifications/vapid-public-key" && !POST) {
@@ -1245,6 +2507,25 @@ const server = http.createServer(async (req, res) => {
       savePushSubs()
       return json(res, { ok: true })
     }
+    // Teams chat push (t147) — its own isolated subscription store; same VAPID keys, separate subs.
+    if (p === "/api/teams/push/vapid-public-key" && !POST) {
+      return json(res, { key: VAPID_PUBLIC_KEY })
+    }
+    if (p === "/api/teams/push/subscribe" && POST) {
+      const { subscription, deviceId } = await body(req)
+      if (!subscription?.endpoint) return json(res, { error: "missing endpoint" }, 400)
+      teamsPushSubs = teamsPushSubs.filter((s) => s.endpoint !== subscription.endpoint)
+      teamsPushSubs.push(deviceId ? { ...subscription, deviceId } : subscription)
+      saveTeamsPushSubs()
+      return json(res, { ok: true })
+    }
+    if (p === "/api/teams/push/unsubscribe" && POST) {
+      const { endpoint } = await body(req)
+      if (!endpoint) return json(res, { error: "missing endpoint" }, 400)
+      teamsPushSubs = teamsPushSubs.filter((s) => s.endpoint !== endpoint)
+      saveTeamsPushSubs()
+      return json(res, { ok: true })
+    }
   } catch (e) {
     // A malformed/undecryptable body (t099) is a client error → 400, and no route ran, so
     // nothing was persisted. Everything else stays a 500.
@@ -1253,6 +2534,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p.startsWith("/api/")) return res.writeHead(404).end("unknown api route")
+  if (p === "/chat" || p.startsWith("/chat/")) return serveChat(req, res, p)
   return serveStatic(req, res, p)
 })
 

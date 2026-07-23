@@ -1,11 +1,17 @@
 node_modules
 dist
+dist-chat
 release
 
 # Web build runtime state (default paths write to repo root; override via env)
 web-settings.json
 web-notifications.json
 web-history.json
+
+# Teams chat store (server-owned SQLite; default path writes to repo root)
+web-teams.db
+web-teams.db-shm
+web-teams.db-wal
 
 # Baked build identity (Docker builder writes it; never committed)
 .gitsha
@@ -28,3 +34,5 @@ playwright-report/
 slack-workspaces.json
 slack-sweep-state.json
 web-push-subs.json
+teams-push-subs.json
+teams-notify-state.json

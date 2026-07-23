@@ -28,6 +28,16 @@ const {
   markStale,
   redact,
 } = require("./slack-creds")
+// Teams messaging creds are a PARALLEL path (t127, ADR-0019), not a genericization of the
+// Slack helpers above — the mint chains differ (Slack scrapes a static session token; Teams
+// reads a ~1h MSAL bearer then authz-mints a skype token). Kept as two impls on purpose.
+const {
+  parseMsalBearer,
+  decodeJwtClaims,
+  markFresh: markTeamsFresh,
+  markStale: markTeamsStale,
+  redact: redactTeams,
+} = require("./teams-creds")
 const { tsCmp } = require("./slack-sweep")
 const { CAPTURE_MARKER } = require("./capture-tab")
 
@@ -42,6 +52,47 @@ const CDP_CALL_TIMEOUT_MS = 10_000
 // still-non-OPEN socket past this threshold is genuinely stuck.
 const SIDECHANNEL_STALE_MS = 15_000
 
+// ---- Teams messaging-cred in-page scripts (t127, ADR-0019) ----------------
+// CA-proof design: every Teams HTTPS call runs IN-PAGE (the browser makes its own
+// authenticated fetch from its session + egress IP), so a Conditional-Access policy binding
+// tokens to the compliant device/IP can't reject them. The server only orchestrates + persists
+// the returned JSON — it never fetches Teams directly.
+
+// Step 1 (no network): dump the MSAL accesstoken localStorage entries so the server parses the
+// api.spaces.skype.com bearer with the pure parseMsalBearer (a localStorage read isn't a network
+// call, so CA doesn't apply; the bearer is stored server-side for v1 anyway).
+const TEAMS_MSAL_DUMP = `(() => {
+  const snap = {}
+  for (const k of Object.keys(localStorage)) {
+    if (k.startsWith("msal.") && k.includes("accesstoken")) snap[k] = localStorage.getItem(k)
+  }
+  return snap
+})()`
+
+// Step 2 (network, IN-PAGE): exchange the bearer for a skype token + region gateways. The bearer
+// is interpolated as a string literal — it's going straight back into the page that owns it.
+function teamsAuthzScript(bearer) {
+  return `(async () => {
+    try {
+      const r = await fetch("https://teams.microsoft.com/api/authsvc/v1.0/authz", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + ${JSON.stringify(bearer)}, "Content-Type": "application/json" },
+        body: "{}",
+      })
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "authz_http_" + r.status }
+      const j = await r.json()
+      return {
+        skypeToken: (j && j.tokens && j.tokens.skypeToken) || "",
+        // Pin ALL msg traffic to regionGtms.chatService. chatsvcagg.teams.microsoft.com is a
+        // proven 401 dead-end (the bearer authenticates but the request is unauthorized there).
+        chatServiceBase: (j && j.regionGtms && j.regionGtms.chatService) || "",
+        trouterUrl: (j && j.regionGtms && j.regionGtms.calling_trouterUrl) || "",
+      }
+    } catch (e) { return { error: "authz_failed" } }
+  })()`
+}
+
 // Notification Adapters identify notification-capable sites by URL hostname. Each
 // names its capture script (loaded via the injected `readInject`) and the icon to
 // stamp on its entries. Adding an adapter is a one-line config change here.
@@ -53,9 +104,14 @@ const ADAPTERS = [
     // Served from the app's own origin (t086): external favicon CDNs are blocked by a
     // corporate TLS-intercepting proxy / need auth, so they silently failed to load on the phone.
     iconUrl: "/icons/teams.svg",
+    // Teams also drives the standalone chat app (ADR-0019 "teams-chat-app"): the side-channel dumps
+    // the MSAL bearer + authz-mints a skype token IN-PAGE for the messaging API. Web build only —
+    // gated by the server passing `onTeamsCreds` (Electron never does, so it structurally stubs).
+    extractTeamsCreds: true,
     // Teams suppresses its in-app toast for the conversation a tab has open + focused, so a
-    // message in the actively-viewed chat is never scraped. The keeper (t105) maintains one
-    // always-background capture tab at this URL — never focused, so Teams toasts every message.
+    // message in the actively-viewed chat is never scraped. The keeper maintains one always-background
+    // capture tab at this URL (ADR-0018 "dedicated-notification-capture-tab") — never focused, so
+    // Teams toasts every message. Independent of the chat app's cred extraction above.
     captureTab: true,
     captureUrl: "https://teams.microsoft.com/v2/",
   },
@@ -118,6 +174,14 @@ function createNotificationCenter(deps) {
   // `team_is_restricted`). For these the hijack falls back to writing entries directly,
   // since the sweep can't cover them.
   const sweepDisabledTeams = new Set()
+  // Teams messaging creds keyed by AAD tenant (t127, ADR-0019) — a PARALLEL map to credsByTeam,
+  // never a shared generic. Each: { tenant, userId, bearer, bearerExp, skypeToken,
+  // chatServiceBase, trouterUrl, fresh, lastError }. Read by the /api/teams/* routes; the
+  // bearer/skypeToken are the user's own secrets and are never logged in full (redactTeams).
+  const credsByTenant = new Map()
+  // Live Teams cred sockets: targetId -> { cdpCall, target }. Lets markTeamsCredsStale re-mint
+  // over an already-open socket and lets a route run an in-page fetch through the Teams tab.
+  const teamsCredSockets = new Map()
   const log = deps.log || (() => {})
   const now = deps.now || (() => Date.now())
   const WS_OPEN = WebSocketCtor && WebSocketCtor.OPEN != null ? WebSocketCtor.OPEN : 1
@@ -269,6 +333,12 @@ function createNotificationCenter(deps) {
         credSockets.set(target.id, { cdpCall, target })
         extractSlackCreds(cdpCall, target).catch(() => {})
       }
+      // Teams only (t127): mint the messaging creds for the chat app. Keep the live cdpCall
+      // handle so a 401 can re-mint and a route can run an in-page fetch over this same socket.
+      if (adapter.extractTeamsCreds && deps.onTeamsCreds) {
+        teamsCredSockets.set(target.id, { cdpCall, target })
+        extractTeamsCreds(cdpCall, target).catch(() => {})
+      }
     })
     ws.on("message", (data) => {
       try {
@@ -286,6 +356,7 @@ function createNotificationCenter(deps) {
     const drop = () => {
       if (sideChannels.get(target.id) === ws) sideChannels.delete(target.id)
       credSockets.delete(target.id)
+      teamsCredSockets.delete(target.id)
       captureTabTargets.delete(target.id)
       // Free any in-flight awaitable call so a stalled socket can't leak its promise.
       for (const p of pending.values()) p.reject(new Error("side-channel closed"))
@@ -334,6 +405,94 @@ function createNotificationCenter(deps) {
       return true
     }
     return false
+  }
+
+  // ---- Teams messaging-cred mint (t127, ADR-0019) --------------------------
+  function recordTeamsCreds(fields) {
+    const prev = credsByTenant.get(fields.tenant)
+    const rec = markTeamsFresh(prev || {}, fields)
+    credsByTenant.set(fields.tenant, rec)
+    log(`[teams-creds] minted tenant=${fields.tenant} skype=${redactTeams(fields.skypeToken)}`)
+    if (deps.onTeamsCreds) deps.onTeamsCreds(rec)
+  }
+
+  // Dump MSAL → parse the api.spaces.skype.com bearer → authz-mint the skype token IN-PAGE
+  // (CA-proof). Best-effort: a parse miss or a CDP error leaves any prior creds intact and
+  // logs — never throws into the attach path. A 401 on authz means the bearer itself is stale
+  // (only the live tab's MSAL rotates it), so the record is marked stale for the health surface.
+  async function extractTeamsCreds(cdpCall, target) {
+    try {
+      const dumpRes = await cdpCall("Runtime.evaluate", {
+        expression: TEAMS_MSAL_DUMP,
+        returnByValue: true,
+      })
+      const parsed = parseMsalBearer(dumpRes?.result?.result?.value)
+      if (!parsed) {
+        log(`[teams-creds] no MSAL skype bearer on ${target.url}`)
+        return
+      }
+      const claims = decodeJwtClaims(parsed.bearer)
+      const tenant = claims.tid || ""
+      const userId = claims.oid || ""
+      if (!tenant) {
+        log(`[teams-creds] bearer carries no tenant claim on ${target.url}`)
+        return
+      }
+      const authzRes = await cdpCall("Runtime.evaluate", {
+        expression: teamsAuthzScript(parsed.bearer),
+        awaitPromise: true,
+        returnByValue: true,
+      })
+      const minted = authzRes?.result?.result?.value
+      if (!minted || minted.error) {
+        const prev = credsByTenant.get(tenant)
+        if (prev) credsByTenant.set(tenant, markTeamsStale(prev, minted?.error || "authz_failed"))
+        log(`[teams-creds] authz failed on ${target.url}: ${minted?.error || "no_result"}`)
+        return
+      }
+      recordTeamsCreds({
+        tenant,
+        userId,
+        bearer: parsed.bearer,
+        bearerExp: parsed.bearerExp,
+        skypeToken: minted.skypeToken,
+        chatServiceBase: minted.chatServiceBase,
+        trouterUrl: minted.trouterUrl,
+      })
+    } catch (e) {
+      log(`[teams-creds] extraction failed: ${e && e.message ? e.message : e}`)
+    }
+  }
+
+  // Re-mint over any live Teams socket (mirrors Slack's refreshCreds) — a 401 on the msg
+  // service triggers a re-mint (re-authz), not a re-scrape. Resolves false when no live tab.
+  async function refreshTeamsCreds() {
+    for (const [id, ws] of sideChannels) {
+      if (ws.readyState !== WS_OPEN) continue
+      const handle = teamsCredSockets.get(id)
+      if (!handle) continue
+      await extractTeamsCreds(handle.cdpCall, handle.target)
+      return true
+    }
+    return false
+  }
+
+  // Run an arbitrary in-page expression through a live Teams tab and return its by-value result
+  // (CA-proof: the browser makes the fetch). Any live Teams cred socket serves the single
+  // signed-in identity (decision 11), so the first open one wins. Null when no Teams tab is live.
+  async function runInTeamsPage(expression) {
+    for (const [id, ws] of sideChannels) {
+      if (ws.readyState !== WS_OPEN) continue
+      const handle = teamsCredSockets.get(id)
+      if (!handle) continue
+      const res = await handle.cdpCall("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      })
+      return res?.result?.result?.value ?? null
+    }
+    return null
   }
 
   // Attach to newly-seen adapter-matching Tab targets, drop vanished/changed ones.
@@ -419,6 +578,20 @@ function createNotificationCenter(deps) {
     },
     // Force a re-extraction over any live Slack socket (t099) — exposed for the server + tests.
     refreshCreds,
+    // Teams messaging-cred accessors (t127, ADR-0019) — parallel to the Slack ones above; the
+    // /api/teams/* routes read these. getTeamsCreds/listTeamsCreds return the minted record;
+    // markTeamsCredsStale flips fresh→false then re-mints over a live tab (returns that promise
+    // so a synchronous route can await the one re-authz retry); runInTeamsPage executes an
+    // in-page fetch (CA-proof) through a live Teams tab.
+    listTeamsCreds: () => [...credsByTenant.values()],
+    getTeamsCreds: (tenant) => credsByTenant.get(tenant) || null,
+    markTeamsCredsStale: (tenant, reason) => {
+      const prev = credsByTenant.get(tenant)
+      if (prev) credsByTenant.set(tenant, markTeamsStale(prev, reason))
+      return refreshTeamsCreds()
+    },
+    refreshTeamsCreds,
+    runInTeamsPage,
     // The sweep caches the resolved self user id (for channel @-mention parity) here.
     setSelfUserId: (teamId, selfUserId) => {
       const prev = credsByTeam.get(teamId)

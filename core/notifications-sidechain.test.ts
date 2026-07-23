@@ -123,6 +123,66 @@ async function answerCredExtraction(
   await Promise.resolve()
 }
 
+// ---- Teams cred extraction helpers (t127) ----------------------------------
+const b64url = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString("base64url")
+const fakeJwt = (claims: Record<string, unknown>) =>
+  `${b64url({ alg: "none" })}.${b64url(claims)}.sig`
+
+// Drive the two-step Teams mint: MSAL dump (returnByValue) → authz POST (awaitPromise). The
+// extractor awaits each reply, so the authz send only appears after the dump reply resolves.
+async function answerTeamsMint(
+  ws: FakeWs,
+  opts: {
+    tid?: string
+    oid?: string
+    bearerExp?: number
+    skypeToken?: string
+    chatServiceBase?: string
+    trouterUrl?: string
+    authzError?: string
+    noBearer?: boolean
+  } = {},
+) {
+  const tid = opts.tid ?? "TENANT-1"
+  const oid = opts.oid ?? "USER-1"
+  const bearerExp = opts.bearerExp ?? 1_750_000_000
+  const dumpSend = [...ws.sent]
+    .reverse()
+    .find(
+      (m) =>
+        m.method === "Runtime.evaluate" &&
+        String(m.params?.expression).includes("localStorage") &&
+        String(m.params?.expression).includes("accesstoken"),
+    )
+  if (dumpSend) {
+    const key =
+      "msal.acc-login.windows.net-accesstoken-5e3ce6c0-tenant-https://api.spaces.skype.com/x--"
+    const snap = opts.noBearer
+      ? {}
+      : { [key]: JSON.stringify({ secret: fakeJwt({ tid, oid }), expiresOn: String(bearerExp) }) }
+    ws.reply(dumpSend.id, { result: { value: snap } })
+  }
+  await Promise.resolve()
+  await Promise.resolve()
+  const authzSend = [...ws.sent]
+    .reverse()
+    .find(
+      (m) => m.method === "Runtime.evaluate" && String(m.params?.expression).includes("authsvc"),
+    )
+  if (authzSend) {
+    const value = opts.authzError
+      ? { error: opts.authzError }
+      : {
+          skypeToken: opts.skypeToken ?? "skype-XYZ",
+          chatServiceBase: opts.chatServiceBase ?? "https://apac.ng.msg.teams.microsoft.com",
+          trouterUrl: opts.trouterUrl ?? "https://trouter.example/",
+        }
+    ws.reply(authzSend.id, { result: { value } })
+  }
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
 function makeCenter(over: Partial<any> = {}) {
   const saved: any[][] = []
   const onEntry = vi.fn()
@@ -489,6 +549,98 @@ describe("slack cred extraction (t069)", () => {
   it("refreshCreds resolves false when no live Slack socket exists", async () => {
     const { center } = makeCenter({ onCreds: vi.fn() })
     expect(await center.refreshCreds()).toBe(false)
+  })
+})
+
+describe("teams messaging-cred mint (t127)", () => {
+  it("mints creds over a live Teams tab: bearer dump → authz → record + onTeamsCreds", async () => {
+    const onTeamsCreds = vi.fn()
+    const { center } = makeCenter({ onTeamsCreds })
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerTeamsMint(ws, { tid: "T-A", oid: "U-A", skypeToken: "skype-A" })
+
+    const rec = center.getTeamsCreds("T-A")
+    expect(rec).toMatchObject({
+      tenant: "T-A",
+      userId: "U-A",
+      skypeToken: "skype-A",
+      chatServiceBase: "https://apac.ng.msg.teams.microsoft.com",
+      trouterUrl: "https://trouter.example/",
+      fresh: true,
+      lastError: null,
+    })
+    expect(rec?.bearer).toContain(".") // the JWT bearer is stored server-side (v1)
+    expect(onTeamsCreds).toHaveBeenCalledWith(expect.objectContaining({ tenant: "T-A" }))
+    expect(center.listTeamsCreds()).toHaveLength(1)
+  })
+
+  it("does NOT extract Teams creds when onTeamsCreds is absent (Electron structural stub)", async () => {
+    const { center } = makeCenter() // no onTeamsCreds
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    // No mint eval (only the capture-script injection) should carry the MSAL dump expression.
+    const dump = ws.sent.find(
+      (m: any) =>
+        m.method === "Runtime.evaluate" && String(m.params?.expression).includes("accesstoken"),
+    )
+    expect(dump).toBeUndefined()
+    expect(center.listTeamsCreds()).toEqual([])
+  })
+
+  it("marks creds stale on a 401 authz (bearer itself stale) without a record when new", async () => {
+    const onTeamsCreds = vi.fn()
+    const { center } = makeCenter({ onTeamsCreds })
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerTeamsMint(ws, { authzError: "invalid_auth" })
+    expect(onTeamsCreds).not.toHaveBeenCalled()
+    expect(center.listTeamsCreds()).toEqual([])
+  })
+
+  it("markTeamsCredsStale flips fresh→false then re-mints over the live socket (re-authz)", async () => {
+    const onTeamsCreds = vi.fn()
+    const { center } = makeCenter({ onTeamsCreds })
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerTeamsMint(ws, { tid: "T-A", skypeToken: "skype-OLD" })
+
+    const stalePromise = center.markTeamsCredsStale("T-A", "invalid_auth")
+    expect(center.getTeamsCreds("T-A")).toMatchObject({ fresh: false, lastError: "invalid_auth" })
+    // The re-mint runs over the same socket — answer its fresh authz with a rotated token.
+    await answerTeamsMint(ws, { tid: "T-A", skypeToken: "skype-NEW" })
+    await stalePromise
+    expect(center.getTeamsCreds("T-A")).toMatchObject({ skypeToken: "skype-NEW", fresh: true })
+  })
+
+  it("runInTeamsPage executes an in-page expression over a live Teams tab and returns its value", async () => {
+    const onTeamsCreds = vi.fn()
+    const { center } = makeCenter({ onTeamsCreds })
+    await center.reconcile([teamsTarget()])
+    const ws = FakeWs.instances[0]
+    ws.open()
+    await answerTeamsMint(ws)
+
+    const p = center.runInTeamsPage("fetchConversations()")
+    await Promise.resolve()
+    const evalSend = [...ws.sent]
+      .reverse()
+      .find(
+        (m: any) =>
+          m.method === "Runtime.evaluate" &&
+          String(m.params?.expression).includes("fetchConversations"),
+      )
+    ws.reply(evalSend.id, { result: { value: { conversations: [{ id: "19:x@thread.v2" }] } } })
+    expect(await p).toEqual({ conversations: [{ id: "19:x@thread.v2" }] })
+  })
+
+  it("runInTeamsPage returns null when no Teams tab is live", async () => {
+    const { center } = makeCenter({ onTeamsCreds: vi.fn() })
+    expect(await center.runInTeamsPage("x")).toBeNull()
   })
 })
 

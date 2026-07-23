@@ -1,0 +1,116 @@
+/* Reuse the browser renderer's design system verbatim — Tailwind v4 engine, shadcn
+   radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0019 decision 1): the
+   chat app should look like the same product. The Vite Tailwind plugin scans this build's
+   module graph, so the shared ui components imported by the chat views are covered. */
+@import "../../src/index.css";
+
+/* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
+   currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
+   preflight resets margins/list styles, so lists and block spacing are restored here. */
+.teams-message-body {
+  white-space: normal;
+}
+.teams-message-body > *:first-child {
+  margin-top: 0;
+}
+.teams-message-body > *:last-child {
+  margin-bottom: 0;
+}
+.teams-message-body p {
+  margin: 0.25em 0;
+}
+.teams-message-body a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.teams-message-body ul,
+.teams-message-body ol {
+  margin: 0.25em 0;
+  padding-left: 1.25em;
+}
+.teams-message-body ul {
+  list-style: disc;
+}
+.teams-message-body ol {
+  list-style: decimal;
+}
+.teams-message-body blockquote {
+  margin: 0.25em 0;
+  padding-left: 0.6em;
+  border-left: 2px solid color-mix(in oklab, currentColor 30%, transparent);
+  opacity: 0.85;
+}
+.teams-message-body code,
+.teams-message-body kbd,
+.teams-message-body pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: color-mix(in oklab, currentColor 12%, transparent);
+  border-radius: 4px;
+}
+.teams-message-body code,
+.teams-message-body kbd {
+  padding: 0.05em 0.3em;
+}
+.teams-message-body pre {
+  margin: 0.35em 0;
+  padding: 0.5em 0.6em;
+  overflow-x: auto;
+}
+.teams-message-body pre code {
+  padding: 0;
+  background: none;
+}
+.teams-message-body .mention {
+  padding: 0 0.25em;
+  border-radius: 4px;
+  font-weight: 500;
+  background: color-mix(in oklab, currentColor 14%, transparent);
+}
+/* Inline media by kind (t139). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
+   thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
+   small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the
+   split — the older class="emoji" tag is kept as an equivalent for text-emoji that carry no class. */
+/* Generic placeholder (t140): width/height attrs (from ensureMediaDimensions) reserve the aspect-ratio
+   box before load; the muted background fills it so the layout is stable and no content-shift flicker
+   happens while scrolling before the bytes paint over it. Emoji/stickers opt out below (no bg). */
+.teams-message-body img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  /* width + height BOTH auto so the intrinsic aspect ratio (from the width/height attrs) scales to
+     fit within both max constraints, preserving the ratio. With only height:auto the attr width
+     forces the width while max-height clamps the height independently → a portrait image distorts
+     to a landscape box (t140 fix). object-fit is a belt-and-suspenders. */
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--muted);
+  cursor: zoom-in;
+}
+.teams-message-body img[itemtype*="Emoji"],
+.teams-message-body img.emoji {
+  display: inline;
+  height: 1.25em;
+  width: auto;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  vertical-align: -0.2em;
+  cursor: auto;
+}
+.teams-message-body img[itemtype*="Sticker"] {
+  max-height: 140px;
+  width: auto;
+  background: transparent;
+  cursor: auto;
+}
+.teams-message-body video {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 6px;
+  background: var(--muted);
+}
