@@ -119,17 +119,22 @@ ipcMain.on("chat:set-badge", (_e, count) => {
   if (typeof app.setBadgeCount === "function") app.setBadgeCount(Number(count) || 0)
 })
 
-// Browser-style nav (Electron-only header controls). Back/forward walk the page history; reload
-// bypasses the HTTP cache so it force-fetches a fresh build.
-ipcMain.on("chat:go-back", () => {
-  const nav = win?.webContents?.navigationHistory
-  if (nav?.canGoBack()) nav.goBack()
+// Reload = force-fetch a fresh build. The chat PWA registers a cache-first service worker, so an
+// HTTP-cache-bypassing reload alone still serves the SW's cached bundle; a native always-online
+// shell wants the newest build, so we unregister the SW + drop its caches first, then reload
+// ignoring cache. The SW re-registers on the next load against an empty cache (fresh assets).
+ipcMain.on("chat:reload", async () => {
+  const wc = win?.webContents
+  if (!wc) return
+  try {
+    await wc.executeJavaScript(
+      `(async()=>{try{const rs=await navigator.serviceWorker.getRegistrations();for(const r of rs)await r.unregister();if(self.caches){for(const k of await caches.keys())await caches.delete(k)}}catch{}})()`,
+    )
+  } catch {
+    // best-effort — reload regardless
+  }
+  wc.reloadIgnoringCache()
 })
-ipcMain.on("chat:go-forward", () => {
-  const nav = win?.webContents?.navigationHistory
-  if (nav?.canGoForward()) nav.goForward()
-})
-ipcMain.on("chat:reload", () => win?.webContents?.reloadIgnoringCache())
 
 // In-app server URL (Settings). Repoints the shell + persists; ignores a non-http(s) value.
 ipcMain.handle("chat:get-server-url", () => serverUrl)

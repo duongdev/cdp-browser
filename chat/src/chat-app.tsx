@@ -7,6 +7,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
@@ -45,52 +46,70 @@ function useIsWide() {
   return wide
 }
 
-function AppHeader({ onOpenSettings }: { onOpenSettings: () => void }) {
-  // Electron-only browser-style nav (back/forward/reload). Reload force-fetches a fresh build.
+function HeaderButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+}: {
+  label: string
+  icon: typeof Settings02Icon
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={label}
+          className="text-muted-foreground"
+          disabled={disabled}
+          onClick={onClick}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <HugeiconsIcon className="size-4" icon={icon} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function AppHeader({
+  onOpenSettings,
+  canBack,
+  canForward,
+}: {
+  onOpenSettings: () => void
+  canBack: boolean
+  canForward: boolean
+}) {
+  // Electron-only browser-style nav. Reload force-fetches a fresh build (main); back/forward walk
+  // the SPA history directly (window.history — Electron's navigationHistory ignores pushState).
   const shell = chatShell()
   return (
-    <header className="titlebar titlebar-pad flex h-12 shrink-0 items-center gap-2 border-border border-b px-4">
-      {shell && (
-        <div className="flex items-center gap-0.5">
-          <Button
-            aria-label="Back"
-            className="text-muted-foreground"
-            onClick={() => shell.goBack()}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />
-          </Button>
-          <Button
-            aria-label="Forward"
-            className="text-muted-foreground"
-            onClick={() => shell.goForward()}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={ArrowRight01Icon} />
-          </Button>
-          <Button
-            aria-label="Reload"
-            className="text-muted-foreground"
-            onClick={() => shell.reload()}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={ReloadIcon} />
-          </Button>
-        </div>
-      )}
-      <h1 className="font-heading font-semibold text-foreground text-sm">Teams Chat</h1>
-      <Button
-        aria-label="Settings"
-        className="ml-auto text-muted-foreground"
-        onClick={onOpenSettings}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <HugeiconsIcon className="size-4" icon={Settings02Icon} />
-      </Button>
+    <header className="titlebar flex h-12 shrink-0 items-center justify-end gap-0.5 border-border border-b px-4">
+      <TooltipProvider delayDuration={300}>
+        <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
+        {shell && (
+          <>
+            <HeaderButton icon={ReloadIcon} label="Refresh" onClick={() => shell.reload()} />
+            <HeaderButton
+              disabled={!canBack}
+              icon={ArrowLeft01Icon}
+              label="Back"
+              onClick={() => window.history.back()}
+            />
+            <HeaderButton
+              disabled={!canForward}
+              icon={ArrowRight01Icon}
+              label="Forward"
+              onClick={() => window.history.forward()}
+            />
+          </>
+        )}
+      </TooltipProvider>
     </header>
   )
 }
@@ -206,6 +225,25 @@ export function ChatApp() {
     if (persist) markReadLocal(id, action, ts)
   }, [])
 
+  // Renderer-owned back/forward for the Electron header (PSN-91). Electron's webContents
+  // navigationHistory doesn't count same-document pushState entries, so the SPA routes are walked
+  // with window.history and enable/disable is tracked by a self-managed index stamped into
+  // history.state (the History API has no canGoForward). `pushPath` is the single push seam.
+  const navIdx = useRef(0)
+  const navMax = useRef(0)
+  const [canNav, setCanNav] = useState({ back: false, forward: false })
+  useEffect(() => {
+    // Stamp the base entry so popstate can read a position back to it.
+    window.history.replaceState({ idx: 0 }, "")
+  }, [])
+  const pushPath = useCallback((path: string) => {
+    if (window.location.pathname === path) return
+    navIdx.current += 1
+    navMax.current = navIdx.current
+    window.history.pushState({ idx: navIdx.current }, "", path)
+    setCanNav({ back: navIdx.current > 0, forward: false })
+  }, [])
+
   // The URL is the state (t150): `/chat/c/{id}` is an open conversation, `/chat/` is the list.
   // A user-driven open pushes; a popstate-driven one replays history without re-pushing.
   const openConversation = useCallback(
@@ -216,10 +254,9 @@ export function ChatApp() {
       // persist=true: a kept-alive pane re-open doesn't refetch history (whose non-poll load is the
       // other server-side read write), so the open itself must clear a mark-unread sentinel durably.
       patchConvRead(conv.id, "read", true)
-      const path = pathFor(conv.id)
-      if (window.location.pathname !== path) window.history.pushState(null, "", path)
+      pushPath(pathFor(conv.id))
     },
-    [patchConvRead],
+    [patchConvRead, pushPath],
   )
 
   const openConversationById = useCallback(
@@ -228,10 +265,9 @@ export function ChatApp() {
       setKeepAlive((s) => openThread(s, id))
       setPhoneView("thread")
       patchConvRead(id, "read", true)
-      const path = pathFor(id)
-      if (push && window.location.pathname !== path) window.history.pushState(null, "", path)
+      if (push) pushPath(pathFor(id))
     },
-    [patchConvRead],
+    [patchConvRead, pushPath],
   )
   openConvRef.current = openConversationById
 
@@ -273,7 +309,11 @@ export function ChatApp() {
   useEffect(() => {
     const route = parsePath(window.location.pathname)
     if (route) openConversationById(route.convId, false)
-    const onPop = () => {
+    const onPop = (e: PopStateEvent) => {
+      // Track position from the stamped index so the header's back/forward can enable correctly.
+      const idx = (e.state as { idx?: number } | null)?.idx ?? 0
+      navIdx.current = idx
+      setCanNav({ back: idx > 0, forward: idx < navMax.current })
       const r = parsePath(window.location.pathname)
       if (r) openConversationById(r.convId, false)
       else setPhoneView("list")
@@ -295,8 +335,8 @@ export function ChatApp() {
 
   const backToList = useCallback(() => {
     setPhoneView("list")
-    if (window.location.pathname !== "/chat/") window.history.pushState(null, "", "/chat/")
-  }, [])
+    pushPath("/chat/")
+  }, [pushPath])
 
   // ── Keyboard-first navigation (t152) ────────────────────────────────────────────────────────
   // List cursor + the active thread pane's handle + its reported focused message. The list cursor
@@ -730,7 +770,11 @@ export function ChatApp() {
     return (
       <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
         <aside className="flex w-80 shrink-0 flex-col border-border border-r">
-          <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
+          <AppHeader
+            canBack={canNav.back}
+            canForward={canNav.forward}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
               collapsedFolders={collapsed}
@@ -763,7 +807,11 @@ export function ChatApp() {
   return (
     <div className="flex h-[var(--app-h,100dvh)] w-full flex-col bg-background">
       <div className={cn("flex min-h-0 flex-1 flex-col", phoneView === "thread" && "hidden")}>
-        <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
+        <AppHeader
+          canBack={canNav.back}
+          canForward={canNav.forward}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
             collapsedFolders={collapsed}

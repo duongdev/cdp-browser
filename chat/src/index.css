@@ -520,17 +520,13 @@
 }
 
 /* Electron shell (PSN-91): the CDP Chats window uses a frameless titlebar (titleBarStyle
-   "hiddenInset"), so the top headers double as the OS drag region and must clear the macOS
-   traffic lights. Gated by `.is-electron` (set by chat-app when window.chatShell exists) so the
-   web/PWA build is byte-unchanged. Interactive children opt back out of the drag region, or they
-   couldn't be clicked. */
+   "hiddenInset"), so the top headers double as the OS drag region. The action buttons live on the
+   RIGHT, clear of the macOS traffic lights (top-left), so the empty left area is pure drag surface.
+   Gated by `.is-electron` (set by chat-app when window.chatShell exists) so the web/PWA build is
+   byte-unchanged. Interactive children opt back out of the drag region, or they couldn't be clicked. */
 .is-electron .titlebar {
   -webkit-app-region: drag;
 }
 .is-electron .titlebar :where(button, input, a, [role="button"], select, textarea) {
   -webkit-app-region: no-drag;
-}
-/* Left-column header sits under the traffic lights — pad its content clear of them. */
-.is-electron .titlebar-pad {
-  padding-left: 76px;
 }

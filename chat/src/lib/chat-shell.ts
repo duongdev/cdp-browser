@@ -8,10 +8,8 @@ export interface ChatShellBridge {
   notify(p: { title: string; body: string; convId: string }): void
   setBadge(count: number): void
   onNotificationActivate(cb: (convId: string) => void): void
-  /** Browser-style nav for the Electron window: back/forward walk the page history; reload does a
-   *  cache-bypassing reload (force-fetches a new build). */
-  goBack(): void
-  goForward(): void
+  /** Cache-bypassing reload (force-fetches a new build). Back/forward are handled in the renderer
+   *  via window.history — Electron's webContents navigationHistory ignores same-document pushState. */
   reload(): void
   /** The server the shell loads /chat from — editable in Settings (Electron-only). Setting it
    *  persists to chat-config.json and reloads the window to the new server. */
