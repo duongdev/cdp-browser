@@ -28,6 +28,15 @@ function oidFromMri(mri) {
   return typeof mri === "string" ? mri.replace(/^8:orgid:/, "") : ""
 }
 
+// SSRF/shape guard for the avatar endpoint (t153): a Teams user id is an AAD object id (a UUID) or
+// its `8:orgid:{uuid}` MRI form — never a URL. Strip the MRI prefix and accept only a bare UUID, so
+// a hostile `?userId=…` can't steer the in-page Graph fetch at another path/host. Returns the bare
+// oid or "" (rejected).
+function normalizeUserOid(id) {
+  const oid = oidFromMri(id)
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(oid) ? oid : ""
+}
+
 // Compose the display title exactly as Teams renders it (verified live against the running tenant).
 // Precedence: an explicit topic wins (any kind); the self "Notes" chat shows "{selfName} (You)";
 // a 1:1 DM shows the other full name; a topic-less group-DM shows GIVEN names (first token of each
@@ -57,4 +66,4 @@ function composeTitle(input = {}) {
   return `${g[0]}, ${g[1]}, +${g.length - 2}`
 }
 
-module.exports = { otherMrisFromId, oidFromMri, composeTitle }
+module.exports = { otherMrisFromId, oidFromMri, composeTitle, normalizeUserOid }

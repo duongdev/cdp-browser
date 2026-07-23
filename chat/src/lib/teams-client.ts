@@ -16,6 +16,9 @@ export interface TeamsConversation {
   lastMessageTs: number | null
   lastMessagePreview: string
   muted: boolean
+  /** The user oid whose photo represents this row (t153): a 1:1's other member or the self chat's
+   *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/teams/avatar`. */
+  avatarUserId?: string
 }
 
 interface ConversationsResponse {

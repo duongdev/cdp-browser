@@ -50,6 +50,7 @@ import { buildTeamsFilePayload } from "../core/teams-files.js"
 import { isValidAmsUrl, rewriteMediaHtml } from "../core/teams-media.js"
 import {
   composeTitle as teamsComposeTitle,
+  normalizeUserOid as teamsNormalizeUserOid,
   oidFromMri as teamsOidFromMri,
   otherMrisFromId as teamsOtherMrisFromId,
 } from "../core/teams-names.js"
@@ -1331,6 +1332,14 @@ async function teamsResolveTitles(cred, convs) {
       memberNames: (mrisByConv.get(c.id) || []).map((m) => cache.get(m)).filter(Boolean),
       selfName,
     }),
+    // The oid whose photo represents this row (t153): a 1:1 → the other member, the self Notes chat
+    // → the viewer, a group → none (keeps the initials tile). Undefined when unknown.
+    avatarUserId:
+      c.kind === "self"
+        ? cred.userId || undefined
+        : c.kind === "oneOnOne"
+          ? teamsOidFromMri((mrisByConv.get(c.id) || [])[0] || "") || undefined
+          : undefined,
   }))
 }
 
@@ -1523,6 +1532,75 @@ async function teamsMedia(url) {
     ct: out.ct || "application/octet-stream",
     buf: Buffer.from(out.dataUrl.slice(comma + 1), "base64"),
   }
+}
+
+// ---- Teams user avatars (t153) --------------------------------------------
+// Real user photos via Graph `/v1.0/users/{oid}/photos/48x48/$value`, fetched IN-PAGE with the
+// page's own Graph bearer (the same MSAL accesstoken teamsResolveTitles uses for getByIds) so
+// Conditional Access can't reject it. Best-effort: a user with no photo 404s (common) — that miss
+// is cached as a negative so the list can't hammer Graph. Keyed by bare oid (immutable), LRU + neg.
+const TEAMS_AVATAR_CACHE = new Map() // oid -> { ct, buf } | { miss: true }
+const TEAMS_AVATAR_CACHE_MAX = 256
+
+function teamsAvatarCacheGet(oid) {
+  const hit = TEAMS_AVATAR_CACHE.get(oid)
+  if (!hit) return null
+  TEAMS_AVATAR_CACHE.delete(oid)
+  TEAMS_AVATAR_CACHE.set(oid, hit)
+  return hit
+}
+
+function teamsAvatarCacheSet(oid, entry) {
+  TEAMS_AVATAR_CACHE.set(oid, entry)
+  while (TEAMS_AVATAR_CACHE.size > TEAMS_AVATAR_CACHE_MAX) {
+    TEAMS_AVATAR_CACHE.delete(TEAMS_AVATAR_CACHE.keys().next().value)
+  }
+}
+
+async function fetchTeamsAvatarInPage(oid) {
+  // 48px is enough for a chat avatar; the bearer is a localStorage read (CA doesn't apply), the
+  // GET is the browser's own authenticated request. 404 = no photo (negative-cache it).
+  const script = `(async () => {
+    try {
+      let key = null
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
+      }
+      if (!key) return { error: "no_bearer" }
+      let bearer = ""
+      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { error: "no_bearer" } }
+      if (!bearer) return { error: "no_bearer" }
+      const r = await fetch("https://graph.microsoft.com/v1.0/users/${oid}/photos/48x48/$value", {
+        headers: { Authorization: "Bearer " + bearer },
+      })
+      if (r.status === 404) return { miss: true }
+      if (r.status === 401 || r.status === 403) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      const blob = await r.blob()
+      const dataUrl = await new Promise((resolve, reject) => {
+        const fr = new FileReader()
+        fr.onload = () => resolve(fr.result)
+        fr.onerror = () => reject(fr.error)
+        fr.readAsDataURL(blob)
+      })
+      return { ct: blob.type || r.headers.get("content-type") || "image/jpeg", dataUrl }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
+// Resolve one user's avatar → { ct, buf } | { miss: true } | { error }. The in-page Graph fetch
+// needs only a Teams tab (any tenant's bearer resolves any oid in that tenant's directory); no
+// per-tenant cred juggling like media.
+async function teamsAvatar(oid) {
+  const out = await fetchTeamsAvatarInPage(oid)
+  if (out.miss) return { miss: true }
+  if (out.error) return { error: out.error }
+  const comma = typeof out.dataUrl === "string" ? out.dataUrl.indexOf(",") : -1
+  if (comma === -1) return { error: "bad_data_url" }
+  return { ct: out.ct || "image/jpeg", buf: Buffer.from(out.dataUrl.slice(comma + 1), "base64") }
 }
 
 // ---- Teams reply + mark-read (t130, ADR-0019) -----------------------------
@@ -2404,6 +2482,28 @@ const server = http.createServer(async (req, res) => {
           "Content-Type": hit.ct,
           "X-Content-Type-Options": "nosniff",
           "Cache-Control": "public, max-age=604800, immutable",
+        })
+        .end(hit.buf)
+    }
+    // Teams chat: real user avatar via Graph photo (t153). userId is an oid/MRI (never a URL) —
+    // shape-guarded by teamsNormalizeUserOid (SSRF). 404/no-photo → 204 so the client keeps
+    // initials; the miss is negative-cached. Serves image bytes with nosniff. Web only.
+    if (p === "/api/teams/avatar" && !POST) {
+      const oid = teamsNormalizeUserOid(url.searchParams.get("userId") || "")
+      if (!oid) return res.writeHead(400).end("bad userId")
+      let hit = teamsAvatarCacheGet(oid)
+      if (!hit) {
+        hit = await teamsAvatar(oid)
+        if (hit.miss || (hit.ct && /^image\//.test(hit.ct))) teamsAvatarCacheSet(oid, hit)
+      }
+      if (hit.miss) return res.writeHead(204).end()
+      if (hit.error) return res.writeHead(502).end(hit.error)
+      if (!/^image\//.test(hit.ct || "")) return res.writeHead(502).end("bad media type")
+      return res
+        .writeHead(200, {
+          "Content-Type": hit.ct,
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "public, max-age=86400",
         })
         .end(hit.buf)
     }

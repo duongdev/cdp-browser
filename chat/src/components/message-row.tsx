@@ -35,6 +35,7 @@ import { htmlToPlain } from "../lib/html-to-plain"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
 import { ImageLightbox } from "./image-lightbox"
+import { UserAvatar } from "./user-avatar"
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
 // DEFAULT_REACTIONS — a frozen, closed set, kept local so the browser build needn't import the CJS
@@ -209,7 +210,14 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete, focused, command }
       ref={rowRef}
     >
       {!self && !!message.senderName && (
-        <span className="px-1 font-medium text-muted-foreground text-xs">{message.senderName}</span>
+        <span className="flex items-center gap-1.5 px-1">
+          <UserAvatar
+            className="size-5 text-[10px]"
+            label={message.senderName}
+            userId={message.senderId}
+          />
+          <span className="font-medium text-muted-foreground text-xs">{message.senderName}</span>
+        </span>
       )}
       {hasBody && editing && (
         <div className="flex w-full max-w-[85%] flex-col gap-1 self-end">

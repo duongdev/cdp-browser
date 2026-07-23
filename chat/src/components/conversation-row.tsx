@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react"
 import { cn } from "@/lib/utils"
 import { conversationLabel, previewLine, relativeTime } from "../lib/conversation-view"
 import type { TeamsConversation } from "../lib/teams-client"
+import { UserAvatar } from "./user-avatar"
 
 interface ConversationRowProps {
   conversation: TeamsConversation
@@ -34,9 +35,7 @@ export function ConversationRow({ conversation, onOpen, active, focused }: Conve
       ref={ref}
       type="button"
     >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-medium text-primary">
-        {label.charAt(0).toUpperCase()}
-      </span>
+      <UserAvatar label={label} userId={conversation.avatarUserId} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
           <span className="truncate font-medium text-foreground">{label}</span>
