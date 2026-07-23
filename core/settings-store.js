@@ -65,6 +65,8 @@ const DEVICE_KEY_PREFIXES = [
   // t154 chat app per-device settings: theme (system/light/dark) + density (comfortable/compact).
   "chatTheme_",
   "chatDensity_",
+  // t156 chat app per-device folder collapse state: JSON array of collapsed folder names.
+  "chatFolders_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

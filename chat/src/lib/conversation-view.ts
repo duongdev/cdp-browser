@@ -102,6 +102,9 @@ export function previewText(rawContent: string): string {
  *  `unreadSticky` sentinel forces unread even when `readTs` would otherwise cover it (server already
  *  zeroes `readTs` in that case, so the ts check suffices; the flag is kept for an explicit read). */
 export function isUnread(conv: TeamsConversation): boolean {
+  // A muted conversation (t156, local pref) contributes nothing to the unread/badge signal — mute
+  // wins over unread in display. The conv's `muted` is set by applyPrefs (or the server row).
+  if (conv.muted) return false
   if (conv.lastMessageFromMe) return false
   if (conv.lastMessageTs == null) return false
   return conv.lastMessageTs > (conv.readTs || 0)
@@ -132,6 +135,82 @@ export function applyReadOverride(
   }
   if (conv.readTs === 0 && conv.unreadSticky) return conv
   return { ...conv, readTs: 0, unreadSticky: true }
+}
+
+// ── Conversation prefs: labels / folder / mute (t156, Workstream K) ─────────────────────────────
+// Local-only organisation, shared server-side but NEVER written to Teams. Fetched as a map beside
+// the list and re-applied over polled rows (a poll can't clobber a pref), same pattern as t155's
+// read overrides.
+
+/** One conversation's local prefs (mirror of the server's teams-store shape). */
+export interface ConvPrefs {
+  labels: string[]
+  folder: string | null
+  muted: boolean
+}
+
+export const EMPTY_PREFS: ConvPrefs = { labels: [], folder: null, muted: false }
+
+/** Merge a conversation's prefs onto the server row: `muted` OR'd with the pref, `labels`/`folder`
+ *  carried on the row for the UI. Returns the same reference when nothing changes. Pure. */
+export function applyPrefs(conv: TeamsConversation, prefs?: ConvPrefs): TeamsConversation {
+  if (!prefs) return conv
+  const muted = conv.muted || prefs.muted
+  const hasLabels = prefs.labels.length > 0
+  if (muted === conv.muted && !hasLabels && !prefs.folder) return conv
+  return { ...conv, muted, labels: prefs.labels, folder: prefs.folder }
+}
+
+/** A folder section (or the ungrouped bucket) for the grouped list view. */
+export interface FolderSection {
+  /** The folder name, or null for the ungrouped rows. */
+  folder: string | null
+  conversations: TeamsConversation[]
+}
+
+/** Group a (pref-applied, already list-sorted) conversation list into folder sections. Folder
+ *  sections come first, alpha-sorted by name (locale-aware, case-insensitive); the ungrouped rows
+ *  follow as a trailing section (folder: null). Each section keeps the incoming order (the list is
+ *  already newest-first). A conversation's folder is read from `conv.folder` (set by applyPrefs).
+ *  Pure — the row/section rendering is presentation over this. */
+export function groupByFolder(conversations: TeamsConversation[]): FolderSection[] {
+  const folders = new Map<string, TeamsConversation[]>()
+  const ungrouped: TeamsConversation[] = []
+  for (const c of conversations) {
+    const f = c.folder?.trim()
+    if (f) {
+      const arr = folders.get(f)
+      if (arr) arr.push(c)
+      else folders.set(f, [c])
+    } else ungrouped.push(c)
+  }
+  const sections: FolderSection[] = [...folders.keys()]
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .map((folder) => ({ folder, conversations: folders.get(folder) as TeamsConversation[] }))
+  // Trailing ungrouped section — only when non-empty AND there are folders (otherwise a flat list).
+  if (ungrouped.length > 0) sections.push({ folder: null, conversations: ungrouped })
+  return sections
+}
+
+/** Every distinct folder name in a prefs map, alpha-sorted — the "Move to folder" submenu source. */
+export function knownFolders(prefs: Record<string, ConvPrefs>): string[] {
+  const set = new Set<string>()
+  for (const p of Object.values(prefs)) if (p.folder) set.add(p.folder)
+  return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+}
+
+/** Every distinct label across all conversations, alpha-sorted — the "Labels" menu toggle source. */
+export function knownLabels(prefs: Record<string, ConvPrefs>): string[] {
+  const set = new Set<string>()
+  for (const p of Object.values(prefs)) for (const l of p.labels) set.add(l)
+  return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+}
+
+/** Toggle a label in a list (add if absent, remove if present). Pure — the caller POSTs the result. */
+export function toggleLabel(labels: string[], label: string): string[] {
+  const t = label.trim()
+  if (!t) return labels
+  return labels.includes(t) ? labels.filter((l) => l !== t) : [...labels, t]
 }
 
 const MINUTE = 60_000

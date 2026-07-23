@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest"
 import {
+  applyPrefs,
   applyReadOverride,
   conversationLabel,
+  groupByFolder,
   isUnread,
+  knownFolders,
+  knownLabels,
   previewLine,
   relativeTime,
+  toggleLabel,
 } from "./conversation-view"
 import type { TeamsConversation } from "./teams-client"
 
@@ -193,5 +198,63 @@ describe("applyReadOverride (t155)", () => {
   it("no override → same ref", () => {
     const c = conv({ lastMessageTs: 200 })
     expect(applyReadOverride(c, undefined)).toBe(c)
+  })
+})
+
+describe("conversation prefs shaping (t156)", () => {
+  it("applyPrefs OR's mute and carries labels/folder onto the row", () => {
+    const c = conv({ id: "c1", muted: false })
+    const out = applyPrefs(c, { labels: ["work"], folder: "Team", muted: true })
+    expect(out.muted).toBe(true)
+    expect(out.labels).toEqual(["work"])
+    expect(out.folder).toBe("Team")
+  })
+
+  it("applyPrefs returns the same ref for an empty pref", () => {
+    const c = conv({ id: "c1" })
+    expect(applyPrefs(c, { labels: [], folder: null, muted: false })).toBe(c)
+    expect(applyPrefs(c, undefined)).toBe(c)
+  })
+
+  it("isUnread is false for a muted conversation (mute wins)", () => {
+    const c = applyPrefs(conv({ lastMessageTs: 100, readTs: 0 }), {
+      labels: [],
+      folder: null,
+      muted: true,
+    })
+    expect(isUnread(c)).toBe(false)
+  })
+
+  it("groupByFolder: folders alpha-first, ungrouped trailing", () => {
+    const rows = [
+      applyPrefs(conv({ id: "a" }), { labels: [], folder: "Zeta", muted: false }),
+      applyPrefs(conv({ id: "b" }), { labels: [], folder: "Alpha", muted: false }),
+      conv({ id: "c" }), // ungrouped
+    ]
+    const s = groupByFolder(rows)
+    expect(s.map((x) => x.folder)).toEqual(["Alpha", "Zeta", null])
+    expect(s[2].conversations.map((c) => c.id)).toEqual(["c"])
+  })
+
+  it("groupByFolder: a flat list is one null section (no folder headers)", () => {
+    const rows = [conv({ id: "a" }), conv({ id: "b" })]
+    const s = groupByFolder(rows)
+    expect(s).toHaveLength(1)
+    expect(s[0].folder).toBe(null)
+  })
+
+  it("knownFolders / knownLabels are distinct + alpha-sorted", () => {
+    const prefs = {
+      a: { labels: ["z", "a"], folder: "Work", muted: false },
+      b: { labels: ["a"], folder: "Home", muted: false },
+    }
+    expect(knownFolders(prefs)).toEqual(["Home", "Work"])
+    expect(knownLabels(prefs)).toEqual(["a", "z"])
+  })
+
+  it("toggleLabel adds then removes", () => {
+    expect(toggleLabel([], "x")).toEqual(["x"])
+    expect(toggleLabel(["x"], "x")).toEqual([])
+    expect(toggleLabel(["x"], " ")).toEqual(["x"])
   })
 })

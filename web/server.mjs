@@ -58,6 +58,7 @@ import { planTeamsNotifications } from "../core/teams-notify-sweep.js"
 import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
 import {
   conversationKind as teamsConversationKind,
+  getAllPrefs as teamsGetAllPrefs,
   getReadState as teamsGetReadState,
   getUsers as teamsGetUsers,
   listConversations as teamsListConversations,
@@ -65,6 +66,7 @@ import {
   markConversationUnread as teamsMarkConversationUnread,
   migrate as teamsMigrate,
   setLocalRead as teamsSetLocalRead,
+  setPrefs as teamsSetPrefs,
   setReadHorizon as teamsSetReadHorizon,
   upsertAccount as teamsUpsertAccount,
   upsertConversations as teamsUpsertConversations,
@@ -2541,6 +2543,21 @@ const server = http.createServer(async (req, res) => {
       if (action === "read") teamsMarkConversationRead(teamsDb, tenant, convId, Number(ts) || 0)
       else teamsMarkConversationUnread(teamsDb, tenant, convId)
       return json(res, { ok: true })
+    }
+    // Teams chat: LOCAL conversation prefs (t156, Workstream K) — labels, folder, mute. All local to
+    // this store, NEVER written to Teams; shared across every device (not device-keyed). GET returns
+    // every conversation's prefs (a map the client holds beside the list + re-applies over polls);
+    // POST patches one conversation (only the provided keys). Web only. No cred needed — prefs are
+    // keyed by convId, not tenant.
+    if (p === "/api/teams/prefs" && !POST) return json(res, { prefs: teamsGetAllPrefs(teamsDb) })
+    if (p === "/api/teams/prefs" && POST) {
+      const { convId, labels, folder, muted } = await body(req)
+      if (!convId) return json(res, { error: "missing fields" }, 400)
+      const patch = {}
+      if (labels !== undefined) patch.labels = labels
+      if (folder !== undefined) patch.folder = folder
+      if (muted !== undefined) patch.muted = muted
+      return json(res, { ok: true, prefs: teamsSetPrefs(teamsDb, convId, patch) })
     }
     // Teams chat: add/remove the viewer's reaction on a message IN-PAGE (t142, ADR-0019). Best-effort
     // { ok } — the client is optimistic and the poll reconciles. A 401 → one re-authz + retry. Web only.

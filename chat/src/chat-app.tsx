@@ -11,10 +11,11 @@ import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/th
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
-import { isUnread, type ReadOverride } from "./lib/conversation-view"
+import { isUnread, knownFolders, type ReadOverride } from "./lib/conversation-view"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
+import { useConvPrefs } from "./lib/use-conv-prefs"
 
 // Reactive wide/narrow gate (t129). Wide (≥768px) shows the two-pane list+thread; narrow stacks
 // list → thread → back. matchMedia over a resize listener — it fires only on the boundary cross.
@@ -229,6 +230,9 @@ export function ChatApp() {
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { settings, update: updateSettings } = useChatSettings()
+  // Local conversation prefs (t156): labels/folder/mute (shared server-side) + per-device folder
+  // collapse state. Applied over the list rows inside ConversationList (poll-proof, like read overrides).
+  const { prefs, patch: patchPrefs, collapsed, toggleFolderCollapsed } = useConvPrefs()
   const pendingG = useRef(false)
   const gTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -333,6 +337,39 @@ export function ChatApp() {
         run: () =>
           ctx.focusedConversationId && patchConvRead(ctx.focusedConversationId, "unread", true),
       },
+      // Per-conversation mute (t156). Label flips with the focused conversation's current state.
+      {
+        id: "mute-conv",
+        label: prefs[ctx.focusedConversationId ?? ""]?.muted
+          ? "Unmute conversation"
+          : "Mute conversation",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: () => {
+          const id = ctx.focusedConversationId
+          if (id) patchPrefs(id, { muted: !prefs[id]?.muted })
+        },
+      },
+      // Move to folder (t156). Palette-simple: prompt for a folder name (blank clears). The row menu
+      // has the full submenu of existing folders; this is the keyboard-driven quick path.
+      {
+        id: "move-folder",
+        label: "Move to folder…",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: () => {
+          const id = ctx.focusedConversationId
+          if (!id) return
+          const existing = knownFolders(prefs)
+          const hint = existing.length ? ` (${existing.join(", ")})` : ""
+          const name = window.prompt(
+            `Move to folder${hint} — blank to remove`,
+            prefs[id]?.folder ?? "",
+          )
+          if (name === null) return
+          patchPrefs(id, { folder: name.trim() || null })
+        },
+      },
       ...jumps,
       {
         id: "msg-react",
@@ -359,7 +396,17 @@ export function ChatApp() {
         run: () => activeThreadRef.current?.command("delete"),
       },
     ])
-  }, [conversations, openConversation, backToList, view, moveListFocus, patchConvRead, ctx])
+  }, [
+    conversations,
+    openConversation,
+    backToList,
+    view,
+    moveListFocus,
+    patchConvRead,
+    ctx,
+    prefs,
+    patchPrefs,
+  ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
   useEffect(() => {
@@ -495,9 +542,13 @@ export function ChatApp() {
           <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
+              collapsedFolders={collapsed}
               focusedId={view === "list" ? focusedConvId : null}
               onConversations={onConversations}
               onOpenConversation={openConversation}
+              onPatchPrefs={patchPrefs}
+              onToggleFolder={toggleFolderCollapsed}
+              prefs={prefs}
               readOverrides={readOverrides}
               selectedId={keepAlive.active || null}
             />
@@ -522,9 +573,13 @@ export function ChatApp() {
         <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
+            collapsedFolders={collapsed}
             focusedId={focusedConvId}
             onConversations={onConversations}
             onOpenConversation={openConversation}
+            onPatchPrefs={patchPrefs}
+            onToggleFolder={toggleFolderCollapsed}
+            prefs={prefs}
             readOverrides={readOverrides}
             selectedId={keepAlive.active || null}
           />

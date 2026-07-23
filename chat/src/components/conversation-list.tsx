@@ -1,11 +1,20 @@
-import { Alert02Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
+import { Alert02Icon, ArrowRight01Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import { mergeConversations } from "../lib/conversation-merge"
-import { applyReadOverride, type ReadOverride } from "../lib/conversation-view"
+import {
+  applyPrefs,
+  applyReadOverride,
+  type ConvPrefs,
+  type FolderSection,
+  groupByFolder,
+  type ReadOverride,
+} from "../lib/conversation-view"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
 import { ConversationRow } from "./conversation-row"
+import { ConversationRowMenu } from "./conversation-row-menu"
 
 // Live sync (t135, poll-first): cadence for re-unioning the newest conversation page.
 const LIST_POLL_MS = 12_000
@@ -37,6 +46,17 @@ interface ConversationListProps {
    *  screen — and echoed through `onConversations` so the app's copy agrees. A server poll can't
    *  clobber an override (read = readTs floor, unread = forced sticky). */
   readOverrides?: Record<string, ReadOverride>
+  /** Local conversation prefs by id (t156): labels/folder/mute, applied over the rows HERE (same
+   *  pattern as readOverrides) so a poll can't clobber them. Groups the list into folder sections. */
+  prefs?: Record<string, ConvPrefs>
+  /** Collapsed folder names (per-device view state, t156). */
+  collapsedFolders?: Set<string>
+  onToggleFolder?: (folder: string) => void
+  /** Patch a conversation's prefs from the row menu (t156). */
+  onPatchPrefs?: (
+    convId: string,
+    patch: { labels?: string[]; folder?: string | null; muted?: boolean },
+  ) => void
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
@@ -48,6 +68,10 @@ export function ConversationList({
   focusedId,
   onConversations,
   readOverrides,
+  prefs,
+  collapsedFolders,
+  onToggleFolder,
+  onPatchPrefs,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
@@ -79,9 +103,18 @@ export function ConversationList({
   const conversations = state.status === "ready" ? state.conversations : null
   const display = useMemo(
     () =>
-      conversations ? conversations.map((c) => applyReadOverride(c, readOverrides?.[c.id])) : null,
-    [conversations, readOverrides],
+      conversations
+        ? conversations.map((c) =>
+            applyPrefs(applyReadOverride(c, readOverrides?.[c.id]), prefs?.[c.id]),
+          )
+        : null,
+    [conversations, readOverrides, prefs],
   )
+
+  // Group into folder sections (t156): folders alpha-sorted on top, ungrouped rows below. A flat
+  // list (no folders assigned) collapses to one null section — the render treats that as the plain,
+  // header-less list it was before.
+  const sections = useMemo(() => (display ? groupByFolder(display) : null), [display])
 
   // Report the override-applied list upward whenever it (referentially) changes, so the app's copy
   // (keyboard toggle, ⌘K predicates) agrees with what's on screen.
@@ -202,16 +235,42 @@ export function ConversationList({
     return <EmptyState icon={InboxIcon} title="No conversations" />
   }
 
+  const renderRow = (c: TeamsConversation) => {
+    const row = (
+      <ConversationRow
+        active={c.id === selectedId}
+        conversation={c}
+        focused={c.id === focusedId}
+        key={c.id}
+        onOpen={onOpenConversation}
+      />
+    )
+    // Wrap in the right-click / long-press prefs menu when the app injected a patch handler.
+    if (!onPatchPrefs) return row
+    return (
+      <ConversationRowMenu
+        allPrefs={prefs ?? {}}
+        convId={c.id}
+        key={c.id}
+        onPatch={onPatchPrefs}
+        prefs={prefs?.[c.id] ?? { labels: [], folder: null, muted: false }}
+      >
+        {row}
+      </ConversationRowMenu>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-0.5 p-2">
-      {(display ?? []).map((c) => (
-        <ConversationRow
-          active={c.id === selectedId}
-          conversation={c}
-          focused={c.id === focusedId}
-          key={c.id}
-          onOpen={onOpenConversation}
-        />
+      {(sections ?? []).map((section) => (
+        <FolderGroup
+          collapsed={!!section.folder && !!collapsedFolders?.has(section.folder)}
+          key={section.folder ?? "__ungrouped"}
+          onToggle={onToggleFolder}
+          section={section}
+        >
+          {section.conversations.map(renderRow)}
+        </FolderGroup>
       ))}
       {hasMore && (
         // Keep the sentinel mounted (with a little idle height so the observer keeps firing); while
@@ -225,6 +284,40 @@ export function ConversationList({
             ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// A folder section (t156): a named folder gets a collapsible header (chevron + name + count);
+// the ungrouped (null) section renders its rows bare, so a list with no folders looks unchanged.
+function FolderGroup({
+  section,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  section: FolderSection
+  collapsed: boolean
+  onToggle?: (folder: string) => void
+  children: React.ReactNode
+}) {
+  if (section.folder == null) return <>{children}</>
+  return (
+    <div className="flex flex-col gap-0.5">
+      <button
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+        onClick={() => onToggle?.(section.folder as string)}
+        type="button"
+      >
+        <HugeiconsIcon
+          className={cn("size-3.5 transition-transform", !collapsed && "rotate-90")}
+          icon={ArrowRight01Icon}
+        />
+        <span className="truncate font-semibold uppercase tracking-wide">{section.folder}</span>
+        <span className="ml-auto font-mono text-[10px]">{section.conversations.length}</span>
+      </button>
+      {!collapsed && <div className="flex flex-col gap-0.5">{children}</div>}
     </div>
   )
 }

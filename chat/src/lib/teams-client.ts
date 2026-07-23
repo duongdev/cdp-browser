@@ -23,6 +23,11 @@ export interface TeamsConversation {
   /** True while an explicit mark-unread sentinel forces the row unread past the Teams horizon (t155). */
   unreadSticky: boolean
   muted: boolean
+  /** Local labels applied to this row (t156): set by applyPrefs from the prefs map, not the server
+   *  conversation payload. Absent until prefs merge. */
+  labels?: string[]
+  /** Local folder this row is filed under (t156): set by applyPrefs. null/absent = ungrouped. */
+  folder?: string | null
   /** The user oid whose photo represents this row (t153): a 1:1's other member or the self chat's
    *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/teams/avatar`. */
   avatarUserId?: string
@@ -324,6 +329,45 @@ export async function uploadFile(
     throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
   }
   return { msgId: data.msgId }
+}
+
+/** Local conversation prefs (t156): labels / folder / mute. Local to the chat store, shared across
+ *  devices, never written to Teams. Mirror of the server's teams-store shape. */
+export interface ConvPrefsDto {
+  labels: string[]
+  folder: string | null
+  muted: boolean
+}
+
+/** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
+ *  app holds it beside the list and re-applies over polls. Best-effort — a failure yields {}. */
+export async function fetchPrefs(signal?: AbortSignal): Promise<Record<string, ConvPrefsDto>> {
+  try {
+    const res = await fetch("/api/teams/prefs", { signal })
+    const data = (await res.json().catch(() => ({}))) as { prefs?: Record<string, ConvPrefsDto> }
+    return data.prefs ?? {}
+  } catch {
+    return {}
+  }
+}
+
+/** Patch one conversation's prefs (t156). Only the provided keys change server-side. Returns the
+ *  conversation's full prefs after the write (or null on failure — the caller stays optimistic). */
+export async function setPrefs(
+  convId: string,
+  patch: { labels?: string[]; folder?: string | null; muted?: boolean },
+): Promise<ConvPrefsDto | null> {
+  try {
+    const res = await fetch("/api/teams/prefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ convId, ...patch }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { prefs?: ConvPrefsDto }
+    return data.prefs ?? null
+  } catch {
+    return null
+  }
 }
 
 /** Write-through mark-read (t130, Q9 hybrid): push the conversation's read horizon to Teams.

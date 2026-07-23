@@ -1,3 +1,5 @@
+import { NotificationOff03Icon } from "@hugeicons/core-free-icons"
+import { HugeiconsIcon } from "@hugeicons/react"
 import { useEffect, useRef } from "react"
 import { cn } from "@/lib/utils"
 import { conversationLabel, isUnread, previewLine, relativeTime } from "../lib/conversation-view"
@@ -18,6 +20,8 @@ export function ConversationRow({ conversation, onOpen, active, focused }: Conve
   const label = conversationLabel(conversation)
   const time = relativeTime(conversation.lastMessageTs)
   const unread = isUnread(conversation)
+  const muted = !!conversation.muted
+  const labels = conversation.labels ?? []
   const ref = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -31,6 +35,7 @@ export function ConversationRow({ conversation, onOpen, active, focused }: Conve
         "hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
         active && "bg-muted",
         focused && "ring-2 ring-ring/70 ring-inset",
+        muted && "opacity-60",
       )}
       onClick={() => onOpen(conversation)}
       ref={ref}
@@ -39,20 +44,38 @@ export function ConversationRow({ conversation, onOpen, active, focused }: Conve
       <UserAvatar label={label} userId={conversation.avatarUserId} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
-          <span
-            className={cn("truncate text-foreground", unread ? "font-semibold" : "font-medium")}
-          >
-            {label}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={cn("truncate text-foreground", unread ? "font-semibold" : "font-medium")}
+            >
+              {label}
+            </span>
+            {labels.map((l) => (
+              <span
+                className="shrink-0 rounded-full bg-muted px-1.5 py-px font-medium text-[10px] text-muted-foreground"
+                key={l}
+              >
+                {l}
+              </span>
+            ))}
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
             {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
-            {unread && (
-              <span
-                aria-label="Unread"
-                className="size-2 rounded-full bg-ring"
-                role="img"
-                title="Unread"
+            {muted ? (
+              <HugeiconsIcon
+                aria-label="Muted"
+                className="size-3.5 text-muted-foreground"
+                icon={NotificationOff03Icon}
               />
+            ) : (
+              unread && (
+                <span
+                  aria-label="Unread"
+                  className="size-2 rounded-full bg-ring"
+                  role="img"
+                  title="Unread"
+                />
+              )
             )}
           </span>
         </span>

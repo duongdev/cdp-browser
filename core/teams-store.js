@@ -65,6 +65,15 @@ const SCHEMA = [
   )`,
   // Populated later (search is a deferred default) — external-content FTS over `messages`.
   `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content='messages')`,
+  // Per-conversation LOCAL organisation (t156, Workstream K): labels, one folder, and a local mute.
+  // All local to this store — NEVER written back to Teams. Shared across every device that talks to
+  // this server (not device-keyed, by design). `labels` is a JSON string array.
+  `CREATE TABLE IF NOT EXISTS conversation_prefs (
+    conv_id TEXT PRIMARY KEY,
+    labels  TEXT,
+    folder  TEXT,
+    muted   INTEGER DEFAULT 0
+  )`,
 ]
 
 // Columns added after t127's original schema. `CREATE TABLE IF NOT EXISTS` won't add a column to a
@@ -430,8 +439,86 @@ function getUsers(db, mris) {
   return map
 }
 
+// ---- conversation prefs (t156, Workstream K) ------------------------------
+// LOCAL labels / folder / mute per conversation — never written to Teams. Shared across devices
+// (server-side, not device-keyed). `labels` persists as a JSON string array.
+
+// One conversation's prefs, or the empty default (no row = no labels, no folder, not muted).
+function getPrefs(db, convId) {
+  const r = db
+    .prepare("SELECT labels, folder, muted FROM conversation_prefs WHERE conv_id = ?")
+    .get(convId)
+  if (!r) return { labels: [], folder: null, muted: false }
+  return {
+    labels: parseLabels(r.labels),
+    folder: r.folder || null,
+    muted: !!r.muted,
+  }
+}
+
+// Every conversation's prefs → Map(convId → {labels, folder, muted}). The client fetches this once
+// on boot + after each write, holds it alongside the list, and re-applies over polled rows (so a
+// poll can't clobber a pref). Empty folder/label rows are still returned (the write may have cleared
+// them) — the client treats an all-empty pref as "ungrouped, no labels, unmuted".
+function getAllPrefs(db) {
+  const map = {}
+  for (const r of db
+    .prepare("SELECT conv_id, labels, folder, muted FROM conversation_prefs")
+    .all()) {
+    map[r.conv_id] = { labels: parseLabels(r.labels), folder: r.folder || null, muted: !!r.muted }
+  }
+  return map
+}
+
+// Patch a conversation's prefs (upsert). Only the provided keys change; the rest keep their stored
+// value (COALESCE against the existing row). `labels` (array) is stored as JSON; `folder` ("" → null
+// to un-file); `muted` (bool → 0/1). Returns the row's full prefs after the write.
+function setPrefs(db, convId, patch) {
+  const cur = getPrefs(db, convId)
+  const labels = patch.labels !== undefined ? sanitizeLabels(patch.labels) : cur.labels
+  const folder =
+    patch.folder !== undefined
+      ? patch.folder
+        ? String(patch.folder).trim() || null
+        : null
+      : cur.folder
+  const muted = patch.muted !== undefined ? (patch.muted ? 1 : 0) : cur.muted ? 1 : 0
+  db.prepare(`
+    INSERT INTO conversation_prefs (conv_id, labels, folder, muted)
+    VALUES (@convId, @labels, @folder, @muted)
+    ON CONFLICT(conv_id) DO UPDATE SET labels = excluded.labels, folder = excluded.folder, muted = excluded.muted
+  `).run({ convId, labels: JSON.stringify(labels), folder, muted })
+  return { labels, folder, muted: !!muted }
+}
+
+function parseLabels(raw) {
+  if (typeof raw !== "string" || !raw) return []
+  try {
+    const v = JSON.parse(raw)
+    return sanitizeLabels(v)
+  } catch {
+    return []
+  }
+}
+
+// Trim, drop empties, dedupe, cap length — a label is a short free-form tag.
+function sanitizeLabels(v) {
+  if (!Array.isArray(v)) return []
+  const out = []
+  for (const s of v) {
+    const t = String(s || "")
+      .trim()
+      .slice(0, 40)
+    if (t && !out.includes(t)) out.push(t)
+  }
+  return out
+}
+
 module.exports = {
   migrate,
+  getPrefs,
+  getAllPrefs,
+  setPrefs,
   isReservedConversation,
   conversationKind,
   shapeConversation,

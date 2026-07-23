@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest"
 // SQLite chat store (t127, ADR-0019). Exercised against an in-memory handle — no fs, no server.
 import {
   conversationKind,
+  getAllPrefs,
+  getPrefs,
   getReadState,
   getUsers,
   isReservedConversation,
@@ -13,6 +15,7 @@ import {
   migrate,
   parseConsumptionHorizonTs,
   setLocalRead,
+  setPrefs,
   setReadHorizon,
   shapeConversation,
   upsertAccount,
@@ -416,5 +419,52 @@ describe("unread derivation over read_state (t155)", () => {
     setLocalRead(db, TENANT, CONV, 5000)
     expect(row().unreadSticky).toBe(false)
     expect(row().readTs).toBe(9000)
+  })
+})
+
+describe("conversation prefs (t156)", () => {
+  let db: InstanceType<typeof Database>
+  beforeEach(() => {
+    db = new Database(":memory:")
+    migrate(db)
+  })
+
+  it("defaults to empty when no row exists", () => {
+    expect(getPrefs(db, "19:x@thread.v2")).toEqual({ labels: [], folder: null, muted: false })
+    expect(getAllPrefs(db)).toEqual({})
+  })
+
+  it("setPrefs upserts and patches only provided keys", () => {
+    setPrefs(db, "c1", { folder: "Work", labels: ["urgent", "team"] })
+    expect(getPrefs(db, "c1")).toEqual({ folder: "Work", labels: ["urgent", "team"], muted: false })
+    // A partial patch keeps the untouched keys.
+    setPrefs(db, "c1", { muted: true })
+    expect(getPrefs(db, "c1")).toEqual({ folder: "Work", labels: ["urgent", "team"], muted: true })
+  })
+
+  it("sanitizes labels: trim, drop empty, dedupe", () => {
+    setPrefs(db, "c1", { labels: [" a ", "a", "", "b"] })
+    expect(getPrefs(db, "c1").labels).toEqual(["a", "b"])
+  })
+
+  it("empty folder string un-files (folder → null)", () => {
+    setPrefs(db, "c1", { folder: "Work" })
+    setPrefs(db, "c1", { folder: "" })
+    expect(getPrefs(db, "c1").folder).toBe(null)
+  })
+
+  it("getAllPrefs returns every stored conversation's prefs", () => {
+    setPrefs(db, "c1", { folder: "Work" })
+    setPrefs(db, "c2", { muted: true })
+    expect(getAllPrefs(db)).toEqual({
+      c1: { labels: [], folder: "Work", muted: false },
+      c2: { labels: [], folder: null, muted: true },
+    })
+  })
+
+  it("survives a re-migrate (idempotent, prefs kept)", () => {
+    setPrefs(db, "c1", { folder: "Work", labels: ["x"], muted: true })
+    migrate(db)
+    expect(getPrefs(db, "c1")).toEqual({ folder: "Work", labels: ["x"], muted: true })
   })
 })
