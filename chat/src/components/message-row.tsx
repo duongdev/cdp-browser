@@ -93,6 +93,8 @@ interface MessageRowProps {
   showMeta?: boolean
   /** Name display preference (t161) — applied to the sender header + reactor tooltips. */
   namePref?: NamePref
+  /** Open the sender's profile card (t166). Present → the sender name/avatar header is clickable. */
+  onOpenProfile?: (target: { userId: string; name: string }) => void
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -117,6 +119,7 @@ function ChatMessageRow({
   command,
   showMeta = true,
   namePref = FULL_NAME,
+  onOpenProfile,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -241,18 +244,43 @@ function ChatMessageRow({
       )}
       ref={rowRef}
     >
-      {showMeta && !self && !!message.senderName && (
-        <span className="flex items-center gap-1.5 px-1">
-          <UserAvatar
-            className="size-5 text-[10px]"
-            label={message.senderName}
-            userId={message.senderId}
-          />
-          <span className="font-semibold text-foreground text-xs">
-            {formatName(message.senderName ?? "", namePref)}
+      {showMeta &&
+        !self &&
+        !!message.senderName &&
+        // Sender header — a button when a profile can open (t166: known senderId + handler), else
+        // the plain span it always was. Same layout either way, no shift.
+        (onOpenProfile && message.senderId ? (
+          <button
+            className="flex items-center gap-1.5 rounded px-1 text-left hover:bg-accent/60"
+            onClick={() =>
+              onOpenProfile({
+                userId: message.senderId ?? "",
+                name: message.senderName ?? "",
+              })
+            }
+            type="button"
+          >
+            <UserAvatar
+              className="size-5 text-[10px]"
+              label={message.senderName}
+              userId={message.senderId}
+            />
+            <span className="font-semibold text-foreground text-xs">
+              {formatName(message.senderName ?? "", namePref)}
+            </span>
+          </button>
+        ) : (
+          <span className="flex items-center gap-1.5 px-1">
+            <UserAvatar
+              className="size-5 text-[10px]"
+              label={message.senderName}
+              userId={message.senderId}
+            />
+            <span className="font-semibold text-foreground text-xs">
+              {formatName(message.senderName ?? "", namePref)}
+            </span>
           </span>
-        </span>
-      )}
+        ))}
       {hasBody && editing && (
         <div className="flex w-full max-w-[85%] flex-col gap-1 self-end">
           <textarea

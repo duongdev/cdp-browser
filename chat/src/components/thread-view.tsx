@@ -141,13 +141,15 @@ interface ThreadViewProps {
   onFocusChange?: (focus: ThreadFocus | null) => void
   /** Name display preference (t161) — applied to the header label + sender names. */
   namePref?: NamePref
+  /** Open a sender's profile card (t166) — passed through to each row's sender header. */
+  onOpenProfile?: (target: { userId: string; name: string }) => void
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
 export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
-  { conversation, onBack, visible = true, onFocusChange, namePref },
+  { conversation, onBack, visible = true, onFocusChange, namePref, onOpenProfile },
   ref,
 ) {
   const [state, setState] = useState<State>({ status: "loading" })
@@ -740,6 +742,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     onDelete={onDelete}
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}
+                    onOpenProfile={onOpenProfile}
                     onReact={onReact}
                     onRetrySend={onRetrySend}
                     showMeta={item.showMeta}

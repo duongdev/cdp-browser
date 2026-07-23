@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
+import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
@@ -520,6 +521,25 @@ export function ChatApp() {
     [settings.nameDisplay, settings.nameRegex],
   )
 
+  // Profile card (t166): one dialog at the root, opened from any row's sender header. "Message"
+  // resolves an existing 1:1 by the row-avatar oid (never creates a conversation — grill Q11).
+  const [profileTarget, setProfileTarget] = useState<ProfileTarget | null>(null)
+  const oidTail = (id: string) => id.split(":").pop() || id
+  const profileDm = profileTarget
+    ? conversations.find(
+        (c) =>
+          c.kind === "oneOnOne" &&
+          c.avatarUserId &&
+          oidTail(c.avatarUserId) === oidTail(profileTarget.userId),
+      )
+    : undefined
+  const messageFromProfile = profileDm
+    ? () => {
+        setProfileTarget(null)
+        openConversationById(profileDm.id)
+      }
+    : undefined
+
   const threadPanes = keepAlive.mounted.map((id) => {
     const conv = convById[id]
     if (!conv) return null
@@ -531,6 +551,7 @@ export function ChatApp() {
         namePref={namePref}
         onBack={isWide ? undefined : backToList}
         onFocusChange={isActive ? setThreadFocus : undefined}
+        onOpenProfile={setProfileTarget}
         ref={isActive ? activeThreadRef : undefined}
         visible={isActive && (isWide || phoneView === "thread")}
       />
@@ -546,6 +567,11 @@ export function ChatApp() {
         open={paletteOpen}
       />
       <ShortcutOverlay actions={actions} onOpenChange={setOverlayOpen} open={overlayOpen} />
+      <ProfileDialog
+        onClose={() => setProfileTarget(null)}
+        onMessage={messageFromProfile}
+        target={profileTarget}
+      />
       <SettingsSheet
         onOpenChange={setSettingsOpen}
         onUpdate={updateSettings}

@@ -1636,6 +1636,64 @@ async function teamsAvatar(oid) {
   return { ct: out.ct || "image/jpeg", buf: Buffer.from(out.dataUrl.slice(comma + 1), "base64") }
 }
 
+// ---- Teams user profile (t166) --------------------------------------------
+// Full profile card via Graph `/v1.0/users/{oid}?$select=…`, fetched IN-PAGE with the page's own
+// MSAL Graph bearer (same pattern as avatars/getByIds — CA-proof). Fields are the standard org-
+// directory card: mail, title, department, office, phones. Best-effort; an LRU keeps reopening
+// instant and Graph un-hammered. Keyed by bare oid.
+const TEAMS_PROFILE_CACHE = new Map() // oid -> { profile } (errors are never cached)
+const TEAMS_PROFILE_CACHE_MAX = 256
+const TEAMS_PROFILE_SELECT =
+  "displayName,mail,userPrincipalName,jobTitle,department,officeLocation,businessPhones,mobilePhone"
+
+function teamsProfileCacheGet(oid) {
+  const hit = TEAMS_PROFILE_CACHE.get(oid)
+  if (!hit) return null
+  TEAMS_PROFILE_CACHE.delete(oid)
+  TEAMS_PROFILE_CACHE.set(oid, hit)
+  return hit
+}
+
+function teamsProfileCacheSet(oid, entry) {
+  TEAMS_PROFILE_CACHE.set(oid, entry)
+  while (TEAMS_PROFILE_CACHE.size > TEAMS_PROFILE_CACHE_MAX) {
+    TEAMS_PROFILE_CACHE.delete(TEAMS_PROFILE_CACHE.keys().next().value)
+  }
+}
+
+async function teamsProfile(oid) {
+  const script = `(async () => {
+    try {
+      let key = null
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
+      }
+      if (!key) return { error: "no_bearer" }
+      let bearer = ""
+      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { error: "no_bearer" } }
+      if (!bearer) return { error: "no_bearer" }
+      const r = await fetch("https://graph.microsoft.com/v1.0/users/${oid}?$select=${TEAMS_PROFILE_SELECT}", {
+        headers: { Authorization: "Bearer " + bearer },
+      })
+      if (r.status === 404) return { error: "not_found" }
+      if (r.status === 401 || r.status === 403) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      const j = await r.json()
+      return { profile: {
+        displayName: j.displayName || "",
+        mail: j.mail || j.userPrincipalName || "",
+        jobTitle: j.jobTitle || "",
+        department: j.department || "",
+        officeLocation: j.officeLocation || "",
+        phones: [].concat(Array.isArray(j.businessPhones) ? j.businessPhones : [], j.mobilePhone ? [j.mobilePhone] : []),
+      } }
+    } catch (e) { return { error: "fetch_failed" } }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  return result
+}
+
 // ---- Teams reply + mark-read (t130, ADR-0019) -----------------------------
 // CA-proof like the list/history: the send runs IN-PAGE via the side-channel (the browser's own
 // authenticated POST). A random 18-digit clientmessageid dedups server-side; Teams echoes back
@@ -2545,6 +2603,22 @@ const server = http.createServer(async (req, res) => {
           "Cache-Control": "public, max-age=86400",
         })
         .end(hit.buf)
+    }
+    // Teams chat: full user profile card via Graph (t166). userId is an oid/MRI (never a URL) —
+    // shape-guarded by teamsNormalizeUserOid (SSRF, same as avatar). LRU-cached per oid; errors
+    // pass through un-cached so a transient no-tab doesn't stick. Web only.
+    if (p === "/api/teams/profile" && !POST) {
+      const oid = teamsNormalizeUserOid(url.searchParams.get("userId") || "")
+      if (!oid) return json(res, { error: "bad userId" }, 400)
+      let hit = teamsProfileCacheGet(oid)
+      if (!hit) {
+        hit = await teamsProfile(oid)
+        if (hit.profile) teamsProfileCacheSet(oid, hit)
+      }
+      if (hit.error === "invalid_auth") return json(res, hit, 401)
+      if (hit.error === "not_found") return json(res, hit, 404)
+      if (hit.error) return json(res, hit, 502)
+      return json(res, hit)
     }
     // Teams chat: write-through mark-read (t130, Q9 hybrid). Best-effort — always { ok } even
     // if the horizon write fails, so it can't undo a successful reply. Web only.
