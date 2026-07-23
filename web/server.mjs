@@ -55,7 +55,11 @@ import {
   otherMrisFromId as teamsOtherMrisFromId,
 } from "../core/teams-names.js"
 import { planTeamsNotifications } from "../core/teams-notify-sweep.js"
-import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
+import {
+  applyQuoteAuthorNames as teamsApplyQuoteAuthorNames,
+  quoteAuthorMris as teamsQuoteAuthorMris,
+  toReaderMessages as teamsToReaderMessages,
+} from "../core/teams-render.js"
 import {
   conversationKind as teamsConversationKind,
   getAllPrefs as teamsGetAllPrefs,
@@ -1419,6 +1423,41 @@ async function attachTeamsReactorNames(cred, messages) {
     }
 }
 
+// Repair reply quotes that name their author "Display Name"/"" (PSN-92 workstream A): collect the
+// broken authors' MRIs across the rendered bodies, resolve names cache-first + one Graph batch (same
+// seam as reactor names — self MRI included, so a quote of you shows your real name, decision 4), and
+// rewrite each body. Best-effort: an unresolved MRI keeps the placeholder. Cache-warm after first hit.
+async function attachTeamsQuoteNames(cred, messages) {
+  const needed = new Set()
+  for (const m of messages)
+    if (typeof m.body === "string") for (const mri of teamsQuoteAuthorMris(m.body)) needed.add(mri)
+  if (needed.size === 0) return
+
+  const nameByMri = {}
+  try {
+    const cached = teamsGetUsers(teamsDb, [...needed])
+    for (const [mri, name] of cached) nameByMri[mri] = name
+    const misses = [...needed].filter((m) => !nameByMri[m])
+    if (misses.length) {
+      const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+      const resolved = []
+      for (const m of misses) {
+        const name = oidMap[teamsOidFromMri(m)]
+        if (name) {
+          nameByMri[m] = name
+          resolved.push({ mri: m, displayName: name })
+        }
+      }
+      if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+    }
+  } catch (e) {
+    console.error("[web] teams quote author resolution failed:", e.message) // degrade to placeholder
+  }
+
+  for (const m of messages)
+    if (typeof m.body === "string") m.body = teamsApplyQuoteAuthorNames(m.body, nameByMri)
+}
+
 // ---- Teams conversation history (t129/t134, ADR-0019) ---------------------
 // CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. First page = the
 // base URL; older pages = the previous response's `_metadata.backwardLink` (an opaque syncState
@@ -1475,6 +1514,7 @@ async function teamsHistory(convId, cursor, poll) {
   const messages = teamsToReaderMessages(out.messages, cred.userId)
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
   await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t143); strips userMris
+  await attachTeamsQuoteNames(cred, messages) // repair "Display Name" reply quotes (PSN-92 A)
   // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
   // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
   // A background `poll` of the open thread also advances it (live-viewing = reading) EXCEPT when a
@@ -1650,6 +1690,30 @@ function randomClientMessageId() {
 // passes plain text with messagetype "Text", the media paths pass the pre-built HTML with
 // "RichText/Html". `properties` carries the message extras — the file send passes a JSON-string
 // `files` there so Teams renders the SharePoint chip; every other caller omits it (→ {}).
+// Populate cred.displayName once from the self oid (users cache → one Graph getByIds), so every
+// outgoing message stamps the real `imdisplayname`. Without it Teams bakes the "Display Name"
+// placeholder into colleagues' reply quotes of our messages (PSN-92 workstream A). Best-effort:
+// a resolution failure leaves the name empty (today's behavior) and never blocks the send.
+async function ensureTeamsSelfName(cred) {
+  if (cred.displayName || !cred.userId) return
+  const selfMri = `8:orgid:${cred.userId}`
+  try {
+    const cached = teamsGetUsers(teamsDb, [selfMri]).get(selfMri)
+    if (cached) {
+      cred.displayName = cached
+      return
+    }
+    const oidMap = await resolveTeamsNamesInPage([cred.userId])
+    const name = oidMap[cred.userId]
+    if (name) {
+      cred.displayName = name
+      teamsUpsertUsers(teamsDb, [{ mri: selfMri, displayName: name }])
+    }
+  } catch (e) {
+    console.error("[web] teams self-name resolution failed:", e.message)
+  }
+}
+
 async function sendTeamsMessageInPage(
   cred,
   convId,
@@ -1658,6 +1722,7 @@ async function sendTeamsMessageInPage(
   properties = {},
 ) {
   if (!cred.chatServiceBase) return { error: "no_base" }
+  await ensureTeamsSelfName(cred)
   const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages`
   const clientmessageid = randomClientMessageId()
   const payload = {
