@@ -1,4 +1,5 @@
 import {
+  ArrowTurnBackwardIcon,
   Cancel01Icon,
   Csv01Icon,
   Delete02Icon,
@@ -79,6 +80,8 @@ interface MessageRowProps {
   /** Delete the viewer's OWN message (t144). The parent optimistically tombstones it + fires the
    *  best-effort call. Only passed for own, non-deleted messages. */
   onDelete?: (msgId: string) => void
+  /** Quote this message in the composer (PSN-92 B). Passed for any confirmed, non-deleted message. */
+  onReply?: (msg: TeamsMessage) => void
   /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
   onRetrySend?: (msgId: string) => void
   /** Discard a failed optimistic send — removes the bubble (t159). */
@@ -111,6 +114,7 @@ function ChatMessageRow({
   onReact,
   onEdit,
   onDelete,
+  onReply,
   onRetrySend,
   onDiscardSend,
   focused,
@@ -131,6 +135,8 @@ function ChatMessageRow({
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
   const canReact = !deleted && !unconfirmed && !!onReact
+  // Reply-with-quote (PSN-92 B): any confirmed, non-deleted message, own or others'.
+  const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
   const canManage = self && !deleted && !unconfirmed && (!!onEdit || !!onDelete)
 
@@ -309,8 +315,9 @@ function ChatMessageRow({
             // style grouping; the tooltip is where "when exactly?" lives now.
             title={new Date(message.ts).toLocaleString()}
           />
-          {(canReact || canManage) && (
+          {(canReact || canManage || canReply) && (
             <div className="flex shrink-0 items-center gap-0.5">
+              {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
               {canReact && (
                 <QuickReact
                   coarse={coarse}
@@ -446,6 +453,24 @@ function SystemRow({ body }: { body: string }) {
         {body}
       </span>
     </div>
+  )
+}
+
+/** The reply affordance beside a bubble (PSN-92 B): quotes the message into the composer. Same reveal
+ *  as QuickReact — fade-in on hover for a fine pointer, always-visible for coarse. */
+function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void }) {
+  return (
+    <button
+      aria-label="Reply"
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+        coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      <HugeiconsIcon className="size-4" icon={ArrowTurnBackwardIcon} />
+    </button>
   )
 }
 

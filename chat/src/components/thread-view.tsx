@@ -21,6 +21,7 @@ import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
 import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
+import { htmlToPlain } from "../lib/html-to-plain"
 import {
   applyPendingReactions,
   applyReaction,
@@ -28,6 +29,7 @@ import {
   mergeMessages,
   resolveLocalSend,
 } from "../lib/message-merge"
+import { buildReplyBlockquote } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
 import {
   deleteMessage,
@@ -461,6 +463,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const replyTarget = selectReplyTarget(conversation)
   const composerRef = useRef<ComposerHandle>(null)
   const coarse = usePointerCoarse()
+  // The message being quoted (PSN-92 B); its blockquote is prepended to the next send. Reset on switch.
+  const [quoteTarget, setQuoteTarget] = useState<TeamsMessage | null>(null)
+  const onReply = useCallback((m: TeamsMessage) => {
+    setQuoteTarget(m)
+    composerRef.current?.focus()
+  }, [])
   // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
   const retryPayloads = useRef<Map<string, { out: OutgoingMessage; file: File | null }>>(new Map())
   const localSeq = useRef(0)
@@ -526,8 +534,22 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   )
 
   const onComposerSend = useCallback(
-    (out: OutgoingMessage, file: File | null) => {
+    (raw: OutgoingMessage, file: File | null) => {
       if (!replyTarget) return
+      // A quoted reply (PSN-92 B) rides the same send: prepend the Reply blockquote to the body HTML
+      // (forcing a RichText/Html send) so both the optimistic bubble and Teams render the quote. A file
+      // send can't carry inline HTML, so the quote only applies to the text/rich path.
+      let out = raw
+      if (quoteTarget && !file) {
+        const quoteHtml = buildReplyBlockquote({
+          msgId: quoteTarget.id,
+          authorMri: quoteTarget.senderId || "",
+          authorName: quoteTarget.senderName || "",
+          previewText: htmlToPlain(quoteTarget.body),
+        })
+        out = { text: raw.text, html: quoteHtml + (raw.html ?? textToHtml(raw.text)) }
+      }
+      setQuoteTarget(null)
       const localId = `local:${++localSeq.current}:${Date.now()}`
       retryPayloads.current.set(localId, { out, file })
       const isImage = file?.type.startsWith("image/") ?? false
@@ -556,7 +578,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       })
       runSend(localId, out, file)
     },
-    [replyTarget, appendSent, runSend],
+    [replyTarget, appendSent, runSend, quoteTarget],
   )
 
   // Retry a failed optimistic send in place (t159): back to pending, same payload, same bubble.
@@ -616,6 +638,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   useEffect(() => {
     setFocusedId(null)
     setRowCommand(null)
+    setQuoteTarget(null)
   }, [convId])
 
   // Report the focused message (id + own-ness) up so chat-app's palette/keys context stays honest.
@@ -663,6 +686,15 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         composerFocusedRef.current = f
       }}
       onSend={onComposerSend}
+      quote={
+        quoteTarget
+          ? {
+              authorName: quoteTarget.self ? "You" : quoteTarget.senderName || "Unknown",
+              preview: htmlToPlain(quoteTarget.body),
+              onCancel: () => setQuoteTarget(null),
+            }
+          : null
+      }
       ref={composerRef}
       resetKey={convId}
     />
@@ -741,6 +773,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}
                     onReact={onReact}
+                    onReply={onReply}
                     onRetrySend={onRetrySend}
                     showMeta={item.showMeta}
                   />

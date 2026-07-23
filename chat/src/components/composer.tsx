@@ -33,6 +33,8 @@ interface ComposerProps {
   onFocusChange: (focused: boolean) => void
   /** Auto-focus on mount / reset — wide pointer layouts only (a phone would pop the keyboard). */
   autoFocus?: boolean
+  /** Quoted-message chip above the editor (PSN-92 B); Escape or its ✕ cancels the reply. */
+  quote?: { authorName: string; preview: string; onCancel: () => void } | null
 }
 
 // Formatting toolbar actions → document.execCommand. Deprecated but universal, zero-dep — the lazy
@@ -56,6 +58,7 @@ export function Composer({
   onSend,
   onFocusChange,
   autoFocus = false,
+  quote,
 }: ComposerProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -116,6 +119,24 @@ export function Composer({
           "focus-within:border-ring/40 focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/25",
         )}
       >
+        {quote && (
+          <div className="px-3 pt-3">
+            <div className="flex items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-ring text-xs">{quote.authorName}</div>
+                <div className="truncate text-muted-foreground text-xs">{quote.preview}</div>
+              </div>
+              <button
+                aria-label="Cancel reply"
+                className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
+                onClick={quote.onCancel}
+                type="button"
+              >
+                <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+              </button>
+            </div>
+          </div>
+        )}
         {(pendingUrl || (pendingFile && !pendingUrl)) && (
           <div className="px-3 pt-3">
             <div className="relative inline-block">
@@ -162,6 +183,9 @@ export function Composer({
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault()
               doSend()
+            } else if (e.key === "Escape" && quote) {
+              e.preventDefault()
+              quote.onCancel()
             }
           }}
           onPaste={(e) => {
