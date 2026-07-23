@@ -20,7 +20,8 @@ import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
+import { FULL_NAME, formatConversationLabel, formatName, type NamePref } from "../lib/display-name"
+import { htmlToPlain } from "../lib/html-to-plain"
 import {
   applyPendingReactions,
   applyReaction,
@@ -28,12 +29,15 @@ import {
   mergeMessages,
   resolveLocalSend,
 } from "../lib/message-merge"
+import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
 import {
   deleteMessage,
   editMessage,
   fetchHistory,
+  type MentionRef,
   markRead,
+  type ReplyRef,
   react,
   sendReply,
   TeamsApiError,
@@ -44,6 +48,7 @@ import {
 } from "../lib/teams-client"
 import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
+import { BodyNameTooltip } from "./body-name-tooltip"
 import { Composer, type ComposerHandle } from "./composer"
 import { MessageRow, type RowCommand } from "./message-row"
 
@@ -56,6 +61,9 @@ const THREAD_BOTTOM_SLACK = 64
 // A pending optimistic reaction is overlaid on every merge until the server confirms it, or until it
 // ages past this window — a lost write shouldn't pin a phantom reaction forever (t143).
 const PENDING_REACTION_TTL_MS = 20000
+// Click-to-jump backward-walk cap (PSN-92 B5, decision 7): never page more than this to find a quoted
+// original — past it, "Message too far back".
+const MAX_JUMP_PAGES = 5
 
 /** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
  *  and when it was fired (for the failed-write timeout). Keyed msgId → key. */
@@ -172,6 +180,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // Keyboard message focus (t152): the id of the focused message row + the command dispatched to it.
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [rowCommand, setRowCommand] = useState<RowCommand | null>(null)
+  // Click-to-jump (PSN-92 B5): the row currently flashing after a jump, and a transient status toast.
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+  const [jumpToast, setJumpToast] = useState<string | null>(null)
   // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
   const composerFocusedRef = useRef(false)
 
@@ -244,6 +255,99 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         setLoadingOlder(false)
       })
   }, [convId, hasMore, state])
+
+  // Click-to-jump (PSN-92 B5). Scroll a loaded message into view + flash it; ids are numeric so they
+  // need no CSS escaping. Returns false when the row isn't in the DOM (→ the caller walks older pages).
+  const scrollToMsg = useCallback((id: string): boolean => {
+    const el = scrollRef.current?.querySelector(`[data-msg-id="${id}"]`)
+    if (!el) return false
+    el.scrollIntoView({ block: "center", behavior: "smooth" })
+    setHighlightId(id)
+    window.setTimeout(() => setHighlightId((c) => (c === id ? null : c)), 1700)
+    return true
+  }, [])
+
+  // A just-prepended row isn't laid out on the next frame (React commit + media reflow lag), which
+  // made the jump flaky when it had to fetch (PSN-92). Retry across frames until the row exists.
+  const scrollToMsgSoon = useCallback(
+    (id: string, attempts = 24) => {
+      if (scrollToMsg(id) || attempts <= 0) return
+      requestAnimationFrame(() => scrollToMsgSoon(id, attempts - 1))
+    },
+    [scrollToMsg],
+  )
+
+  // Page backward through the t134 cursor chain until the quoted message loads, capped at ~5 pages
+  // (decision 7). Cursor exhausted → the original lives in another chat (a forwarded/pasted quote);
+  // cap hit → too far back. The blockquote carries no conversation ref, so the walk stays here.
+  const walkToMessage = useCallback(
+    async (id: string) => {
+      if (loadingOlderRef.current) return // a page load is already in flight
+      setJumpToast("Finding the message…")
+      loadingOlderRef.current = true // block the top-sentinel loadOlder from double-fetching
+      try {
+        for (let i = 0; i < MAX_JUMP_PAGES; i++) {
+          const cursor = olderCursor.current
+          if (!cursor) {
+            setJumpToast("Original message isn't in this chat")
+            return
+          }
+          const older = await fetchHistory(convId, cursor)
+          olderCursor.current = older.cursor
+          setHasMore(older.cursor != null)
+          setState((s) => {
+            if (s.status !== "ready") return s
+            const known = new Set(s.messages.map((m) => m.id))
+            const fresh = older.messages.filter((m) => !known.has(m.id))
+            return fresh.length
+              ? {
+                  status: "ready",
+                  messages: applyPendingReactions(
+                    [...fresh, ...s.messages],
+                    pendingReactions.current,
+                  ),
+                }
+              : s
+          })
+          if (older.messages.some((m) => m.id === id)) {
+            setJumpToast(null)
+            scrollToMsgSoon(id) // retry across frames — the prepend isn't laid out immediately
+            return
+          }
+          if (!older.cursor) {
+            setJumpToast("Original message isn't in this chat")
+            return
+          }
+        }
+        setJumpToast("Message too far back")
+      } catch {
+        setJumpToast("Couldn't load the original message")
+      } finally {
+        loadingOlderRef.current = false
+      }
+    },
+    [convId, scrollToMsgSoon],
+  )
+
+  const jumpToMessage = useCallback(
+    (id: string) => {
+      setJumpToast(null)
+      const loaded = state.status === "ready" && state.messages.some((m) => m.id === id)
+      if (loaded) {
+        scrollToMsgSoon(id)
+        return
+      }
+      walkToMessage(id)
+    },
+    [state, scrollToMsgSoon, walkToMessage],
+  )
+
+  // Auto-dismiss the jump toast (except the in-progress "Finding…" state, which its resolution clears).
+  useEffect(() => {
+    if (!jumpToast || jumpToast === "Finding the message…") return
+    const t = window.setTimeout(() => setJumpToast(null), 2500)
+    return () => window.clearTimeout(t)
+  }, [jumpToast])
 
   // Trigger load-older from a sentinel at the visual top (mirrors the list's t136 infinite scroll)
   // rather than a scrollTop threshold — flex-col-reverse makes scrollTop's sign browser-dependent, but
@@ -463,8 +567,20 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const replyTarget = selectReplyTarget(conversation)
   const composerRef = useRef<ComposerHandle>(null)
   const coarse = usePointerCoarse()
+  // Messages being quoted (PSN-92 B/C): an ordered list — each Reply stacks another quote, and the
+  // send prepends one blockquote per target in selection order (Teams' multi-reply). Reset on switch.
+  const [quoteTargets, setQuoteTargets] = useState<TeamsMessage[]>([])
+  const onReply = useCallback((m: TeamsMessage) => {
+    setQuoteTargets((cur) => (cur.some((q) => q.id === m.id) ? cur : [...cur, m]))
+    composerRef.current?.focus()
+  }, [])
   // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
-  const retryPayloads = useRef<Map<string, { out: OutgoingMessage; file: File | null }>>(new Map())
+  const retryPayloads = useRef<
+    Map<
+      string,
+      { out: OutgoingMessage; file: File | null; quotes: ReplyRef[]; mentions: MentionRef[] }
+    >
+  >(new Map())
   const localSeq = useRef(0)
   // Stale in-flight sends don't leak across a conversation reset.
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
@@ -493,7 +609,13 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // placeholder for the server id (resolveLocalSend collapses a poll-delivered echo); failure marks
   // the bubble with the typed code. Never touches the composer.
   const runSend = useCallback(
-    (localId: string, out: OutgoingMessage, file: File | null) => {
+    (
+      localId: string,
+      out: OutgoingMessage,
+      file: File | null,
+      quotes: ReplyRef[] = [],
+      mentions: MentionRef[] = [],
+    ) => {
       const target = replyTarget
       if (!target) return
       const op = file
@@ -502,7 +624,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             file,
             out.text,
           ).then((r) => r.msgId)
-        : sendReply(target.convId, out.text, out.html).then((r) => r.ts)
+        : sendReply(target.convId, out.text, out.html, quotes, mentions).then((r) => r.ts)
       op.then((id) => {
         retryPayloads.current.delete(localId)
         setState((s) =>
@@ -528,17 +650,47 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   )
 
   const onComposerSend = useCallback(
-    (out: OutgoingMessage, file: File | null) => {
+    (raw: OutgoingMessage, file: File | null) => {
       if (!replyTarget) return
+      // A quoted reply (PSN-92 B/C) prepends one Reply blockquote per target; an @mention (PSN-92 D)
+      // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send. A file
+      // send can't carry inline HTML, so quotes/mentions only apply to the text/rich path. The optimistic
+      // bubble uses the DISPLAY body (mentions as one pill) — the poll reconciles to the server render.
+      const mentions = file ? [] : (raw.mentions ?? [])
+      const wireBody = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
+      const dispBody = raw.displayHtml ?? wireBody
+      let sendHtml: string | null = raw.html
+      let optimisticHtml: string = raw.displayHtml ?? raw.html ?? textToHtml(raw.text)
+      let quotes: ReplyRef[] = []
+      if (quoteTargets.length > 0 && !file) {
+        const meta = quoteTargets.map((m) => ({
+          msgId: m.id,
+          authorMri: m.senderId || "",
+          // Real name in the wire (decision 4 — quotes never say "(You)"); the render applies the
+          // Names setting. A self message's senderName is its stamped imdisplayname (workstream A).
+          authorName: m.senderName || "",
+          previewHtml: quotePreviewHtml(m.body),
+        }))
+        sendHtml = buildReplyBody(meta, wireBody)
+        optimisticHtml = buildReplyBody(meta, dispBody)
+        // qtdMsgs references — makes Teams render a NATIVE reply (clickable), not just a blockquote.
+        quotes = quoteTargets.map((m) => ({
+          messageId: Number(m.id),
+          sender: m.senderId || "",
+          time: Number(m.id),
+        }))
+      }
+      setQuoteTargets([])
+      const out: OutgoingMessage = { ...raw, html: sendHtml }
       const localId = `local:${++localSeq.current}:${Date.now()}`
-      retryPayloads.current.set(localId, { out, file })
+      retryPayloads.current.set(localId, { out, file, quotes, mentions })
       const isImage = file?.type.startsWith("image/") ?? false
       appendSent({
         id: localId,
         ts: Date.now(),
         senderId: "",
         senderName: "You",
-        body: out.html ?? textToHtml(out.text),
+        body: optimisticHtml,
         self: true,
         edited: false,
         deleted: false,
@@ -556,9 +708,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               }
           : {}),
       })
-      runSend(localId, out, file)
+      runSend(localId, out, file, quotes, mentions)
     },
-    [replyTarget, appendSent, runSend],
+    [replyTarget, appendSent, runSend, quoteTargets],
   )
 
   // Retry a failed optimistic send in place (t159): back to pending, same payload, same bubble.
@@ -576,7 +728,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             }
           : s,
       )
-      runSend(localId, payload.out, payload.file)
+      runSend(localId, payload.out, payload.file, payload.quotes, payload.mentions)
     },
     [runSend],
   )
@@ -618,6 +770,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   useEffect(() => {
     setFocusedId(null)
     setRowCommand(null)
+    setQuoteTargets([])
+    setHighlightId(null)
+    setJumpToast(null)
   }, [convId])
 
   // Report the focused message (id + own-ness) up so chat-app's palette/keys context stays honest.
@@ -662,10 +817,19 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const composer = replyTarget ? (
     <Composer
       autoFocus={visible && !coarse}
+      convId={convId}
+      namePref={namePref ?? FULL_NAME}
+      onEscape={() => setQuoteTargets([])}
       onFocusChange={(f) => {
         composerFocusedRef.current = f
       }}
       onSend={onComposerSend}
+      quotes={quoteTargets.map((m) => ({
+        id: m.id,
+        authorName: formatName(m.self ? "You" : m.senderName || "Unknown", namePref ?? FULL_NAME),
+        preview: htmlToPlain(m.body),
+        onCancel: () => setQuoteTargets((cur) => cur.filter((q) => q.id !== m.id)),
+      }))}
       ref={composerRef}
       resetKey={convId}
     />
@@ -737,13 +901,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                   <MessageRow
                     command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
                     focused={item.message.id === focusedId}
+                    highlighted={item.message.id === highlightId}
                     key={item.key}
                     message={item.message}
                     namePref={namePref}
                     onDelete={onDelete}
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}
+                    onJumpToMessage={jumpToMessage}
                     onReact={onReact}
+                    onReply={onReply}
                     onRetrySend={onRetrySend}
                     showMeta={item.showMeta}
                   />
@@ -758,6 +925,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             )}
             {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
           </div>
+          {/* Full-name hover tooltip for shortened mention pills / quote authors inside the message
+              HTML (PSN-92 E) — delegated over the scroll container's data-fullname markers. */}
+          <BodyNameTooltip containerRef={scrollRef} />
           {/* Floating current-period pill (t160): flex-col-reverse breaks position:sticky, so the
               topmost-passed separator's label floats here while scrolling, then fades. */}
           <div
@@ -786,6 +956,15 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           >
             <HugeiconsIcon className="size-4" icon={ArrowDown01Icon} />
           </Button>
+          {/* Jump-to-original status (PSN-92 B5): a transient centered pill (finding / too-far-back /
+              not-in-this-chat). */}
+          {jumpToast && (
+            <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2">
+              <span className="rounded-full border border-border bg-popover px-3 py-1 font-medium text-muted-foreground text-xs shadow-md">
+                {jumpToast}
+              </span>
+            </div>
+          )}
         </div>
       )}
       {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
