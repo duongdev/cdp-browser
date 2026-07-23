@@ -669,6 +669,14 @@ export function ChatApp() {
     if (chatShell()) document.documentElement.classList.add("is-electron")
   }, [])
 
+  // Report the current SPA path to the Electron shell so the next launch reopens this conversation.
+  useEffect(() => {
+    chatShell()?.routeChanged(keepAlive.active ? pathFor(keepAlive.active) : "/chat/")
+  }, [keepAlive.active])
+
+  // "Reconnecting…" banner: the background list poll flips this on failure and back on success.
+  const [online, setOnline] = useState(true)
+
   // Name display preference (t161), derived once per settings change and threaded to every
   // person-name render (rows, thread header, sender names, reactor tooltips).
   const namePref = useMemo<NamePref>(
@@ -708,6 +716,13 @@ export function ChatApp() {
         open={settingsOpen}
         settings={settings}
       />
+      {!online && (
+        <div className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div className="rounded-full bg-foreground/85 px-3 py-1 text-background text-xs shadow-md backdrop-blur">
+            Reconnecting…
+          </div>
+        </div>
+      )}
     </>
   )
 
@@ -721,6 +736,7 @@ export function ChatApp() {
               collapsedFolders={collapsed}
               focusedId={view === "list" ? focusedConvId : null}
               namePref={namePref}
+              onConnectionChange={setOnline}
               onConversations={onConversations}
               onOpenConversation={openConversation}
               onPatchPrefs={patchPrefs}
@@ -753,6 +769,7 @@ export function ChatApp() {
             collapsedFolders={collapsed}
             focusedId={focusedConvId}
             namePref={namePref}
+            onConnectionChange={setOnline}
             onConversations={onConversations}
             onOpenConversation={openConversation}
             onPatchPrefs={patchPrefs}

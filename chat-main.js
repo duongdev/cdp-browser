@@ -34,13 +34,18 @@ function writeConfig(patch) {
 }
 
 const config = readConfig()
-// Precedence: CHAT_SERVER_URL env > stored config > prod tailnet default.
-const SERVER_URL = resolveServerUrl(
+// Precedence: CHAT_SERVER_URL env > stored config > prod tailnet default. Mutable so the in-app
+// Settings server field can repoint the shell without a relaunch.
+let serverUrl = resolveServerUrl(
   process.env.CHAT_SERVER_URL,
   config.serverUrl,
   "https://portal.dp.dustin.one",
 )
-const CHAT_URL = `${SERVER_URL}/chat/`
+// Restore the last-open conversation on launch (the renderer reports its SPA path via chat:route).
+const lastPath =
+  typeof config.lastPath === "string" && config.lastPath.startsWith("/chat")
+    ? config.lastPath
+    : "/chat/"
 
 let win
 
@@ -68,7 +73,7 @@ function createWindow() {
       preload: path.join(__dirname, "chat-preload.js"),
     },
   })
-  win.loadURL(CHAT_URL)
+  win.loadURL(`${serverUrl}${lastPath}`)
 
   // Non-chat targets (external links, target=_blank) open in the OS browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -76,7 +81,7 @@ function createWindow() {
     return { action: "deny" }
   })
   win.webContents.on("will-navigate", (e, url) => {
-    if (isExternalUrl(url, SERVER_URL)) {
+    if (isExternalUrl(url, serverUrl)) {
       e.preventDefault()
       shell.openExternal(url)
     }
@@ -125,6 +130,22 @@ ipcMain.on("chat:go-forward", () => {
   if (nav?.canGoForward()) nav.goForward()
 })
 ipcMain.on("chat:reload", () => win?.webContents?.reloadIgnoringCache())
+
+// In-app server URL (Settings). Repoints the shell + persists; ignores a non-http(s) value.
+ipcMain.handle("chat:get-server-url", () => serverUrl)
+ipcMain.on("chat:set-server-url", (_e, url) => {
+  const clean = resolveServerUrl(url, null, "")
+  if (!/^https?:\/\//.test(clean) || clean === serverUrl) return
+  serverUrl = clean
+  writeConfig({ serverUrl: clean })
+  win?.loadURL(`${serverUrl}/chat/`)
+})
+
+// Remember the last-open conversation path so the next launch reopens it.
+ipcMain.on("chat:route", (_e, routePath) => {
+  if (typeof routePath === "string" && routePath.startsWith("/chat"))
+    writeConfig({ lastPath: routePath })
+})
 
 app.whenReady().then(() => {
   createWindow()

@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld("chatShell", {
   goBack: () => ipcRenderer.send("chat:go-back"),
   goForward: () => ipcRenderer.send("chat:go-forward"),
   reload: () => ipcRenderer.send("chat:reload"),
+  getServerUrl: () => ipcRenderer.invoke("chat:get-server-url"),
+  setServerUrl: (url) => ipcRenderer.send("chat:set-server-url", url),
+  routeChanged: (path) => ipcRenderer.send("chat:route", path),
 })

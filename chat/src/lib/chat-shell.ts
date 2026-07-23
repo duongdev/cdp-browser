@@ -13,6 +13,12 @@ export interface ChatShellBridge {
   goBack(): void
   goForward(): void
   reload(): void
+  /** The server the shell loads /chat from — editable in Settings (Electron-only). Setting it
+   *  persists to chat-config.json and reloads the window to the new server. */
+  getServerUrl(): Promise<string>
+  setServerUrl(url: string): void
+  /** Persist the current SPA path so the next launch reopens the last conversation. */
+  routeChanged(path: string): void
 }
 
 export function chatShell(): ChatShellBridge | null {

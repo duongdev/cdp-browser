@@ -1,6 +1,6 @@
 import { Cancel01Icon, ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
@@ -28,6 +28,7 @@ import type {
   ChatSettings,
   ChatTheme,
 } from "../lib/chat-settings"
+import { chatShell } from "../lib/chat-shell"
 import { formatName } from "../lib/display-name"
 import { NotifyToggle } from "./notify-toggle"
 
@@ -164,6 +165,17 @@ export function SettingsSheet({
   onUpdate: (partial: Partial<ChatSettings>) => void
 }) {
   const pointerCoarse = usePointerCoarse()
+  // Electron shell: the server the app loads /chat from, editable here (web build hides this).
+  const shell = chatShell()
+  const [serverUrl, setServerUrlInput] = useState("")
+  const [serverSaved, setServerSaved] = useState("")
+  useEffect(() => {
+    if (open && shell)
+      shell.getServerUrl().then((u) => {
+        setServerUrlInput(u)
+        setServerSaved(u)
+      })
+  }, [open, shell])
   // A portaled Select (Font pickers) opens off-panel — suppress the leave-timer while it's open.
   const [selectOpen, setSelectOpen] = useState(false)
   // Once the user interacts via keyboard, stop auto-closing on mouse-leave (they're committed).
@@ -300,6 +312,31 @@ export function SettingsSheet({
             </div>
             <NotifyToggle />
           </div>
+
+          {/* Server URL — Electron shell only (the web build is served by its own origin). */}
+          {shell && (
+            <div className="space-y-2 border-border/60 border-t pt-3">
+              <Label className="text-[13px]">Server</Label>
+              <div className="flex gap-1.5">
+                <input
+                  className="min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 py-1.5 text-[13px] outline-none focus:ring-1 focus:ring-ring"
+                  onChange={(e) => setServerUrlInput(e.target.value)}
+                  placeholder="https://…"
+                  spellCheck={false}
+                  value={serverUrl}
+                />
+                <Button
+                  disabled={!serverUrl.trim() || serverUrl.trim() === serverSaved}
+                  onClick={() => shell.setServerUrl(serverUrl.trim())}
+                  size="sm"
+                  variant="secondary"
+                >
+                  Save
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Reloads the app to this server.</p>
+            </div>
+          )}
         </div>
       </SheetContent>
     </Sheet>
