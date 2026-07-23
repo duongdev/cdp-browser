@@ -1,4 +1,9 @@
-import { Settings02Icon } from "@hugeicons/core-free-icons"
+import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  ReloadIcon,
+  Settings02Icon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
@@ -41,8 +46,41 @@ function useIsWide() {
 }
 
 function AppHeader({ onOpenSettings }: { onOpenSettings: () => void }) {
+  // Electron-only browser-style nav (back/forward/reload). Reload force-fetches a fresh build.
+  const shell = chatShell()
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-border border-b px-4">
+    <header className="titlebar titlebar-pad flex h-12 shrink-0 items-center gap-2 border-border border-b px-4">
+      {shell && (
+        <div className="flex items-center gap-0.5">
+          <Button
+            aria-label="Back"
+            className="text-muted-foreground"
+            onClick={() => shell.goBack()}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />
+          </Button>
+          <Button
+            aria-label="Forward"
+            className="text-muted-foreground"
+            onClick={() => shell.goForward()}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <HugeiconsIcon className="size-4" icon={ArrowRight01Icon} />
+          </Button>
+          <Button
+            aria-label="Reload"
+            className="text-muted-foreground"
+            onClick={() => shell.reload()}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <HugeiconsIcon className="size-4" icon={ReloadIcon} />
+          </Button>
+        </div>
+      )}
       <h1 className="font-heading font-semibold text-foreground text-sm">Teams Chat</h1>
       <Button
         aria-label="Settings"
@@ -305,6 +343,28 @@ export function ChatApp() {
     [navConversations],
   )
 
+  // Switch the OPEN conversation by delta (⌥↑/⌥↓): walk the visible list order from the current
+  // active/focused row and open its neighbor. Works from the thread view too.
+  const switchConversation = useCallback(
+    (delta: 1 | -1) => {
+      if (navConversations.length === 0) return
+      const cur = keepAlive.active ?? focusedConvId
+      const i = cur ? navConversations.findIndex((c) => c.id === cur) : -1
+      const next = i === -1 ? 0 : Math.min(navConversations.length - 1, Math.max(0, i + delta))
+      openConversation(navConversations[next])
+    },
+    [navConversations, keepAlive.active, focusedConvId, openConversation],
+  )
+
+  // Open the Nth visible conversation (⌘1..⌘9). Out-of-range indexes are a no-op.
+  const openConvByIndex = useCallback(
+    (n: number) => {
+      const conv = navConversations[n - 1]
+      if (conv) openConversation(conv)
+    },
+    [navConversations, openConversation],
+  )
+
   const clearPendingG = useCallback(() => {
     pendingG.current = false
     if (gTimer.current) clearTimeout(gTimer.current)
@@ -348,9 +408,39 @@ export function ChatApp() {
         run: () => (view === "list" ? moveListFocus(-1) : activeThreadRef.current?.focusPrev()),
       },
       {
+        id: "conv-next",
+        label: "Next conversation",
+        group: "Navigation",
+        keys: "⌥↓",
+        run: () => switchConversation(1),
+      },
+      {
+        id: "conv-prev",
+        label: "Previous conversation",
+        group: "Navigation",
+        keys: "⌥↑",
+        run: () => switchConversation(-1),
+      },
+      {
+        id: "jump-index",
+        label: "Jump to conversation 1–9",
+        group: "Navigation",
+        keys: "⌘1–9",
+        run: () => openConvByIndex(1),
+      },
+      {
+        id: "focus-input",
+        label: "Focus message input",
+        group: "Message",
+        keys: "i",
+        when: (c) => c.view === "thread",
+        run: () => activeThreadRef.current?.focusComposer(),
+      },
+      {
         id: "open-settings",
         label: "Open settings",
         group: "App",
+        keys: "⌘,",
         run: () => setSettingsOpen(true),
       },
       {
@@ -454,6 +544,8 @@ export function ChatApp() {
     ctx,
     prefs,
     patchPrefs,
+    switchConversation,
+    openConvByIndex,
   ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
@@ -531,6 +623,26 @@ export function ChatApp() {
           e.preventDefault()
           toggleReadUnread(ctx.focusedConversationId ?? null)
           break
+        case "focus-composer":
+          e.preventDefault()
+          activeThreadRef.current?.focusComposer()
+          break
+        case "settings":
+          e.preventDefault()
+          setSettingsOpen((v) => !v)
+          break
+        case "conv-next":
+          e.preventDefault()
+          switchConversation(1)
+          break
+        case "conv-prev":
+          e.preventDefault()
+          switchConversation(-1)
+          break
+        case "conv-index":
+          e.preventDefault()
+          openConvByIndex(intent.index)
+          break
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -547,7 +659,15 @@ export function ChatApp() {
     backToList,
     clearPendingG,
     toggleReadUnread,
+    switchConversation,
+    openConvByIndex,
   ])
+
+  // In the Electron shell (window.chatShell present), flag the root so the CSS can turn the top
+  // headers into a window-drag region + clear the macOS traffic lights (chat/src/index.css).
+  useEffect(() => {
+    if (chatShell()) document.documentElement.classList.add("is-electron")
+  }, [])
 
   // Name display preference (t161), derived once per settings change and threaded to every
   // person-name render (rows, thread header, sender names, reactor tooltips).

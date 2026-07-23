@@ -60,6 +60,8 @@ function createWindow() {
     minHeight: 480,
     title: "CDP Chats",
     titleBarStyle: "hiddenInset",
+    // Center the traffic lights within the 48px (h-12) header strip.
+    trafficLightPosition: { x: 19, y: 17 },
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#0a0a0a" : "#ffffff",
     webPreferences: {
       contextIsolation: true,
@@ -111,6 +113,18 @@ ipcMain.on("chat:notify", (_e, { title, body, convId } = {}) => {
 ipcMain.on("chat:set-badge", (_e, count) => {
   if (typeof app.setBadgeCount === "function") app.setBadgeCount(Number(count) || 0)
 })
+
+// Browser-style nav (Electron-only header controls). Back/forward walk the page history; reload
+// bypasses the HTTP cache so it force-fetches a fresh build.
+ipcMain.on("chat:go-back", () => {
+  const nav = win?.webContents?.navigationHistory
+  if (nav?.canGoBack()) nav.goBack()
+})
+ipcMain.on("chat:go-forward", () => {
+  const nav = win?.webContents?.navigationHistory
+  if (nav?.canGoForward()) nav.goForward()
+})
+ipcMain.on("chat:reload", () => win?.webContents?.reloadIgnoringCache())
 
 app.whenReady().then(() => {
   createWindow()

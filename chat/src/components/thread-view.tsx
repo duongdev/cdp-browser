@@ -127,6 +127,8 @@ export interface ThreadHandle {
   command: (type: RowCommand["type"]) => void
   /** True while the composer or inline editor holds focus — chat-app suppresses bare-key shortcuts. */
   isComposerFocused: () => boolean
+  /** Focus the message input (the `i` shortcut / ⌘K "Focus message input"). */
+  focusComposer: () => void
 }
 
 interface ThreadViewProps {
@@ -652,6 +654,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         setRowCommand({ type, nonce: Date.now() })
       },
       isComposerFocused: () => composerFocusedRef.current,
+      focusComposer: () => composerRef.current?.focus(),
     }),
     [moveFocus, focused, focusedId],
   )
@@ -670,7 +673,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-background", !visible && "hidden")}>
-      <header className="flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
+      <header className="titlebar flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
         {onBack && (
           <Button
             aria-label="Back to conversations"

@@ -33,6 +33,11 @@ export type KeyIntent =
   | { type: "delete" } // ⌫ / Delete — delete focused own message
   | { type: "react" } // r — open reaction bar on focused message
   | { type: "toggle-read" } // u — toggle read/unread on the focused/open conversation
+  | { type: "focus-composer" } // i — focus the message input (thread view)
+  | { type: "settings" } // ⌘, — open settings
+  | { type: "conv-next" } // ⌥↓ — switch to the next conversation
+  | { type: "conv-prev" } // ⌥↑ — switch to the previous conversation
+  | { type: "conv-index"; index: number } // ⌘1..⌘9 — open the Nth conversation
 
 /** True when the event target is a text-editing surface (input/textarea/select/contenteditable).
  *  Bare-char shortcuts must be suppressed there so typing isn't hijacked. */
@@ -62,6 +67,17 @@ export function routeKey(e: KeyLike, ctx: ChatContext, pendingG: boolean): KeyIn
   if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) return { type: "palette" }
   // ⌘/ / Ctrl+/ — shortcut overlay. Also global.
   if ((e.metaKey || e.ctrlKey) && e.key === "/") return { type: "overlay" }
+  // ⌘, — settings. Global (works from the composer too).
+  if ((e.metaKey || e.ctrlKey) && e.key === ",") return { type: "settings" }
+  // ⌘1..⌘9 — open the Nth conversation. Global; a digit chord is never a text op.
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && /^[1-9]$/.test(e.key))
+    return { type: "conv-index", index: Number(e.key) }
+  // ⌥↑ / ⌥↓ — previous/next conversation (Slack-style). Global, EXCEPT while the composer is
+  // focused, where ⌥↑/↓ is a text-navigation key we must not hijack.
+  if (e.altKey && !e.metaKey && !e.ctrlKey && !ctx.composerFocused) {
+    if (e.key === "ArrowDown") return { type: "conv-next" }
+    if (e.key === "ArrowUp") return { type: "conv-prev" }
+  }
 
   // Everything below is a bare-key shortcut: suppressed in a text field / when a chord modifier is
   // held, and while the composer is focused (chat-app also passes composerFocused as a belt).
@@ -97,6 +113,9 @@ export function routeKey(e: KeyLike, ctx: ChatContext, pendingG: boolean): KeyIn
     case "u":
       // Toggle read/unread on the focused (list) or open (thread) conversation.
       return ctx.focusedConversationId ? { type: "toggle-read" } : null
+    case "i":
+      // Focus the message input — only meaningful with a thread open.
+      return ctx.view === "thread" ? { type: "focus-composer" } : null
     default:
       return null
   }

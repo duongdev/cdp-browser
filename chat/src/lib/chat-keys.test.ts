@@ -40,6 +40,45 @@ describe("routeKey — global modifier shortcuts", () => {
       type: "overlay",
     })
   })
+  it("⌘, → settings, even in the composer", () => {
+    const inField = { tagName: "TEXTAREA" } as unknown as EventTarget
+    expect(routeKey(key(",", { metaKey: true, target: inField }), thread, false)).toEqual({
+      type: "settings",
+    })
+  })
+  it("⌘1..⌘9 → conv-index with the digit, even in a field", () => {
+    const inField = { tagName: "INPUT" } as unknown as EventTarget
+    expect(routeKey(key("3", { metaKey: true, target: inField }), list, false)).toEqual({
+      type: "conv-index",
+      index: 3,
+    })
+    expect(routeKey(key("0", { metaKey: true }), list, false)).toBeNull()
+  })
+})
+
+describe("routeKey — conversation switch (⌥↑/⌥↓)", () => {
+  it("⌥↓ → conv-next, ⌥↑ → conv-prev", () => {
+    expect(routeKey(key("ArrowDown", { altKey: true }), thread, false)).toEqual({
+      type: "conv-next",
+    })
+    expect(routeKey(key("ArrowUp", { altKey: true }), list, false)).toEqual({ type: "conv-prev" })
+  })
+  it("is suppressed while the composer is focused (text nav wins)", () => {
+    expect(
+      routeKey(key("ArrowDown", { altKey: true }), { ...thread, composerFocused: true }, false),
+    ).toBeNull()
+  })
+})
+
+describe("routeKey — focus composer (i)", () => {
+  it("i → focus-composer only in a thread", () => {
+    expect(routeKey(key("i"), thread, false)).toEqual({ type: "focus-composer" })
+    expect(routeKey(key("i"), list, false)).toBeNull()
+  })
+  it("does not fire while a text field is focused", () => {
+    const t = { tagName: "TEXTAREA" } as unknown as EventTarget
+    expect(routeKey(key("i", { target: t }), thread, false)).toBeNull()
+  })
 })
 
 describe("routeKey — text-field guard", () => {

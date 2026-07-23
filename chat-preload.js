@@ -10,4 +10,7 @@ contextBridge.exposeInMainWorld("chatShell", {
   setBadge: (count) => ipcRenderer.send("chat:set-badge", count),
   onNotificationActivate: (cb) =>
     ipcRenderer.on("chat:notification-activate", (_e, convId) => cb(convId)),
+  goBack: () => ipcRenderer.send("chat:go-back"),
+  goForward: () => ipcRenderer.send("chat:go-forward"),
+  reload: () => ipcRenderer.send("chat:reload"),
 })

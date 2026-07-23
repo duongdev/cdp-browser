@@ -8,6 +8,11 @@ export interface ChatShellBridge {
   notify(p: { title: string; body: string; convId: string }): void
   setBadge(count: number): void
   onNotificationActivate(cb: (convId: string) => void): void
+  /** Browser-style nav for the Electron window: back/forward walk the page history; reload does a
+   *  cache-bypassing reload (force-fetches a new build). */
+  goBack(): void
+  goForward(): void
+  reload(): void
 }
 
 export function chatShell(): ChatShellBridge | null {
