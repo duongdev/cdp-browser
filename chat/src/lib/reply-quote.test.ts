@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest"
-import { buildReplyBlockquote, buildReplyBody, quotePreviewHtml } from "./reply-quote"
+import {
+  buildReplyBlockquote,
+  buildReplyBody,
+  quotePreviewHtml,
+  stampReplyIds,
+} from "./reply-quote"
+
+describe("stampReplyIds", () => {
+  it("adds data-reply-id from the blockquote itemid", () => {
+    const out = stampReplyIds(
+      '<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="123"><p>q</p></blockquote>x',
+    )
+    expect(out).toContain('data-reply-id="123"')
+  })
+  it("leaves a non-reply body unchanged", () => {
+    expect(stampReplyIds("<blockquote>plain</blockquote>")).toBe("<blockquote>plain</blockquote>")
+    expect(stampReplyIds("no quote")).toBe("no quote")
+  })
+})
 
 describe("quotePreviewHtml", () => {
   it("keeps inline emoji and reduces the rest to text", () => {

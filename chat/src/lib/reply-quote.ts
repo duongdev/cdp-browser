@@ -96,6 +96,20 @@ export function buildReplyBlockquote(quote: ReplyQuote): string {
   )
 }
 
+/** Stamp `data-reply-id` (from the blockquote's `itemid`, the quoted message's id) onto each reply
+ *  blockquote so the rendered quote is a click target for jump-to-original (PSN-92 B5). The sanitizer
+ *  allowlists `data-reply-id`. Pure; a body with no reply blockquote is returned unchanged. */
+export function stampReplyIds(html: string): string {
+  if (typeof html !== "string" || !html.includes("blockquote")) return html
+  return html.replace(
+    /<blockquote\b([^>]*\bitemtype\s*=\s*(["'])[^"']*Reply[^"']*\2[^>]*)>/gi,
+    (m, attrs) => {
+      const id = /\bitemid\s*=\s*(["'])([^"']+)\1/i.exec(attrs)
+      return id ? `<blockquote${attrs} data-reply-id="${id[2]}">` : m
+    },
+  )
+}
+
 /** Concatenate stacked quotes (selection order) ahead of the reply body — the multi-reply wire form.
  *  A newline separates the blockquotes from the body, matching Teams' native reply markup. */
 export function buildReplyBody(quotes: ReplyQuote[], bodyHtml: string): string {

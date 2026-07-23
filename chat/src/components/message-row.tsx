@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils"
 import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
+import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
 import { DisplayName } from "./display-name"
@@ -85,6 +86,10 @@ interface MessageRowProps {
   onDelete?: (msgId: string) => void
   /** Quote this message in the composer (PSN-92 B). Passed for any confirmed, non-deleted message. */
   onReply?: (msg: TeamsMessage) => void
+  /** Jump to a quoted message when its reply block is clicked (PSN-92 B5). */
+  onJumpToMessage?: (msgId: string) => void
+  /** Briefly flash this row after a jump landed on it (PSN-92 B5). */
+  highlighted?: boolean
   /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
   onRetrySend?: (msgId: string) => void
   /** Discard a failed optimistic send — removes the bubble (t159). */
@@ -118,6 +123,8 @@ function ChatMessageRow({
   onEdit,
   onDelete,
   onReply,
+  onJumpToMessage,
+  highlighted,
   onRetrySend,
   onDiscardSend,
   focused,
@@ -221,10 +228,19 @@ function ChatMessageRow({
     onReact?.(message.id, key, emoji, false)
   }
 
-  // A tap on a content image (not an emoji/sticker) opens the lightbox with that image's src.
-  // Delegated off the body so it covers every img the sanitized HTML produced.
+  // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
+  // content image (not an emoji/sticker) opens the lightbox.
   function onBodyClick(e: MouseEvent<HTMLDivElement>) {
     const el = e.target as HTMLElement
+    const quote = el.closest?.("blockquote[data-reply-id]") as HTMLElement | null
+    if (quote) {
+      const id = quote.getAttribute("data-reply-id")
+      if (id && onJumpToMessage) {
+        e.stopPropagation()
+        onJumpToMessage(id)
+      }
+      return
+    }
     if (el.tagName !== "IMG") return
     const itemtype = el.getAttribute("itemtype") || ""
     if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
@@ -243,7 +259,10 @@ function ChatMessageRow({
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
+        // Jump-landing flash (PSN-92 B5): a brief highlight so the eye finds the jumped-to message.
+        highlighted && "msg-jump-flash",
       )}
+      data-msg-id={message.id}
       ref={rowRef}
     >
       {showMeta && !self && !!message.senderName && (
@@ -313,10 +332,13 @@ function ChatMessageRow({
               pending && "opacity-60",
               failed && "opacity-70 ring-1 ring-destructive/40",
             )}
-            // formatBodyNames applies the Names setting to mention pills + quote authors BEFORE the
-            // sanitizer (it reads the itemprop/class the sanitizer strips) — PSN-92 E.
+            // formatBodyNames applies the Names setting to mention pills + quote authors, and
+            // stampReplyIds tags reply blockquotes for click-to-jump — BOTH before the sanitizer (they
+            // read itemprop/itemid the sanitizer strips) — PSN-92 E + B5.
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
-            dangerouslySetInnerHTML={{ __html: sanitize(formatBodyNames(message.body, namePref)) }}
+            dangerouslySetInnerHTML={{
+              __html: sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
+            }}
             onClick={onBodyClick}
             // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
             // style grouping; the tooltip is where "when exactly?" lives now.

@@ -419,6 +419,25 @@
   font-weight: 500;
   background: color-mix(in oklab, currentColor 14%, transparent);
 }
+/* A reply quote is a click target that jumps to the original message (PSN-92 B5). */
+.teams-message-body blockquote[data-reply-id] {
+  cursor: pointer;
+}
+/* Jump-landing flash (PSN-92 B5): a brief coral ring on the row the jump landed on. */
+@keyframes msg-jump-flash {
+  0%,
+  60% {
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 70%, transparent);
+    border-radius: 1rem;
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+    border-radius: 1rem;
+  }
+}
+.msg-jump-flash {
+  animation: msg-jump-flash 1.6s ease-out;
+}
 /* Inline media by kind (t139). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
    thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
    small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the

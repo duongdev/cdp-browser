@@ -61,6 +61,9 @@ const THREAD_BOTTOM_SLACK = 64
 // A pending optimistic reaction is overlaid on every merge until the server confirms it, or until it
 // ages past this window — a lost write shouldn't pin a phantom reaction forever (t143).
 const PENDING_REACTION_TTL_MS = 20000
+// Click-to-jump backward-walk cap (PSN-92 B5, decision 7): never page more than this to find a quoted
+// original — past it, "Message too far back".
+const MAX_JUMP_PAGES = 5
 
 /** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
  *  and when it was fired (for the failed-write timeout). Keyed msgId → key. */
@@ -175,6 +178,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // Keyboard message focus (t152): the id of the focused message row + the command dispatched to it.
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [rowCommand, setRowCommand] = useState<RowCommand | null>(null)
+  // Click-to-jump (PSN-92 B5): the row currently flashing after a jump, and a transient status toast.
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+  const [jumpToast, setJumpToast] = useState<string | null>(null)
   // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
   const composerFocusedRef = useRef(false)
 
@@ -247,6 +253,88 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         setLoadingOlder(false)
       })
   }, [convId, hasMore, state])
+
+  // Click-to-jump (PSN-92 B5). Scroll a loaded message into view + flash it; ids are numeric so they
+  // need no CSS escaping. Returns false when the row isn't in the DOM (→ the caller walks older pages).
+  const scrollToMsg = useCallback((id: string): boolean => {
+    const el = scrollRef.current?.querySelector(`[data-msg-id="${id}"]`)
+    if (!el) return false
+    el.scrollIntoView({ block: "center", behavior: "smooth" })
+    setHighlightId(id)
+    window.setTimeout(() => setHighlightId((c) => (c === id ? null : c)), 1700)
+    return true
+  }, [])
+
+  // Page backward through the t134 cursor chain until the quoted message loads, capped at ~5 pages
+  // (decision 7). Cursor exhausted → the original lives in another chat (a forwarded/pasted quote);
+  // cap hit → too far back. The blockquote carries no conversation ref, so the walk stays here.
+  const walkToMessage = useCallback(
+    async (id: string) => {
+      setJumpToast("Finding the message…")
+      try {
+        for (let i = 0; i < MAX_JUMP_PAGES; i++) {
+          const cursor = olderCursor.current
+          if (!cursor) {
+            setJumpToast("Original message isn't in this chat")
+            return
+          }
+          const older = await fetchHistory(convId, cursor)
+          olderCursor.current = older.cursor
+          setHasMore(older.cursor != null)
+          setState((s) => {
+            if (s.status !== "ready") return s
+            const known = new Set(s.messages.map((m) => m.id))
+            const fresh = older.messages.filter((m) => !known.has(m.id))
+            return fresh.length
+              ? {
+                  status: "ready",
+                  messages: applyPendingReactions(
+                    [...fresh, ...s.messages],
+                    pendingReactions.current,
+                  ),
+                }
+              : s
+          })
+          if (older.messages.some((m) => m.id === id)) {
+            setJumpToast(null)
+            // Two frames: let React commit the prepend before we measure + scroll.
+            requestAnimationFrame(() => requestAnimationFrame(() => scrollToMsg(id)))
+            return
+          }
+          if (!older.cursor) {
+            setJumpToast("Original message isn't in this chat")
+            return
+          }
+        }
+        setJumpToast("Message too far back")
+      } catch {
+        setJumpToast("Couldn't load the original message")
+      }
+    },
+    [convId, scrollToMsg],
+  )
+
+  const jumpToMessage = useCallback(
+    (id: string) => {
+      setJumpToast(null)
+      const loaded = state.status === "ready" && state.messages.some((m) => m.id === id)
+      if (loaded) {
+        requestAnimationFrame(() => {
+          if (!scrollToMsg(id)) walkToMessage(id)
+        })
+        return
+      }
+      walkToMessage(id)
+    },
+    [state, scrollToMsg, walkToMessage],
+  )
+
+  // Auto-dismiss the jump toast (except the in-progress "Finding…" state, which its resolution clears).
+  useEffect(() => {
+    if (!jumpToast || jumpToast === "Finding the message…") return
+    const t = window.setTimeout(() => setJumpToast(null), 2500)
+    return () => window.clearTimeout(t)
+  }, [jumpToast])
 
   // Trigger load-older from a sentinel at the visual top (mirrors the list's t136 infinite scroll)
   // rather than a scrollTop threshold — flex-col-reverse makes scrollTop's sign browser-dependent, but
@@ -797,12 +885,14 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                   <MessageRow
                     command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
                     focused={item.message.id === focusedId}
+                    highlighted={item.message.id === highlightId}
                     key={item.key}
                     message={item.message}
                     namePref={namePref}
                     onDelete={onDelete}
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}
+                    onJumpToMessage={jumpToMessage}
                     onReact={onReact}
                     onReply={onReply}
                     onRetrySend={onRetrySend}
@@ -850,6 +940,15 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           >
             <HugeiconsIcon className="size-4" icon={ArrowDown01Icon} />
           </Button>
+          {/* Jump-to-original status (PSN-92 B5): a transient centered pill (finding / too-far-back /
+              not-in-this-chat). */}
+          {jumpToast && (
+            <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2">
+              <span className="rounded-full border border-border bg-popover px-3 py-1 font-medium text-muted-foreground text-xs shadow-md">
+                {jumpToast}
+              </span>
+            </div>
+          )}
         </div>
       )}
       {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
