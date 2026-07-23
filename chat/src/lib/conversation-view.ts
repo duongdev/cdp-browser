@@ -192,6 +192,23 @@ export function groupByFolder(conversations: TeamsConversation[]): FolderSection
   return sections
 }
 
+/** The conversations in the exact VISUAL order the list renders them (folder sections first, then
+ *  ungrouped), with any collapsed folder's rows dropped. This is the order keyboard j/k must walk —
+ *  the raw list is newest-first, but folder grouping reorders the rows and a collapsed folder hides
+ *  its rows entirely, so navigating the raw list lands the focus ring on an off-screen row (t157).
+ *  Pure: `groupByFolder` is the render's own grouping, so this can't drift from what's shown. */
+export function navigableConversations(
+  conversations: TeamsConversation[],
+  collapsed?: ReadonlySet<string>,
+): TeamsConversation[] {
+  const out: TeamsConversation[] = []
+  for (const section of groupByFolder(conversations)) {
+    if (section.folder && collapsed?.has(section.folder)) continue
+    out.push(...section.conversations)
+  }
+  return out
+}
+
 /** Every distinct folder name in a prefs map, alpha-sorted — the "Move to folder" submenu source. */
 export function knownFolders(prefs: Record<string, ConvPrefs>): string[] {
   const set = new Set<string>()

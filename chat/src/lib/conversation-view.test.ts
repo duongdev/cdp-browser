@@ -7,6 +7,7 @@ import {
   isUnread,
   knownFolders,
   knownLabels,
+  navigableConversations,
   previewLine,
   relativeTime,
   toggleLabel,
@@ -241,6 +242,18 @@ describe("conversation prefs shaping (t156)", () => {
     const s = groupByFolder(rows)
     expect(s).toHaveLength(1)
     expect(s[0].folder).toBe(null)
+  })
+
+  it("navigableConversations: visual order, collapsed folders skipped (t157)", () => {
+    const rows = [
+      applyPrefs(conv({ id: "z1" }), { labels: [], folder: "Zeta", muted: false }),
+      applyPrefs(conv({ id: "a1" }), { labels: [], folder: "Alpha", muted: false }),
+      conv({ id: "u1" }), // ungrouped
+    ]
+    // No collapse: folders alpha-first (Alpha, Zeta), then ungrouped — the render order, not raw.
+    expect(navigableConversations(rows).map((c) => c.id)).toEqual(["a1", "z1", "u1"])
+    // Zeta collapsed: its rows drop out of the navigable order entirely.
+    expect(navigableConversations(rows, new Set(["Zeta"])).map((c) => c.id)).toEqual(["a1", "u1"])
   })
 
   it("knownFolders / knownLabels are distinct + alpha-sorted", () => {

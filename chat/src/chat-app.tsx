@@ -11,7 +11,12 @@ import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/th
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
-import { isUnread, knownFolders, type ReadOverride } from "./lib/conversation-view"
+import {
+  isUnread,
+  knownFolders,
+  navigableConversations,
+  type ReadOverride,
+} from "./lib/conversation-view"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
@@ -243,18 +248,25 @@ export function ChatApp() {
   const threadOpen = !!keepAlive.active && (isWide || phoneView === "thread")
   const view: "list" | "thread" = threadOpen ? "thread" : "list"
 
+  // The list in the exact order it's shown (folder-grouped, collapsed folders excluded) — the order
+  // j/k must walk so the focus ring never lands on an off-screen row (t157).
+  const navConversations = useMemo(
+    () => navigableConversations(conversations, collapsed),
+    [conversations, collapsed],
+  )
+
   // Move the list cursor by delta (down = next, i.e. further down the list).
   const moveListFocus = useCallback(
     (delta: 1 | -1) => {
       setFocusedConvId((cur) => {
-        if (conversations.length === 0) return cur
-        const i = cur ? conversations.findIndex((c) => c.id === cur) : -1
-        if (i === -1) return conversations[0].id
-        const next = Math.min(conversations.length - 1, Math.max(0, i + delta))
-        return conversations[next].id
+        if (navConversations.length === 0) return cur
+        const i = cur ? navConversations.findIndex((c) => c.id === cur) : -1
+        if (i === -1) return navConversations[0].id
+        const next = Math.min(navConversations.length - 1, Math.max(0, i + delta))
+        return navConversations[next].id
       })
     },
-    [conversations],
+    [navConversations],
   )
 
   const clearPendingG = useCallback(() => {
