@@ -185,6 +185,21 @@ Trackpad swipe left/right is supported for back/forward navigation.
 - [dnd-kit](https://dndkit.com/) — drag and drop
 - [Vite](https://vite.dev/) — build tool
 
+## Development Workflow (Linear + Cyrus)
+
+This repo is worked on through [Linear](https://linear.app) issues driven by the
+[Cyrus](https://github.com/ceedaragents/cyrus) agent:
+
+- Issues live in the Linear **cdp-browser** project (team **PSN**).
+- **Labels drive the mode:**
+  - `grill` / `plan` — scoping and design only, no code.
+  - `build` — implement the change and open a PR.
+  - `bug` — reproduce, root-cause, and fix.
+- Delegating an issue to the **`cyrus`** agent spins up an isolated git worktree, does
+  the work on its own branch, and opens a **Ready** pull request for review.
+
+Day-to-day conventions, task specs, and decisions live under [`docs/`](docs/).
+
 ## License
 
 MIT
