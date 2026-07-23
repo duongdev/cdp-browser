@@ -185,6 +185,21 @@ Trackpad swipe left/right is supported for back/forward navigation.
 - [dnd-kit](https://dndkit.com/) — drag and drop
 - [Vite](https://vite.dev/) — build tool
 
+## Development Workflow
+
+Issues are tracked in [Linear](https://linear.app/) (project `cdp-browser`, team `PSN`).
+GitHub Issues is external bug intake only.
+
+An issue's label selects the mode the agent runs in:
+
+- `grill` / `plan` — scoping only, no code changes.
+- `build` — implement the change and open a Ready pull request.
+- `bug` — reproduce and fix.
+
+Each issue is worked in its own isolated git worktree, on a branch named for the issue
+(e.g. `PSN-86-…`). The work lands as a Ready PR against `main`; the worktree is torn down
+once the PR merges.
+
 ## License
 
 MIT
