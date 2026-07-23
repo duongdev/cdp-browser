@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
+import { FULL_NAME, formatConversationLabel, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
 import {
   applyPendingReactions,
@@ -29,7 +29,7 @@ import {
   mergeMessages,
   resolveLocalSend,
 } from "../lib/message-merge"
-import { buildReplyBlockquote } from "../lib/reply-quote"
+import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
 import {
   deleteMessage,
@@ -46,6 +46,7 @@ import {
 } from "../lib/teams-client"
 import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
+import { BodyNameTooltip } from "./body-name-tooltip"
 import { Composer, type ComposerHandle } from "./composer"
 import { MessageRow, type RowCommand } from "./message-row"
 
@@ -463,10 +464,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const replyTarget = selectReplyTarget(conversation)
   const composerRef = useRef<ComposerHandle>(null)
   const coarse = usePointerCoarse()
-  // The message being quoted (PSN-92 B); its blockquote is prepended to the next send. Reset on switch.
-  const [quoteTarget, setQuoteTarget] = useState<TeamsMessage | null>(null)
+  // Messages being quoted (PSN-92 B/C): an ordered list — each Reply stacks another quote, and the
+  // send prepends one blockquote per target in selection order (Teams' multi-reply). Reset on switch.
+  const [quoteTargets, setQuoteTargets] = useState<TeamsMessage[]>([])
   const onReply = useCallback((m: TeamsMessage) => {
-    setQuoteTarget(m)
+    setQuoteTargets((cur) => (cur.some((q) => q.id === m.id) ? cur : [...cur, m]))
     composerRef.current?.focus()
   }, [])
   // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
@@ -536,20 +538,25 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const onComposerSend = useCallback(
     (raw: OutgoingMessage, file: File | null) => {
       if (!replyTarget) return
-      // A quoted reply (PSN-92 B) rides the same send: prepend the Reply blockquote to the body HTML
-      // (forcing a RichText/Html send) so both the optimistic bubble and Teams render the quote. A file
-      // send can't carry inline HTML, so the quote only applies to the text/rich path.
+      // A quoted reply (PSN-92 B/C) rides the same send: prepend one Reply blockquote per target to the
+      // body HTML (forcing a RichText/Html send) so both the optimistic bubble and Teams render the
+      // quotes. A file send can't carry inline HTML, so quotes only apply to the text/rich path.
       let out = raw
-      if (quoteTarget && !file) {
-        const quoteHtml = buildReplyBlockquote({
-          msgId: quoteTarget.id,
-          authorMri: quoteTarget.senderId || "",
-          authorName: quoteTarget.senderName || "",
-          previewText: htmlToPlain(quoteTarget.body),
-        })
-        out = { text: raw.text, html: quoteHtml + (raw.html ?? textToHtml(raw.text)) }
+      if (quoteTargets.length > 0 && !file) {
+        const body = buildReplyBody(
+          quoteTargets.map((m) => ({
+            msgId: m.id,
+            authorMri: m.senderId || "",
+            // Real name in the wire (decision 4 — quotes never say "(You)"); the render applies the
+            // Names setting. A self message's senderName is its stamped imdisplayname (workstream A).
+            authorName: m.senderName || "",
+            previewHtml: quotePreviewHtml(m.body),
+          })),
+          raw.html ?? textToHtml(raw.text),
+        )
+        out = { text: raw.text, html: body }
       }
-      setQuoteTarget(null)
+      setQuoteTargets([])
       const localId = `local:${++localSeq.current}:${Date.now()}`
       retryPayloads.current.set(localId, { out, file })
       const isImage = file?.type.startsWith("image/") ?? false
@@ -578,7 +585,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       })
       runSend(localId, out, file)
     },
-    [replyTarget, appendSent, runSend, quoteTarget],
+    [replyTarget, appendSent, runSend, quoteTargets],
   )
 
   // Retry a failed optimistic send in place (t159): back to pending, same payload, same bubble.
@@ -638,7 +645,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   useEffect(() => {
     setFocusedId(null)
     setRowCommand(null)
-    setQuoteTarget(null)
+    setQuoteTargets([])
   }, [convId])
 
   // Report the focused message (id + own-ness) up so chat-app's palette/keys context stays honest.
@@ -682,19 +689,17 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const composer = replyTarget ? (
     <Composer
       autoFocus={visible && !coarse}
+      onEscape={() => setQuoteTargets([])}
       onFocusChange={(f) => {
         composerFocusedRef.current = f
       }}
       onSend={onComposerSend}
-      quote={
-        quoteTarget
-          ? {
-              authorName: quoteTarget.self ? "You" : quoteTarget.senderName || "Unknown",
-              preview: htmlToPlain(quoteTarget.body),
-              onCancel: () => setQuoteTarget(null),
-            }
-          : null
-      }
+      quotes={quoteTargets.map((m) => ({
+        id: m.id,
+        authorName: formatName(m.self ? "You" : m.senderName || "Unknown", namePref ?? FULL_NAME),
+        preview: htmlToPlain(m.body),
+        onCancel: () => setQuoteTargets((cur) => cur.filter((q) => q.id !== m.id)),
+      }))}
       ref={composerRef}
       resetKey={convId}
     />
@@ -788,6 +793,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             )}
             {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
           </div>
+          {/* Full-name hover tooltip for shortened mention pills / quote authors inside the message
+              HTML (PSN-92 E) — delegated over the scroll container's data-fullname markers. */}
+          <BodyNameTooltip containerRef={scrollRef} />
           {/* Floating current-period pill (t160): flex-col-reverse breaks position:sticky, so the
               topmost-passed separator's label floats here while scrolling, then fades. */}
           <div

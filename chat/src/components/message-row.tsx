@@ -29,12 +29,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
+import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
+import { DisplayName } from "./display-name"
 import { ImageLightbox } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
@@ -250,9 +253,11 @@ function ChatMessageRow({
             label={message.senderName}
             userId={message.senderId}
           />
-          <span className="font-semibold text-foreground text-xs">
-            {formatName(message.senderName ?? "", namePref)}
-          </span>
+          <DisplayName
+            className="font-semibold text-foreground text-xs"
+            name={message.senderName ?? ""}
+            pref={namePref}
+          />
         </span>
       )}
       {hasBody && editing && (
@@ -308,8 +313,10 @@ function ChatMessageRow({
               pending && "opacity-60",
               failed && "opacity-70 ring-1 ring-destructive/40",
             )}
+            // formatBodyNames applies the Names setting to mention pills + quote authors BEFORE the
+            // sanitizer (it reads the itemprop/class the sanitizer strips) — PSN-92 E.
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
-            dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
+            dangerouslySetInnerHTML={{ __html: sanitize(formatBodyNames(message.body, namePref)) }}
             onClick={onBodyClick}
             // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
             // style grouping; the tooltip is where "when exactly?" lives now.
@@ -380,24 +387,30 @@ function ChatMessageRow({
         <div
           className={cn("flex max-w-[85%] flex-wrap gap-1", self ? "justify-end" : "justify-start")}
         >
-          {reactions.map((r) => (
-            <button
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
-                r.mine
-                  ? "border-primary bg-primary/15 text-foreground"
-                  : "border-border bg-background/60 text-muted-foreground hover:bg-accent",
-              )}
-              disabled={!onReact}
-              key={r.key}
-              onClick={() => toggleChip(r)}
-              title={reactorTitle(r, namePref)}
-              type="button"
-            >
-              <span aria-hidden>{r.emoji}</span>
-              <span className="font-mono">{r.count}</span>
-            </button>
-          ))}
+          {reactions.map((r) => {
+            const who = reactorTitle(r, namePref)
+            return (
+              <Tooltip key={r.key}>
+                <TooltipTrigger asChild>
+                  <button
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                      r.mine
+                        ? "border-primary bg-primary/15 text-foreground"
+                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent",
+                    )}
+                    disabled={!onReact}
+                    onClick={() => toggleChip(r)}
+                    type="button"
+                  >
+                    <span aria-hidden>{r.emoji}</span>
+                    <span className="font-mono">{r.count}</span>
+                  </button>
+                </TooltipTrigger>
+                {who && <TooltipContent>{who}</TooltipContent>}
+              </Tooltip>
+            )
+          })}
         </div>
       )}
       {/* Optimistic send status (t159): a quiet "Sending…" while in flight; a failed send keeps the

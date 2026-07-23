@@ -33,8 +33,10 @@ interface ComposerProps {
   onFocusChange: (focused: boolean) => void
   /** Auto-focus on mount / reset — wide pointer layouts only (a phone would pop the keyboard). */
   autoFocus?: boolean
-  /** Quoted-message chip above the editor (PSN-92 B); Escape or its ✕ cancels the reply. */
-  quote?: { authorName: string; preview: string; onCancel: () => void } | null
+  /** Stacked quoted-message chips above the editor (PSN-92 B/C); each ✕ drops one, Escape clears all. */
+  quotes?: { id: string; authorName: string; preview: string; onCancel: () => void }[]
+  /** Escape in the editor — clears the reply targets (only wired when `quotes` is non-empty). */
+  onEscape?: () => void
 }
 
 // Formatting toolbar actions → document.execCommand. Deprecated but universal, zero-dep — the lazy
@@ -58,7 +60,8 @@ export function Composer({
   onSend,
   onFocusChange,
   autoFocus = false,
-  quote,
+  quotes,
+  onEscape,
 }: ComposerProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -119,22 +122,27 @@ export function Composer({
           "focus-within:border-ring/40 focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/25",
         )}
       >
-        {quote && (
-          <div className="px-3 pt-3">
-            <div className="flex items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-ring text-xs">{quote.authorName}</div>
-                <div className="truncate text-muted-foreground text-xs">{quote.preview}</div>
-              </div>
-              <button
-                aria-label="Cancel reply"
-                className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
-                onClick={quote.onCancel}
-                type="button"
+        {quotes && quotes.length > 0 && (
+          <div className="flex flex-col gap-1 px-3 pt-3">
+            {quotes.map((q) => (
+              <div
+                className="flex items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5"
+                key={q.id}
               >
-                <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-              </button>
-            </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-ring text-xs">{q.authorName}</div>
+                  <div className="truncate text-muted-foreground text-xs">{q.preview}</div>
+                </div>
+                <button
+                  aria-label="Remove quoted message"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
+                  onClick={q.onCancel}
+                  type="button"
+                >
+                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
         {(pendingUrl || (pendingFile && !pendingUrl)) && (
@@ -183,9 +191,9 @@ export function Composer({
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault()
               doSend()
-            } else if (e.key === "Escape" && quote) {
+            } else if (e.key === "Escape" && quotes && quotes.length > 0) {
               e.preventDefault()
-              quote.onCancel()
+              onEscape?.()
             }
           }}
           onPaste={(e) => {

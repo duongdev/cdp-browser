@@ -41,6 +41,8 @@ const ALLOWED_ATTR = [
   "height",
   "controls",
   "data-duration",
+  // Full-name for the Names-setting hover tooltip on a shortened mention / quote author (PSN-92 E).
+  "data-fullname",
 ]
 
 const SAFE_HREF = /^(https?:|mailto:)/i
