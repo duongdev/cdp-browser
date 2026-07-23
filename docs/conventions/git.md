@@ -4,8 +4,12 @@ The smallest workflow that keeps history readable. Solo project today; assume a 
 
 ## Branches
 
-- `main` — always green, always shippable.
+- `main` — always green, always shippable. **Never commit on it directly** — `.husky/pre-commit` refuses (override with `ALLOW_MAIN_COMMIT=1` for release tooling or an explicit user-approved hotfix).
 - Feature branches off `main`, merged back via PR (even solo, for the audit trail).
+
+`main` stays **linear**: `pull.rebase=true` + `rebase.autoStash=true` are set locally, so `git pull` on `main` rebases instead of creating a merge bubble.
+
+**Why the guard exists:** `docs/` and `CLAUDE.md` are shared across worktrees (`.claude/scripts/e2e-link-worktree.sh` symlinks git-ignored shared knowledge, `conductor-sync.sh` rsyncs the rest), so a doc write intended for a feature branch lands wherever `HEAD` happens to be. Committed on `main`, it forks `main` from the branch — and when the branch later merges (often squashed and renumbered), those `main` commits become duplicate specs under dead task IDs. Recovering means resetting `main` to `origin/main`. Branch first, always.
 
 ### Branch naming
 

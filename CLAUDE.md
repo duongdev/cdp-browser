@@ -250,7 +250,7 @@ on pre-existing errors in untouched files).
 
 ### Dev lifecycle skills
 
-Project-local slash commands in `.claude/skills/` (thin SKILL.md → unit-tested `scripts/cdp-commands/*.mjs`): `idea`, `learn`, `risk` (capture to `docs/memories/`), `new-task`/`task`/`status` (the `docs/tasks/` lifecycle), `adr` (scaffold `docs/adr/NNNN-*`), `frontend` (conventions checkpoint), `pr-monitor`. Branch naming is enforced by `.claude/hooks/branch-name-check.sh`.
+Project-local slash commands in `.claude/skills/` (thin SKILL.md → unit-tested `scripts/cdp-commands/*.mjs`): `idea`, `learn`, `risk` (capture to `docs/memories/`), `new-task`/`task`/`status` (the `docs/tasks/` lifecycle), `adr` (scaffold `docs/adr/NNNN-*`), `frontend` (conventions checkpoint), `pr-monitor`. Branch naming is enforced by `.claude/hooks/branch-name-check.sh`, and `.husky/pre-commit` refuses commits on `main` (shared cross-worktree `docs/` means a branch's doc write can otherwise land on `main` and fork it — see [git.md](docs/conventions/git.md#branches); override `ALLOW_MAIN_COMMIT=1`).
 
 ### Issue tracker (external intake only)
 
