@@ -723,7 +723,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             </Centered>
           ) : (
             <div
-              className="flex min-h-0 flex-1 flex-col-reverse gap-2 overflow-y-auto overscroll-contain px-3 py-3"
+              className="thread-messages flex min-h-0 flex-1 flex-col-reverse gap-2 overflow-y-auto overscroll-contain px-3 py-3"
               onScroll={onScroll}
               ref={scrollRef}
             >

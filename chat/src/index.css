@@ -63,6 +63,26 @@
   --shadow-md: 0 4px 16px -4px oklch(0.2 0.02 60 / 0.1), 0 2px 6px -2px oklch(0.2 0.02 60 / 0.08);
 }
 
+/* Compact density (t154): tightens the conversation-list rows + thread message spacing/padding and
+   nudges the body font down a notch. Driven by data-density="compact" on the root (useChatSettings).
+   Marker classes (.conv-row, .thread-messages) + the semantic .teams-message-body win by ordering —
+   this block is after the shared import, so equal-specificity utility classes are overridden. */
+[data-density="compact"] .conv-row {
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+  gap: 0.6rem;
+}
+[data-density="compact"] .thread-messages {
+  gap: 0.2rem;
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+}
+[data-density="compact"] .teams-message-body {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+}
+
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
    currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
    preflight resets margins/list styles, so lists and block spacing are restored here. */

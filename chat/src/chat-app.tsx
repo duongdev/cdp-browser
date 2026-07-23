@@ -1,10 +1,11 @@
-import { BubbleChatIcon } from "@hugeicons/core-free-icons"
+import { BubbleChatIcon, Settings02Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
-import { NotifyToggle } from "./components/notify-toggle"
+import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
 import { routeKey } from "./lib/chat-keys"
@@ -12,6 +13,7 @@ import { parsePath, pathFor } from "./lib/chat-route"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import type { TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
+import { useChatSettings } from "./lib/use-chat-settings"
 
 // Reactive wide/narrow gate (t129). Wide (≥768px) shows the two-pane list+thread; narrow stacks
 // list → thread → back. matchMedia over a resize listener — it fires only on the boundary cross.
@@ -26,14 +28,20 @@ function useIsWide() {
   return wide
 }
 
-function AppHeader() {
+function AppHeader({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <header className="flex items-center gap-2 border-border border-b px-4 py-3">
       <HugeiconsIcon className="size-5 text-primary" icon={BubbleChatIcon} />
       <h1 className="font-heading font-semibold text-base text-foreground">Teams Chat</h1>
-      <div className="ml-auto">
-        <NotifyToggle />
-      </div>
+      <Button
+        aria-label="Settings"
+        className="ml-auto text-muted-foreground"
+        onClick={onOpenSettings}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <HugeiconsIcon className="size-4" icon={Settings02Icon} />
+      </Button>
     </header>
   )
 }
@@ -172,6 +180,8 @@ export function ChatApp() {
   const [threadFocus, setThreadFocus] = useState<ThreadFocus | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [overlayOpen, setOverlayOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { settings, update: updateSettings } = useChatSettings()
   const pendingG = useRef(false)
   const gTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -237,6 +247,12 @@ export function ChatApp() {
         group: "Navigation",
         keys: "k",
         run: () => (view === "list" ? moveListFocus(-1) : activeThreadRef.current?.focusPrev()),
+      },
+      {
+        id: "open-settings",
+        label: "Open settings",
+        group: "App",
+        run: () => setSettingsOpen(true),
       },
       {
         id: "shortcuts",
@@ -386,6 +402,12 @@ export function ChatApp() {
         open={paletteOpen}
       />
       <ShortcutOverlay actions={actions} onOpenChange={setOverlayOpen} open={overlayOpen} />
+      <SettingsSheet
+        onOpenChange={setSettingsOpen}
+        onUpdate={updateSettings}
+        open={settingsOpen}
+        settings={settings}
+      />
     </>
   )
 
@@ -393,7 +415,7 @@ export function ChatApp() {
     return (
       <div className="mx-auto flex h-[var(--app-h,100dvh)] w-full max-w-6xl bg-background">
         <aside className="flex w-80 shrink-0 flex-col border-border border-r">
-          <AppHeader />
+          <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
               focusedId={view === "list" ? focusedConvId : null}
@@ -419,7 +441,7 @@ export function ChatApp() {
   return (
     <div className="mx-auto flex h-[var(--app-h,100dvh)] w-full max-w-2xl flex-col bg-background">
       <div className={cn("flex min-h-0 flex-1 flex-col", phoneView === "thread" && "hidden")}>
-        <AppHeader />
+        <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
             focusedId={focusedConvId}

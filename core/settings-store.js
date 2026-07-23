@@ -62,6 +62,9 @@ const DEVICE_KEY_PREFIXES = [
   "qualityTier_",
   "inputTransport_",
   "latencyHud_",
+  // t154 chat app per-device settings: theme (system/light/dark) + density (comfortable/compact).
+  "chatTheme_",
+  "chatDensity_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

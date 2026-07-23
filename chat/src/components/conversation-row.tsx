@@ -26,7 +26,7 @@ export function ConversationRow({ conversation, onOpen, active, focused }: Conve
   return (
     <button
       className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+        "conv-row flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
         "hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
         active && "bg-muted",
         focused && "ring-2 ring-ring/70 ring-inset",
