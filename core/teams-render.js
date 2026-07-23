@@ -314,21 +314,53 @@ function parseFiles(message) {
 
 const URIOBJECT_RE = /<URIObject\b([^>]*)>([\s\S]*?)<\/URIObject>/gi
 
+// A finished recording's playback URL lives on SharePoint/OneDrive, not AMS (t162, live-probed):
+// the `<a href>` "Play" link and the `onedriveForBusinessVideo` item both point at the SharePoint
+// stream (browser SSO opens it, like a file chip). The AMS `amsVideo` uri also exists but a
+// 43-min recording streamed through the buffering media proxy is a memory bomb — link out instead.
+// A recording still being written (RecordingStatus ChunkFinished/Initial) has empty hrefs → no url.
+function recordingPlayUrl(inner) {
+  const anchor = inner.match(/<a\b[^>]*\bhref\s*=\s*(["'])([\s\S]*?)\1[^>]*>/i)
+  if (anchor && /^https?:\/\//i.test(anchor[2])) return anchor[2]
+  const od = inner.match(
+    /<item\b[^>]*\btype\s*=\s*(["'])onedriveForBusinessVideo\1[^>]*\buri\s*=\s*(["'])([\s\S]*?)\2/i,
+  )
+  if (od && /^https?:\/\//i.test(od[3])) return od[3]
+  return undefined
+}
+
+// A recording chunk that isn't the finished master carries no playable href — RecordingStatus is
+// Initial/ChunkFinished (in-progress). The finished master is "Success" (live) / "viewable" (older
+// format). Anything not explicitly in-progress is treated as ready so an unknown status still shows.
+function isRecordingReady(inner) {
+  const st = inner.match(/<RecordingStatus\b[^>]*\bstatus\s*=\s*(["'])([\s\S]*?)\1/i)
+  if (!st) return true
+  return !/^(Initial|ChunkFinished|InProgress|Recording)$/i.test(st[2].trim())
+}
+
 // Parse call-recording (URIObject type "Video…/CallRecording…") and Swift-card (type "SWIFT…")
-// blocks out of `content`. Recording → its proxied AMS thumbnail; card → its <Title> + thumbnail.
+// blocks out of `content`. Recording → { title, url (SharePoint playback), thumbnail, ready };
+// card → its <Title> + thumbnail.
 function parseUriObjects(content) {
   const html = typeof content === "string" ? content : ""
   const out = []
   for (const m of html.matchAll(URIOBJECT_RE)) {
     const type = attrValue(m[1], "type")
     const thumb = proxyThumb(attrValue(m[1], "url_thumbnail"))
+    const titleM = m[2].match(/<Title\b[^>]*>([\s\S]*?)<\/Title>/i)
+    const title = titleM ? titleM[1].replace(/<[^>]+>/g, "").trim() : ""
     if (/CallRecording/i.test(type)) {
+      // A meeting emits several chunk rows (Initial/ChunkFinished…) before the finished master.
+      // Only the ready one is playable — the in-progress chunks are dropped here so a thread shows
+      // ONE recording chip, not four dead ones (t162).
+      if (!isRecordingReady(m[2])) continue
       const att = { kind: "recording" }
+      if (title) att.title = title
       if (thumb) att.thumbnailUrl = thumb
+      const url = recordingPlayUrl(m[2])
+      if (url) att.url = url
       out.push(att)
     } else if (/SWIFT/i.test(type)) {
-      const titleM = m[2].match(/<Title\b[^>]*>([\s\S]*?)<\/Title>/i)
-      const title = titleM ? titleM[1].replace(/<[^>]+>/g, "").trim() : ""
       const att = { kind: "card", title: title || "Card" }
       if (thumb) att.thumbnailUrl = thumb
       out.push(att)
@@ -543,6 +575,11 @@ function toReaderMessages(list, selfId) {
     const attachments = deleted ? [] : parseAttachments(m)
     const reactions = deleted ? [] : parseEmotions(m, selfId)
     const body = deleted ? "message deleted" : renderBody(m, selfId)
+    // A recording chunk row that produced no chip (an in-progress chunk, dropped by parseUriObjects)
+    // carries no meaning — skip it so the thread shows one finished recording, not empty rows (t162).
+    if (!deleted && /Media_CallRecording/i.test(m.messagetype || "") && attachments.length === 0) {
+      continue
+    }
     out.push({
       id: String(m.id),
       ts: toEpochMs(m.originalarrivaltime) ?? toEpochMs(m.composetime) ?? 0,

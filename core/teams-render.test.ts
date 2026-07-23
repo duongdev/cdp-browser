@@ -503,6 +503,38 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
     ])
   })
 
+  it("extracts a finished recording's title + SharePoint playback url (t162)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/0-ea/views/thumbnail_small"><RecordingStatus status="Success"></RecordingStatus><Title>Trainer Squad Standup</Title><a href="https://fwdgroup-my.sharepoint.com/:v:/g/personal/x/IQabc">Play</a></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      {
+        kind: "recording",
+        title: "Trainer Squad Standup",
+        thumbnailUrl:
+          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-ea%2Fviews%2Fthumbnail_small",
+        url: "https://fwdgroup-my.sharepoint.com/:v:/g/personal/x/IQabc",
+      },
+    ])
+  })
+
+  it("falls back to the onedriveForBusinessVideo item url when the anchor href is empty (t162)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1"><RecordingStatus status="Success"></RecordingStatus><Title>Sync</Title><a href="">Play</a><RecordingContent><item type="onedriveForBusinessVideo" uri="https://fwdgroup-my.sharepoint.com/:v:/g/personal/y/IQdef" /></RecordingContent></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([
+      {
+        kind: "recording",
+        title: "Sync",
+        url: "https://fwdgroup-my.sharepoint.com/:v:/g/personal/y/IQdef",
+      },
+    ])
+  })
+
+  it("drops an in-progress recording chunk (ChunkFinished/Initial → no chip) (t162)", () => {
+    const content =
+      '<URIObject type="Video.2/CallRecording.1"><RecordingStatus status="ChunkFinished"></RecordingStatus><Title>Sync</Title><a href="">Play</a></URIObject>'
+    expect(parseAttachments(msg({ content }))).toEqual([])
+  })
+
   it("extracts a Swift card with its Title and proxied AMS thumbnail", () => {
     const content =
       '<URIObject type="SWIFT.1" url_thumbnail="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/card-thumb/views/imgpsh"><Title>Weekly digest</Title><Swift b64="eyto="></Swift></URIObject>'
@@ -562,6 +594,27 @@ describe("toReaderMessages — attachments", () => {
   it("omits attachments when there are none", () => {
     const out = toReaderMessages([msg({ id: "1", content: "<p>plain</p>" })], "ME")
     expect(out[0].attachments).toBeUndefined()
+  })
+
+  it("keeps the finished recording but skips the in-progress chunk rows (t162)", () => {
+    const rec = (status, href) =>
+      `<URIObject type="Video.2/CallRecording.1"><RecordingStatus status="${status}"></RecordingStatus><Title>Standup</Title><a href="${href}">Play</a></URIObject>`
+    const out = toReaderMessages(
+      [
+        { id: "1", messagetype: "RichText/Media_CallRecording", content: rec("Initial", "") },
+        { id: "2", messagetype: "RichText/Media_CallRecording", content: rec("ChunkFinished", "") },
+        {
+          id: "3",
+          messagetype: "RichText/Media_CallRecording",
+          content: rec("Success", "https://sp/play"),
+        },
+      ],
+      "ME",
+    )
+    expect(out.map((m) => m.id)).toEqual(["3"])
+    expect(out[0].attachments).toEqual([
+      { kind: "recording", title: "Standup", url: "https://sp/play" },
+    ])
   })
 })
 
@@ -797,9 +850,9 @@ describe("renderBody — self-mention highlight (t160)", () => {
   })
 
   it("marks a legacy <at> mention of the viewer", () => {
-    expect(
-      renderBody(msg({ content: `<at id="8:orgid:${selfOid}">Dustin</at>` }), selfOid),
-    ).toBe('<span class="mention mention-self">@Dustin</span>')
+    expect(renderBody(msg({ content: `<at id="8:orgid:${selfOid}">Dustin</at>` }), selfOid)).toBe(
+      '<span class="mention mention-self">@Dustin</span>',
+    )
   })
 
   it("leaves other people's mentions unmarked", () => {

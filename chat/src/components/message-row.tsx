@@ -630,23 +630,40 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
   }
 
   if (a.kind === "recording") {
-    return (
-      <span className={cn(CHIP_CLASS, "cursor-default")}>
+    // A finished recording carries a SharePoint playback url (t162) → the chip opens it in a new tab
+    // (browser SSO, like a file). Thumbnail with a play overlay when present, a play glyph otherwise.
+    const inner = (
+      <>
         {a.thumbnailUrl ? (
-          <img
-            alt=""
-            className="size-9 shrink-0 rounded object-cover"
-            loading="lazy"
-            src={a.thumbnailUrl}
-          />
+          <span className="relative size-9 shrink-0">
+            <img
+              alt=""
+              className="size-9 rounded object-cover"
+              loading="lazy"
+              src={a.thumbnailUrl}
+            />
+            <HugeiconsIcon
+              className="absolute inset-0 m-auto size-4 text-white drop-shadow"
+              icon={PlayCircleIcon}
+            />
+          </span>
         ) : (
           <HugeiconsIcon className="size-5 shrink-0 text-muted-foreground" icon={PlayCircleIcon} />
         )}
-        <span className="flex items-center gap-1">
-          <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={PlayCircleIcon} />
-          Call recording
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-medium">{a.title || "Call recording"}</span>
+          <span className="text-[11px] text-muted-foreground">
+            {a.url ? "Play recording" : "Recording"}
+          </span>
         </span>
-      </span>
+      </>
+    )
+    return a.url ? (
+      <a className={CHIP_CLASS} href={a.url} rel="noopener noreferrer" target="_blank">
+        {inner}
+      </a>
+    ) : (
+      <span className={cn(CHIP_CLASS, "cursor-default")}>{inner}</span>
     )
   }
 
