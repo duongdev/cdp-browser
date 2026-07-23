@@ -369,6 +369,167 @@ land; J after I; K after J; D last (grilled #8).
 - Voice/video, presence, typing indicators, message search UI (unless a later task).
 - Rewriting the live-sync/poll model (works; not a UI concern).
 
+---
+
+# Phase 2 — polish round 2 (grilled 2026-07-23, comment feedback)
+
+Twelve new items from live usage of t149–t158. Not a new epic — same surface,
+same plan; grouped into five workstreams (L–P) below. Baseline facts verified
+in code before grouping:
+
+- Grouping (t158) already groups by sender + 5-min window; timestamp renders on
+  the group leader only, no hover tooltip (`thread-group.ts`,
+  `message-row.tsx:376`).
+- Composer **blocks while sending** (`disabled={send.phase === "sending"}`,
+  `thread-view.tsx:650`) even though the append is already optimistic; focus is
+  not restored after send; media rides the same blocking path.
+- Composer renders during history load but is never auto-focused.
+- Root is `max-w-6xl mx-auto` (`chat-app.tsx:552`).
+- Labels/folders/mutes live in `conversation_prefs` inside `web-teams.db`
+  (default path: repo dir, `TEAMS_DB_PATH` env override exists) — a preview
+  redeploy replaces the container filesystem, so the DB and all prefs are wiped.
+  Not a code bug; a persistence-location problem.
+- Recording chip is a dead `<span>`: `parseUriObjects` keeps only
+  `url_thumbnail` and drops the URIObject's playback `uri`/inner anchor
+  (`teams-render.js:302-321`).
+- Mention spans carry no MRI (`<span class="mention">@name</span>`) and the
+  client never learns the self oid — "mentions me" needs both.
+- `readTs` already reaches the client per conversation (`conversation-view.ts`);
+  a last-read separator is pure client-side work.
+
+## Workstream L — Thread reading polish
+
+Items 1, 3, 4, 6, 10.
+
+- **Messenger-style timestamps (1).** Rework `thread-group.ts`: drop the
+  per-group inline timestamp; render centered time separators per "turn"
+  (sender change after a long gap) and after long idle (Messenger uses ~20 min
+  within a day + date separators, which t158 already has). Every bubble gets an
+  exact-time tooltip (`title` attr, cheap) — shadcn Tooltip only if `title`
+  feels too poor on iPad.
+- **Mentions-of-me highlight (3).** `teams-render.js` stamps `data-mri` on
+  mention spans (extend the DOMPurify allowlist to keep it); server exposes the
+  self oid (it's already in the `accounts` table) on the conversations
+  response; renderer adds a `.mention-self` class match → accent-tinted pill,
+  plus a subtle full-row tint like Slack's mention background.
+- **Scroll-to-bottom FAB (4).** Floating button, visible when not `nearBottom`
+  (state already tracked, `thread-view.tsx:261`); shows new-message count while
+  scrolled up; click = `scrollTop = 0` (flex-col-reverse).
+- **Last-read separator (6).** Pure insert into `buildThreadItems`: a "New"
+  hairline after the last message with `ts <= readTs`, computed **once when the
+  thread opens** (Slack semantics — it doesn't chase the poll while you read),
+  cleared on next open if nothing new.
+- **Full-width root (10).** Drop `max-w-6xl`/`max-w-2xl`; list column keeps its
+  fixed width, thread pane takes the rest. Message *bubbles* keep a readable
+  max-width (~65ch) so ultrawide doesn't produce 300-char lines.
+
+Acceptance: tooltip shows exact time on every message; self-mention visually
+distinct (light+dark); FAB appears/works with count; separator matches Slack
+behaviour incl. refresh; no horizontal max-width on the app root.
+
+## Workstream M — Composer + send UX
+
+Items 5, 7, 8.
+
+- **Optimistic non-blocking send (7).** Remove the `sending` disable: clear the
+  textarea immediately, keep focus (`ref.focus()` after send — and after edit,
+  react, image send), let the optimistic bubble carry a pending state; failure
+  restores the draft (existing `reduceSend` contract) with a retry affordance
+  on the failed bubble instead of freezing the input. Same for image/media
+  sends: pending thumbnail bubble, composer stays live.
+- **Loading state (8).** While history loads, composer renders enabled +
+  auto-focused (wide layout; on touch, no auto-focus — it pops the iOS
+  keyboard).
+- **Composer redesign (5).** Full visual redesign of the input area: proper
+  surface (raised card, hairline border, focus ring), attach + emoji affordance
+  placement, send button state, multiline growth, pending-image chips row.
+  Design pass against the Airbnb token layer (workstream A). Note: the
+  requested `/ui-ux-pro-max` skill is not installed in this agent environment —
+  the task will embed the design spec directly (or run under a session where
+  the skill exists).
+
+Acceptance: send never blocks typing; focus retained after every send path
+incl. media; failed send = inline retry, draft preserved; thread-open shows a
+usable focused composer; redesigned composer screenshot-reviewed light+dark.
+
+## Workstream N — Identity display
+
+Items 2, 12.
+
+- **Name display preference (2).** Chat setting (`chat-settings.ts`, device-keyed
+  ui-state like theme/density): `full name` (default) | `first name` |
+  `custom strip regex` (applied then trimmed; invalid regex → full name).
+  Applied at one pure seam (a `displayName(raw, pref)` helper) used by
+  message-row sender names, conversation titles, reactor tooltips.
+- **Group avatar facepile (12).** Teams-style composite for group chats:
+  2 members → two overlapping circles, 3+ → the 2×2-ish cluster Teams shows.
+  Extend `listConversations` to carry the first 2–4 member oids (roster already
+  fetched for titles, t131); `user-avatar.tsx` grows a `FacepileAvatar` variant
+  reusing the existing `/api/teams/avatar` proxy + initials fallback.
+
+Acceptance: pref switches names everywhere live (no reload); bad regex is safe;
+group rows show composite member avatars with graceful initials fallback.
+
+## Workstream O — Call recording playback (research-first)
+
+Item 9. `parseUriObjects` drops the playback pointer today — first step is a
+live probe of "Trainer Squad Standup" over the read-only side-channel to dump
+raw `Media_CallRecording` payloads and see where the video actually lives:
+
+- **AMS-hosted** → parse the `uri` attr, proxy through the existing
+  `/api/teams/media` (already video-capable, `isValidAmsUrl`) → inline
+  `<video>` playback.
+- **SharePoint/Stream-hosted** (newer tenants) → parse the inner anchor href →
+  chip becomes a link-out (browser SSO, like file chips). Inline playback of
+  SharePoint streams is out of scope (auth'd HLS).
+- Either way the chip stops being a dead span.
+
+Acceptance: committed probe notes (payload shape → chosen path); recordings in
+that thread either play inline or link out; chip shows duration/title when the
+payload carries it.
+
+## Workstream P — Prefs durability (infra, item 11)
+
+Labels/folders/mutes (and all chat state) die with every preview redeploy
+because `web-teams.db` lives on the container filesystem. Fix is deployment
+config, not code: mount a persistent volume and point `TEAMS_DB_PATH` (and the
+settings/ui-state dir) at it. Open decision below — previews are per-branch
+apps, so each preview still gets its *own* volume unless they share prod's API.
+
+Acceptance: redeploy of the same app preserves labels/folders/mutes + read
+state; documented in the deploy guide.
+
+## Phase 2 open questions (need your input)
+
+1. **Item 11 / P — which surface must keep prefs?** (a) persistent volume on
+   **prod** only, previews stay ephemeral (recommended if prod is the daily
+   driver); (b) volume per preview app too (each branch still has its own DB);
+   (c) previews proxy prefs to prod's DB (shared state, but preview code can
+   corrupt prod). Which one — and is your daily driver currently a preview URL
+   or prod?
+2. **Item 2 — strip regex preset.** Give one real example of your org's display
+   name format (e.g. `"Nguyen Van A (EXT)"`) so the default preset actually
+   matches; and should the pref be per-device (like theme) or shared?
+3. **Item 5 — composer scope.** Visual redesign only, or also new affordances
+   (emoji picker, text formatting)? Emoji picker would pull the `frimousse`
+   trigger from the chat-ui-lib research.
+4. **Item 1 — Messenger gap.** Messenger shows a time separator after ~20 min
+   idle; keep 20 min or stay with the current 5-min sender-group window for
+   separators too?
+
+Defaults if unanswered: P=(a) prod volume only; 2=per-device, no preset until an
+example; 5=visual only; 1=20 min separators, 5 min sender grouping.
+
+## Phase 2 parallelisation
+
+| Session | Workstream | Depends on |
+|---|---|---|
+| 10 | M composer + send UX | A (tokens) |
+| 11 | L thread reading polish | A; L's mention part touches server + sanitizer |
+| 12 | N identity display | A |
+| 13 | O recording playback | probe first, independent |
+| 14 | P prefs durability | infra only, independent — needs Q1 answered |
+
 ## Decisions (grilled, 2026-07-23)
 
 1. **Re-skin scope** — `/chat` only. The `/` browser build stays byte-unchanged.
