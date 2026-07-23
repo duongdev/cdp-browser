@@ -185,6 +185,15 @@ Trackpad swipe left/right is supported for back/forward navigation.
 - [dnd-kit](https://dndkit.com/) — drag and drop
 - [Vite](https://vite.dev/) — build tool
 
+## Support
+
+Found a bug or hit unexpected behavior? Open an issue on
+[GitHub](https://github.com/duongdev/cdp-browser/issues) with steps to reproduce.
+
+Broader questions, feature requests, and roadmap discussion are tracked in
+[Linear](https://linear.app/withdustin) — reach out there if GitHub Issues
+isn't the right fit.
+
 ## License
 
 MIT
