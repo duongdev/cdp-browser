@@ -119,6 +119,8 @@ export interface TeamsMessage {
   attachments?: TeamsAttachment[]
   /** Reaction chips (t142); absent when the message has none. */
   reactions?: TeamsReaction[]
+  /** The viewer is @mentioned in this message (t160) — drives the highlight tint. Server-set. */
+  mentionsMe?: boolean
   /** Client-only optimistic image preview (t145): a local object-URL shown until the poll replaces
    *  this message with the server's rendered AMSImage. Never set by the server. */
   localImageUrl?: string

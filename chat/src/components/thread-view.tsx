@@ -1,4 +1,10 @@
-import { Alert02Icon, ArrowLeft01Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
+import {
+  Alert02Icon,
+  ArrowDown01Icon,
+  ArrowLeft01Icon,
+  InboxIcon,
+  ReloadIcon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   forwardRef,
@@ -257,9 +263,38 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     return () => io.disconnect()
   }, [canLoadOlder])
 
+  // Scroll-to-bottom FAB (t160): visible whenever the viewport is off the bottom. Floating
+  // separator (t160): while scrolling, the topmost-passed date/time separator's label floats as a
+  // sticky pill (flex-col-reverse breaks CSS position:sticky, so this is a scroll-driven overlay),
+  // fading out shortly after the scroll rests.
+  const [offBottom, setOffBottom] = useState(false)
+  const [floatingSep, setFloatingSep] = useState<string | null>(null)
+  const floatingHideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current
-    if (el) savedScrollTop.current = el.scrollTop
+    if (!el) return
+    savedScrollTop.current = el.scrollTop
+    setOffBottom(Math.abs(el.scrollTop) > THREAD_BOTTOM_SLACK)
+    // Topmost visible-or-passed separator: among rendered separator pills, the one closest above
+    // the container's top edge names the period the viewport is currently in.
+    const containerTop = el.getBoundingClientRect().top
+    let best: { top: number; label: string } | null = null
+    for (const sep of el.querySelectorAll<HTMLElement>("[data-thread-sep]")) {
+      const top = sep.getBoundingClientRect().top
+      if (top <= containerTop + 40 && (!best || top > best.top)) {
+        best = { top, label: sep.dataset.threadSep || "" }
+      }
+    }
+    setFloatingSep(best?.label || null)
+    clearTimeout(floatingHideTimer.current)
+    floatingHideTimer.current = setTimeout(() => setFloatingSep(null), 1200)
+  }, [])
+  useEffect(() => () => clearTimeout(floatingHideTimer.current), [])
+
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
 
   // Restore scroll when this pane becomes visible again (t132). display:none resets the container's
@@ -553,9 +588,25 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // Focusable (non-system) messages in visual order (oldest→newest). System lines aren't focusable.
   const messages = state.status === "ready" ? state.messages : null
   const focusable = useMemo(() => (messages ?? []).filter((m) => m.kind !== "system"), [messages])
-  // Date separators + consecutive-sender grouping (t158), computed oldest→newest; the render reverses
-  // for flex-col-reverse. Recomputed on message change (Date.now() drives the relative day labels).
-  const threadItems = useMemo(() => buildThreadItems(messages ?? [], Date.now()), [messages])
+
+  // Last-read watermark for the "New" separator (t160, Slack semantics): captured when the thread
+  // opens (the conversation prop still carries the PRE-open readTs — chat-app lays its "read"
+  // override after storing the row) and re-captured on each keep-alive re-show, so the marker
+  // survives while you read but clears on the next open when nothing new arrived.
+  const [lastReadTs, setLastReadTs] = useState<number | null>(conversation.readTs || null)
+  const prevVisible = useRef(visible)
+  useEffect(() => {
+    if (visible && !prevVisible.current) setLastReadTs(conversation.readTs || null)
+    prevVisible.current = visible
+    // biome-ignore lint/correctness/useExhaustiveDependencies: re-capture only on the visibility flip
+  }, [visible])
+
+  // Time separators + consecutive-sender grouping + New marker (t158 → t160), computed oldest→
+  // newest; the render reverses for flex-col-reverse.
+  const threadItems = useMemo(
+    () => buildThreadItems(messages ?? [], Date.now(), lastReadTs),
+    [messages, lastReadTs],
+  )
 
   // Reset the keyboard cursor when the conversation changes (a stale id doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
@@ -652,46 +703,78 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           <p className="text-muted-foreground text-sm">No messages yet</p>
         </Centered>
       ) : (
-        <div
-          className="thread-messages flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-3 py-3"
-          onScroll={onScroll}
-          ref={scrollRef}
-        >
-          {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
-                  (items reversed) to show oldest→newest top→bottom. Date separators + consecutive-
-                  sender grouping (t158) are computed oldest→newest by buildThreadItems, so a day's
-                  separator sits above that day's first message after the reverse. Older messages
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div
+            className="thread-messages flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-3 py-3"
+            onScroll={onScroll}
+            ref={scrollRef}
+          >
+            {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
+                  (items reversed) to show oldest→newest top→bottom. Time separators + consecutive-
+                  sender grouping (t158/t160) are computed oldest→newest by buildThreadItems, so a
+                  period's separator sits above its first message after the reverse. Older messages
                   prepend to the array (→ end of this reversed map = the visual top). Vertical rhythm
                   is per-item margin (leader gap vs tight follower gap), not a uniform container gap. */}
-          {threadItems
-            .slice()
-            .reverse()
-            .map((item) =>
-              item.type === "date" ? (
-                <DateSeparator key={item.key} label={item.label} />
-              ) : (
-                <MessageRow
-                  command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
-                  focused={item.message.id === focusedId}
-                  key={item.key}
-                  message={item.message}
-                  onDelete={onDelete}
-                  onDiscardSend={onDiscardSend}
-                  onEdit={onEdit}
-                  onReact={onReact}
-                  onRetrySend={onRetrySend}
-                  showMeta={item.showMeta}
-                />
-              ),
+            {threadItems
+              .slice()
+              .reverse()
+              .map((item) =>
+                item.type === "date" ? (
+                  <DateSeparator key={item.key} label={item.label} />
+                ) : item.type === "new" ? (
+                  <NewSeparator key={item.key} />
+                ) : (
+                  <MessageRow
+                    command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
+                    focused={item.message.id === focusedId}
+                    key={item.key}
+                    message={item.message}
+                    onDelete={onDelete}
+                    onDiscardSend={onDiscardSend}
+                    onEdit={onEdit}
+                    onReact={onReact}
+                    onRetrySend={onRetrySend}
+                    showMeta={item.showMeta}
+                  />
+                ),
+              )}
+            {loadingOlder && (
+              <div className="flex flex-col gap-2">
+                {[0, 1, 2].map((i) => (
+                  <MessageBubbleSkeleton index={i} key={i} />
+                ))}
+              </div>
             )}
-          {loadingOlder && (
-            <div className="flex flex-col gap-2">
-              {[0, 1, 2].map((i) => (
-                <MessageBubbleSkeleton index={i} key={i} />
-              ))}
-            </div>
-          )}
-          {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
+            {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
+          </div>
+          {/* Floating current-period pill (t160): flex-col-reverse breaks position:sticky, so the
+              topmost-passed separator's label floats here while scrolling, then fades. */}
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 transition-opacity duration-300",
+              floatingSep ? "opacity-100" : "opacity-0",
+            )}
+          >
+            <span className="rounded-full border border-border bg-popover px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground shadow-sm">
+              {floatingSep}
+            </span>
+          </div>
+          {/* Scroll-to-bottom FAB (t160): appears whenever the viewport is off the bottom. */}
+          <Button
+            aria-label="Scroll to bottom"
+            className={cn(
+              "absolute right-4 bottom-3 z-10 rounded-full shadow-md transition-all duration-200",
+              offBottom
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-2 opacity-0",
+            )}
+            onClick={jumpToBottom}
+            size="icon"
+            variant="secondary"
+          >
+            <HugeiconsIcon className="size-4" icon={ArrowDown01Icon} />
+          </Button>
         </div>
       )}
       {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
@@ -700,15 +783,26 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   )
 })
 
-// A centered day separator between messages of different calendar days (t158). Pill-style, muted —
-// the Slack/Linear thread-date marker. Its label ("Today" / "Yesterday" / "Mon, Jul 21") is computed
-// by buildThreadItems. A little more top margin so it reads as a day break, not a message gap.
+// A centered time separator (t158 → t160): a new calendar day ("Today 2:30 PM") or a ≥20-min idle
+// gap ("2:30 PM"), Messenger-style. Pill, muted. `data-thread-sep` feeds the floating-pill overlay.
 function DateSeparator({ label }: { label: string }) {
   return (
-    <div className="flex justify-center pt-4 pb-2">
+    <div className="flex justify-center pt-4 pb-2" data-thread-sep={label}>
       <span className="rounded-full bg-muted/60 px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground">
         {label}
       </span>
+    </div>
+  )
+}
+
+// The Slack-style last-read marker (t160): a coral hairline + "New" chip before the first unread
+// message, computed once per open (buildThreadItems' lastReadTs).
+function NewSeparator() {
+  return (
+    <div className="flex items-center gap-2 pt-3 pb-1">
+      <div className="h-px flex-1 bg-ring/50" />
+      <span className="font-semibold text-[10px] text-ring uppercase tracking-wide">New</span>
+      <div className="h-px flex-1 bg-ring/50" />
     </div>
   )
 }

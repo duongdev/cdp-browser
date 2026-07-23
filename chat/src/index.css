@@ -511,3 +511,10 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* Mention-of-me (t160): the viewer's own @mention pill pops in the coral accent; the bubble itself
+   also tints via message-row's mentionsMe class. Readable on both muted and primary bubbles. */
+.teams-message-body .mention-self {
+  font-weight: 600;
+  background: color-mix(in oklab, var(--ring) 22%, transparent);
+}

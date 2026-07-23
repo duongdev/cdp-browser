@@ -30,7 +30,6 @@ import {
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
-import { relativeTime } from "../lib/conversation-view"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -120,7 +119,6 @@ function ChatMessageRow({
   const pending = !!message.pending
   const failed = message.failed != null
   const unconfirmed = pending || failed
-  const time = relativeTime(message.ts)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
@@ -291,6 +289,8 @@ function ChatMessageRow({
             className={cn(
               "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
+              // Mention-of-me highlight (t160): a coral-tinted bubble, Slack's mention background.
+              message.mentionsMe && !self && "bg-ring/12 ring-1 ring-ring/30",
               deleted && "italic opacity-70",
               pending && "opacity-60",
               failed && "opacity-70 ring-1 ring-destructive/40",
@@ -298,6 +298,9 @@ function ChatMessageRow({
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
             dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
             onClick={onBodyClick}
+            // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
+            // style grouping; the tooltip is where "when exactly?" lives now.
+            title={new Date(message.ts).toLocaleString()}
           />
           {(canReact || canManage) && (
             <div className="flex shrink-0 items-center gap-0.5">
@@ -409,13 +412,10 @@ function ChatMessageRow({
           )}
         </span>
       )}
-      {/* Timestamp on the group leader (t158); a follower stays clean unless it was edited (an
-          "(edited)" marker is meaningful, so it survives the grouping). */}
-      {!unconfirmed && (showMeta || (message.edited && !deleted)) && (
-        <span className="px-1 font-mono text-[10px] text-muted-foreground">
-          {showMeta && time}
-          {message.edited && !deleted && <span className={cn(showMeta && "ml-1")}>(edited)</span>}
-        </span>
+      {/* No inline timestamps (t160, Messenger grouping) — separators + the bubble tooltip carry
+          the time. The "(edited)" marker stays; it's meaning, not chrome. */}
+      {!unconfirmed && message.edited && !deleted && (
+        <span className="px-1 font-mono text-[10px] text-muted-foreground">(edited)</span>
       )}
       <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
     </div>

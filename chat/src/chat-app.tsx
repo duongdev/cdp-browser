@@ -549,7 +549,7 @@ export function ChatApp() {
 
   if (isWide) {
     return (
-      <div className="mx-auto flex h-[var(--app-h,100dvh)] w-full max-w-6xl bg-background">
+      <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
         <aside className="flex w-80 shrink-0 flex-col border-border border-r">
           <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -580,7 +580,7 @@ export function ChatApp() {
   }
 
   return (
-    <div className="mx-auto flex h-[var(--app-h,100dvh)] w-full max-w-2xl flex-col bg-background">
+    <div className="flex h-[var(--app-h,100dvh)] w-full flex-col bg-background">
       <div className={cn("flex min-h-0 flex-1 flex-col", phoneView === "thread" && "hidden")}>
         <AppHeader onOpenSettings={() => setSettingsOpen(true)} />
         <main className="min-h-0 flex-1 overflow-y-auto">

@@ -42,8 +42,9 @@ describe("buildThreadItems", () => {
       now,
     )
     expect(items.map((i) => i.type)).toEqual(["date", "message", "date", "message"])
-    expect(items[0]).toMatchObject({ type: "date", label: "Yesterday" })
-    expect(items[2]).toMatchObject({ type: "date", label: "Today" })
+    // t160: a day-crossing separator carries the day + the time (Messenger-style).
+    expect((items[0] as any).label).toMatch(/^Yesterday /)
+    expect((items[2] as any).label).toMatch(/^Today /)
   })
 
   it("groups a run from one sender within 5min — leader shows meta, followers don't", () => {
@@ -104,5 +105,58 @@ describe("buildThreadItems", () => {
     )
     const metas = items.filter((i) => i.type === "message").map((i) => (i as any).showMeta)
     expect(metas).toEqual([true, true])
+  })
+
+  it("a ≥20-min same-day idle gap inserts a time-only separator (t160)", () => {
+    const items = buildThreadItems(
+      [msg({ ts: AT(2026, 7, 23, 10, 0) }), msg({ ts: AT(2026, 7, 23, 10, 25) })],
+      now,
+    )
+    expect(items.map((i) => i.type)).toEqual(["date", "message", "date", "message"])
+    // Same-day separator: time only, no day part.
+    expect((items[2] as any).label).not.toMatch(/Today/)
+    expect((items[2] as any).label).toMatch(/10[:.]25|25/)
+  })
+
+  it("a 6–19min gap breaks the sender group but adds no separator", () => {
+    const items = buildThreadItems(
+      [msg({ ts: AT(2026, 7, 23, 10, 0) }), msg({ ts: AT(2026, 7, 23, 10, 10) })],
+      now,
+    )
+    expect(items.map((i) => i.type)).toEqual(["date", "message", "message"])
+    const metas = items.filter((i) => i.type === "message").map((i) => (i as any).showMeta)
+    expect(metas).toEqual([true, true])
+  })
+
+  it("places one New marker before the first unread non-self message (t160)", () => {
+    const readTs = AT(2026, 7, 23, 10, 1)
+    const items = buildThreadItems(
+      [
+        msg({ ts: AT(2026, 7, 23, 10, 0), id: "read" }),
+        msg({ ts: AT(2026, 7, 23, 10, 2), id: "mine", self: true, senderName: "You" }),
+        msg({ ts: AT(2026, 7, 23, 10, 3), id: "unread1" }),
+        msg({ ts: AT(2026, 7, 23, 10, 4), id: "unread2" }),
+      ],
+      now,
+      readTs,
+    )
+    const newIdx = items.findIndex((i) => i.type === "new")
+    expect(newIdx).toBeGreaterThan(-1)
+    expect(items.filter((i) => i.type === "new")).toHaveLength(1)
+    // The marker sits immediately before the first non-self unread message.
+    expect(items[newIdx + 1]).toMatchObject({ type: "message", key: "unread1" })
+  })
+
+  it("emits no New marker when everything is read or only self messages are newer", () => {
+    const readTs = AT(2026, 7, 23, 10, 5)
+    const items = buildThreadItems(
+      [
+        msg({ ts: AT(2026, 7, 23, 10, 0) }),
+        msg({ ts: AT(2026, 7, 23, 10, 6), self: true, senderName: "You" }),
+      ],
+      now,
+      readTs,
+    )
+    expect(items.some((i) => i.type === "new")).toBe(false)
   })
 })

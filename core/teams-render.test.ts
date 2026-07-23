@@ -780,3 +780,59 @@ describe("composeTitle", () => {
     expect(composeTitle({ topic: "  ", kind: "group" })).toBe("Group chat")
   })
 })
+
+// t160: a mention of the signed-in user gets `mention-self` (renderer highlights it), and the
+// message carries `mentionsMe` so the row can tint without re-parsing the HTML.
+describe("renderBody — self-mention highlight (t160)", () => {
+  const span = (id, text) =>
+    `<span itemscope itemtype="http://schema.skype.com/Mention" itemid="${id}">${text}</span>`
+  const selfOid = "f89854b7-bc31-430f-ad88-723752d1c7dd"
+
+  it("marks an itemtype mention of the viewer (mri oid match)", () => {
+    const content = `<p>ping ${span(0, "Dustin Do")}</p>`
+    const mentions = [{ itemid: 0, mri: `8:orgid:${selfOid}` }]
+    expect(renderBody(msg({ content, properties: { mentions } }), `8:orgid:${selfOid}`)).toBe(
+      '<p>ping <span class="mention mention-self">@Dustin Do</span></p>',
+    )
+  })
+
+  it("marks a legacy <at> mention of the viewer", () => {
+    expect(
+      renderBody(msg({ content: `<at id="8:orgid:${selfOid}">Dustin</at>` }), selfOid),
+    ).toBe('<span class="mention mention-self">@Dustin</span>')
+  })
+
+  it("leaves other people's mentions unmarked", () => {
+    const content = span(0, "Alice")
+    const mentions = [{ itemid: 0, mri: "8:orgid:someone-else" }]
+    expect(renderBody(msg({ content, properties: { mentions } }), `8:orgid:${selfOid}`)).toBe(
+      '<span class="mention">@Alice</span>',
+    )
+  })
+
+  it("toReaderMessages stamps mentionsMe on a self-mentioning message only", () => {
+    const mentions = [{ itemid: 0, mri: `8:orgid:${selfOid}` }]
+    const list = [
+      {
+        id: "1",
+        originalarrivaltime: "2026-07-23T01:00:00.000Z",
+        from: "https://x/contacts/8:orgid:other",
+        imdisplayname: "Alice",
+        messagetype: "RichText/Html",
+        content: `<p>hey ${span(0, "Dustin")}</p>`,
+        properties: { mentions },
+      },
+      {
+        id: "2",
+        originalarrivaltime: "2026-07-23T01:01:00.000Z",
+        from: "https://x/contacts/8:orgid:other",
+        imdisplayname: "Alice",
+        messagetype: "RichText/Html",
+        content: "<p>no mention</p>",
+      },
+    ]
+    const out = toReaderMessages(list, `8:orgid:${selfOid}`)
+    expect(out[0].mentionsMe).toBe(true)
+    expect(out[1].mentionsMe).toBeUndefined()
+  })
+})

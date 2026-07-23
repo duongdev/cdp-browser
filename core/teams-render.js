@@ -55,8 +55,12 @@ const RUN = new RegExp(
 // into one pill. `mentionMri` is the itemid→mri map (string keys) built by renderBody; without it each
 // span keys on its own itemid, so nothing merges (we never merge two different people). Legacy `<at>`
 // is one pill each — Teams never splits those.
-function resolveMentions(html, mentionMri = {}) {
-  const withAt = html.replace(/<at\b[^>]*>([\s\S]*?)<\/at>/gi, (_m, inner) => mentionSpan(inner))
+function resolveMentions(html, mentionMri = {}, selfId = "") {
+  const withAt = html.replace(/<at\b([^>]*)>([\s\S]*?)<\/at>/gi, (_m, attrs, inner) => {
+    const idm = attrs.match(/\bid\s*=\s*(?:(["'])([\s\S]*?)\1|([^\s>]+))/i)
+    const mri = idm ? (idm[2] ?? idm[3]) : ""
+    return mentionSpan(inner, mentionIsSelf(mri, selfId))
+  })
   let uid = 0
   const withSentinels = withAt.replace(
     /<span\b([^>]*\bitemtype\s*=\s*(["'])[^"']*[Mm]ention[^"']*\2[^>]*)>([\s\S]*?)<\/span>/gi,
@@ -68,7 +72,19 @@ function resolveMentions(html, mentionMri = {}) {
       return `${S_OPEN}${key}${S_SPLIT}${text}${S_CLOSE}`
     },
   )
-  return mergeMentionRuns(withSentinels).replace(SENTINEL_RE, (_m, _key, text) => mentionSpan(text))
+  // The sentinel key is the person's mri (when properties.mentions mapped it), so the self check
+  // rides the same identity the run merge uses — a mention of the viewer gets `mention-self` (t160).
+  return mergeMentionRuns(withSentinels).replace(SENTINEL_RE, (_m, key, text) =>
+    mentionSpan(text, mentionIsSelf(key, selfId)),
+  )
+}
+
+// Does a mention key (an mri like `8:orgid:<oid>`, possibly behind the `id:` fallback prefix) point
+// at the signed-in user? Matches on the oid tail, like isSelf.
+function mentionIsSelf(key, selfId) {
+  if (!selfId || !key) return false
+  const mri = String(key).replace(/^id:/, "")
+  return mri === selfId || oidOf(mri) === oidOf(selfId)
 }
 
 // Collapse a run of same-key sentinels, joining the texts with a single space; repeat until stable so
@@ -84,12 +100,13 @@ function mergeMentionRuns(html) {
   return out
 }
 
-function mentionSpan(inner) {
+function mentionSpan(inner, isSelfMention = false) {
   const name = inner
     .replace(/<[^>]+>/g, "")
     .trim()
     .replace(/^@+/, "")
-  return `<span class="mention">@${name || "mention"}</span>`
+  const cls = isSelfMention ? "mention mention-self" : "mention"
+  return `<span class="${cls}">@${name || "mention"}</span>`
 }
 
 // Teams emoji arrive as `<img itemtype="…/Emoji" …>`. Tag them `class="emoji"` (only when the img
@@ -335,7 +352,7 @@ function stripUriObjects(html) {
 // chip so a message with both text and a file keeps its words; a body-less/empty card/file falls
 // back to the chip. HTML messagetypes keep their markup (mentions + emoji normalized); a literal
 // "Text" messagetype is HTML-escaped (angle brackets stay literal) with newlines as <br>.
-function renderBody(message) {
+function renderBody(message, selfId = "") {
   // Strip <URIObject> blocks (call-recording / Swift card) FIRST, before the messagetype branch —
   // these messagetypes (RichText/Media_CallRecording, RichText/Media_Card) are NOT "html", so without
   // stripping here they hit the escape branch and leak as literal `<URIObject …>` text (t141). The
@@ -353,7 +370,9 @@ function renderBody(message) {
     const chip = attachmentChip(message)
     return chip || `[unsupported: ${escapeHtml(type)}]`
   }
-  const html = rewriteMediaHtml(tagEmoji(resolveMentions(content, mentionMriMap(message))).trim())
+  const html = rewriteMediaHtml(
+    tagEmoji(resolveMentions(content, mentionMriMap(message), selfId)).trim(),
+  )
   return hasVisibleText(html) ? html : attachmentChip(message)
 }
 
@@ -523,6 +542,7 @@ function toReaderMessages(list, selfId) {
     const senderId = senderIdOf(m.from)
     const attachments = deleted ? [] : parseAttachments(m)
     const reactions = deleted ? [] : parseEmotions(m, selfId)
+    const body = deleted ? "message deleted" : renderBody(m, selfId)
     out.push({
       id: String(m.id),
       ts: toEpochMs(m.originalarrivaltime) ?? toEpochMs(m.composetime) ?? 0,
@@ -530,10 +550,12 @@ function toReaderMessages(list, selfId) {
       // Empty when Teams omits it (e.g. recorder-authored Media_CallRecording rows) — the client
       // hides the sender header rather than printing a fabricated "Unknown" (t151).
       senderName: m.imdisplayname || "",
-      body: deleted ? "message deleted" : renderBody(m),
+      body,
       self: isSelf(senderId, selfId),
       edited: !deleted && !!m.properties?.edittime,
       deleted,
+      // The viewer is @mentioned (t160) — drives the row highlight without re-parsing the HTML.
+      ...(body.includes("mention-self") ? { mentionsMe: true } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(reactions.length ? { reactions } : {}),
     })
