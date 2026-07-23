@@ -8,7 +8,7 @@
 
 import { execFileSync } from "node:child_process"
 import nodeCrypto from "node:crypto"
-import { createReadStream, existsSync, readFileSync } from "node:fs"
+import { createReadStream, existsSync, mkdirSync, readFileSync } from "node:fs"
 import http from "node:http"
 import { dirname, extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -81,17 +81,28 @@ const DIST = join(HERE, "..", "dist")
 // same-origin path /chat, path-scoped so it never shadows the / browser PWA above.
 const DIST_CHAT = join(HERE, "..", "dist-chat")
 const PORT = Number(process.env.PORT || 7800)
-const SETTINGS_PATH = process.env.SETTINGS_PATH || join(HERE, "..", "web-settings.json")
-const NOTIFS_PATH = process.env.NOTIFS_PATH || join(HERE, "..", "web-notifications.json")
+// Persistent data directory (t163). Every stateful file (chat DB, settings, pins/history,
+// notifications, push subs, Slack registry/sweep state) defaults under here; on a container deploy
+// point DATA_DIR at a mounted volume so a redeploy doesn't wipe folders/labels/read-state. Unset →
+// the repo root (the pre-t163 behaviour), so local dev + Electron are unchanged. Per-file _PATH
+// env overrides still win for anyone who set them. Created on boot if missing.
+const DATA_DIR = process.env.DATA_DIR || join(HERE, "..")
+try {
+  mkdirSync(DATA_DIR, { recursive: true })
+} catch {
+  /* already exists / not writable — the individual file writes surface a real error */
+}
+const dataPath = (name) => join(DATA_DIR, name)
+const SETTINGS_PATH = process.env.SETTINGS_PATH || dataPath("web-settings.json")
+const NOTIFS_PATH = process.env.NOTIFS_PATH || dataPath("web-notifications.json")
 // Slack workspace registry (t070) — non-secret metadata only (teamId → {url,name,lastSeen}).
 // Drives the parked-tab keeper so a closed/lost Slack tab is recreated. No creds on disk:
 // the shared d cookie + all-team localConfig re-extract from any live Slack tab.
-const SLACK_WORKSPACES_PATH =
-  process.env.SLACK_WORKSPACES_PATH || join(HERE, "..", "slack-workspaces.json")
+const SLACK_WORKSPACES_PATH = process.env.SLACK_WORKSPACES_PATH || dataPath("slack-workspaces.json")
 // Slack sweep read state (t099, ADR-0016) — non-secret {watermark, seeded}. Persisted so a
 // restart RESUMES from the watermark (backfilling the downtime gap) instead of re-seeding.
 const SLACK_SWEEP_STATE_PATH =
-  process.env.SLACK_SWEEP_STATE_PATH || join(HERE, "..", "slack-sweep-state.json")
+  process.env.SLACK_SWEEP_STATE_PATH || dataPath("slack-sweep-state.json")
 // Browser tab title for the web build, set at deploy time. Electron keeps the
 // title baked into index.html (it loads the file directly, not via this server).
 const APP_TITLE = process.env.APP_TITLE || "CDP Browser"
@@ -150,7 +161,7 @@ webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
 // Push subscriptions are persisted next to web-settings.json — in-memory would lose
 // them on every server restart, forcing users to re-subscribe. Each subscription has
 // the endpoint URL + auth/p256dh keys the browser registered with its push service.
-const SUBS_PATH = process.env.SUBS_PATH || join(HERE, "..", "web-push-subs.json")
+const SUBS_PATH = process.env.SUBS_PATH || dataPath("web-push-subs.json")
 let pushSubs = []
 
 // ---- settings -------------------------------------------------------------
@@ -184,7 +195,7 @@ if (process.env.CDP_HOST)
 // store), served to the New Tab omnibox via /api/history. Titled by the tab, so
 // SPA route changes that never alter the /json url aren't captured — fine for
 // suggestions. Now stamped by the caller (pure store needs a clock).
-const HISTORY_PATH = process.env.HISTORY_PATH || join(HERE, "..", "web-history.json")
+const HISTORY_PATH = process.env.HISTORY_PATH || dataPath("web-history.json")
 let history = loadJson(HISTORY_PATH, [])
 let lastTabUrls = {} // tabId → last-seen url, for the navigation diff
 const saveHistory = () => {
@@ -219,10 +230,9 @@ const savePushSubs = () => {
 // path, so a Teams-chat subscriber and its every-new-message pushes never touch the existing
 // notification delivery. Capture is a server-side REST poll (trouter realtime is a dead end),
 // mirroring the Slack sweep — see teamsNotifySweep + core/teams-notify-sweep.js.
-const TEAMS_PUSH_SUBS_PATH =
-  process.env.TEAMS_PUSH_SUBS_PATH || join(HERE, "..", "teams-push-subs.json")
+const TEAMS_PUSH_SUBS_PATH = process.env.TEAMS_PUSH_SUBS_PATH || dataPath("teams-push-subs.json")
 const TEAMS_NOTIFY_STATE_PATH =
-  process.env.TEAMS_NOTIFY_STATE_PATH || join(HERE, "..", "teams-notify-state.json")
+  process.env.TEAMS_NOTIFY_STATE_PATH || dataPath("teams-notify-state.json")
 let teamsPushSubs = loadJson(TEAMS_PUSH_SUBS_PATH, [])
 if (!Array.isArray(teamsPushSubs)) teamsPushSubs = []
 // { watermarks: { convId: lastNotifiedTs }, seeded } — persisted so a restart resumes from the
@@ -648,7 +658,7 @@ function applyBatch(items) {
 // only — Electron is a shell that loads the served URL, so the native module is never bundled
 // there (not in package.json build.files). t127 writes accounts + conversations; the rest of
 // the schema ships migration-only. Lives next to the settings file.
-const TEAMS_DB_PATH = process.env.TEAMS_DB_PATH || join(HERE, "..", "web-teams.db")
+const TEAMS_DB_PATH = process.env.TEAMS_DB_PATH || dataPath("web-teams.db")
 const teamsDb = new Database(TEAMS_DB_PATH)
 teamsMigrate(teamsDb)
 

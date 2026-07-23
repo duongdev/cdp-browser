@@ -13,6 +13,10 @@ services:
       CDP_PORT: ${CDP_PORT:-9222}
       PORT: "7800"
       APP_TITLE: ${APP_TITLE:-CDP Browser}
+      # All stateful files default under DATA_DIR (t163) — chat DB, pins/history, push subs, Slack
+      # state — so a redeploy on the mounted volume keeps folders/labels/read-state. The two legacy
+      # paths keep their existing /data filenames.
+      DATA_DIR: /data
       SETTINGS_PATH: /data/settings.json
       NOTIFS_PATH: /data/notifications.json
       # Optional E2E payload encryption. Set E2E_PASSPHRASE to turn it on (else plaintext).
