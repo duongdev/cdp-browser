@@ -16,8 +16,18 @@ describe("readChatSettings", () => {
   })
 
   it("reads this device's slots", () => {
-    const ui = { chatTheme_device_abc: "dark", chatDensity_device_abc: "compact" }
-    expect(readChatSettings(ui, DEV)).toEqual<ChatSettings>({ theme: "dark", density: "compact" })
+    const ui = {
+      chatTheme_device_abc: "dark",
+      chatDensity_device_abc: "compact",
+      chatFont_device_abc: "anthropic-sans",
+      chatMono_device_abc: "dm-mono",
+    }
+    expect(readChatSettings(ui, DEV)).toEqual<ChatSettings>({
+      theme: "dark",
+      density: "compact",
+      font: "anthropic-sans",
+      mono: "dm-mono",
+    })
   })
 
   it("ignores another device's slots", () => {
@@ -26,7 +36,12 @@ describe("readChatSettings", () => {
   })
 
   it("falls back to defaults on garbage values", () => {
-    const ui = { chatTheme_device_abc: "neon", chatDensity_device_abc: 3 }
+    const ui = {
+      chatTheme_device_abc: "neon",
+      chatDensity_device_abc: 3,
+      chatFont_device_abc: "comic-sans",
+      chatMono_device_abc: 7,
+    }
     expect(readChatSettings(ui, DEV)).toEqual(DEFAULT_CHAT_SETTINGS)
   })
 })
@@ -43,6 +58,13 @@ describe("writeChatSettings", () => {
     expect(writeChatSettings({ theme: "dark", density: "compact" }, DEV)).toEqual({
       chatTheme_device_abc: "dark",
       chatDensity_device_abc: "compact",
+    })
+  })
+
+  it("emits font + mono slots", () => {
+    expect(writeChatSettings({ font: "anthropic-serif", mono: "anthropic-mono" }, DEV)).toEqual({
+      chatFont_device_abc: "anthropic-serif",
+      chatMono_device_abc: "anthropic-mono",
     })
   })
 

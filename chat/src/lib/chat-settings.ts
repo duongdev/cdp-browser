@@ -7,24 +7,36 @@
 
 export type ChatTheme = "system" | "light" | "dark"
 export type ChatDensity = "comfortable" | "compact"
+// UI/body typeface + code typeface. Values are the data-font / data-mono attribute strings the CSS
+// switches on (see chat/src/index.css). "svn-gilroy" / "maple" are the defaults (no attribute).
+export type ChatFont = "svn-gilroy" | "anthropic-sans" | "anthropic-serif" | "manrope"
+export type ChatMono = "maple" | "anthropic-mono" | "dm-mono"
 
 export interface ChatSettings {
   theme: ChatTheme
   density: ChatDensity
+  font: ChatFont
+  mono: ChatMono
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   theme: "system",
   density: "comfortable",
+  font: "svn-gilroy",
+  mono: "maple",
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
 // through its DEVICE_KEY_PREFIXES gate (core/settings-store.js).
 export const CHAT_THEME_BASE = "chatTheme"
 export const CHAT_DENSITY_BASE = "chatDensity"
+export const CHAT_FONT_BASE = "chatFont"
+export const CHAT_MONO_BASE = "chatMono"
 
 const THEMES: ChatTheme[] = ["system", "light", "dark"]
 const DENSITIES: ChatDensity[] = ["comfortable", "compact"]
+const FONTS: ChatFont[] = ["svn-gilroy", "anthropic-sans", "anthropic-serif", "manrope"]
+const MONOS: ChatMono[] = ["maple", "anthropic-mono", "dm-mono"]
 
 function parseTheme(raw: unknown): ChatTheme {
   return typeof raw === "string" && (THEMES as string[]).includes(raw)
@@ -38,6 +50,18 @@ function parseDensity(raw: unknown): ChatDensity {
     : DEFAULT_CHAT_SETTINGS.density
 }
 
+function parseFont(raw: unknown): ChatFont {
+  return typeof raw === "string" && (FONTS as string[]).includes(raw)
+    ? (raw as ChatFont)
+    : DEFAULT_CHAT_SETTINGS.font
+}
+
+function parseMono(raw: unknown): ChatMono {
+  return typeof raw === "string" && (MONOS as string[]).includes(raw)
+    ? (raw as ChatMono)
+    : DEFAULT_CHAT_SETTINGS.mono
+}
+
 export function deviceKey(base: string, deviceId: string): string {
   return `${base}_${deviceId}`
 }
@@ -47,6 +71,8 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
   return {
     theme: parseTheme(ui[deviceKey(CHAT_THEME_BASE, deviceId)]),
     density: parseDensity(ui[deviceKey(CHAT_DENSITY_BASE, deviceId)]),
+    font: parseFont(ui[deviceKey(CHAT_FONT_BASE, deviceId)]),
+    mono: parseMono(ui[deviceKey(CHAT_MONO_BASE, deviceId)]),
   }
 }
 
@@ -59,6 +85,8 @@ export function writeChatSettings(
   const out: Record<string, unknown> = {}
   if (partial.theme !== undefined) out[deviceKey(CHAT_THEME_BASE, deviceId)] = partial.theme
   if (partial.density !== undefined) out[deviceKey(CHAT_DENSITY_BASE, deviceId)] = partial.density
+  if (partial.font !== undefined) out[deviceKey(CHAT_FONT_BASE, deviceId)] = partial.font
+  if (partial.mono !== undefined) out[deviceKey(CHAT_MONO_BASE, deviceId)] = partial.mono
   return out
 }
 

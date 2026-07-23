@@ -30,6 +30,8 @@ function getDeviceId(): string {
 function applySettings(s: ChatSettings): () => void {
   const root = document.documentElement
   root.setAttribute("data-density", s.density)
+  root.setAttribute("data-font", s.font)
+  root.setAttribute("data-mono", s.mono)
   const mq = window.matchMedia("(prefers-color-scheme: dark)")
   const paint = () => root.classList.toggle("dark", resolveDark(s.theme, mq.matches))
   paint()

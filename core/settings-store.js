@@ -65,6 +65,9 @@ const DEVICE_KEY_PREFIXES = [
   // t154 chat app per-device settings: theme (system/light/dark) + density (comfortable/compact).
   "chatTheme_",
   "chatDensity_",
+  // chat app per-device font selection: UI typeface + code typeface.
+  "chatFont_",
+  "chatMono_",
   // t156 chat app per-device folder collapse state: JSON array of collapsed folder names.
   "chatFolders_",
 ]

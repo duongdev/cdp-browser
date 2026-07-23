@@ -9,15 +9,25 @@
    (t152 fix). Source the shared renderer tree explicitly. */
 @source "../../src";
 
-/* Chat-only typefaces: SVN-Gilroy (Vietnamese-complete geometric sans) for UI text, Maple Mono
-   (variable) for code. Files live in chat/public/fonts/ so only the /chat build ships them; the /
-   browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base prepended by Vite. */
+/* Chat-only typefaces (selectable in Settings → Font). Files live in chat/public/fonts/ so only the
+   /chat build ships them; the / browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base
+   prepended by Vite.
+
+   SVN-Gilroy metric-override: the OTFs ship without the USE_TYPO_METRICS fsSelection bit and an
+   inflated usWinAscent (1066/1000em — headroom for stacked Vietnamese diacritics), so Blink lays the
+   line box out from those win metrics and the baseline sits low, riding the text visibly high in the
+   line. Overriding to the designer's typo metrics (ascender 800, descender 250, gap 0) restores a
+   balanced box on every browser while keeping the accent glyphs (they overflow the ascent into the
+   leading, they don't clip). Applied to every SVN-Gilroy face so weights stay aligned. */
 @font-face {
   font-family: "SVN-Gilroy";
   src: url("/fonts/svn-gilroy-regular.otf") format("opentype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -25,6 +35,9 @@
   font-weight: 400;
   font-style: italic;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -32,6 +45,9 @@
   font-weight: 500;
   font-style: normal;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -39,6 +55,9 @@
   font-weight: 500;
   font-style: italic;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -46,6 +65,9 @@
   font-weight: 600;
   font-style: normal;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -53,6 +75,9 @@
   font-weight: 600;
   font-style: italic;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -60,6 +85,9 @@
   font-weight: 700;
   font-style: normal;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "SVN-Gilroy";
@@ -67,6 +95,9 @@
   font-weight: 700;
   font-style: italic;
   font-display: swap;
+  ascent-override: 80%;
+  descent-override: 25%;
+  line-gap-override: 0%;
 }
 @font-face {
   font-family: "Maple Mono";
@@ -81,6 +112,140 @@
   font-weight: 100 800;
   font-style: italic;
   font-display: swap;
+}
+
+/* Anthropic type family (Sans / Serif / Mono), Latin-only woff2 (no Vietnamese glyphs — the sans/serif
+   fall back to SVN-Gilroy per-glyph, and the mono to DM Mono, so Vietnamese still renders). One weight
+   axis per file (@300–@900 for sans/serif, @400 for mono). */
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@300.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@800.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("/fonts/anthropic/AnthropicSans@900.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@300.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@800.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Serif";
+  src: url("/fonts/anthropic/AnthropicSerif@900.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Anthropic Mono";
+  src: url("/fonts/anthropic/AnthropicMono@400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Runtime-switchable font stacks (Settings → Font). The base :root value is the default
+   (SVN-Gilroy / Maple Mono); a data-font / data-mono attribute on <html> swaps the stack. These feed
+   the Tailwind font tokens below via `@theme inline`, so `font-sans`/`font-heading`/`font-mono`
+   utilities AND the body default all follow the live selection. Anthropic sans/serif keep SVN-Gilroy
+   as the Vietnamese fallback. */
+:root {
+  --chat-font-sans: "SVN-Gilroy", "Manrope Variable", sans-serif;
+  --chat-font-mono: "Maple Mono", "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-font="anthropic-sans"] {
+  --chat-font-sans: "Anthropic Sans", "SVN-Gilroy", "Manrope Variable", sans-serif;
+}
+:root[data-font="anthropic-serif"] {
+  --chat-font-sans: "Anthropic Serif", "SVN-Gilroy", Georgia, serif;
+}
+:root[data-font="manrope"] {
+  --chat-font-sans: "Manrope Variable", sans-serif;
+}
+:root[data-mono="anthropic-mono"] {
+  --chat-font-mono: "Anthropic Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-mono="dm-mono"] {
+  --chat-font-mono: "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* Airbnb-flavoured re-skin, chat-only (t149). Overrides the shared shadcn tokens AFTER the import
@@ -133,10 +298,13 @@
 /* One soft shadow tier for elevated chat surfaces (popovers, menus, quick-react bar) — the shadow
    utilities the shared ui/* components already use (shadow-sm/shadow-md) rescaled to Airbnb softness. */
 /* Later @theme wins over the shared import's font tokens — the chat build recompiles Tailwind, so
-   every font-sans/font-mono utility picks these up; Manrope/DM-Mono stay as fallbacks. */
+   every font-sans/font-heading/font-mono utility picks these up. `inline` substitutes the var
+   reference into the utilities, so overriding --chat-font-* at runtime (data-font/data-mono) swaps
+   the actual font without a rebuild. */
 @theme inline {
-  --font-sans: "SVN-Gilroy", "Manrope Variable", sans-serif;
-  --font-mono: "Maple Mono", "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: var(--chat-font-sans);
+  --font-heading: var(--chat-font-sans);
+  --font-mono: var(--chat-font-mono);
   --shadow-sm: 0 1px 2px 0 oklch(0.2 0.02 60 / 0.06), 0 2px 8px -2px oklch(0.2 0.02 60 / 0.08);
   --shadow-md: 0 4px 16px -4px oklch(0.2 0.02 60 / 0.1), 0 2px 6px -2px oklch(0.2 0.02 60 / 0.08);
 }

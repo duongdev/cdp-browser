@@ -10,7 +10,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
-import type { ChatDensity, ChatSettings, ChatTheme } from "../lib/chat-settings"
+import type { ChatDensity, ChatFont, ChatMono, ChatSettings, ChatTheme } from "../lib/chat-settings"
 import { NotifyToggle } from "./notify-toggle"
 
 const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = [
@@ -24,6 +24,20 @@ const DENSITY_OPTIONS: { id: ChatDensity; label: string }[] = [
   { id: "compact", label: "Compact" },
 ]
 
+// The label previews itself in its own font (fontFamily) so the picker shows the actual typeface.
+const FONT_OPTIONS: { id: ChatFont; label: string; fontFamily: string }[] = [
+  { id: "svn-gilroy", label: "SVN-Gilroy", fontFamily: '"SVN-Gilroy", sans-serif' },
+  { id: "anthropic-sans", label: "Anthropic Sans", fontFamily: '"Anthropic Sans", sans-serif' },
+  { id: "anthropic-serif", label: "Anthropic Serif", fontFamily: '"Anthropic Serif", serif' },
+  { id: "manrope", label: "Manrope", fontFamily: '"Manrope Variable", sans-serif' },
+]
+
+const MONO_OPTIONS: { id: ChatMono; label: string; fontFamily: string }[] = [
+  { id: "maple", label: "Maple Mono", fontFamily: '"Maple Mono", monospace' },
+  { id: "anthropic-mono", label: "Anthropic Mono", fontFamily: '"Anthropic Mono", monospace' },
+  { id: "dm-mono", label: "DM Mono", fontFamily: '"DM Mono", monospace' },
+]
+
 function Segmented<T extends string>({
   value,
   options,
@@ -31,13 +45,13 @@ function Segmented<T extends string>({
   cols,
 }: {
   value: T
-  options: { id: T; label: string; icon?: IconSvgElement }[]
+  options: { id: T; label: string; icon?: IconSvgElement; fontFamily?: string }[]
   onChange: (v: T) => void
   cols: number
 }) {
   return (
     <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-      {options.map(({ id, label, icon }) => (
+      {options.map(({ id, label, icon, fontFamily }) => (
         <button
           aria-pressed={value === id}
           className={cn(
@@ -48,6 +62,7 @@ function Segmented<T extends string>({
           )}
           key={id}
           onClick={() => onChange(id)}
+          style={fontFamily ? { fontFamily } : undefined}
           type="button"
         >
           {icon && <HugeiconsIcon className="size-4" icon={icon} />}
@@ -103,6 +118,26 @@ export function SettingsSheet({
               onChange={(density) => onUpdate({ density })}
               options={DENSITY_OPTIONS}
               value={settings.density}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-[13px]">Font</Label>
+            <Segmented
+              cols={2}
+              onChange={(font) => onUpdate({ font })}
+              options={FONT_OPTIONS}
+              value={settings.font}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-[13px]">Code font</Label>
+            <Segmented
+              cols={1}
+              onChange={(mono) => onUpdate({ mono })}
+              options={MONO_OPTIONS}
+              value={settings.mono}
             />
           </div>
 
