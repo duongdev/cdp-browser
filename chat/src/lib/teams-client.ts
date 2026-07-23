@@ -204,6 +204,8 @@ export interface MentionRef {
 export interface RosterMember {
   mri: string
   name: string
+  /** True for the viewer's own entry — the composer pill uses the coral self-mention style. */
+  self?: boolean
 }
 
 /** Fetch the conversation roster for the @-mention dropdown. Returns [] on any error (the dropdown

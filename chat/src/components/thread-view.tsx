@@ -265,6 +265,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     return true
   }, [])
 
+  // A just-prepended row isn't laid out on the next frame (React commit + media reflow lag), which
+  // made the jump flaky when it had to fetch (PSN-92). Retry across frames until the row exists.
+  const scrollToMsgSoon = useCallback(
+    (id: string, attempts = 24) => {
+      if (scrollToMsg(id) || attempts <= 0) return
+      requestAnimationFrame(() => scrollToMsgSoon(id, attempts - 1))
+    },
+    [scrollToMsg],
+  )
+
   // Page backward through the t134 cursor chain until the quoted message loads, capped at ~5 pages
   // (decision 7). Cursor exhausted → the original lives in another chat (a forwarded/pasted quote);
   // cap hit → too far back. The blockquote carries no conversation ref, so the walk stays here.
@@ -299,8 +309,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           })
           if (older.messages.some((m) => m.id === id)) {
             setJumpToast(null)
-            // Two frames: let React commit the prepend before we measure + scroll.
-            requestAnimationFrame(() => requestAnimationFrame(() => scrollToMsg(id)))
+            scrollToMsgSoon(id) // retry across frames — the prepend isn't laid out immediately
             return
           }
           if (!older.cursor) {
@@ -315,7 +324,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         loadingOlderRef.current = false
       }
     },
-    [convId, scrollToMsg],
+    [convId, scrollToMsgSoon],
   )
 
   const jumpToMessage = useCallback(
@@ -323,14 +332,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       setJumpToast(null)
       const loaded = state.status === "ready" && state.messages.some((m) => m.id === id)
       if (loaded) {
-        requestAnimationFrame(() => {
-          if (!scrollToMsg(id)) walkToMessage(id)
-        })
+        scrollToMsgSoon(id)
         return
       }
       walkToMessage(id)
     },
-    [state, scrollToMsg, walkToMessage],
+    [state, scrollToMsgSoon, walkToMessage],
   )
 
   // Auto-dismiss the jump toast (except the in-progress "Finding…" state, which its resolution clears).

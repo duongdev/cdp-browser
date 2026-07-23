@@ -1351,7 +1351,9 @@ async function teamsRoster(convId) {
     console.error("[web] teams roster name resolution failed:", e.message)
   }
 
-  const members = mris.map((mri) => ({ mri, name: nameByMri.get(mri) || "" })).filter((m) => m.name)
+  const members = mris
+    .map((mri) => ({ mri, name: nameByMri.get(mri) || "", self: mri === selfMri }))
+    .filter((m) => m.name)
   teamsRosterCache.set(convId, { at: Date.now(), members })
   return { members }
 }

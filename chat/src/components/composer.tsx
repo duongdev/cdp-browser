@@ -144,7 +144,8 @@ export function Composer({
     del.deleteContents()
 
     const pill = document.createElement("span")
-    pill.className = "mention"
+    // Self mention → coral (mention-self); anyone else → neutral, matching the message bubble.
+    pill.className = m.self ? "mention mention-self" : "mention"
     pill.setAttribute("data-mri", m.mri)
     pill.setAttribute("data-name", m.name)
     pill.setAttribute("contenteditable", "false")
