@@ -1,4 +1,4 @@
-import { BubbleChatIcon, Settings02Icon } from "@hugeicons/core-free-icons"
+import { Settings02Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
@@ -38,9 +38,8 @@ function useIsWide() {
 
 function AppHeader({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
-    <header className="flex items-center gap-2 border-border border-b px-4 py-3">
-      <HugeiconsIcon className="size-5 text-primary" icon={BubbleChatIcon} />
-      <h1 className="font-heading font-semibold text-base text-foreground">Teams Chat</h1>
+    <header className="flex h-12 shrink-0 items-center gap-2 border-border border-b px-4">
+      <h1 className="font-heading font-semibold text-foreground text-sm">Teams Chat</h1>
       <Button
         aria-label="Settings"
         className="ml-auto text-muted-foreground"

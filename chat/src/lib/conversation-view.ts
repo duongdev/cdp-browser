@@ -43,6 +43,27 @@ function plainText(html: string): string {
     .trim()
 }
 
+// Member friendly-names from a MemberJoined/Left JSON payload (mirror of teams-render `memberNames`).
+function memberNames(content: string): string[] {
+  try {
+    const j = JSON.parse(content)
+    const members = Array.isArray(j?.members) ? j.members : []
+    return members.map(
+      (m: { friendlyname?: string }) => String(m?.friendlyname || "").trim() || "someone",
+    )
+  } catch {
+    return []
+  }
+}
+
+// "A", "A and B", "A, B, and C", "A, B, +N" (mirror of teams-render `joinNames`).
+function joinNames(names: string[]): string {
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  if (names.length === 3) return `${names[0]}, ${names[1]}, and ${names[2]}`
+  return `${names[0]}, ${names[1]}, +${names.length - 2}`
+}
+
 /** Reduce a raw last-message content string to one clean preview line (t151). Mirror of
  *  core/teams-render.js `previewText`. Empty content → "". */
 export function previewText(rawContent: string): string {
@@ -64,6 +85,11 @@ export function previewText(rawContent: string): string {
   if (/^\s*<meetingpolicyupdated\b|^\s*<UpdateFavDefault\b/i.test(content)) return ""
   // A call transcript / recording pointer (Media_CallTranscript JSON) — a control artifact, no value.
   if (/scopeId\\?"\s*:|"callId\\?"\s*:/.test(content) && /^\s*[{\\]/.test(content)) return ""
+  // MemberJoined/Left/PinnedItemsUpdate JSON payloads (mirror of teams-render `previewText`).
+  if (/^\s*\{[\s\S]*"eventtime"/.test(content)) {
+    const names = memberNames(content)
+    return names.length ? `${joinNames(names)} joined the meeting` : ""
+  }
   // A card (URIObject SWIFT / recording): its title, else a label.
   if (/<URIObject\b/i.test(content)) {
     if (/CallRecording/i.test(content)) return "Call recording"

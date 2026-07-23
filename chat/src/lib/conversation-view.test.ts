@@ -128,6 +128,21 @@ describe("previewLine", () => {
       previewLine(conv({ lastMessagePreview: '{\\"scopeId\\":\\"a\\",\\"callId\\":\\"b\\"}' })),
     ).toBe("No messages yet")
   })
+
+  // t151 mirror gap: a MemberJoined JSON payload must not leak raw property text into the list.
+  it("reduces a MemberJoined eventtime payload to a clean line", () => {
+    expect(
+      previewLine(
+        conv({
+          lastMessagePreview:
+            '{"eventtime":1234567890,"members":[{"friendlyname":"Ada"},{"friendlyname":"Bo"}]}',
+        }),
+      ),
+    ).toBe("Ada and Bo joined the meeting")
+    expect(previewLine(conv({ lastMessagePreview: '{"eventtime":1,"members":[]}' }))).toBe(
+      "No messages yet",
+    )
+  })
 })
 
 describe("relativeTime", () => {
