@@ -13,20 +13,21 @@
    /chat build ships them; the / browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base
    prepended by Vite.
 
-   SVN-Gilroy metric-override: the OTFs ship without the USE_TYPO_METRICS fsSelection bit and an
-   inflated usWinAscent (1066/1000em — headroom for stacked Vietnamese diacritics), so Blink lays the
-   line box out from those win metrics and the baseline sits low, riding the text visibly high in the
-   line. Overriding to the designer's typo metrics (ascender 800, descender 250, gap 0) restores a
-   balanced box on every browser while keeping the accent glyphs (they overflow the ascent into the
-   leading, they don't clip). Applied to every SVN-Gilroy face so weights stay aligned. */
+   SVN-Gilroy metric-override: the OTFs' native metrics leave the text riding high in its line box
+   (no USE_TYPO_METRICS bit + inflated usWinAscent 1066 on Blink; and even the hhea 800/250 WebKit
+   uses reserves 0.25em of empty descent under cap-only titles while leaving only 0.10em above the
+   0.70em cap, so short titles sit high). Override to center the CAP BLOCK: ascent−capHeight ==
+   descent, i.e. 0.90 − 0.70 == 0.20 → ascent 90% / descent 20% / gap 0. Caps/x-height land centered
+   on every browser; descenders spill ~0.01em into the leading and Vietnamese stacked accents (~0.9em)
+   fit under the 0.90 ascent without clipping. Applied to every face so weights stay aligned. */
 @font-face {
   font-family: "SVN-Gilroy";
   src: url("/fonts/svn-gilroy-regular.otf") format("opentype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -35,8 +36,8 @@
   font-weight: 400;
   font-style: italic;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -45,8 +46,8 @@
   font-weight: 500;
   font-style: normal;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -55,8 +56,8 @@
   font-weight: 500;
   font-style: italic;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -65,8 +66,8 @@
   font-weight: 600;
   font-style: normal;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -75,8 +76,8 @@
   font-weight: 600;
   font-style: italic;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -85,8 +86,8 @@
   font-weight: 700;
   font-style: normal;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
@@ -95,8 +96,8 @@
   font-weight: 700;
   font-style: italic;
   font-display: swap;
-  ascent-override: 80%;
-  descent-override: 25%;
+  ascent-override: 90%;
+  descent-override: 20%;
   line-gap-override: 0%;
 }
 @font-face {
