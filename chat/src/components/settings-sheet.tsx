@@ -3,6 +3,13 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -24,19 +31,61 @@ const DENSITY_OPTIONS: { id: ChatDensity; label: string }[] = [
   { id: "compact", label: "Compact" },
 ]
 
-// The label previews itself in its own font (fontFamily) so the picker shows the actual typeface.
+// Each option previews itself in its own font (fontFamily) so the picker shows the actual typeface.
 const FONT_OPTIONS: { id: ChatFont; label: string; fontFamily: string }[] = [
   { id: "svn-gilroy", label: "SVN-Gilroy", fontFamily: '"SVN-Gilroy", sans-serif' },
   { id: "anthropic-sans", label: "Anthropic Sans", fontFamily: '"Anthropic Sans", sans-serif' },
   { id: "anthropic-serif", label: "Anthropic Serif", fontFamily: '"Anthropic Serif", serif' },
+  { id: "inter", label: "Inter", fontFamily: '"Inter Variable", sans-serif' },
+  { id: "geist", label: "Geist", fontFamily: '"Geist Variable", sans-serif' },
   { id: "manrope", label: "Manrope", fontFamily: '"Manrope Variable", sans-serif' },
+  { id: "roboto", label: "Roboto (Google)", fontFamily: '"Roboto Variable", sans-serif' },
+  {
+    id: "system",
+    label: "System (Apple)",
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+  },
 ]
 
 const MONO_OPTIONS: { id: ChatMono; label: string; fontFamily: string }[] = [
   { id: "maple", label: "Maple Mono", fontFamily: '"Maple Mono", monospace' },
   { id: "anthropic-mono", label: "Anthropic Mono", fontFamily: '"Anthropic Mono", monospace' },
   { id: "dm-mono", label: "DM Mono", fontFamily: '"DM Mono", monospace' },
+  { id: "geist-mono", label: "Geist Mono", fontFamily: '"Geist Mono Variable", monospace' },
+  {
+    id: "system-mono",
+    label: "System Mono",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+  },
 ]
+
+function FontSelect<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T
+  options: { id: T; label: string; fontFamily: string }[]
+  onChange: (v: T) => void
+}) {
+  return (
+    <Select onValueChange={(v) => onChange(v as T)} value={value}>
+      <SelectTrigger
+        className="w-full"
+        style={{ fontFamily: options.find((o) => o.id === value)?.fontFamily }}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map(({ id, label, fontFamily }) => (
+          <SelectItem key={id} style={{ fontFamily }} value={id}>
+            {label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
 
 function Segmented<T extends string>({
   value,
@@ -45,13 +94,13 @@ function Segmented<T extends string>({
   cols,
 }: {
   value: T
-  options: { id: T; label: string; icon?: IconSvgElement; fontFamily?: string }[]
+  options: { id: T; label: string; icon?: IconSvgElement }[]
   onChange: (v: T) => void
   cols: number
 }) {
   return (
     <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-      {options.map(({ id, label, icon, fontFamily }) => (
+      {options.map(({ id, label, icon }) => (
         <button
           aria-pressed={value === id}
           className={cn(
@@ -62,7 +111,6 @@ function Segmented<T extends string>({
           )}
           key={id}
           onClick={() => onChange(id)}
-          style={fontFamily ? { fontFamily } : undefined}
           type="button"
         >
           {icon && <HugeiconsIcon className="size-4" icon={icon} />}
@@ -123,8 +171,7 @@ export function SettingsSheet({
 
           <div className="space-y-2">
             <Label className="text-[13px]">Font</Label>
-            <Segmented
-              cols={2}
+            <FontSelect
               onChange={(font) => onUpdate({ font })}
               options={FONT_OPTIONS}
               value={settings.font}
@@ -133,8 +180,7 @@ export function SettingsSheet({
 
           <div className="space-y-2">
             <Label className="text-[13px]">Code font</Label>
-            <Segmented
-              cols={1}
+            <FontSelect
               onChange={(mono) => onUpdate({ mono })}
               options={MONO_OPTIONS}
               value={settings.mono}

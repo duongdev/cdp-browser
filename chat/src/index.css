@@ -2,6 +2,12 @@
    radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0019 decision 1): the
    chat app should look like the same product. */
 @import "../../src/index.css";
+/* Chat-only extra UI font choices (Settings → Font). Variable woff2 via fontsource, all subsets
+   (Inter/Roboto include Vietnamese; Geist is Latin-only and falls back per-glyph). */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/roboto";
 
 /* Tailwind v4 auto-detects sources from the Vite ROOT, which is `chat/` for this build — the shared
    ui/* components live OUTSIDE it, so utilities used only there (dialog overlay/positioning,
@@ -242,11 +248,31 @@
 :root[data-font="manrope"] {
   --chat-font-sans: "Manrope Variable", sans-serif;
 }
+:root[data-font="inter"] {
+  --chat-font-sans: "Inter Variable", "SVN-Gilroy", sans-serif;
+}
+:root[data-font="geist"] {
+  --chat-font-sans: "Geist Variable", "SVN-Gilroy", sans-serif;
+}
+:root[data-font="roboto"] {
+  --chat-font-sans: "Roboto Variable", "SVN-Gilroy", sans-serif;
+}
+/* The device's native UI font — SF Pro on Apple, Segoe on Windows, Roboto on Android. Zero bytes. */
+:root[data-font="system"] {
+  --chat-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
 :root[data-mono="anthropic-mono"] {
   --chat-font-mono: "Anthropic Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 :root[data-mono="dm-mono"] {
   --chat-font-mono: "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-mono="geist-mono"] {
+  --chat-font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* The device's native monospace — SF Mono on Apple, Consolas on Windows. Zero bytes. */
+:root[data-mono="system-mono"] {
+  --chat-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 /* Airbnb-flavoured re-skin, chat-only (t149). Overrides the shared shadcn tokens AFTER the import
@@ -465,4 +491,23 @@
   margin-top: 0.15em;
   opacity: 0.85;
   font-size: 0.95em;
+}
+
+/* Rich composer editor (t159): the contenteditable mirrors the message-body list/spacing resets so
+   what you type previews like it will render. font-size ≥16px is already on inputs globally for iOS
+   no-zoom; the contenteditable gets it from text-base. */
+.composer-editor ul,
+.composer-editor ol {
+  margin: 0.25em 0;
+  padding-left: 1.25em;
+}
+.composer-editor ul {
+  list-style: disc;
+}
+.composer-editor ol {
+  list-style: decimal;
+}
+.composer-editor a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

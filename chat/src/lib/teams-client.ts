@@ -122,6 +122,12 @@ export interface TeamsMessage {
   /** Client-only optimistic image preview (t145): a local object-URL shown until the poll replaces
    *  this message with the server's rendered AMSImage. Never set by the server. */
   localImageUrl?: string
+  /** Client-only (t159): an optimistic send still in flight — id is a `local:` placeholder until the
+   *  server confirms (resolveLocalSend). Never set by the server. */
+  pending?: boolean
+  /** Client-only (t159): the typed error code of a failed send — the bubble renders a retry/discard
+   *  affordance instead of blocking the composer. Never set by the server. */
+  failed?: string
 }
 
 interface HistoryResponse {
@@ -170,13 +176,18 @@ export interface SendReplyResult {
   clientmessageid: string
 }
 
-/** Send a text reply to a conversation (t130). Throws TeamsApiError with the server's typed code
- *  on failure so the composer can retain the draft and show honest copy. */
-export async function sendReply(convId: string, text: string): Promise<SendReplyResult> {
+/** Send a reply to a conversation (t130). `html` (t159, composer formatting) upgrades the send to
+ *  a `RichText/Html` message; without it the wire format stays the plain Text send. Throws
+ *  TeamsApiError with the server's typed code so the failed bubble can show honest copy. */
+export async function sendReply(
+  convId: string,
+  text: string,
+  html?: string | null,
+): Promise<SendReplyResult> {
   const res = await fetch("/api/teams/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, text }),
+    body: JSON.stringify({ convId, text, ...(html ? { html } : {}) }),
   })
   const data = (await res.json().catch(() => ({}))) as SendReplyResult & { error?: string }
   if (!res.ok || data.error) {

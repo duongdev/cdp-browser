@@ -1,13 +1,4 @@
-import {
-  Alert02Icon,
-  ArrowLeft01Icon,
-  Attachment01Icon,
-  Cancel01Icon,
-  File01Icon,
-  InboxIcon,
-  ReloadIcon,
-  SentIcon,
-} from "@hugeicons/core-free-icons"
+import { Alert02Icon, ArrowLeft01Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   forwardRef,
@@ -20,10 +11,17 @@ import {
   useState,
 } from "react"
 import { Button } from "@/components/ui/button"
+import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
-import { pickFile } from "../lib/image-attach"
-import { applyPendingReactions, applyReaction, mergeMessages } from "../lib/message-merge"
+import {
+  applyPendingReactions,
+  applyReaction,
+  markSendFailed,
+  mergeMessages,
+  resolveLocalSend,
+} from "../lib/message-merge"
+import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
 import {
   deleteMessage,
   editMessage,
@@ -37,8 +35,9 @@ import {
   uploadFile,
   uploadImage,
 } from "../lib/teams-client"
-import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
+import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
+import { Composer, type ComposerHandle } from "./composer"
 import { MessageRow, type RowCommand } from "./message-row"
 
 // Live sync (t135, poll-first): cadence for re-fetching the newest history page while this pane is
@@ -418,42 +417,26 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [convId],
   )
 
-  // Composer (t130, Q9 hybrid): text-only, synchronous + honest — no outbox. A successful send
-  // optimistically appends the message and write-through marks the conversation read on Teams.
-  // The reply target is chosen by the single policy owner (selectReplyTarget) — flat for Teams.
+  // Composer (t130 → t159): optimistic + non-blocking. A send appends a pending bubble immediately
+  // and the input stays live + focused; failure marks the bubble (retry/discard) instead of freezing
+  // the composer. The reply target is chosen by the single policy owner (selectReplyTarget).
   const replyTarget = selectReplyTarget(conversation)
-  const [send, setSend] = useState<SendState>({ phase: "idle", draft: "" })
-  // A pasted/picked attachment staged for send (t145 image, t146 any file): held until Send uploads
-  // it (or the ✕ clears it). An image routes to uploadImage; any other file routes to uploadFile.
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
-  const pendingIsImage = pendingFile?.type.startsWith("image/") ?? false
-  const taRef = useRef<HTMLTextAreaElement>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
-  // Reset the composer when the conversation changes (a half-typed draft / staged file doesn't leak).
+  const composerRef = useRef<ComposerHandle>(null)
+  const coarse = usePointerCoarse()
+  // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
+  const retryPayloads = useRef<Map<string, { out: OutgoingMessage; file: File | null }>>(new Map())
+  const localSeq = useRef(0)
+  // Stale in-flight sends don't leak across a conversation reset.
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
   useEffect(() => {
-    setSend({ phase: "idle", draft: "" })
-    setPendingFile(null)
+    retryPayloads.current = new Map()
   }, [convId])
-  // Object-URL thumbnail preview — images only; a non-image file shows a chip, not a thumbnail.
+
+  // Re-focus the composer whenever this pane is (re)shown on a keyboard layout — incl. while the
+  // history is still loading (t159 item 8). A coarse pointer never auto-focuses (keyboard pop).
   useEffect(() => {
-    if (!pendingFile?.type.startsWith("image/")) {
-      setPendingUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(pendingFile)
-    setPendingUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [pendingFile])
-  // Auto-grow the textarea up to a cap; height resets to measure the real scrollHeight each edit.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: send.draft is the deliberate re-measure trigger
-  useLayoutEffect(() => {
-    const el = taRef.current
-    if (!el) return
-    el.style.height = "auto"
-    el.style.height = `${Math.min(el.scrollHeight, 128)}px`
-  }, [send.draft])
+    if (visible && !coarse) composerRef.current?.focus()
+  }, [visible, coarse])
 
   // Append a just-sent optimistic message + pin to the bottom (flex-col-reverse: 0 is the newest).
   const appendSent = useCallback((sent: TeamsMessage) => {
@@ -466,77 +449,106 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     })
   }, [])
 
-  const doSend = useCallback(() => {
-    if (!replyTarget || send.phase === "sending") return
-    const text = send.draft.trim()
-
-    // Attachment send (t145 image, t146 file): an upload can carry an optional caption, so its draft
-    // can be empty — it bypasses reduceSend's non-empty guard. On success the poll reconciles the
-    // optimistic bubble to the server-rendered message; on failure the file + caption stay for retry.
-    if (pendingFile) {
-      const file = pendingFile
-      const isImage = file.type.startsWith("image/")
-      setSend({ phase: "sending", draft: send.draft })
-      const upload = isImage
-        ? uploadImage(replyTarget.convId, file, text)
-        : uploadFile(replyTarget.convId, file, text)
-      upload
-        .then((out) => {
-          setPendingFile(null)
-          setSend({ phase: "idle", draft: "" })
-          appendSent({
-            id: out.msgId,
-            ts: Number(out.msgId) || Date.now(),
-            senderId: "",
-            senderName: "You",
-            body: text,
-            self: true,
-            edited: false,
-            deleted: false,
-            // Image → own object URL for the optimistic bubble (revoked with the pending preview);
-            // file → a chip descriptor. Either is replaced by the server's rendered message on the
-            // next poll (the chip gains its clickable SharePoint url then).
-            ...(isImage
-              ? { localImageUrl: URL.createObjectURL(file) }
-              : {
-                  attachments: [
-                    { kind: "file", name: file.name || "file", type: pendingExt(file.name) },
-                  ],
-                }),
-          })
-          markRead(replyTarget.convId, out.msgId, out.msgId)
-        })
-        .catch((e) => {
-          const code = e instanceof TeamsApiError ? e.code : "network_error"
-          setSend((s) => reduceSend(s, { type: "fail", code }))
-        })
-      return
-    }
-
-    const next = reduceSend(send, { type: "send" })
-    setSend(next)
-    if (next.phase !== "sending") return
-    sendReply(replyTarget.convId, text)
-      .then((out) => {
-        setSend((s) => reduceSend(s, { type: "ok" }))
-        appendSent({
-          id: out.ts,
-          ts: Number(out.ts) || Date.now(),
-          senderId: "",
-          senderName: "You",
-          body: text,
-          self: true,
-          edited: false,
-          deleted: false,
-        })
+  // Fire (or re-fire, on retry) the server send for one optimistic bubble. Success swaps the local
+  // placeholder for the server id (resolveLocalSend collapses a poll-delivered echo); failure marks
+  // the bubble with the typed code. Never touches the composer.
+  const runSend = useCallback(
+    (localId: string, out: OutgoingMessage, file: File | null) => {
+      const target = replyTarget
+      if (!target) return
+      const op = file
+        ? (file.type.startsWith("image/") ? uploadImage : uploadFile)(
+            target.convId,
+            file,
+            out.text,
+          ).then((r) => r.msgId)
+        : sendReply(target.convId, out.text, out.html).then((r) => r.ts)
+      op.then((id) => {
+        retryPayloads.current.delete(localId)
+        setState((s) =>
+          s.status === "ready"
+            ? {
+                status: "ready",
+                messages: resolveLocalSend(s.messages, localId, id, Number(id) || Date.now()),
+              }
+            : s,
+        )
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
-        markRead(replyTarget.convId, out.ts, out.ts)
-      })
-      .catch((e) => {
+        markRead(target.convId, id, id)
+      }).catch((e) => {
         const code = e instanceof TeamsApiError ? e.code : "network_error"
-        setSend((s) => reduceSend(s, { type: "fail", code }))
+        setState((s) =>
+          s.status === "ready"
+            ? { status: "ready", messages: markSendFailed(s.messages, localId, code) }
+            : s,
+        )
       })
-  }, [send, replyTarget, pendingFile, appendSent])
+    },
+    [replyTarget],
+  )
+
+  const onComposerSend = useCallback(
+    (out: OutgoingMessage, file: File | null) => {
+      if (!replyTarget) return
+      const localId = `local:${++localSeq.current}:${Date.now()}`
+      retryPayloads.current.set(localId, { out, file })
+      const isImage = file?.type.startsWith("image/") ?? false
+      appendSent({
+        id: localId,
+        ts: Date.now(),
+        senderId: "",
+        senderName: "You",
+        body: out.html ?? textToHtml(out.text),
+        self: true,
+        edited: false,
+        deleted: false,
+        pending: true,
+        // Image → own object URL for the optimistic bubble; file → a chip descriptor. Either is
+        // replaced by the server's rendered message on the next poll (the chip gains its clickable
+        // SharePoint url then).
+        ...(file
+          ? isImage
+            ? { localImageUrl: URL.createObjectURL(file) }
+            : {
+                attachments: [
+                  { kind: "file", name: file.name || "file", type: pendingExt(file.name) },
+                ],
+              }
+          : {}),
+      })
+      runSend(localId, out, file)
+    },
+    [replyTarget, appendSent, runSend],
+  )
+
+  // Retry a failed optimistic send in place (t159): back to pending, same payload, same bubble.
+  const onRetrySend = useCallback(
+    (localId: string) => {
+      const payload = retryPayloads.current.get(localId)
+      if (!payload) return
+      setState((s) =>
+        s.status === "ready"
+          ? {
+              status: "ready",
+              messages: s.messages.map((m) =>
+                m.id === localId ? { ...m, pending: true, failed: undefined } : m,
+              ),
+            }
+          : s,
+      )
+      runSend(localId, payload.out, payload.file)
+    },
+    [runSend],
+  )
+
+  const onDiscardSend = useCallback((localId: string) => {
+    retryPayloads.current.delete(localId)
+    setState((s) =>
+      s.status === "ready"
+        ? { status: "ready", messages: s.messages.filter((m) => m.id !== localId) }
+        : s,
+    )
+  }, [])
 
   // Focusable (non-system) messages in visual order (oldest→newest). System lines aren't focusable.
   const messages = state.status === "ready" ? state.messages : null
@@ -590,103 +602,17 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [moveFocus, focused, focusedId],
   )
 
-  const composer = (
-    <div className="shrink-0 border-border border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-      {send.phase === "failed" && (
-        <p className="pb-1.5 text-destructive text-xs">{sendErrorCopy(send.code)}</p>
-      )}
-      {(pendingUrl || (pendingFile && !pendingIsImage)) && (
-        <div className="pb-2">
-          <div className="relative inline-block">
-            {pendingUrl ? (
-              <img
-                alt="Attachment preview"
-                className="size-16 rounded-md border border-border object-cover"
-                src={pendingUrl}
-              />
-            ) : (
-              <div className="flex max-w-[16rem] items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
-                <HugeiconsIcon
-                  className="size-4 shrink-0 text-muted-foreground"
-                  icon={File01Icon}
-                />
-                <span className="truncate text-sm">{pendingFile?.name || "file"}</span>
-              </div>
-            )}
-            <button
-              aria-label="Remove attachment"
-              className="-right-1.5 -top-1.5 absolute flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent"
-              disabled={send.phase === "sending"}
-              onClick={() => setPendingFile(null)}
-              type="button"
-            >
-              <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-            </button>
-          </div>
-        </div>
-      )}
-      <div className="flex items-end gap-2">
-        <input
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) setPendingFile(f)
-            e.target.value = "" // allow re-picking the same file
-          }}
-          ref={fileRef}
-          type="file"
-        />
-        <Button
-          aria-label="Attach file"
-          disabled={send.phase === "sending"}
-          onClick={() => fileRef.current?.click()}
-          size="icon"
-          variant="ghost"
-        >
-          <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
-        </Button>
-        <textarea
-          className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
-          disabled={send.phase === "sending"}
-          onBlur={() => {
-            composerFocusedRef.current = false
-          }}
-          onChange={(e) => setSend(reduceSend(send, { type: "edit", draft: e.target.value }))}
-          onFocus={() => {
-            composerFocusedRef.current = true
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              doSend()
-            }
-          }}
-          onPaste={(e) => {
-            const file = pickFile(e.clipboardData?.items)
-            if (file) {
-              e.preventDefault()
-              setPendingFile(file)
-            }
-          }}
-          placeholder="Type a message…"
-          ref={taRef}
-          rows={1}
-          value={send.draft}
-        />
-        <Button
-          aria-label={send.phase === "failed" ? "Retry send" : "Send"}
-          disabled={send.phase === "sending" || (!send.draft.trim() && !pendingFile)}
-          onClick={doSend}
-          size="icon"
-        >
-          <HugeiconsIcon className="size-4" icon={SentIcon} />
-        </Button>
-      </div>
-      {send.phase === "sending" && (
-        <p className="pt-1 text-[11px] text-muted-foreground">Sending…</p>
-      )}
-    </div>
-  )
+  const composer = replyTarget ? (
+    <Composer
+      autoFocus={visible && !coarse}
+      onFocusChange={(f) => {
+        composerFocusedRef.current = f
+      }}
+      onSend={onComposerSend}
+      ref={composerRef}
+      resetKey={convId}
+    />
+  ) : null
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-background", !visible && "hidden")}>
@@ -708,6 +634,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       </header>
 
       {state.status === "loading" ? (
+        // The composer renders (and focuses) during the history load too (t159 item 8) — you can
+        // start typing before the messages land.
         <ThreadSkeleton />
       ) : state.status === "error" ? (
         <Centered>
@@ -752,8 +680,10 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                       key={item.key}
                       message={item.message}
                       onDelete={onDelete}
+                      onDiscardSend={onDiscardSend}
                       onEdit={onEdit}
                       onReact={onReact}
+                      onRetrySend={onRetrySend}
                       showMeta={item.showMeta}
                     />
                   ),
@@ -768,21 +698,13 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
             </div>
           )}
-          {replyTarget && composer}
         </>
       )}
+      {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
+      {composer}
     </div>
   )
 })
-
-// Composer failure copy — honest and specific where we can be, generic otherwise.
-function sendErrorCopy(code: string): string {
-  if (code === "invalid_auth")
-    return "Teams sign-in expired — it refreshes when the Teams tab reloads. Your message is kept; retry in a moment."
-  if (code === "rate_limited")
-    return "Teams is rate-limiting. Your message is kept — retry in a moment."
-  return "Could not send. Your message is kept — retry."
-}
 
 // A centered day separator between messages of different calendar days (t158). Pill-style, muted —
 // the Slack/Linear thread-date marker. Its label ("Today" / "Yesterday" / "Mon, Jul 21") is computed

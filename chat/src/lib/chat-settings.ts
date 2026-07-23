@@ -9,8 +9,16 @@ export type ChatTheme = "system" | "light" | "dark"
 export type ChatDensity = "comfortable" | "compact"
 // UI/body typeface + code typeface. Values are the data-font / data-mono attribute strings the CSS
 // switches on (see chat/src/index.css). "svn-gilroy" / "maple" are the defaults (no attribute).
-export type ChatFont = "svn-gilroy" | "anthropic-sans" | "anthropic-serif" | "manrope"
-export type ChatMono = "maple" | "anthropic-mono" | "dm-mono"
+export type ChatFont =
+  | "svn-gilroy"
+  | "anthropic-sans"
+  | "anthropic-serif"
+  | "manrope"
+  | "inter"
+  | "geist"
+  | "roboto"
+  | "system"
+export type ChatMono = "maple" | "anthropic-mono" | "dm-mono" | "geist-mono" | "system-mono"
 
 export interface ChatSettings {
   theme: ChatTheme
@@ -35,8 +43,17 @@ export const CHAT_MONO_BASE = "chatMono"
 
 const THEMES: ChatTheme[] = ["system", "light", "dark"]
 const DENSITIES: ChatDensity[] = ["comfortable", "compact"]
-const FONTS: ChatFont[] = ["svn-gilroy", "anthropic-sans", "anthropic-serif", "manrope"]
-const MONOS: ChatMono[] = ["maple", "anthropic-mono", "dm-mono"]
+const FONTS: ChatFont[] = [
+  "svn-gilroy",
+  "anthropic-sans",
+  "anthropic-serif",
+  "manrope",
+  "inter",
+  "geist",
+  "roboto",
+  "system",
+]
+const MONOS: ChatMono[] = ["maple", "anthropic-mono", "dm-mono", "geist-mono", "system-mono"]
 
 function parseTheme(raw: unknown): ChatTheme {
   return typeof raw === "string" && (THEMES as string[]).includes(raw)

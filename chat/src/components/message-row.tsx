@@ -78,6 +78,10 @@ interface MessageRowProps {
   /** Delete the viewer's OWN message (t144). The parent optimistically tombstones it + fires the
    *  best-effort call. Only passed for own, non-deleted messages. */
   onDelete?: (msgId: string) => void
+  /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
+  onRetrySend?: (msgId: string) => void
+  /** Discard a failed optimistic send — removes the bubble (t159). */
+  onDiscardSend?: (msgId: string) => void
   /** Keyboard focus (t152): draws a ring + scrolls into view. */
   focused?: boolean
   /** A keyboard command aimed at this row when it's focused (t152). Only acted on when `focused`. */
@@ -104,12 +108,18 @@ function ChatMessageRow({
   onReact,
   onEdit,
   onDelete,
+  onRetrySend,
+  onDiscardSend,
   focused,
   command,
   showMeta = true,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
+  // An optimistic send in flight / failed (t159): muted bubble, no react/manage until confirmed.
+  const pending = !!message.pending
+  const failed = message.failed != null
+  const unconfirmed = pending || failed
   const time = relativeTime(message.ts)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -117,9 +127,9 @@ function ChatMessageRow({
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
-  const canReact = !deleted && !!onReact
+  const canReact = !deleted && !unconfirmed && !!onReact
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
-  const canManage = self && !deleted && (!!onEdit || !!onDelete)
+  const canManage = self && !deleted && !unconfirmed && (!!onEdit || !!onDelete)
 
   // Inline edit + delete-confirm state (t144).
   const [editing, setEditing] = useState(false)
@@ -282,6 +292,8 @@ function ChatMessageRow({
               "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
               deleted && "italic opacity-70",
+              pending && "opacity-60",
+              failed && "opacity-70 ring-1 ring-destructive/40",
             )}
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
             dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
@@ -371,9 +383,35 @@ function ChatMessageRow({
           ))}
         </div>
       )}
+      {/* Optimistic send status (t159): a quiet "Sending…" while in flight; a failed send keeps the
+          bubble with honest copy + retry/discard instead of blocking the composer. */}
+      {pending && <span className="px-1 text-[10px] text-muted-foreground">Sending…</span>}
+      {failed && (
+        <span className="flex items-center gap-2 px-1 text-[11px] text-destructive">
+          {sendErrorCopy(message.failed ?? "")}
+          {onRetrySend && (
+            <button
+              className="font-semibold underline underline-offset-2"
+              onClick={() => onRetrySend(message.id)}
+              type="button"
+            >
+              Retry
+            </button>
+          )}
+          {onDiscardSend && (
+            <button
+              className="text-muted-foreground underline underline-offset-2"
+              onClick={() => onDiscardSend(message.id)}
+              type="button"
+            >
+              Discard
+            </button>
+          )}
+        </span>
+      )}
       {/* Timestamp on the group leader (t158); a follower stays clean unless it was edited (an
           "(edited)" marker is meaningful, so it survives the grouping). */}
-      {(showMeta || (message.edited && !deleted)) && (
+      {!unconfirmed && (showMeta || (message.edited && !deleted)) && (
         <span className="px-1 font-mono text-[10px] text-muted-foreground">
           {showMeta && time}
           {message.edited && !deleted && <span className={cn(showMeta && "ml-1")}>(edited)</span>}
@@ -382,6 +420,14 @@ function ChatMessageRow({
       <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
     </div>
   )
+}
+
+// Failed-send copy (t159) — honest and specific where we can be, generic otherwise.
+function sendErrorCopy(code: string): string {
+  if (code === "invalid_auth")
+    return "Not sent — Teams sign-in expired; it refreshes when the Teams tab reloads."
+  if (code === "rate_limited") return "Not sent — Teams is rate-limiting."
+  return "Not sent."
 }
 
 /** A system-event line (t151): centered, muted, small — Slack/Linear-style meta row for member

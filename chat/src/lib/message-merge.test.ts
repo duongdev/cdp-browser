@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { applyPendingReactions, applyReaction, mergeMessages } from "./message-merge"
+import {
+  applyPendingReactions,
+  applyReaction,
+  markSendFailed,
+  mergeMessages,
+  resolveLocalSend,
+} from "./message-merge"
 import type { TeamsMessage } from "./teams-client"
 
 type Pending = Map<string, Map<string, { emoji: string; desiredMine: boolean }>>
@@ -218,5 +224,38 @@ describe("applyPendingReactions (overlay that survives a stale poll)", () => {
   it("is a same-ref no-op when there are no pending entries", () => {
     const messages = [msg({ id: "1", ts: 100 })]
     expect(applyPendingReactions(messages, pending([]))).toBe(messages)
+  })
+})
+
+describe("resolveLocalSend / markSendFailed — optimistic non-blocking send (t159)", () => {
+  it("swaps the local placeholder for the server id/ts and clears pending", () => {
+    const messages = [msg({ id: "local:1", ts: 100, self: true, pending: true })]
+    const out = resolveLocalSend(messages, "local:1", "1700000000000", 1700000000000)
+    expect(out).toHaveLength(1)
+    expect(out[0].id).toBe("1700000000000")
+    expect(out[0].ts).toBe(1700000000000)
+    expect(out[0].pending).toBeUndefined()
+  })
+
+  it("drops the placeholder when the server echo already arrived via a poll", () => {
+    const messages = [
+      msg({ id: "local:1", ts: 100, self: true, pending: true }),
+      msg({ id: "1700000000000", ts: 1700000000000, self: true }),
+    ]
+    const out = resolveLocalSend(messages, "local:1", "1700000000000", 1700000000000)
+    expect(out.map((m) => m.id)).toEqual(["1700000000000"])
+  })
+
+  it("is a same-ref no-op for an unknown localId", () => {
+    const messages = [msg({ id: "1", ts: 100 })]
+    expect(resolveLocalSend(messages, "local:gone", "2", 200)).toBe(messages)
+  })
+
+  it("markSendFailed flags the bubble with the typed code and clears pending", () => {
+    const messages = [msg({ id: "local:1", ts: 100, self: true, pending: true })]
+    const out = markSendFailed(messages, "local:1", "invalid_auth")
+    expect(out[0].failed).toBe("invalid_auth")
+    expect(out[0].pending).toBeUndefined()
+    expect(markSendFailed(messages, "local:gone", "x")).toBe(messages)
   })
 })
