@@ -38,6 +38,7 @@ import {
   uploadImage,
 } from "../lib/teams-client"
 import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
+import { buildThreadItems } from "../lib/thread-group"
 import { MessageRow, type RowCommand } from "./message-row"
 
 // Live sync (t135, poll-first): cadence for re-fetching the newest history page while this pane is
@@ -540,6 +541,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // Focusable (non-system) messages in visual order (oldest→newest). System lines aren't focusable.
   const messages = state.status === "ready" ? state.messages : null
   const focusable = useMemo(() => (messages ?? []).filter((m) => m.kind !== "system"), [messages])
+  // Date separators + consecutive-sender grouping (t158), computed oldest→newest; the render reverses
+  // for flex-col-reverse. Recomputed on message change (Date.now() drives the relative day labels).
+  const threadItems = useMemo(() => buildThreadItems(messages ?? [], Date.now()), [messages])
 
   // Reset the keyboard cursor when the conversation changes (a stale id doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
@@ -723,28 +727,44 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             </Centered>
           ) : (
             <div
-              className="thread-messages flex min-h-0 flex-1 flex-col-reverse gap-2 overflow-y-auto overscroll-contain px-3 py-3"
+              className="thread-messages flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-3 py-3"
               onScroll={onScroll}
               ref={scrollRef}
             >
               {/* flex-col-reverse: the FIRST child renders at the visual BOTTOM, so render newest-first
-                  to show oldest→newest top→bottom. Older messages prepend to the array (→ end of this
-                  reversed map = the visual top), and the loading skeleton + sentinel sit above them. */}
-              {state.messages
+                  (items reversed) to show oldest→newest top→bottom. Date separators + consecutive-
+                  sender grouping (t158) are computed oldest→newest by buildThreadItems, so a day's
+                  separator sits above that day's first message after the reverse. Older messages
+                  prepend to the array (→ end of this reversed map = the visual top). Vertical rhythm
+                  is per-item margin (leader gap vs tight follower gap), not a uniform container gap. */}
+              {threadItems
                 .slice()
                 .reverse()
-                .map((m) => (
-                  <MessageRow
-                    command={m.id === focusedId ? (rowCommand ?? undefined) : undefined}
-                    focused={m.id === focusedId}
-                    key={m.id}
-                    message={m}
-                    onDelete={onDelete}
-                    onEdit={onEdit}
-                    onReact={onReact}
-                  />
-                ))}
-              {loadingOlder && [0, 1, 2].map((i) => <MessageBubbleSkeleton index={i} key={i} />)}
+                .map((item) =>
+                  item.type === "date" ? (
+                    <DateSeparator key={item.key} label={item.label} />
+                  ) : (
+                    <MessageRow
+                      command={
+                        item.message.id === focusedId ? (rowCommand ?? undefined) : undefined
+                      }
+                      focused={item.message.id === focusedId}
+                      key={item.key}
+                      message={item.message}
+                      onDelete={onDelete}
+                      onEdit={onEdit}
+                      onReact={onReact}
+                      showMeta={item.showMeta}
+                    />
+                  ),
+                )}
+              {loadingOlder && (
+                <div className="flex flex-col gap-2">
+                  {[0, 1, 2].map((i) => (
+                    <MessageBubbleSkeleton index={i} key={i} />
+                  ))}
+                </div>
+              )}
               {canLoadOlder && <div className="h-px shrink-0" ref={topSentinelRef} />}
             </div>
           )}
@@ -762,6 +782,19 @@ function sendErrorCopy(code: string): string {
   if (code === "rate_limited")
     return "Teams is rate-limiting. Your message is kept — retry in a moment."
   return "Could not send. Your message is kept — retry."
+}
+
+// A centered day separator between messages of different calendar days (t158). Pill-style, muted —
+// the Slack/Linear thread-date marker. Its label ("Today" / "Yesterday" / "Mon, Jul 21") is computed
+// by buildThreadItems. A little more top margin so it reads as a day break, not a message gap.
+function DateSeparator({ label }: { label: string }) {
+  return (
+    <div className="flex justify-center pt-4 pb-2">
+      <span className="rounded-full bg-muted/60 px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground">
+        {label}
+      </span>
+    </div>
+  )
 }
 
 // One placeholder bubble matching ThreadSkeleton's row (label chip + bubble), alternating side by

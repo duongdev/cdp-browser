@@ -82,6 +82,10 @@ interface MessageRowProps {
   focused?: boolean
   /** A keyboard command aimed at this row when it's focused (t152). Only acted on when `focused`. */
   command?: RowCommand
+  /** Group leader (t158): show the avatar/name header + timestamp and a larger top gap. A follower
+   *  (`false`) — same sender within 5min, same day — shows only the bubble, tight against the prior.
+   *  Defaults true, so any caller not passing it renders the full (pre-grouping) row. */
+  showMeta?: boolean
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -95,7 +99,15 @@ export function MessageRow(props: MessageRowProps) {
   return <ChatMessageRow {...props} />
 }
 
-function ChatMessageRow({ message, onReact, onEdit, onDelete, focused, command }: MessageRowProps) {
+function ChatMessageRow({
+  message,
+  onReact,
+  onEdit,
+  onDelete,
+  focused,
+  command,
+  showMeta = true,
+}: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
   const time = relativeTime(message.ts)
@@ -203,20 +215,23 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete, focused, command }
       className={cn(
         "flex flex-col gap-0.5 rounded-2xl",
         self ? "items-end" : "items-start",
+        // Vertical rhythm (t158): a group leader opens with a larger gap (≈16px) so distinct groups
+        // read as blocks; a follower hugs the prior bubble (≈2px) for a tight Slack-style run.
+        showMeta ? "mt-4 first:mt-0" : "mt-0.5",
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
       )}
       ref={rowRef}
     >
-      {!self && !!message.senderName && (
+      {showMeta && !self && !!message.senderName && (
         <span className="flex items-center gap-1.5 px-1">
           <UserAvatar
             className="size-5 text-[10px]"
             label={message.senderName}
             userId={message.senderId}
           />
-          <span className="font-medium text-muted-foreground text-xs">{message.senderName}</span>
+          <span className="font-semibold text-foreground text-xs">{message.senderName}</span>
         </span>
       )}
       {hasBody && editing && (
@@ -264,7 +279,7 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete, focused, command }
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable. */}
           <div
             className={cn(
-              "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
+              "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
               deleted && "italic opacity-70",
             )}
@@ -356,10 +371,14 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete, focused, command }
           ))}
         </div>
       )}
-      <span className="px-1 font-mono text-[10px] text-muted-foreground">
-        {time}
-        {message.edited && !deleted && <span className="ml-1">(edited)</span>}
-      </span>
+      {/* Timestamp on the group leader (t158); a follower stays clean unless it was edited (an
+          "(edited)" marker is meaningful, so it survives the grouping). */}
+      {(showMeta || (message.edited && !deleted)) && (
+        <span className="px-1 font-mono text-[10px] text-muted-foreground">
+          {showMeta && time}
+          {message.edited && !deleted && <span className={cn(showMeta && "ml-1")}>(edited)</span>}
+        </span>
+      )}
       <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
     </div>
   )

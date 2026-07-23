@@ -163,16 +163,31 @@ export function applyPrefs(conv: TeamsConversation, prefs?: ConvPrefs): TeamsCon
 
 /** A folder section (or the ungrouped bucket) for the grouped list view. */
 export interface FolderSection {
-  /** The folder name, or null for the ungrouped rows. */
+  /** The folder name, the CHATS_FOLDER sentinel for the "Chats" pseudo-folder, or null for the
+   *  header-less flat list (no real folders exist). */
   folder: string | null
   conversations: TeamsConversation[]
 }
 
-/** Group a (pref-applied, already list-sorted) conversation list into folder sections. Folder
+/** The reserved key for the "Chats" pseudo-folder that groups ungrouped conversations under a fake
+ *  header BELOW the real folders (t158). Leading space so it can never collide with a real folder
+ *  name — those are `.trim()`ed on assignment, so no user folder can ever equal this. Rendered as
+ *  "Chats" and never offered as an assignable folder in menus. */
+export const CHATS_FOLDER = " chats"
+
+/** Human label for a section header (t158). The CHATS_FOLDER sentinel shows as "Chats"; a real
+ *  folder shows its own name. Never called for the null flat-list section. */
+export function folderLabel(folder: string): string {
+  return folder === CHATS_FOLDER ? "Chats" : folder
+}
+
+/** Group a (pref-applied, already list-sorted) conversation list into folder sections. Real folder
  *  sections come first, alpha-sorted by name (locale-aware, case-insensitive); the ungrouped rows
- *  follow as a trailing section (folder: null). Each section keeps the incoming order (the list is
- *  already newest-first). A conversation's folder is read from `conv.folder` (set by applyPrefs).
- *  Pure — the row/section rendering is presentation over this. */
+ *  follow. When real folders exist, the ungrouped rows get their own collapsible "Chats" section
+ *  (CHATS_FOLDER, t158) below them; when NO real folder exists, they render as one header-less flat
+ *  section (folder: null) — a single flat list needs no header noise. Each section keeps the incoming
+ *  order (the list is already newest-first). A conversation's folder is read from `conv.folder` (set
+ *  by applyPrefs). Pure — the row/section rendering is presentation over this. */
 export function groupByFolder(conversations: TeamsConversation[]): FolderSection[] {
   const folders = new Map<string, TeamsConversation[]>()
   const ungrouped: TeamsConversation[] = []
@@ -187,8 +202,11 @@ export function groupByFolder(conversations: TeamsConversation[]): FolderSection
   const sections: FolderSection[] = [...folders.keys()]
     .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
     .map((folder) => ({ folder, conversations: folders.get(folder) as TeamsConversation[] }))
-  // Trailing ungrouped section — only when non-empty AND there are folders (otherwise a flat list).
-  if (ungrouped.length > 0) sections.push({ folder: null, conversations: ungrouped })
+  // Trailing ungrouped rows: a "Chats" pseudo-folder section when real folders exist (so the
+  // ungrouped rows read as a deliberate group, not orphans), else a header-less flat section.
+  if (ungrouped.length > 0) {
+    sections.push({ folder: sections.length > 0 ? CHATS_FOLDER : null, conversations: ungrouped })
+  }
   return sections
 }
 

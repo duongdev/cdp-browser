@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import {
   applyPrefs,
   applyReadOverride,
+  CHATS_FOLDER,
   conversationLabel,
+  folderLabel,
   groupByFolder,
   isUnread,
   knownFolders,
@@ -226,22 +228,29 @@ describe("conversation prefs shaping (t156)", () => {
     expect(isUnread(c)).toBe(false)
   })
 
-  it("groupByFolder: folders alpha-first, ungrouped trailing", () => {
+  it("groupByFolder: real folders alpha-first, ungrouped in a trailing Chats section (t158)", () => {
     const rows = [
       applyPrefs(conv({ id: "a" }), { labels: [], folder: "Zeta", muted: false }),
       applyPrefs(conv({ id: "b" }), { labels: [], folder: "Alpha", muted: false }),
       conv({ id: "c" }), // ungrouped
     ]
     const s = groupByFolder(rows)
-    expect(s.map((x) => x.folder)).toEqual(["Alpha", "Zeta", null])
+    expect(s.map((x) => x.folder)).toEqual(["Alpha", "Zeta", CHATS_FOLDER])
     expect(s[2].conversations.map((c) => c.id)).toEqual(["c"])
+    expect(folderLabel(CHATS_FOLDER)).toBe("Chats")
   })
 
-  it("groupByFolder: a flat list is one null section (no folder headers)", () => {
+  it("groupByFolder: a flat list (no real folders) is one header-less null section (t158)", () => {
     const rows = [conv({ id: "a" }), conv({ id: "b" })]
     const s = groupByFolder(rows)
     expect(s).toHaveLength(1)
-    expect(s[0].folder).toBe(null)
+    expect(s[0].folder).toBe(null) // no Chats header when there are no real folders
+  })
+
+  it("groupByFolder: no ungrouped rows → only the real folder sections, no Chats section (t158)", () => {
+    const rows = [applyPrefs(conv({ id: "a" }), { labels: [], folder: "Work", muted: false })]
+    const s = groupByFolder(rows)
+    expect(s.map((x) => x.folder)).toEqual(["Work"])
   })
 
   it("navigableConversations: visual order, collapsed folders skipped (t157)", () => {
@@ -254,6 +263,11 @@ describe("conversation prefs shaping (t156)", () => {
     expect(navigableConversations(rows).map((c) => c.id)).toEqual(["a1", "z1", "u1"])
     // Zeta collapsed: its rows drop out of the navigable order entirely.
     expect(navigableConversations(rows, new Set(["Zeta"])).map((c) => c.id)).toEqual(["a1", "u1"])
+    // The Chats pseudo-folder collapses like any named section (t158).
+    expect(navigableConversations(rows, new Set([CHATS_FOLDER])).map((c) => c.id)).toEqual([
+      "a1",
+      "z1",
+    ])
   })
 
   it("knownFolders / knownLabels are distinct + alpha-sorted", () => {

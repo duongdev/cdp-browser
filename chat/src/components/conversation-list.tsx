@@ -9,6 +9,7 @@ import {
   applyReadOverride,
   type ConvPrefs,
   type FolderSection,
+  folderLabel,
   groupByFolder,
   type ReadOverride,
 } from "../lib/conversation-view"
@@ -314,7 +315,9 @@ function FolderGroup({
           className={cn("size-3.5 transition-transform", !collapsed && "rotate-90")}
           icon={ArrowRight01Icon}
         />
-        <span className="truncate font-semibold uppercase tracking-wide">{section.folder}</span>
+        <span className="truncate font-semibold uppercase tracking-wide">
+          {folderLabel(section.folder as string)}
+        </span>
         <span className="ml-auto font-mono text-[10px]">{section.conversations.length}</span>
       </button>
       {!collapsed && <div className="flex flex-col gap-0.5">{children}</div>}
