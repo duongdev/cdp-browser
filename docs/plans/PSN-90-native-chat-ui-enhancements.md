@@ -442,15 +442,16 @@ Items 5, 7, 8.
   keyboard).
 - **Composer redesign (5).** Full visual redesign of the input area: proper
   surface (raised card, hairline border, focus ring), attach + emoji affordance
-  placement, send button state, multiline growth, pending-image chips row.
-  Design pass against the Airbnb token layer (workstream A). Note: the
-  requested `/ui-ux-pro-max` skill is not installed in this agent environment —
-  the task will embed the design spec directly (or run under a session where
-  the skill exists).
+  placement, send button state, multiline growth, pending-image chips row —
+  plus a **rich editor** (round-2 decision #3: bold/italic/lists sending
+  `RichText/Html`; editor-lib choice at pickup, contenteditable basics first).
+  Design pass against the Airbnb token layer (workstream A) using the
+  **ui-ux-pro-max** skill (plugin path in round-2 decision #3).
 
 Acceptance: send never blocks typing; focus retained after every send path
 incl. media; failed send = inline retry, draft preserved; thread-open shows a
-usable focused composer; redesigned composer screenshot-reviewed light+dark.
+usable focused composer; rich-text formatting round-trips to Teams; redesigned
+composer screenshot-reviewed light+dark.
 
 ## Workstream N — Identity display
 
@@ -492,43 +493,44 @@ payload carries it.
 
 Labels/folders/mutes (and all chat state) die with every preview redeploy
 because `web-teams.db` lives on the container filesystem. Fix is deployment
-config, not code: mount a persistent volume and point `TEAMS_DB_PATH` (and the
-settings/ui-state dir) at it. Open decision below — previews are per-branch
-apps, so each preview still gets its *own* volume unless they share prod's API.
+config, not code: mount a persistent volume on **prod** and point
+`TEAMS_DB_PATH` (and the settings/ui-state dir) at it. Previews stay ephemeral
+by design (decided round 2).
 
 Acceptance: redeploy of the same app preserves labels/folders/mutes + read
 state; documented in the deploy guide.
 
-## Phase 2 open questions (need your input)
+## Phase 2 decisions (grilled 2026-07-23, round 2)
 
-1. **Item 11 / P — which surface must keep prefs?** (a) persistent volume on
-   **prod** only, previews stay ephemeral (recommended if prod is the daily
-   driver); (b) volume per preview app too (each branch still has its own DB);
-   (c) previews proxy prefs to prod's DB (shared state, but preview code can
-   corrupt prod). Which one — and is your daily driver currently a preview URL
-   or prod?
-2. **Item 2 — strip regex preset.** Give one real example of your org's display
-   name format (e.g. `"Nguyen Van A (EXT)"`) so the default preset actually
-   matches; and should the pref be per-device (like theme) or shared?
-3. **Item 5 — composer scope.** Visual redesign only, or also new affordances
-   (emoji picker, text formatting)? Emoji picker would pull the `frimousse`
-   trigger from the chat-ui-lib research.
-4. **Item 1 — Messenger gap.** Messenger shows a time separator after ~20 min
-   idle; keep 20 min or stay with the current 5-min sender-group window for
-   separators too?
-
-Defaults if unanswered: P=(a) prod volume only; 2=per-device, no preset until an
-example; 5=visual only; 1=20 min separators, 5 min sender grouping.
+1. **Item 11 / P** — persistent volume on **prod only**; previews stay
+   ephemeral by design.
+2. **Item 2 — name preset.** Org format: `"Careen Tan - Group Office"` →
+   `Careen`, `"Glory Nguyen - Group Office [C]"` → `Glory`. Default preset:
+   strip everything from `" - "` onward (kills the suffix incl. any trailing
+   `[C]`), then first token as first name. The custom regex option stays for
+   other formats. Pref is per-device (like theme/density).
+3. **Item 5 — composer.** Visual redesign **plus a rich editor**
+   (bold/italic/lists etc → sends `RichText/Html`; editor-lib choice at pickup
+   — lazy first: contenteditable basics before reaching for a lib). Design
+   pass uses the **ui-ux-pro-max** skill — installed as a plugin at
+   `~/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.5.0/`; the
+   build session invokes `/ui-ux-pro-max:ui-ux-pro-max`, or Reads its
+   SKILL.md by path when the plugin isn't loaded in that session.
+4. **Item 1 — separators.** 20-min idle gap for time separators (sender
+   grouping stays 5 min), and the current date/time separator is
+   **sticky/floating** at the top of the thread viewport while scrolling
+   (Messenger/Telegram style; note flex-col-reverse — sticky must be done
+   against the visual top, not the scroll origin).
 
 ## Phase 2 parallelisation
 
 | Session | Workstream | Depends on |
 |---|---|---|
-| 10 | M composer + send UX | A (tokens) |
+| 10 | M composer + send UX + rich editor | A (tokens) |
 | 11 | L thread reading polish | A; L's mention part touches server + sanitizer |
 | 12 | N identity display | A |
 | 13 | O recording playback | probe first, independent |
-| 14 | P prefs durability | infra only, independent — needs Q1 answered |
+| 14 | P prefs durability (prod volume) | infra only, independent |
 
 ## Decisions (grilled, 2026-07-23)
 
