@@ -254,8 +254,12 @@ function ChatMessageRow({
         "flex flex-col gap-0.5 rounded-2xl",
         self ? "items-end" : "items-start",
         // Vertical rhythm (t158): a group leader opens with a larger gap (≈16px) so distinct groups
-        // read as blocks; a follower hugs the prior bubble (≈2px) for a tight Slack-style run.
-        showMeta ? "mt-4 first:mt-0" : "mt-1",
+        // read as blocks; a follower hugs the prior bubble (≈4px) for a tight Slack-style run. NOTE:
+        // the list is flex-col-reverse, so the NEWEST message is the FIRST DOM child — a `first:mt-0`
+        // here would (and did) zero the newest message's leader gap, gluing a reply to the bubble above
+        // it (PSN-92). The margin-top is the gap ABOVE each message; the oldest sits under a date
+        // separator, so no top trim is needed.
+        showMeta ? "mt-4" : "mt-1",
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
