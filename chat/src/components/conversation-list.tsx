@@ -26,12 +26,19 @@ interface ConversationListProps {
   onOpenConversation: (conversation: TeamsConversation) => void
   /** The open conversation, highlighted in the wide two-pane; null on the phone (stacked). */
   selectedId?: string | null
+  /** Fires with the loaded list (and every merge), so a deep-linked stub pane can pick up its
+   *  real metadata (title etc.) once the list arrives (t150). */
+  onConversations?: (conversations: TeamsConversation[]) => void
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
  *  states, and auto-pages older via infinite scroll (a bottom IntersectionObserver sentinel, t136)
  *  driven by the backwardLink cursor (t134). */
-export function ConversationList({ onOpenConversation, selectedId }: ConversationListProps) {
+export function ConversationList({
+  onOpenConversation,
+  selectedId,
+  onConversations,
+}: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
   const [loadingMore, setLoadingMore] = useState(false)
@@ -55,6 +62,13 @@ export function ConversationList({ onOpenConversation, selectedId }: Conversatio
     load(ac.signal)
     return () => ac.abort()
   }, [load])
+
+  // Report the list upward whenever it (referentially) changes — merges keep the same ref when
+  // nothing changed, so this fires only on real updates.
+  const conversations = state.status === "ready" ? state.conversations : null
+  useEffect(() => {
+    if (conversations) onConversations?.(conversations)
+  }, [conversations, onConversations])
 
   // Re-union page 1 into the list without disturbing the paging cursor / Load-more state (t135).
   // No-ops unless "ready"; mergeConversations returns the same ref when nothing changed, so we skip

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { ConversationList } from "./components/conversation-list"
 import { NotifyToggle } from "./components/notify-toggle"
 import { ThreadView } from "./components/thread-view"
+import { parsePath, pathFor } from "./lib/chat-route"
 import type { TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 
@@ -65,16 +66,22 @@ export function ChatApp() {
   // Phone only: which surface is on screen. The thread panes stay mounted while the list shows.
   const [phoneView, setPhoneView] = useState<"list" | "thread">("list")
 
+  // The URL is the state (t150): `/chat/c/{id}` is an open conversation, `/chat/` is the list.
+  // A user-driven open pushes; a popstate-driven one replays history without re-pushing.
   const openConversation = useCallback((conv: TeamsConversation) => {
     setConvById((m) => (m[conv.id] === conv ? m : { ...m, [conv.id]: conv }))
     setKeepAlive((s) => openThread(s, conv.id))
     setPhoneView("thread")
+    const path = pathFor(conv.id)
+    if (window.location.pathname !== path) window.history.pushState(null, "", path)
   }, [])
 
-  const openConversationById = useCallback((id: string) => {
+  const openConversationById = useCallback((id: string, push = true) => {
     setConvById((m) => (m[id] ? m : { ...m, [id]: stubConversation(id) }))
     setKeepAlive((s) => openThread(s, id))
     setPhoneView("thread")
+    const path = pathFor(id)
+    if (push && window.location.pathname !== path) window.history.pushState(null, "", path)
   }, [])
 
   // Push deep-link (t147): a cold tap lands with ?conv=<id> in the URL; a warm tap (window already
@@ -103,7 +110,42 @@ export function ChatApp() {
     return () => sw.removeEventListener("message", onMessage)
   }, [openConversationById])
 
-  const backToList = useCallback(() => setPhoneView("list"), [])
+  // Boot from the URL + follow browser back/forward (t150). On boot, a `/chat/c/{id}` path opens
+  // that conversation (ThreadView fetches by id alone, with its own error state for a gone id).
+  // popstate replays whatever the current path encodes: an id opens its thread, the list path
+  // pops back — on phone that back-swipe returns to the list.
+  useEffect(() => {
+    const route = parsePath(window.location.pathname)
+    if (route) openConversationById(route.convId, false)
+    const onPop = () => {
+      const r = parsePath(window.location.pathname)
+      if (r) openConversationById(r.convId, false)
+      else setPhoneView("list")
+    }
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
+  }, [openConversationById])
+
+  // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
+  // (id only). When the list loads/merges, swap any tracked entry for the real object so the
+  // thread header picks up the resolved title. Only ids already tracked are stored.
+  const onConversations = useCallback((list: TeamsConversation[]) => {
+    setConvById((m) => {
+      let next = m
+      for (const c of list) {
+        if (m[c.id] && m[c.id] !== c) {
+          if (next === m) next = { ...m }
+          next[c.id] = c
+        }
+      }
+      return next
+    })
+  }, [])
+
+  const backToList = useCallback(() => {
+    setPhoneView("list")
+    if (window.location.pathname !== "/chat/") window.history.pushState(null, "", "/chat/")
+  }, [])
 
   const threadPanes = keepAlive.mounted.map((id) => {
     const conv = convById[id]
@@ -125,6 +167,7 @@ export function ChatApp() {
           <AppHeader />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
+              onConversations={onConversations}
               onOpenConversation={openConversation}
               selectedId={keepAlive.active || null}
             />
@@ -148,6 +191,7 @@ export function ChatApp() {
         <AppHeader />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
+            onConversations={onConversations}
             onOpenConversation={openConversation}
             selectedId={keepAlive.active || null}
           />
