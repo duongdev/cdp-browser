@@ -1,8 +1,13 @@
 /* Reuse the browser renderer's design system verbatim — Tailwind v4 engine, shadcn
    radix-nova theme tokens, Manrope/DM-Mono fonts. Not forked (ADR-0019 decision 1): the
-   chat app should look like the same product. The Vite Tailwind plugin scans this build's
-   module graph, so the shared ui components imported by the chat views are covered. */
+   chat app should look like the same product. */
 @import "../../src/index.css";
+
+/* Tailwind v4 auto-detects sources from the Vite ROOT, which is `chat/` for this build — the shared
+   ui/* components live OUTSIDE it, so utilities used only there (dialog overlay/positioning,
+   sr-only, cmdk group selectors) were never generated and the ⌘K dialog rendered unstyled/unhidden
+   (t152 fix). Source the shared renderer tree explicitly. */
+@source "../../src";
 
 /* Airbnb-flavoured re-skin, chat-only (t149). Overrides the shared shadcn tokens AFTER the import
    so every ui/* component inherits without a fork; the / browser build is untouched. Warmth comes

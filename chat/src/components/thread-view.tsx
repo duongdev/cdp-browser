@@ -9,7 +9,16 @@ import {
   SentIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { conversationLabel } from "../lib/conversation-view"
@@ -29,7 +38,7 @@ import {
   uploadImage,
 } from "../lib/teams-client"
 import { reduceSend, type SendState, selectReplyTarget } from "../lib/teams-reply"
-import { MessageRow } from "./message-row"
+import { MessageRow, type RowCommand } from "./message-row"
 
 // Live sync (t135, poll-first): cadence for re-fetching the newest history page while this pane is
 // the visible one and the tab is foregrounded.
@@ -95,6 +104,24 @@ type State =
   | { status: "error"; message: string }
   | { status: "ready"; messages: TeamsMessage[] }
 
+/** The focused message the thread reports up (t152) — id + own-ness, for the palette/keys context. */
+export interface ThreadFocus {
+  id: string
+  isOwn: boolean
+}
+
+/** Imperative keyboard API the active pane exposes to chat-app (t152). Only the active+visible pane's
+ *  handle is driven; message focus lives here (per pane) so each thread keeps its own cursor. */
+export interface ThreadHandle {
+  focusNext: () => void
+  focusPrev: () => void
+  getFocused: () => ThreadFocus | null
+  /** Dispatch a keyboard command (edit/delete/react) at the focused message's row. */
+  command: (type: RowCommand["type"]) => void
+  /** True while the composer or inline editor holds focus — chat-app suppresses bare-key shortcuts. */
+  isComposerFocused: () => boolean
+}
+
 interface ThreadViewProps {
   conversation: TeamsConversation
   /** Back to the list — shown on the phone (stacked), hidden in the wide two-pane. */
@@ -102,12 +129,18 @@ interface ThreadViewProps {
   /** Whether this pane is the on-screen one (t132). Inactive panes stay mounted (fetch + scroll
    *  preserved) but hidden via display:none, so switching conversations is instant. Defaults true. */
   visible?: boolean
+  /** Reports the keyboard-focused message up so chat-app's palette/keys context stays in sync (t152).
+   *  Only the visible pane should be wired. */
+  onFocusChange?: (focus: ThreadFocus | null) => void
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
-export function ThreadView({ conversation, onBack, visible = true }: ThreadViewProps) {
+export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
+  { conversation, onBack, visible = true, onFocusChange },
+  ref,
+) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): the server returns an opaque `backwardLink` cursor with each page;
   // null means there is no older page. `hasMore` mirrors "cursor is non-null" for the affordance.
@@ -124,6 +157,12 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
   // merge setState. Cleared per conversation switch below.
   const pendingReactions = useRef<PendingReactions>(new Map())
   const convId = conversation.id
+
+  // Keyboard message focus (t152): the id of the focused message row + the command dispatched to it.
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const [rowCommand, setRowCommand] = useState<RowCommand | null>(null)
+  // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
+  const composerFocusedRef = useRef(false)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -498,6 +537,55 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       })
   }, [send, replyTarget, pendingFile, appendSent])
 
+  // Focusable (non-system) messages in visual order (oldest→newest). System lines aren't focusable.
+  const messages = state.status === "ready" ? state.messages : null
+  const focusable = useMemo(() => (messages ?? []).filter((m) => m.kind !== "system"), [messages])
+
+  // Reset the keyboard cursor when the conversation changes (a stale id doesn't leak across panes).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
+  useEffect(() => {
+    setFocusedId(null)
+    setRowCommand(null)
+  }, [convId])
+
+  // Report the focused message (id + own-ness) up so chat-app's palette/keys context stays honest.
+  const focused = focusable.find((m) => m.id === focusedId) ?? null
+  useEffect(() => {
+    if (!visible) return
+    onFocusChange?.(focused ? { id: focused.id, isOwn: !!focused.self } : null)
+  }, [visible, focused, onFocusChange])
+
+  const moveFocus = useCallback(
+    (delta: 1 | -1) => {
+      setFocusedId((cur) => {
+        if (focusable.length === 0) return cur
+        const i = cur ? focusable.findIndex((m) => m.id === cur) : -1
+        // From no-focus: `next` starts at the newest (last), `prev` at the newest too — j/k both enter
+        // at the bottom, the natural reading position in a bottom-anchored thread.
+        if (i === -1) return focusable[focusable.length - 1].id
+        const next = Math.min(focusable.length - 1, Math.max(0, i + delta))
+        return focusable[next].id
+      })
+    },
+    [focusable],
+  )
+
+  useImperativeHandle(
+    ref,
+    (): ThreadHandle => ({
+      focusNext: () => moveFocus(1),
+      focusPrev: () => moveFocus(-1),
+      getFocused: () => (focused ? { id: focused.id, isOwn: !!focused.self } : null),
+      command: (type) => {
+        // A command with no focused row is a no-op — chat-app gates on getFocused() anyway.
+        if (!focusedId) return
+        setRowCommand({ type, nonce: Date.now() })
+      },
+      isComposerFocused: () => composerFocusedRef.current,
+    }),
+    [moveFocus, focused, focusedId],
+  )
+
   const composer = (
     <div className="shrink-0 border-border border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
       {send.phase === "failed" && (
@@ -556,7 +644,13 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
         <textarea
           className="max-h-32 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus:ring-1 focus:ring-ring"
           disabled={send.phase === "sending"}
+          onBlur={() => {
+            composerFocusedRef.current = false
+          }}
           onChange={(e) => setSend(reduceSend(send, { type: "edit", draft: e.target.value }))}
+          onFocus={() => {
+            composerFocusedRef.current = true
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault()
@@ -641,6 +735,8 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
                 .reverse()
                 .map((m) => (
                   <MessageRow
+                    command={m.id === focusedId ? (rowCommand ?? undefined) : undefined}
+                    focused={m.id === focusedId}
                     key={m.id}
                     message={m}
                     onDelete={onDelete}
@@ -657,7 +753,7 @@ export function ThreadView({ conversation, onBack, visible = true }: ThreadViewP
       )}
     </div>
   )
-}
+})
 
 // Composer failure copy — honest and specific where we can be, generic otherwise.
 function sendErrorCopy(code: string): string {

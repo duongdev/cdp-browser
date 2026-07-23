@@ -16,7 +16,7 @@ import {
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { type MouseEvent, useLayoutEffect, useRef, useState } from "react"
+import { type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -58,6 +58,13 @@ function reactorTitle(r: TeamsReaction): string | undefined {
   return hidden > 0 ? `${shown.join(", ")} and ${hidden} more` : shown.join(", ")
 }
 
+/** A keyboard command targeted at the focused row (t152). The `nonce` changes on each dispatch so a
+ *  repeat of the same key re-fires the effect. chat-app → thread-view → the focused MessageRow. */
+export interface RowCommand {
+  type: "edit" | "delete" | "react"
+  nonce: number
+}
+
 interface MessageRowProps {
   message: TeamsMessage
   /** Toggle the viewer's reaction for `key` on this message (t142). `remove` true → leave it.
@@ -70,6 +77,10 @@ interface MessageRowProps {
   /** Delete the viewer's OWN message (t144). The parent optimistically tombstones it + fires the
    *  best-effort call. Only passed for own, non-deleted messages. */
   onDelete?: (msgId: string) => void
+  /** Keyboard focus (t152): draws a ring + scrolls into view. */
+  focused?: boolean
+  /** A keyboard command aimed at this row when it's focused (t152). Only acted on when `focused`. */
+  command?: RowCommand
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -83,7 +94,7 @@ export function MessageRow(props: MessageRowProps) {
   return <ChatMessageRow {...props} />
 }
 
-function ChatMessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps) {
+function ChatMessageRow({ message, onReact, onEdit, onDelete, focused, command }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
   const time = relativeTime(message.ts)
@@ -104,6 +115,7 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps)
   const [editErr, setEditErr] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
 
   // Auto-grow the editor up to a cap (mirrors the composer); re-measure on each keystroke.
   // biome-ignore lint/correctness/useExhaustiveDependencies: draft is the deliberate re-measure trigger
@@ -149,6 +161,23 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps)
     }
   }
 
+  // Keyboard focus (t152): scroll the focused row into view (nearest — no jump when already shown).
+  useEffect(() => {
+    if (focused) rowRef.current?.scrollIntoView({ block: "nearest" })
+  }, [focused])
+
+  // Act on a keyboard command aimed at this row while it's focused (t152). The nonce re-fires the
+  // effect on a repeat key. `e`/`r`/`⌫` route through the SAME inline flows a click would — edit
+  // opens the editor, delete opens the AlertDialog confirm (never bypassed), react opens the bar.
+  const cmdNonce = command?.nonce
+  // biome-ignore lint/correctness/useExhaustiveDependencies: nonce is the deliberate re-fire trigger
+  useEffect(() => {
+    if (!focused || !command) return
+    if (command.type === "edit" && canManage && onEdit) startEdit()
+    else if (command.type === "delete" && canManage && onDelete) setConfirmOpen(true)
+    else if (command.type === "react" && canReact) setPickerOpen(true)
+  }, [cmdNonce])
+
   // Clicking a chip toggles my own reaction for that key (mine → remove, else join).
   const toggleChip = (r: TeamsReaction) => onReact?.(message.id, r.key, r.emoji, r.mine)
   // Tapping a quick-bar emoji adds it (a re-tap of one I already made is a no-op upstream).
@@ -169,7 +198,16 @@ function ChatMessageRow({ message, onReact, onEdit, onDelete }: MessageRowProps)
   }
 
   return (
-    <div className={cn("flex flex-col gap-0.5", self ? "items-end" : "items-start")}>
+    <div
+      className={cn(
+        "flex flex-col gap-0.5 rounded-2xl",
+        self ? "items-end" : "items-start",
+        // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
+        // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
+        focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
+      )}
+      ref={rowRef}
+    >
       {!self && !!message.senderName && (
         <span className="px-1 font-medium text-muted-foreground text-xs">{message.senderName}</span>
       )}

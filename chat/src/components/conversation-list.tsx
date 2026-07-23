@@ -26,6 +26,8 @@ interface ConversationListProps {
   onOpenConversation: (conversation: TeamsConversation) => void
   /** The open conversation, highlighted in the wide two-pane; null on the phone (stacked). */
   selectedId?: string | null
+  /** The keyboard-focused row (t152) — a coral ring, distinct from `selectedId`. */
+  focusedId?: string | null
   /** Fires with the loaded list (and every merge), so a deep-linked stub pane can pick up its
    *  real metadata (title etc.) once the list arrives (t150). */
   onConversations?: (conversations: TeamsConversation[]) => void
@@ -37,6 +39,7 @@ interface ConversationListProps {
 export function ConversationList({
   onOpenConversation,
   selectedId,
+  focusedId,
   onConversations,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
@@ -189,6 +192,7 @@ export function ConversationList({
         <ConversationRow
           active={c.id === selectedId}
           conversation={c}
+          focused={c.id === focusedId}
           key={c.id}
           onOpen={onOpenConversation}
         />

@@ -1,11 +1,15 @@
 import { BubbleChatIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
 import { NotifyToggle } from "./components/notify-toggle"
-import { ThreadView } from "./components/thread-view"
+import { ShortcutOverlay } from "./components/shortcut-overlay"
+import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
+import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
+import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import type { TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 
@@ -50,13 +54,21 @@ function stubConversation(id: string): TeamsConversation {
   }
 }
 
+// The 'g …' two-key sequence window (t152): after a bare `g`, the next key within this window is the
+// second half (g i → inbox). Mirrors Linear/Gmail.
+const G_SEQUENCE_MS = 1000
+
 /** Root of the standalone Teams chat app (t128/t129, ADR-0019). List+pane: wide shows the
  *  conversation list beside the thread; narrow shows one at a time with a back button.
  *
  *  Instant switch (t132): every opened conversation's thread stays mounted (its own pane, hidden
  *  when inactive via display:none) so switching is a pure visibility toggle — no remount, no
  *  refetch, scroll retained. The pure keep-alive model (`openThread`) decides which panes mount and
- *  which is active + evicts the least-recently-viewed past the cap; this component only renders. */
+ *  which is active + evicts the least-recently-viewed past the cap; this component only renders.
+ *
+ *  Keyboard-first (t152): a global keydown router (`routeKey`) drives list/thread focus (j/k, arrows),
+ *  the ⌘K palette, the `?` overlay, and message actions on the focused thread message — all through
+ *  the pure command registry, so the palette and overlay share one source of truth. */
 export function ChatApp() {
   const isWide = useIsWide()
   const [keepAlive, setKeepAlive] = useState<KeepAliveState>(EMPTY_KEEPALIVE)
@@ -126,10 +138,14 @@ export function ChatApp() {
     return () => window.removeEventListener("popstate", onPop)
   }, [openConversationById])
 
-  // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
-  // (id only). When the list loads/merges, swap any tracked entry for the real object so the
-  // thread header picks up the resolved title. Only ids already tracked are stored.
+  // The live conversation list (t152): captured from the list component so keyboard j/k has an order
+  // to walk and the palette can jump to any of them. Also feeds the late-metadata swap below.
+  const [conversations, setConversations] = useState<TeamsConversation[]>([])
   const onConversations = useCallback((list: TeamsConversation[]) => {
+    setConversations(list)
+    // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
+    // (id only). When the list loads/merges, swap any tracked entry for the real object so the
+    // thread header picks up the resolved title. Only ids already tracked are stored.
     setConvById((m) => {
       let next = m
       for (const c of list) {
@@ -147,18 +163,231 @@ export function ChatApp() {
     if (window.location.pathname !== "/chat/") window.history.pushState(null, "", "/chat/")
   }, [])
 
+  // ── Keyboard-first navigation (t152) ────────────────────────────────────────────────────────
+  // List cursor + the active thread pane's handle + its reported focused message. The list cursor
+  // is by id (survives a merge that reorders); on phone the "list" view is the list, on wide it's
+  // always visible beside the thread.
+  const [focusedConvId, setFocusedConvId] = useState<string | null>(null)
+  const activeThreadRef = useRef<ThreadHandle | null>(null)
+  const [threadFocus, setThreadFocus] = useState<ThreadFocus | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [overlayOpen, setOverlayOpen] = useState(false)
+  const pendingG = useRef(false)
+  const gTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  // The surface a keystroke acts on: the thread only when one is actually OPEN and on screen (on
+  // phone, when the thread view is showing). Otherwise the list — including the wide layout's boot
+  // state (t152 fix: `view` was "thread" there with no pane open, so j/k drove a null thread handle
+  // and the list cursor never moved).
+  const threadOpen = !!keepAlive.active && (isWide || phoneView === "thread")
+  const view: "list" | "thread" = threadOpen ? "thread" : "list"
+
+  // Move the list cursor by delta (down = next, i.e. further down the list).
+  const moveListFocus = useCallback(
+    (delta: 1 | -1) => {
+      setFocusedConvId((cur) => {
+        if (conversations.length === 0) return cur
+        const i = cur ? conversations.findIndex((c) => c.id === cur) : -1
+        if (i === -1) return conversations[0].id
+        const next = Math.min(conversations.length - 1, Math.max(0, i + delta))
+        return conversations[next].id
+      })
+    },
+    [conversations],
+  )
+
+  const clearPendingG = useCallback(() => {
+    pendingG.current = false
+    if (gTimer.current) clearTimeout(gTimer.current)
+  }, [])
+
+  // The context the palette + key router read. threadFocus drives message-action availability.
+  const ctx: ChatContext = useMemo(
+    () => ({
+      view,
+      focusedConversationId: view === "list" ? focusedConvId : keepAlive.active,
+      focusedMessageId: threadFocus?.id ?? null,
+      isOwnMessage: threadFocus?.isOwn ?? false,
+    }),
+    [view, focusedConvId, keepAlive.active, threadFocus],
+  )
+
+  // The command registry (t152): pure data, effects injected here. Jump-to-conversation rows are
+  // generated per conversation; the rest are static app/message actions. Only actions that work
+  // TODAY are listed — no dead entries (settings/mark-read land in later workstreams).
+  const actions: ChatAction[] = useMemo(() => {
+    const jumps: ChatAction[] = conversations.slice(0, 50).map((c) => ({
+      id: `jump:${c.id}`,
+      label: c.title?.trim() || c.topic?.trim() || (c.kind === "self" ? "Notes" : "Direct message"),
+      group: "Conversation",
+      run: () => openConversation(c),
+    }))
+    return buildActions([
+      { id: "go-inbox", label: "Go to inbox", group: "Navigation", keys: "g i", run: backToList },
+      {
+        id: "focus-next",
+        label: "Focus next",
+        group: "Navigation",
+        keys: "j",
+        run: () => (view === "list" ? moveListFocus(1) : activeThreadRef.current?.focusNext()),
+      },
+      {
+        id: "focus-prev",
+        label: "Focus previous",
+        group: "Navigation",
+        keys: "k",
+        run: () => (view === "list" ? moveListFocus(-1) : activeThreadRef.current?.focusPrev()),
+      },
+      {
+        id: "shortcuts",
+        label: "Keyboard shortcuts",
+        group: "App",
+        keys: "?",
+        run: () => setOverlayOpen(true),
+      },
+      ...jumps,
+      {
+        id: "msg-react",
+        label: "React to message",
+        group: "Message",
+        keys: "r",
+        when: (c) => c.view === "thread" && !!c.focusedMessageId,
+        run: () => activeThreadRef.current?.command("react"),
+      },
+      {
+        id: "msg-edit",
+        label: "Edit message",
+        group: "Message",
+        keys: "e",
+        when: (c) => c.view === "thread" && !!c.isOwnMessage,
+        run: () => activeThreadRef.current?.command("edit"),
+      },
+      {
+        id: "msg-delete",
+        label: "Delete message",
+        group: "Message",
+        keys: "⌫",
+        when: (c) => c.view === "thread" && !!c.isOwnMessage,
+        run: () => activeThreadRef.current?.command("delete"),
+      },
+    ])
+  }, [conversations, openConversation, backToList, view, moveListFocus])
+
+  // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (paletteOpen || overlayOpen) return
+      const intent = routeKey(
+        {
+          key: e.key,
+          metaKey: e.metaKey,
+          ctrlKey: e.ctrlKey,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          target: e.target,
+        },
+        // Composer focus is read from the active pane, not tracked in React state (avoids a re-render
+        // per focus change); the pane exposes it so bare-key shortcuts don't fire mid-typing.
+        { ...ctx, composerFocused: activeThreadRef.current?.isComposerFocused() ?? false },
+        pendingG.current,
+      )
+      // A pending `g` is consumed by whatever key came next (matched or not); re-arm only on g-prefix.
+      const wasPendingG = pendingG.current
+      if (wasPendingG) clearPendingG()
+      if (!intent) return
+
+      switch (intent.type) {
+        case "palette":
+          e.preventDefault()
+          setPaletteOpen(true)
+          break
+        case "overlay":
+          e.preventDefault()
+          setOverlayOpen(true)
+          break
+        case "g-prefix":
+          e.preventDefault()
+          pendingG.current = true
+          gTimer.current = setTimeout(() => {
+            pendingG.current = false
+          }, G_SEQUENCE_MS)
+          break
+        case "go-inbox":
+          e.preventDefault()
+          backToList()
+          break
+        case "focus-next":
+          e.preventDefault()
+          if (view === "list") moveListFocus(1)
+          else activeThreadRef.current?.focusNext()
+          break
+        case "focus-prev":
+          e.preventDefault()
+          if (view === "list") moveListFocus(-1)
+          else activeThreadRef.current?.focusPrev()
+          break
+        case "open": {
+          e.preventDefault()
+          const c = conversations.find((x) => x.id === focusedConvId)
+          if (c) openConversation(c)
+          break
+        }
+        case "edit":
+          e.preventDefault()
+          activeThreadRef.current?.command("edit")
+          break
+        case "delete":
+          e.preventDefault()
+          activeThreadRef.current?.command("delete")
+          break
+        case "react":
+          e.preventDefault()
+          activeThreadRef.current?.command("react")
+          break
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [
+    ctx,
+    view,
+    paletteOpen,
+    overlayOpen,
+    conversations,
+    focusedConvId,
+    moveListFocus,
+    openConversation,
+    backToList,
+    clearPendingG,
+  ])
+
   const threadPanes = keepAlive.mounted.map((id) => {
     const conv = convById[id]
     if (!conv) return null
+    const isActive = id === keepAlive.active
     return (
       <ThreadView
         conversation={conv}
         key={id}
         onBack={isWide ? undefined : backToList}
-        visible={id === keepAlive.active && (isWide || phoneView === "thread")}
+        onFocusChange={isActive ? setThreadFocus : undefined}
+        ref={isActive ? activeThreadRef : undefined}
+        visible={isActive && (isWide || phoneView === "thread")}
       />
     )
   })
+
+  const palette = (
+    <>
+      <CommandPalette
+        actions={actions}
+        ctx={ctx}
+        onOpenChange={setPaletteOpen}
+        open={paletteOpen}
+      />
+      <ShortcutOverlay actions={actions} onOpenChange={setOverlayOpen} open={overlayOpen} />
+    </>
+  )
 
   if (isWide) {
     return (
@@ -167,6 +396,7 @@ export function ChatApp() {
           <AppHeader />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
+              focusedId={view === "list" ? focusedConvId : null}
               onConversations={onConversations}
               onOpenConversation={openConversation}
               selectedId={keepAlive.active || null}
@@ -181,6 +411,7 @@ export function ChatApp() {
             </div>
           )}
         </section>
+        {palette}
       </div>
     )
   }
@@ -191,6 +422,7 @@ export function ChatApp() {
         <AppHeader />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
+            focusedId={focusedConvId}
             onConversations={onConversations}
             onOpenConversation={openConversation}
             selectedId={keepAlive.active || null}
@@ -198,6 +430,7 @@ export function ChatApp() {
         </main>
       </div>
       <div className={cn("min-h-0 flex-1", phoneView === "list" && "hidden")}>{threadPanes}</div>
+      {palette}
     </div>
   )
 }
