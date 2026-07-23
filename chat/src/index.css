@@ -4,6 +4,60 @@
    module graph, so the shared ui components imported by the chat views are covered. */
 @import "../../src/index.css";
 
+/* Airbnb-flavoured re-skin, chat-only (t149). Overrides the shared shadcn tokens AFTER the import
+   so every ui/* component inherits without a fork; the / browser build is untouched. Warmth comes
+   from geometry + whitespace + one soft shadow tier + warm-neutral surfaces, NOT full Rausch — the
+   coral accent is reserved for focus rings, unread, and the own-message bubble tint. Manrope stays.
+   Safe to scope on bare :root/.dark: the chat app is served standalone at /chat, never sharing a DOM
+   with the / build. */
+:root {
+  --radius: 0.85rem;
+  /* Warm-neutral surfaces (a low-chroma ~70° hue reads as paper, not clinical grey). */
+  --background: oklch(0.995 0.003 80);
+  --card: oklch(1 0.002 80);
+  --popover: oklch(1 0.002 80);
+  --secondary: oklch(0.965 0.005 80);
+  --muted: oklch(0.965 0.006 80);
+  --accent: oklch(0.965 0.006 80);
+  /* Warm ink for text + the own-message bubble (subtle warmth, not black). */
+  --foreground: oklch(0.24 0.01 60);
+  --primary: oklch(0.27 0.012 40);
+  --primary-foreground: oklch(0.985 0.004 80);
+  --muted-foreground: oklch(0.53 0.012 60);
+  --accent-foreground: oklch(0.27 0.012 40);
+  --secondary-foreground: oklch(0.27 0.012 40);
+  /* Hairline borders + a warm coral focus/unread accent. */
+  --border: oklch(0.9 0.006 70);
+  --input: oklch(0.9 0.006 70);
+  --ring: oklch(0.64 0.19 15);
+}
+
+.dark {
+  --radius: 0.85rem;
+  --background: oklch(0.17 0.006 60);
+  --card: oklch(0.21 0.007 60);
+  --popover: oklch(0.21 0.007 60);
+  --secondary: oklch(0.27 0.008 60);
+  --muted: oklch(0.27 0.008 60);
+  --accent: oklch(0.27 0.008 60);
+  --foreground: oklch(0.97 0.004 80);
+  --primary: oklch(0.9 0.006 70);
+  --primary-foreground: oklch(0.22 0.008 60);
+  --muted-foreground: oklch(0.7 0.01 70);
+  --accent-foreground: oklch(0.97 0.004 80);
+  --secondary-foreground: oklch(0.97 0.004 80);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.64 0.19 15);
+}
+
+/* One soft shadow tier for elevated chat surfaces (popovers, menus, quick-react bar) — the shadow
+   utilities the shared ui/* components already use (shadow-sm/shadow-md) rescaled to Airbnb softness. */
+@theme inline {
+  --shadow-sm: 0 1px 2px 0 oklch(0.2 0.02 60 / 0.06), 0 2px 8px -2px oklch(0.2 0.02 60 / 0.08);
+  --shadow-md: 0 4px 16px -4px oklch(0.2 0.02 60 / 0.1), 0 2px 6px -2px oklch(0.2 0.02 60 / 0.08);
+}
+
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
    currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
    preflight resets margins/list styles, so lists and block spacing are restored here. */
