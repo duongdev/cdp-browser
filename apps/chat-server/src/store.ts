@@ -363,6 +363,35 @@ export function listMessages(
   }))
 }
 
+/** One stored message by id, or null. Used by the push sweep to read the last message's sender name
+ *  and `mentionsMe` (the conversation row alone doesn't carry them). */
+export function getMessage(
+  db: Db,
+  service: string,
+  convId: string,
+  id: string,
+): StoredMessage | null {
+  const r = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = ? AND conv_id = ? AND id = ?
+    `)
+    .get(service, convId, id) as MsgRow | undefined
+  if (!r) return null
+  return {
+    id: r.id,
+    ts: r.ts,
+    version: r.version,
+    senderId: r.sender_id,
+    senderName: r.sender_name,
+    body: r.body,
+    raw: parseRaw(r.raw),
+    edited: !!r.edited,
+    deleted: !!r.deleted,
+    mentionsMe: !!r.mentions_me,
+  }
+}
+
 interface MsgRow {
   id: string
   version: number | null

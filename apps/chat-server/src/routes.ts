@@ -29,6 +29,9 @@ export interface RoutesDeps {
   providers: Map<ChatService, ChatProvider>
   /** service id → backfill engine. Optional so tests/boot without an engine still serve the route. */
   backfills?: Map<ChatService, BackfillAccessor>
+  /** The non-secret VAPID public key the FE uses as `applicationServerKey` (WS-G). Absent → the
+   *  key route returns null and push is effectively disabled. */
+  vapidPublicKey?: string
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -244,6 +247,33 @@ export function createRoutes(deps: RoutesDeps) {
     if (!engine) return c.json({ ok: true, ...idleBackfill(service) })
     if (b.action === "start") return c.json({ ok: true, ...engine.startBackfill({ days: b.days }) })
     return c.json({ ok: true, ...engine.getBackfillStatus() })
+  })
+
+  // ---- web push (BFF owns Teams push, WS-G) --------------------------------
+  // The public key is non-secret (the FE's applicationServerKey). Subscribe stores the sub keyed by
+  // endpoint; unsubscribe drops it. The sweep is the sender (see sweep.ts / push.ts).
+
+  app.get("/push/vapid-public-key", (c) => c.json({ key: deps.vapidPublicKey ?? null }))
+
+  app.post("/push/subscribe", async (c) => {
+    const b = await readBody(c)
+    const service = b.service || DEFAULT_SERVICE
+    const sub = b.subscription
+    if (!sub?.endpoint) throw new ProviderError("missing_endpoint", 400)
+    store.savePushSub(deps.db, service, {
+      endpoint: sub.endpoint,
+      deviceId: b.deviceId,
+      subscription: sub,
+    })
+    return c.json({ ok: true })
+  })
+
+  app.post("/push/unsubscribe", async (c) => {
+    const b = await readBody(c)
+    const service = b.service || DEFAULT_SERVICE
+    if (!b.endpoint) throw new ProviderError("missing_endpoint", 400)
+    store.deletePushSub(deps.db, service, b.endpoint)
+    return c.json({ ok: true })
   })
 
   return app

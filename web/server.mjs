@@ -1239,17 +1239,13 @@ async function teamsNotifySweep() {
   for (const n of deliverable) await sendTeamsPush(buildTeamsPushPayload(n, convMap.get(n.convId)))
 }
 
-// Poll every 10s. Single-flight so a slow in-page fetch can't stack overlapping sweeps.
-let teamsNotifyInFlight = false
-setInterval(() => {
-  if (teamsNotifyInFlight) return
-  teamsNotifyInFlight = true
-  teamsNotifySweep()
-    .catch((e) => console.error("[teams-push] sweep failed:", e.message))
-    .finally(() => {
-      teamsNotifyInFlight = false
-    })
-}, 10_000)
+// PSN-93 (WS-G): the chat BFF (apps/chat-server) is now the SOLE Teams push sender — it sweeps Teams
+// and fires web push off its own DB deltas (honoring per-conversation mute/notifyOnMention). This
+// server.mjs sweep is disabled so a single message can't push twice (BFF + here). `teamsNotifySweep`
+// / `sendTeamsPush` / the `/api/teams/push/*` routes stay defined for the transition but no longer
+// run on a timer; the FE now subscribes via `/api/chat/push/*` (proxied to the BFF). Re-enabling this
+// interval would re-introduce the double-fire. Slack/browser push (sendPushToAll) is untouched.
+void teamsNotifySweep // referenced so lint doesn't flag it as unused while the definition stays
 
 // ---- DM / group-DM name resolution (t131, ADR-0019) -----------------------
 // A DM/group-DM has no topic, so its title is built from member display names. CA-proof like the

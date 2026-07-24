@@ -16,6 +16,7 @@ import type BetterSqlite3 from "better-sqlite3"
 import type { ChatService } from "./contract.ts"
 import type { ChatProvider } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
+import { buildPushPayload, type PushSender, shouldPush } from "./push.ts"
 import * as store from "./store.ts"
 import { planConversationSweep, planMessageSweep } from "./sweep-plan.ts"
 import { toConversationInput, toMessageInput } from "./upsert-map.ts"
@@ -42,6 +43,9 @@ export interface SweepDeps {
   service: ChatService
   broadcast: (msg: import("./contract.ts").ChatWsServerMessage) => void
   getFocusedConvIds: () => string[]
+  /** Web push sender — fires on a genuinely new inbound last message (WS-G). Optional: absent → no
+   *  push (tests, or a build with no VAPID). */
+  pushSender?: PushSender
   timers?: Timers
   listMs?: number
   focusMs?: number
@@ -60,7 +64,7 @@ export interface SweepEngine {
 }
 
 export function createSweepEngine(deps: SweepDeps): SweepEngine {
-  const { db, provider, service, broadcast, getFocusedConvIds } = deps
+  const { db, provider, service, broadcast, getFocusedConvIds, pushSender } = deps
   const timers = deps.timers ?? realTimers
   const listMs = deps.listMs ?? LIST_SWEEP_MS
   const focusMs = deps.focusMs ?? FOCUS_SWEEP_MS
@@ -101,6 +105,10 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
       )
       const rows = changedConversations.map((c) => after.get(c.id) ?? c)
       if (rows.length) broadcast({ type: "conversation-upsert", service, conversations: rows })
+      // The BFF is the sole Teams push sender (WS-G): a genuinely new inbound last message pushes to
+      // every stored sub with zero FE clients open. Use the post-upsert row (resolved readTs) and gate
+      // per-conversation prefs; a cold-start conv (no prior) seeds silently.
+      if (pushSender) await maybePush(rows, prior)
       for (const rs of readStateChanges) {
         broadcast({
           type: "read-state",
@@ -113,6 +121,25 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
       markHealthy()
     } catch (err) {
       markUnhealthy(healthCodeOf(err))
+    }
+  }
+
+  // Fire a web push for each changed conversation whose new last message is genuinely inbound. The
+  // conv row lacks the last message's sender name / mention flag, so read those from the store (synced
+  // by the same upsert or a prior focus/backfill). A missing message → no sender + not-a-mention (a
+  // muted+notifyOnMention conv then won't push, which is safe). Best-effort: a send never throws.
+  async function maybePush(
+    rows: import("./contract.ts").ChatConversation[],
+    prior: Map<string, unknown>,
+  ): Promise<void> {
+    if (!pushSender) return
+    for (const conv of rows) {
+      const last = conv.lastMessageId
+        ? store.getMessage(db, service, conv.id, conv.lastMessageId)
+        : null
+      const prefs = store.getPrefs(db, service, conv.id)
+      if (!shouldPush(conv, prior.has(conv.id), prefs, !!last?.mentionsMe)) continue
+      await pushSender.send(buildPushPayload(conv, last?.senderName ?? null))
     }
   }
 

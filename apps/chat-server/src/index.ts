@@ -12,11 +12,13 @@ import type { Server } from "node:http"
 import { serve } from "@hono/node-server"
 import Database from "better-sqlite3"
 import { Hono } from "hono"
+import webpush from "web-push"
 import { createBackfillEngine } from "./backfill.ts"
 import type { ChatService } from "./contract.ts"
 import { MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
+import { createPushSender } from "./push.ts"
 import { type BackfillAccessor, createRoutes } from "./routes.ts"
 import { migrate } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
@@ -24,6 +26,18 @@ import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
 
 const dbPath = process.env.CHAT_DB || "chat.db"
 const db = migrate(new Database(dbPath))
+
+// VAPID keys for Teams web push (WS-G, decision 8). These MUST match the keys server.mjs used for
+// /api/teams/push (the same defaults below) — regenerating them would silently kill every already-
+// installed PWA's subscription. Override in prod via VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY /
+// VAPID_SUBJECT; the same env the browser PWA push already reads, so both surfaces stay in sync.
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:admin@example.com"
+const VAPID_PUBLIC_KEY =
+  process.env.VAPID_PUBLIC_KEY ||
+  "BDIDtkQnVIAwcjjpgXgUSKLj6DGvZx_E9UMe4vzn1S-ih2rTIlZMGU_unzeBfIW6VSG_6bF8gUqMvMJUuHeZyzo"
+const VAPID_PRIVATE_KEY =
+  process.env.VAPID_PRIVATE_KEY || process.env.VAPID_PRIVATE_KEY
+webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
 
 const providers = new Map<ChatService, ChatProvider>()
 if (process.env.CHAT_PROVIDER === "mock") providers.set("mock", new MockProvider("mock"))
@@ -37,7 +51,7 @@ for (const [service, provider] of providers) {
 
 const app = new Hono()
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
-app.route("/api/chat", createRoutes({ db, providers, backfills }))
+app.route("/api/chat", createRoutes({ db, providers, backfills, vapidPublicKey: VAPID_PUBLIC_KEY }))
 
 const port = Number(process.env.CHAT_SERVER_PORT) || 7810
 
@@ -50,7 +64,15 @@ attachWsHub(nodeServer, db)
 // Start the sweep once the hub is attached so `broadcast` reaches live clients. One engine per
 // provider; each drives its own list + focus lanes off the shared hub.
 for (const [service, provider] of providers) {
-  const sweep = createSweepEngine({ db, provider, service, broadcast, getFocusedConvIds })
+  const pushSender = createPushSender({ db, service, webpush })
+  const sweep = createSweepEngine({
+    db,
+    provider,
+    service,
+    broadcast,
+    getFocusedConvIds,
+    pushSender,
+  })
   sweep.start()
 }
 
