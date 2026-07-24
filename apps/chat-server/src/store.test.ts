@@ -130,6 +130,18 @@ describe("read state", () => {
     expect(row.readTs).toBe(0)
   })
 
+  test("mark-unread sentinel survives a full sweep upsert re-syncing the horizon (PSN-93 WS-J)", () => {
+    // The real sweep path: markUnread, then a conversations sweep carries Teams' advanced
+    // consumptionHorizon in via upsertConversations(readHorizonTs) — must NOT clear the sentinel.
+    markConversationUnread(db, "teams", "c")
+    upsertConversations(db, "teams", [
+      { id: "c", lastMessageVersion: 2, lastMessageTs: 20_000, readHorizonTs: 20_000 },
+    ])
+    const row = listConversations(db, "teams")[0]
+    expect(row.unreadSticky).toBe(true)
+    expect(row.readTs).toBe(0)
+  })
+
   test("explicit mark-read clears the sentinel", () => {
     markConversationUnread(db, "teams", "c")
     markConversationRead(db, "teams", "c", 10_000)

@@ -248,7 +248,7 @@ export function ChatApp() {
   // OWN state, so the override map is passed down and applied THERE (patching the app-side copy
   // never reached the screen — the iteration-2 bug). `patchConvRead` lays an override (instant dot
   // change, poll-proof via applyReadOverride's max-merge) and, when `persist`, POSTs
-  // /api/teams/read-local so the server agrees (opens persist too — a kept-alive re-open has no
+  // /api/chat/read-local so the server agrees (opens persist too — a kept-alive re-open has no
   // history load to write local_read for it).
   const [readOverrides, setReadOverrides] = useState<Record<string, ReadOverride>>({})
   const patchConvRead = useCallback((id: string, action: "read" | "unread", persist: boolean) => {

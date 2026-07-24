@@ -128,7 +128,7 @@ interface ConversationListProps {
   onConnectionChange?: (ok: boolean) => void
 }
 
-/** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
+/** The conversation list — driven by the BFF WS snapshot + `/api/chat/*` deltas, covers all four
  *  states, and auto-pages older via infinite scroll (a bottom IntersectionObserver sentinel, t136)
  *  driven by the backwardLink cursor (t134). */
 export function ConversationList({

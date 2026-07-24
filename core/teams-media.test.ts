@@ -13,7 +13,7 @@ const GIPHY = "https://media1.giphy.com/media/xyz/giphy.gif"
 const STATICS =
   "https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/giggle.png"
 
-const proxy = (u: string) => `/api/teams/media?url=${encodeURIComponent(u)}`
+const proxy = (u: string) => `/api/chat/media?service=teams&url=${encodeURIComponent(u)}`
 
 describe("isValidAmsUrl", () => {
   it("accepts an as-api.asm.skype.com object url", () => {

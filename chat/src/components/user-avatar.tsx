@@ -12,7 +12,7 @@ interface UserAvatarProps {
 }
 
 /** A user avatar: the initial-letter tile always renders behind; when `userId` resolves a real
- *  Graph photo (`/api/teams/avatar`), the img fades in absolutely on top — same fixed box, so a
+ *  Graph photo (`/api/chat/avatar`), the img fades in absolutely on top — same fixed box, so a
  *  load/miss never shifts layout. A 204 (no photo) or any error keeps the initials (the img's
  *  `onError`, since a 204 has no decodable body). Photos are proxied + cached server-side. */
 /** Teams-style composite avatar for a group chat (t161): the first two members' photos as two

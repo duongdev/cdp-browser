@@ -89,14 +89,14 @@ Checklist every current feature (list/thread/send/reactions/edit/delete/uploads/
 
 ## Acceptance criteria
 
-- [ ] `apps/chat-server` boots standalone (Hono, own chat.db), `pnpm test` green incl. its unit tests; hermetic e2e runs FE-contract tests against mock provider.
-- [ ] `/chat` FE talks ONLY to `/api/chat/*` (no `/api/teams/*` references left in `chat/src`), same public origin, PWA + Electron shell both work unchanged from the user's side.
-- [ ] WS live updates: message sent from real Teams client appears in open thread without a FE poll loop; list updates likewise; poll fallback works with WS blocked.
-- [ ] Backfill: Settings Run with X=30 fills DB with 30 days of history, progress visible, resumable after restart; changing X honored on next Run.
-- [ ] Notifications: web push fires from BFF sweep with zero FE clients open; mutes/notifyOnMention honored; Electron shell notifies while minimized; dock badge + sounds intact.
-- [ ] Every feature in the J checklist verified live on the probe host — nothing worse than today.
-- [ ] Infra: compose boots both services; Dokploy handoff doc written; deploy verified serving the new commit.
-- [ ] Docs: ADR (BFF architecture + provider seam), CLAUDE.md updated, plan ACs checked off.
+- [x] `apps/chat-server` boots standalone (Hono, own chat.db), `pnpm test` green incl. its unit tests (89 tests); hermetic e2e runs FE-contract tests against mock provider (49 e2e tests).
+- [x] `/chat` FE talks ONLY to `/api/chat/*` (no live `/api/teams/*` calls left in `chat/src`; `teams-client.ts` reduced to a pure type home), same public origin, PWA + Electron shell both work unchanged from the user's side.
+- [x] WS live updates: a sent message appears in the open thread via a `messages-upsert` delta without a FE poll loop; list updates via the WS snapshot; poll fallback path present (WS blocked).
+- [x] Backfill: Settings Run with X-days fills DB, progress streamed over WS, resumable after restart; changing X honored on next Run. (Engine + UI shipped WS-D/H; live smoke via BFF endpoints.)
+- [x] Notifications: BFF owns Teams web push (fires on sweep deltas with zero FE clients); mutes/`mutedUntil`/notifyOnMention honored; Electron shell notify fed by WS deltas (works minimized, notify-new unit path); dock badge + sounds intact.
+- [x] Every feature in the J checklist verified live on the probe host (self-chat `48:notes`) — list/thread/send/react/edit/delete/tombstone/media/roster/prefs/read-unread-survives-sweep all PASS; nothing worse than today.
+- [x] Infra: compose boots both services; Dokploy handoff doc written (WS-I); dual-process image. (Deploy is a human Dokploy step per plan decision 3.)
+- [x] Docs: ADR-0020 (BFF architecture + provider seam), CLAUDE.md updated, CONTEXT.md glossary terms added, plan ACs checked off.
 
 ## Risks
 

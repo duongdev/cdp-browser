@@ -9,7 +9,7 @@
 // DOMPurify (browser-native) over this output before any dangerouslySetInnerHTML. Entities are left
 // ENCODED here — decoding them into new tags is exactly what we must not do.
 
-const { rewriteMediaHtml, isValidAmsUrl } = require("./teams-media")
+const { rewriteMediaHtml, isValidAmsUrl, mediaProxyUrl } = require("./teams-media")
 const { reactionEmoji } = require("./teams-emoji")
 
 // Escape the HTML-significant chars in literal user text. A "Text" messagetype carries plain text,
@@ -277,7 +277,7 @@ function mentionMriMap(message) {
 function proxyThumb(url) {
   if (typeof url !== "string" || !url) return ""
   const decoded = url.replace(/&amp;/g, "&")
-  return isValidAmsUrl(decoded) ? `/api/teams/media?url=${encodeURIComponent(decoded)}` : decoded
+  return isValidAmsUrl(decoded) ? mediaProxyUrl(decoded) : decoded
 }
 
 // Value of an attribute in a tag's attribute string (double/single quoted), or "".
