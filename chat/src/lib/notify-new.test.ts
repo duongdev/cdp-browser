@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { newlyArrived } from "./notify-new"
+import { newlyArrived, shouldNotifyConv } from "./notify-new"
 import type { TeamsConversation } from "./teams-client"
 
 const conv = (o: Partial<TeamsConversation>): TeamsConversation =>
@@ -42,5 +42,28 @@ describe("newlyArrived", () => {
     const prev = new Map([["A", 200]])
     const { arrived } = newlyArrived(prev, [conv({ id: "A", lastMessageTs: 200 })])
     expect(arrived).toEqual([])
+  })
+})
+
+describe("shouldNotifyConv", () => {
+  it("notifies when app is backgrounded", () => {
+    expect(shouldNotifyConv("A", null, false, false)).toBe(true)
+  })
+
+  it("notifies a different conversation even when app is visible", () => {
+    expect(shouldNotifyConv("B", "A", true, false)).toBe(true)
+  })
+
+  it("suppresses the open conversation when app is visible", () => {
+    expect(shouldNotifyConv("A", "A", true, false)).toBe(false)
+  })
+
+  it("notifies the open conversation when app is NOT visible", () => {
+    expect(shouldNotifyConv("A", "A", false, false)).toBe(true)
+  })
+
+  it("suppresses muted conversations regardless of visibility", () => {
+    expect(shouldNotifyConv("A", null, false, true)).toBe(false)
+    expect(shouldNotifyConv("A", "B", true, true)).toBe(false)
   })
 })

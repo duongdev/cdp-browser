@@ -127,9 +127,13 @@ ipcMain.on("chat:reload", async () => {
   const wc = win?.webContents
   if (!wc) return
   try {
-    await wc.executeJavaScript(
-      `(async()=>{try{const rs=await navigator.serviceWorker.getRegistrations();for(const r of rs)await r.unregister();if(self.caches){for(const k of await caches.keys())await caches.delete(k)}}catch{}})()`,
-    )
+    // Race the SW/cache clear against a timeout so a hung async IIFE never blocks the reload.
+    await Promise.race([
+      wc.executeJavaScript(
+        `(async()=>{try{const rs=await navigator.serviceWorker.getRegistrations();for(const r of rs)await r.unregister();if(self.caches){for(const k of await caches.keys())await caches.delete(k)}}catch{}})()`,
+      ),
+      new Promise((r) => setTimeout(r, 1500)),
+    ])
   } catch {
     // best-effort — reload regardless
   }

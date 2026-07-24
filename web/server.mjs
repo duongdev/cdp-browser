@@ -99,6 +99,11 @@ try {
 } catch {
   /* already exists / not writable — the individual file writes surface a real error */
 }
+if (process.env.NODE_ENV === "production" && !process.env.DATA_DIR) {
+  console.warn(
+    "[cdp-browser] DATA_DIR is not set: persistent storage is NOT configured — all data (labels, folders, settings, push subs) will be lost on redeploy. Set DATA_DIR to a mounted volume path.",
+  )
+}
 const dataPath = (name) => join(DATA_DIR, name)
 const SETTINGS_PATH = process.env.SETTINGS_PATH || dataPath("web-settings.json")
 const NOTIFS_PATH = process.env.NOTIFS_PATH || dataPath("web-notifications.json")
@@ -2555,9 +2560,13 @@ const server = http.createServer(async (req, res) => {
   // Build identity — always plaintext (never E2E-sealed) so a deploy can be verified
   // with `curl` through a TLS-intercepting proxy without the passphrase. See t036.
   if (p === "/api/version" && !POST) {
-    return res
-      .writeHead(200, { "Content-Type": "application/json" })
-      .end(JSON.stringify({ version: APP_VERSION, sha: GIT_SHA }))
+    return res.writeHead(200, { "Content-Type": "application/json" }).end(
+      JSON.stringify({
+        version: APP_VERSION,
+        sha: GIT_SHA,
+        persistent: Boolean(process.env.DATA_DIR),
+      }),
+    )
   }
 
   // E2E bootstrap — always plaintext (the client needs it before it has a key). The

@@ -21,6 +21,8 @@ export type ChatFont =
 export type ChatMono = "maple" | "anthropic-mono" | "dm-mono" | "geist-mono" | "system-mono"
 // Name display preference (t161): how person names render (see display-name.ts formatName).
 export type ChatNameDisplay = "full" | "first" | "regex"
+// Notification sound played on incoming message (PSN-98, Workstream C).
+export type ChatNotifySound = "none" | "tap" | "polite" | "calm" | "glass" | "whistle"
 
 export interface ChatSettings {
   theme: ChatTheme
@@ -30,6 +32,7 @@ export interface ChatSettings {
   nameDisplay: ChatNameDisplay
   /** The strip pattern for nameDisplay "regex"; ignored otherwise. */
   nameRegex: string
+  notifySound: ChatNotifySound
   /** Electron-shell notification toggle. Web push is managed separately by NotifyToggle. */
   notificationsEnabled: boolean
 }
@@ -41,6 +44,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   mono: "maple",
   nameDisplay: "full",
   nameRegex: "",
+  notifySound: "polite",
   notificationsEnabled: true,
 }
 
@@ -52,6 +56,7 @@ export const CHAT_FONT_BASE = "chatFont"
 export const CHAT_MONO_BASE = "chatMono"
 export const CHAT_NAME_DISPLAY_BASE = "chatNameDisplay"
 export const CHAT_NAME_REGEX_BASE = "chatNameRegex"
+export const CHAT_NOTIFY_SOUND_BASE = "chatNotifySound"
 export const CHAT_NOTIFICATIONS_BASE = "chatNotificationsEnabled"
 
 const THEMES: ChatTheme[] = ["system", "light", "dark"]
@@ -104,6 +109,14 @@ function parseNameRegex(raw: unknown): string {
   return typeof raw === "string" ? raw : ""
 }
 
+const NOTIFY_SOUNDS: ChatNotifySound[] = ["none", "tap", "polite", "calm", "glass", "whistle"]
+
+export function parseNotifySound(raw: unknown): ChatNotifySound {
+  return typeof raw === "string" && (NOTIFY_SOUNDS as string[]).includes(raw)
+    ? (raw as ChatNotifySound)
+    : DEFAULT_CHAT_SETTINGS.notifySound
+}
+
 function parseNotificationsEnabled(raw: unknown): boolean {
   return raw === false ? false : true
 }
@@ -121,6 +134,7 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
     mono: parseMono(ui[deviceKey(CHAT_MONO_BASE, deviceId)]),
     nameDisplay: parseNameDisplay(ui[deviceKey(CHAT_NAME_DISPLAY_BASE, deviceId)]),
     nameRegex: parseNameRegex(ui[deviceKey(CHAT_NAME_REGEX_BASE, deviceId)]),
+    notifySound: parseNotifySound(ui[deviceKey(CHAT_NOTIFY_SOUND_BASE, deviceId)]),
     notificationsEnabled: parseNotificationsEnabled(
       ui[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)],
     ),
@@ -142,6 +156,8 @@ export function writeChatSettings(
     out[deviceKey(CHAT_NAME_DISPLAY_BASE, deviceId)] = partial.nameDisplay
   if (partial.nameRegex !== undefined)
     out[deviceKey(CHAT_NAME_REGEX_BASE, deviceId)] = partial.nameRegex
+  if (partial.notifySound !== undefined)
+    out[deviceKey(CHAT_NOTIFY_SOUND_BASE, deviceId)] = partial.notifySound
   if (partial.notificationsEnabled !== undefined)
     out[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)] = partial.notificationsEnabled
   return out

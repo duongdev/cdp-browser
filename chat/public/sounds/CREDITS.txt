@@ -1,0 +1,2 @@
+Notification sounds from akx/Notifications (https://github.com/akx/Notifications), CC0 / CC-BY 3.0 (dual-licensed).
+Files: tap.wav (Taptap), polite.wav (Polite), calm.wav (Calm), glass.wav (Glass), whistle.wav (Whistleronic).
