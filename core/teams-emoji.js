@@ -91,23 +91,4 @@ function reactionEmoji(key) {
   return "🙂"
 }
 
-// Reverse map: native emoji glyph → Teams reaction key, for arbitrary-emoji picker reactions.
-// Named 6 defaults are returned by their canonical key (like/heart/…). Any other glyph is
-// encoded as its unicode code-points in hex, joined by "_" (e.g. 💯 → "1f4af", ❤️ → "2764_fe0f").
-// Teams' decoder in reactionEmoji() uses only the FIRST hex segment to derive the glyph, so the
-// key is readable back to the correct emoji without storing the suffix name.
-const NAMED_REVERSE = Object.fromEntries(DEFAULT_REACTIONS.map((r) => [r.emoji, r.key]))
-
-function emojiToKey(emoji) {
-  if (!emoji) return null
-  if (NAMED_REVERSE[emoji]) return NAMED_REVERSE[emoji]
-  // Encode as hex codepoints joined by "_". The reactionEmoji decoder requires a "_" separator to
-  // recognise the codepoint-prefix format (`/^([0-9a-f]{4,6})_/`). Multi-codepoint glyphs (e.g.
-  // ❤️ = 2764_fe0f) naturally have the separator; single-codepoint glyphs get a trailing "_e" so
-  // the decoder's regex always fires.
-  const cps = [...emoji].map((ch) => ch.codePointAt(0).toString(16)).join("_")
-  if (!cps) return null
-  return cps.includes("_") ? cps : `${cps}_e`
-}
-
-module.exports = { reactionEmoji, emojiToKey, DEFAULT_REACTIONS }
+module.exports = { reactionEmoji, DEFAULT_REACTIONS }

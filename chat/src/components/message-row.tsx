@@ -18,7 +18,6 @@ import {
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { EmojiPicker } from "frimousse"
 import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertDialog,
@@ -36,12 +35,13 @@ import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
-import { emojiToKey } from "../lib/emoji-to-key"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
+import { getCatalogGlyph } from "../lib/use-emoji-catalog"
 import { DisplayName } from "./display-name"
+import { EmojiPicker } from "./emoji-picker"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
@@ -255,10 +255,10 @@ function ChatMessageRow({
     onReact?.(message.id, key, emoji, false)
   }
 
-  // Called by the frimousse picker — derive the Teams key from the native emoji glyph.
-  const pickerReact = (native: string) => {
-    const key = emojiToKey(native)
-    if (key) quickReact(key, native)
+  // Called by the Teams catalog picker — key is already a Teams catalog ID.
+  const pickerReact = (key: string) => {
+    const emoji = getCatalogGlyph(key) ?? key
+    quickReact(key, emoji)
   }
 
   // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
@@ -629,7 +629,7 @@ function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void
 
 /** The react affordance beside a bubble (F — reactions revamp): the 6-default quick-react bar is
  *  revealed directly on hover (fine pointer) / always-visible (coarse) — one click reacts, no
- *  intermediate toggle. A "+" at the end opens a full frimousse emoji picker in a popover.
+ *  intermediate toggle. A "+" at the end opens the Teams catalog emoji picker in a popover.
  *  The `r` keyboard command opens the full picker (`pickerOpen`). */
 function QuickReact({
   coarse,
@@ -643,7 +643,7 @@ function QuickReact({
   pickerOpen: boolean
   onPickerOpenChange: (open: boolean) => void
   onPick: (key: string, emoji: string) => void
-  onPickerPick: (native: string) => void
+  onPickerPick: (key: string) => void
   side: "start" | "end"
 }) {
   const plusRef = useRef<HTMLButtonElement>(null)
@@ -665,7 +665,7 @@ function QuickReact({
           {r.emoji}
         </button>
       ))}
-      {/* "+" opens the full frimousse picker */}
+      {/* "+" opens the Teams catalog emoji picker */}
       <div className="relative">
         <button
           aria-expanded={pickerOpen}
@@ -680,7 +680,6 @@ function QuickReact({
         {pickerOpen && (
           <>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: Esc closes the picker; buttons inside are focusable */}
             <div
               className="fixed inset-0 z-40"
               onClick={() => onPickerOpenChange(false)}
@@ -688,49 +687,17 @@ function QuickReact({
             />
             <div
               className={cn(
-                "absolute bottom-full z-50 mb-1",
+                "absolute bottom-full z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg",
                 side === "end" ? "right-0" : "left-0",
               )}
             >
-              <EmojiPicker.Root
-                className="flex h-[340px] w-[320px] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
-                onEmojiSelect={({ emoji }) => {
+              <EmojiPicker
+                onClose={() => onPickerOpenChange(false)}
+                onSelect={(key) => {
                   onPickerOpenChange(false)
-                  onPickerPick(emoji)
+                  onPickerPick(key)
                 }}
-              >
-                <EmojiPicker.Search className="m-2 rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring" />
-                <EmojiPicker.Viewport className="flex-1 overflow-y-auto">
-                  <EmojiPicker.Loading className="flex h-full items-center justify-center text-muted-foreground text-sm">
-                    Loading…
-                  </EmojiPicker.Loading>
-                  <EmojiPicker.Empty className="flex h-full items-center justify-center text-muted-foreground text-sm">
-                    No emoji found
-                  </EmojiPicker.Empty>
-                  <EmojiPicker.List
-                    components={{
-                      CategoryHeader: ({ category, ...props }) => (
-                        <div
-                          {...props}
-                          className="bg-popover px-2 py-1 text-muted-foreground text-xs font-semibold"
-                        >
-                          {category.label}
-                        </div>
-                      ),
-                      Row: (props) => <div {...props} className="flex px-1" />,
-                      Emoji: ({ emoji, ...props }) => (
-                        <button
-                          {...props}
-                          className="flex size-9 items-center justify-center rounded-lg text-xl transition-colors hover:bg-accent data-[active]:bg-accent"
-                          type="button"
-                        >
-                          {emoji.emoji}
-                        </button>
-                      ),
-                    }}
-                  />
-                </EmojiPicker.Viewport>
-              </EmojiPicker.Root>
+              />
             </div>
           </>
         )}
