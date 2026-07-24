@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.4.1...cdp-browser-v0.5.0) (2026-07-24)
+
+
+### Features
+
+* **chat:** labels/folders persistence, reload fix, notification sounds (PSN-98) ([623d44a](https://github.com/duongdev/cdp-browser/commit/623d44a3bf9616b8ba69772be965815880ec0e37))
+* **chat:** native chat UI enhancements epic (t149-t157) ([#25](https://github.com/duongdev/cdp-browser/issues/25)) ([09cf3fb](https://github.com/duongdev/cdp-browser/commit/09cf3fbc260a216baba92c14f4eb1415b0f4a8c9))
+* **chat:** reply & mention feature (PSN-92) ([#27](https://github.com/duongdev/cdp-browser/issues/27)) ([88c7a7d](https://github.com/duongdev/cdp-browser/commit/88c7a7d77fec69b28ad43a5fbb36fcfaf9e79e86))
+* **chat:** standalone Electron app for /chat + dual install ([#28](https://github.com/duongdev/cdp-browser/issues/28)) ([820415a](https://github.com/duongdev/cdp-browser/commit/820415a4fdcd066fcfcf4091c9c3c79b3f45e6cf))
+* **chat:** UI enhancements part 2 (PSN-95) ([492c9f2](https://github.com/duongdev/cdp-browser/commit/492c9f2e2aa138f0c01155f1bd70e8ef7ecbd592))
+* **chat:** UI enhancements v3 (PSN-96) ([b332108](https://github.com/duongdev/cdp-browser/commit/b33210871d24c1ebeae0c038bb91db61215a4c7b))
+* native teams chat app served at /chat (t127-t148) ([01e6a78](https://github.com/duongdev/cdp-browser/commit/01e6a78071a9d37a46680894bc2db2e2d887bd95))
+
+
+### Bug Fixes
+
+* **chat:** electron push notification not working ([#32](https://github.com/duongdev/cdp-browser/issues/32)) ([8cb6b34](https://github.com/duongdev/cdp-browser/commit/8cb6b349c6f6d60d3fe93a2eabc92a0c17d9158f))
+
 ## [0.4.1](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.4.0...cdp-browser-v0.4.1) (2026-07-13)
 
 
