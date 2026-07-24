@@ -76,6 +76,17 @@ Each sized for one session. Same branch, same PR throughout.
 
 Note: previously-created labels/folders are unrecoverable (already wiped).
 
+**Preview deployments (confirmed 2026-07-24)**: Dokploy **isolates volume names
+per preview** (a named volume `cdp-web-data` becomes `cdp-web-data-<pr-suffix>`),
+so adding the volume to the parent app gives every preview its own isolated
+volume for free — persists across that preview's redeploys (so the persistence
+bug is testable on a preview), isolated from prod + other previews, and
+destroyed by the same cleanup that removes the preview container on PR
+close/merge. No extra config beyond step 2. Each preview starts **empty** (fresh
+volume, no prod seed) — expected. Verify: write a label on a preview, redeploy
+that preview → survives; open a second preview → does NOT see the first's data
+(guards against the Dokploy isolation quirk, issue #1853).
+
 ### B — Electron reload button (bug)
 
 1. Reproduce on the installed CDP Chats shell (`pnpm dist:chat` /
