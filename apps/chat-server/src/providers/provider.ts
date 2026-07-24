@@ -1,0 +1,88 @@
+// The provider seam (PSN-93, Workstream B). A `ChatProvider` is the BFF's only door to a chat
+// service's live data. `TeamsProvider` speaks server.mjs's `/internal/teams/*`; `MockProvider`
+// speaks in-memory fixtures for hermetic tests. A future service (Slack, …) is a third
+// implementation — the sweep/routes never learn a provider's transport.
+//
+// Every method returns the service-agnostic contract types (from `../contract`); the provider is
+// responsible for stamping `service`. read-local/prefs are LOCAL to the BFF store and are NOT on
+// this interface — the store owns them.
+
+import type {
+  ChatConversation,
+  ChatMessage,
+  ChatProfile,
+  ChatService,
+  ConversationsPage,
+  HistoryPage,
+  MentionRef,
+  ReplyRef,
+  RosterMember,
+  SendResult,
+} from "../contract.ts"
+
+/** Raw bytes plus content-type, for the media/avatar proxies. */
+export interface MediaBytes {
+  contentType: string
+  body: Uint8Array
+}
+
+/** An avatar result: bytes, or `miss` when the user has no photo (the FE keeps initials). */
+export type AvatarResult = MediaBytes | { miss: true }
+
+/** One image in a multi-image upload. */
+export interface UploadImage {
+  filename: string
+  base64: string
+  contentType?: string
+  width?: number
+  height?: number
+}
+
+/** The result of an upload send: the new message's id (arrival ms as string). */
+export interface UploadResult {
+  ok: true
+  msgId: string
+}
+
+/** A typed provider failure carrying the upstream error `code` (e.g. `invalid_auth`) + HTTP status.
+ *  Routes surface `code` to the FE unchanged, matching today's Teams error contract. */
+export class ProviderError extends Error {
+  constructor(
+    public code: string,
+    public status = 502,
+  ) {
+    super(code)
+    this.name = "ProviderError"
+  }
+}
+
+export interface ChatProvider {
+  /** The service this provider serves, stamped onto every returned row. */
+  readonly service: ChatService
+
+  listConversations(cursor?: string | null): Promise<ConversationsPage>
+  fetchHistory(convId: string, cursor?: string | null, poll?: boolean): Promise<HistoryPage>
+  sendReply(
+    convId: string,
+    text: string,
+    opts?: { html?: string | null; quotes?: ReplyRef[]; mentions?: MentionRef[] },
+  ): Promise<SendResult>
+  react(convId: string, msgId: string, key: string, remove: boolean): Promise<void>
+  edit(convId: string, msgId: string, text: string): Promise<void>
+  delete(convId: string, msgId: string): Promise<void>
+  markRead(convId: string, msgId: string, ts: number): Promise<void>
+  roster(convId: string): Promise<RosterMember[]>
+  uploadImage(convId: string, image: UploadImage, text?: string): Promise<UploadResult>
+  uploadImages(convId: string, images: UploadImage[], text?: string): Promise<UploadResult>
+  uploadFile(
+    convId: string,
+    file: { filename: string; base64: string; contentType?: string },
+    text?: string,
+  ): Promise<UploadResult>
+  profile(userId: string): Promise<ChatProfile>
+  avatar(userId: string): Promise<AvatarResult>
+  media(url: string): Promise<MediaBytes>
+}
+
+/** Re-export the contract row types callers touch, so a provider consumer imports from one place. */
+export type { ChatConversation, ChatMessage }

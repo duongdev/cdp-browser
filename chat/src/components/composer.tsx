@@ -14,11 +14,12 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { fetchRoster } from "../lib/chat-client"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { pickFiles } from "../lib/image-attach"
 import { filterRoster, mentionQuery } from "../lib/mention"
 import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
-import { fetchRoster, type RosterMember } from "../lib/teams-client"
+import type { RosterMember } from "../lib/teams-client"
 
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
 export interface ComposerHandle {

@@ -533,7 +533,7 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
       {
         kind: "recording",
         thumbnailUrl:
-          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-wus-d1-abc%2Fviews%2Fthumbnail_small",
+          "/api/chat/media?service=teams&url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-wus-d1-abc%2Fviews%2Fthumbnail_small",
       },
     ])
   })
@@ -546,7 +546,7 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
         kind: "recording",
         title: "Trainer Squad Standup",
         thumbnailUrl:
-          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-ea%2Fviews%2Fthumbnail_small",
+          "/api/chat/media?service=teams&url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-ea%2Fviews%2Fthumbnail_small",
         url: "https://fwdgroup-my.sharepoint.com/:v:/g/personal/x/IQabc",
       },
     ])
@@ -578,7 +578,7 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
         kind: "card",
         title: "Weekly digest",
         thumbnailUrl:
-          "/api/teams/media?url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2Fcard-thumb%2Fviews%2Fimgpsh",
+          "/api/chat/media?service=teams&url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2Fcard-thumb%2Fviews%2Fimgpsh",
       },
     ])
   })

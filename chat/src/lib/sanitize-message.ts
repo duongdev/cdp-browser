@@ -29,7 +29,7 @@ const ALLOWED_TAGS = [
 ]
 // `src`/`alt`/`class` for images; `itemtype`/`width`/`height` for the media-kind CSS selectors and
 // natural sizing; `controls`/`data-duration` for AMS video (t139). The proxy src (same-origin
-// `/api/teams/media?url=…`) and the public-CDN hosts pass DOMPurify's default URI policy unchanged.
+// `/api/chat/media?service=teams&url=…`) and the public-CDN hosts pass DOMPurify's default URI policy unchanged.
 const ALLOWED_ATTR = [
   "href",
   "title",

@@ -1,15 +1,16 @@
 // Web Push subscribe helpers for the Teams chat PWA (t147). Ports the pushManager.subscribe +
 // register-with-server dance from src/lib/push-subscribe.ts (chat/ can't import from src/), against
-// the /api/teams/push/* endpoints. Effects sit behind a DI seam so the toggle is unit-testable.
+// the /api/chat/push/* endpoints (PSN-93 WS-G — the BFF owns Teams push; server.mjs proxies these
+// same-origin). Effects sit behind a DI seam so the toggle is unit-testable.
 
 export interface ChatPushDeps {
   // `navigator.serviceWorker?.ready`
   swReady(): Promise<ServiceWorkerRegistration | null | undefined>
-  // GET /api/teams/push/vapid-public-key → URL-safe base64 key (null when unavailable).
+  // GET /api/chat/push/vapid-public-key → URL-safe base64 key (null when unavailable).
   getVapidKey(): Promise<string | null>
-  // POST /api/teams/push/subscribe
+  // POST /api/chat/push/subscribe
   registerSubscription(sub: PushSubscriptionJSON): Promise<void>
-  // POST /api/teams/push/unsubscribe
+  // POST /api/chat/push/unsubscribe
   unregisterSubscription(endpoint: string): Promise<void>
 }
 
@@ -27,7 +28,7 @@ export function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
 
 export async function getVapidKey(): Promise<string | null> {
   try {
-    const res = await fetch("/api/teams/push/vapid-public-key")
+    const res = await fetch("/api/chat/push/vapid-public-key")
     if (!res.ok) return null
     const data = (await res.json()) as { key?: string }
     return typeof data?.key === "string" && data.key ? data.key : null
@@ -36,20 +37,20 @@ export async function getVapidKey(): Promise<string | null> {
   }
 }
 
-// Binds the deps to the live browser globals + the /api/teams/push endpoints.
+// Binds the deps to the live browser globals + the /api/chat/push endpoints.
 export function createBrowserChatPushDeps(): ChatPushDeps {
   return {
     swReady: () => navigator.serviceWorker?.ready ?? Promise.resolve(null),
     getVapidKey,
     registerSubscription: async (sub) => {
-      await fetch("/api/teams/push/subscribe", {
+      await fetch("/api/chat/push/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subscription: sub }),
       })
     },
     unregisterSubscription: async (endpoint) => {
-      await fetch("/api/teams/push/unsubscribe", {
+      await fetch("/api/chat/push/unsubscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ endpoint }),

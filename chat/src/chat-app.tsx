@@ -16,9 +16,11 @@ import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
+import { markReadLocal } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { chatShell } from "./lib/chat-shell"
+import { useChatWs } from "./lib/chat-ws-context"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
   type ConvPrefs,
@@ -35,7 +37,7 @@ import {
 import type { NamePref } from "./lib/display-name"
 import { newlyArrived, shouldNotifyConv } from "./lib/notify-new"
 import { type NotifySound, playNotifySound } from "./lib/notify-sound"
-import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
+import type { TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
 import { useConvPrefs } from "./lib/use-conv-prefs"
@@ -246,7 +248,7 @@ export function ChatApp() {
   // OWN state, so the override map is passed down and applied THERE (patching the app-side copy
   // never reached the screen — the iteration-2 bug). `patchConvRead` lays an override (instant dot
   // change, poll-proof via applyReadOverride's max-merge) and, when `persist`, POSTs
-  // /api/teams/read-local so the server agrees (opens persist too — a kept-alive re-open has no
+  // /api/chat/read-local so the server agrees (opens persist too — a kept-alive re-open has no
   // history load to write local_read for it).
   const [readOverrides, setReadOverrides] = useState<Record<string, ReadOverride>>({})
   const patchConvRead = useCallback((id: string, action: "read" | "unread", persist: boolean) => {
@@ -933,6 +935,13 @@ export function ChatApp() {
   useEffect(() => {
     chatShell()?.routeChanged(keepAlive.active ? pathFor(keepAlive.active) : "/chat/")
   }, [keepAlive.active])
+
+  // Steer the BFF fast-sweep to the open conversation (PSN-93 WS-E): the server polls the focused
+  // thread's history every ~4s and pushes messages-upsert deltas over the WS. Null when none is open.
+  const { setFocus: setWsFocus } = useChatWs()
+  useEffect(() => {
+    setWsFocus(keepAlive.active ?? null)
+  }, [keepAlive.active, setWsFocus])
 
   // "Reconnecting…" banner: the background list poll flips this on failure and back on success.
   const [online, setOnline] = useState(true)

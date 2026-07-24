@@ -98,7 +98,7 @@ describe("sanitize — images", () => {
 describe("sanitize — media (t139)", () => {
   it("keeps itemtype/width/height on an image (for the media-kind CSS)", () => {
     const out = sanitize(
-      '<img itemtype="http://schema.skype.com/AMSImage" src="/api/teams/media?url=x" width="200" height="150">',
+      '<img itemtype="http://schema.skype.com/AMSImage" src="/api/chat/media?service=teams&url=x" width="200" height="150">',
     )
     expect(out).toContain('itemtype="http://schema.skype.com/AMSImage"')
     expect(out).toContain('width="200"')
@@ -106,8 +106,13 @@ describe("sanitize — media (t139)", () => {
   })
 
   it("keeps the same-origin media-proxy src", () => {
-    const out = sanitize('<img src="/api/teams/media?url=https%3A%2F%2Fas-api.asm.skype.com%2Fa">')
-    expect(out).toContain('src="/api/teams/media?url=https%3A%2F%2Fas-api.asm.skype.com%2Fa"')
+    const out = sanitize(
+      '<img src="/api/chat/media?service=teams&url=https%3A%2F%2Fas-api.asm.skype.com%2Fa">',
+    )
+    // DOMPurify entity-encodes the `&` query separator; the browser parses it back to `&` in the URL.
+    expect(out).toContain(
+      'src="/api/chat/media?service=teams&amp;url=https%3A%2F%2Fas-api.asm.skype.com%2Fa"',
+    )
   })
 
   it("keeps a public-CDN giphy src", () => {
@@ -117,10 +122,10 @@ describe("sanitize — media (t139)", () => {
 
   it("keeps a video as a tap-to-expand poster (no inline controls, t165)", () => {
     const out = sanitize(
-      '<video src="/api/teams/media?url=vid" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT27S">',
+      '<video src="/api/chat/media?service=teams&url=vid" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT27S">',
     )
     expect(out).toContain("<video")
-    expect(out).toContain('src="/api/teams/media?url=vid"')
+    expect(out).toContain('src="/api/chat/media?service=teams&amp;url=vid"')
     // Inline controls are dropped — playback moves to the lightbox; the poster gets .teams-video.
     expect(out).not.toContain("controls")
     expect(out).toContain("teams-video")
@@ -128,7 +133,7 @@ describe("sanitize — media (t139)", () => {
   })
 
   it("still strips a script even next to media", () => {
-    const out = sanitize('<img src="/api/teams/media?url=x"><script>alert(1)</script>')
+    const out = sanitize('<img src="/api/chat/media?service=teams&url=x"><script>alert(1)</script>')
     expect(out).not.toContain("<script")
     expect(out).toContain("<img")
   })
