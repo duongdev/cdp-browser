@@ -2472,6 +2472,40 @@ const json = (res, data, code = 200) =>
     .writeHead(code, { "Content-Type": e2eKey ? "text/plain" : "application/json" })
     .end(e2eKey ? seal(data ?? null, e2eKey) : JSON.stringify(data ?? null))
 
+// The internal Teams provider API (`/internal/teams/*`, PSN-93 WS-B) is consumed only by the BFF
+// (apps/chat-server), never the public origin. It is guarded by a shared secret header
+// (`x-internal-secret`) matched against CHAT_INTERNAL_SECRET. Always plaintext JSON — the BFF is a
+// trusted server-to-server caller, so it never rides the public E2E envelope. When the env is unset
+// (local single-process dev with no BFF), the header must still equal the documented dev value
+// `dev-internal-secret`, so `/internal/*` is never open by accident.
+const INTERNAL_SECRET = process.env.CHAT_INTERNAL_SECRET || "dev-internal-secret"
+// Plaintext JSON responder for internal routes (bypasses the public E2E seal in `json`).
+const ijson = (res, data, code = 200) =>
+  res.writeHead(code, { "Content-Type": "application/json" }).end(JSON.stringify(data ?? null))
+// Reads a raw JSON body without the public E2E `open()` step. Returns {} on empty/malformed.
+const ibody = (req) =>
+  new Promise((resolve) => {
+    let b = ""
+    req.on("data", (c) => {
+      b += c
+      if (b.length > 64 * 1024 * 1024) req.destroy()
+    })
+    req.on("end", () => {
+      if (!b) return resolve({})
+      try {
+        resolve(JSON.parse(b))
+      } catch {
+        resolve({})
+      }
+    })
+  })
+// One guard call per internal route: true = authorized, false = already-answered 403.
+function internalOk(req, res) {
+  if (req.headers["x-internal-secret"] === INTERNAL_SECRET) return true
+  ijson(res, { error: "forbidden" }, 403)
+  return false
+}
+
 const MIME = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -2742,6 +2776,82 @@ const server = http.createServer(async (req, res) => {
       if (out?.error === "rate_limited") return json(res, { error: "rate_limited" }, 429)
       if (!out?.ok) return json(res, { error: out?.error || "send_failed" }, 502)
       return json(res, { ok: true, ts: out.ts })
+    }
+    // ---- Internal Teams provider API (PSN-93 WS-B) --------------------------
+    // The BFF (apps/chat-server) reaches Teams THROUGH this server's CDP side-channel. Each route
+    // is a thin exposure of the SAME executor the matching `/api/teams/*` route already calls — no
+    // in-page logic is duplicated. Guarded by `internalOk` (shared-secret header) so it is never
+    // reachable from the public origin. Byte routes (media/avatar) return base64 in JSON so the
+    // HTTP-client provider gets a typed response. read-local/prefs are LOCAL to the BFF store and
+    // deliberately have no internal route.
+    if (p.startsWith("/internal/teams/")) {
+      if (!internalOk(req, res)) return
+      const iop = p.slice("/internal/teams/".length)
+      if (iop === "conversations" && POST) {
+        const { cursor } = await ibody(req)
+        return ijson(res, await teamsConversations(cursor))
+      }
+      if (iop === "history" && POST) {
+        const { convId, cursor, poll } = await ibody(req)
+        return ijson(res, await teamsHistory(convId, cursor, !!poll))
+      }
+      if (iop === "reply" && POST) {
+        const { convId, text, html, quotes, mentions } = await ibody(req)
+        return ijson(
+          res,
+          await teamsReply(convId, text, html ?? null, quotes ?? [], mentions ?? []),
+        )
+      }
+      if (iop === "react" && POST) {
+        const { convId, msgId, key, remove } = await ibody(req)
+        return ijson(res, await teamsReact(convId, msgId, key, !!remove))
+      }
+      if (iop === "edit" && POST) {
+        const { convId, msgId, text } = await ibody(req)
+        return ijson(res, await teamsEdit(convId, msgId, text))
+      }
+      if (iop === "delete" && POST) {
+        const { convId, msgId } = await ibody(req)
+        return ijson(res, await teamsDelete(convId, msgId))
+      }
+      if (iop === "roster" && POST) {
+        const { convId } = await ibody(req)
+        return ijson(res, await teamsRoster(convId))
+      }
+      if (iop === "mark-read" && POST) {
+        const { convId, msgId, ts } = await ibody(req)
+        return ijson(res, await teamsMarkRead(convId, msgId, ts))
+      }
+      if (iop === "upload-image" && POST) {
+        return ijson(res, await teamsUploadImage(await ibody(req)))
+      }
+      if (iop === "upload-images" && POST) {
+        const { convId, images, text } = await ibody(req)
+        return ijson(res, await teamsUploadImagesMulti({ convId, images, text }))
+      }
+      if (iop === "upload-file" && POST) {
+        return ijson(res, await teamsUploadFile(await ibody(req)))
+      }
+      if (iop === "profile" && POST) {
+        const { userId } = await ibody(req)
+        return ijson(res, await teamsProfile(userId))
+      }
+      // Byte routes: base64 the buffer so the JSON provider client can decode it. `miss` (avatar
+      // no-photo) is passed through as its own flag.
+      if (iop === "avatar" && POST) {
+        const { userId } = await ibody(req)
+        const hit = await teamsAvatar(userId)
+        if (hit.miss) return ijson(res, { miss: true })
+        if (hit.error) return ijson(res, { error: hit.error })
+        return ijson(res, { ct: hit.ct, base64: hit.buf.toString("base64") })
+      }
+      if (iop === "media" && POST) {
+        const { url: mediaUrl } = await ibody(req)
+        const hit = await teamsMedia(mediaUrl)
+        if (hit.error) return ijson(res, { error: hit.error })
+        return ijson(res, { ct: hit.ct, base64: hit.buf.toString("base64") })
+      }
+      return ijson(res, { error: "not_found" }, 404)
     }
     // Teams chat: the authenticated conversation list (t127/t134, ADR-0019). Mints creds via the
     // keeper tab, fetches a page IN-PAGE (CA-proof), upserts into the chat DB, returns the page +
