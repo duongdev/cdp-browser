@@ -19,6 +19,7 @@ import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/th
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { chatShell } from "./lib/chat-shell"
+import { useChatWs } from "./lib/chat-ws-context"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
   type ConvPrefs,
@@ -933,6 +934,13 @@ export function ChatApp() {
   useEffect(() => {
     chatShell()?.routeChanged(keepAlive.active ? pathFor(keepAlive.active) : "/chat/")
   }, [keepAlive.active])
+
+  // Steer the BFF fast-sweep to the open conversation (PSN-93 WS-E): the server polls the focused
+  // thread's history every ~4s and pushes messages-upsert deltas over the WS. Null when none is open.
+  const { setFocus: setWsFocus } = useChatWs()
+  useEffect(() => {
+    setWsFocus(keepAlive.active ?? null)
+  }, [keepAlive.active, setWsFocus])
 
   // "Reconnecting…" banner: the background list poll flips this on failure and back on success.
   const [online, setOnline] = useState(true)

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
+import { avatarUrl } from "../lib/chat-client"
 
 interface UserAvatarProps {
   /** The user oid/MRI whose Graph photo to load (t153). Absent → initials only (a group chat). */
@@ -60,7 +61,7 @@ export function UserAvatar({ userId, label, className }: UserAvatarProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: userId is the deliberate reset trigger
   useEffect(() => setFailed(false), [userId])
 
-  const src = userId && !failed ? `/api/teams/avatar?userId=${encodeURIComponent(userId)}` : null
+  const src = userId && !failed ? avatarUrl(userId) : null
 
   return (
     <span
