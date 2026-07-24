@@ -39,7 +39,7 @@ import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
 import { DisplayName } from "./display-name"
-import { ImageLightbox } from "./image-lightbox"
+import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
@@ -104,6 +104,10 @@ interface MessageRowProps {
   showMeta?: boolean
   /** Name display preference (t161) — applied to the sender header + reactor tooltips. */
   namePref?: NamePref
+  /** Open the sender's profile card (t166). Present → the sender name/avatar header is clickable. */
+  onOpenProfile?: (target: { userId: string; name: string }) => void
+  /** Position in the same-sender run (t169) — tightens the corners facing group neighbours. */
+  groupPos?: "solo" | "first" | "middle" | "last"
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -131,6 +135,8 @@ function ChatMessageRow({
   command,
   showMeta = true,
   namePref = FULL_NAME,
+  onOpenProfile,
+  groupPos = "solo",
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -138,7 +144,7 @@ function ChatMessageRow({
   const pending = !!message.pending
   const failed = message.failed != null
   const unconfirmed = pending || failed
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
   const attachments = message.attachments ?? []
@@ -229,7 +235,7 @@ function ChatMessageRow({
   }
 
   // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
-  // content image (not an emoji/sticker) opens the lightbox.
+  // content image (not an emoji/sticker) or an inline video opens the lightbox with that media.
   function onBodyClick(e: MouseEvent<HTMLDivElement>) {
     const el = e.target as HTMLElement
     const quote = el.closest?.("blockquote[data-reply-id]") as HTMLElement | null
@@ -241,11 +247,15 @@ function ChatMessageRow({
       }
       return
     }
-    if (el.tagName !== "IMG") return
-    const itemtype = el.getAttribute("itemtype") || ""
-    if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
-    const src = (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src
-    if (src) setLightboxSrc(src)
+    if (el.tagName === "IMG") {
+      const itemtype = el.getAttribute("itemtype") || ""
+      if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
+      const src = (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src
+      if (src) setLightboxMedia({ src, kind: "image" })
+    } else if (el.tagName === "VIDEO") {
+      const src = (el as HTMLVideoElement).currentSrc || (el as HTMLVideoElement).src
+      if (src) setLightboxMedia({ src, kind: "video" })
+    }
   }
 
   return (
@@ -269,20 +279,48 @@ function ChatMessageRow({
       data-msg-id={message.id}
       ref={rowRef}
     >
-      {showMeta && !self && !!message.senderName && (
-        <span className="flex items-center gap-1.5 px-1">
-          <UserAvatar
-            className="size-5 text-[10px]"
-            label={message.senderName}
-            userId={message.senderId}
-          />
-          <DisplayName
-            className="font-semibold text-foreground text-xs"
-            name={message.senderName ?? ""}
-            pref={namePref}
-          />
-        </span>
-      )}
+      {showMeta &&
+        !self &&
+        !!message.senderName &&
+        // Sender header — a button when a profile can open (t166: known senderId + handler), else
+        // the plain span it always was. Same layout either way, no shift. Name via DisplayName
+        // (PSN-92 name-preference component).
+        (onOpenProfile && message.senderId ? (
+          <button
+            className="flex items-center gap-1.5 rounded px-1 text-left hover:bg-accent/60"
+            onClick={() =>
+              onOpenProfile({
+                userId: message.senderId ?? "",
+                name: message.senderName ?? "",
+              })
+            }
+            type="button"
+          >
+            <UserAvatar
+              className="size-5 text-[10px]"
+              label={message.senderName}
+              userId={message.senderId}
+            />
+            <DisplayName
+              className="font-semibold text-foreground text-xs"
+              name={message.senderName ?? ""}
+              pref={namePref}
+            />
+          </button>
+        ) : (
+          <span className="flex items-center gap-1.5 px-1">
+            <UserAvatar
+              className="size-5 text-[10px]"
+              label={message.senderName}
+              userId={message.senderId}
+            />
+            <DisplayName
+              className="font-semibold text-foreground text-xs"
+              name={message.senderName ?? ""}
+              pref={namePref}
+            />
+          </span>
+        ))}
       {hasBody && editing && (
         <div className="flex w-full max-w-[85%] flex-col gap-1 self-end">
           <textarea
@@ -328,7 +366,9 @@ function ChatMessageRow({
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable. */}
           <div
             className={cn(
-              "teams-message-body max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
+              // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
+              // density can shrink it and grouped runs get asymmetric corners without class soup.
+              "teams-message-body max-w-[85%] px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
               // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
               // bubble is no longer tinted.
@@ -343,6 +383,8 @@ function ChatMessageRow({
             dangerouslySetInnerHTML={{
               __html: sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
             }}
+            data-pos={groupPos}
+            data-side={self ? "self" : "other"}
             onClick={onBodyClick}
             // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
             // style grouping; the tooltip is where "when exactly?" lives now.
@@ -470,7 +512,7 @@ function ChatMessageRow({
       {!unconfirmed && message.edited && !deleted && (
         <span className="px-1 font-mono text-[10px] text-muted-foreground">(edited)</span>
       )}
-      <ImageLightbox onClose={() => setLightboxSrc(null)} src={lightboxSrc} />
+      <ImageLightbox media={lightboxMedia} onClose={() => setLightboxMedia(null)} />
     </div>
   )
 }

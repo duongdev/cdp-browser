@@ -354,6 +354,36 @@
   padding: 0.3rem 0.6rem;
   font-size: 0.8125rem;
   line-height: 1.2;
+  /* Compact bubbles read tighter with a smaller radius (t169). */
+  --bubble-r: 0.7rem;
+}
+
+/* Bubble geometry (t169): CSS owns the radius (not a Tailwind class) so density can scale it and
+   grouped same-sender runs get asymmetric corners — the corners facing a group neighbour tighten
+   (Messenger-style), driven by data-pos (solo/first/middle/last) + data-side (self/other). */
+.teams-message-body {
+  border-radius: var(--bubble-r, 1rem);
+  --bubble-tight: 0.3rem;
+}
+.teams-message-body[data-side="other"][data-pos="first"] {
+  border-bottom-left-radius: var(--bubble-tight);
+}
+.teams-message-body[data-side="other"][data-pos="middle"] {
+  border-top-left-radius: var(--bubble-tight);
+  border-bottom-left-radius: var(--bubble-tight);
+}
+.teams-message-body[data-side="other"][data-pos="last"] {
+  border-top-left-radius: var(--bubble-tight);
+}
+.teams-message-body[data-side="self"][data-pos="first"] {
+  border-bottom-right-radius: var(--bubble-tight);
+}
+.teams-message-body[data-side="self"][data-pos="middle"] {
+  border-top-right-radius: var(--bubble-tight);
+  border-bottom-right-radius: var(--bubble-tight);
+}
+.teams-message-body[data-side="self"][data-pos="last"] {
+  border-top-right-radius: var(--bubble-tight);
 }
 
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
@@ -478,12 +508,15 @@
   background: transparent;
   cursor: auto;
 }
+/* AMS video renders as a poster frame (no inline controls, t165) that opens the lightbox on tap.
+   The play glyph is a CSS overlay so the sanitized markup stays a bare <video> (no injected DOM). */
 .teams-message-body video {
   display: block;
   max-width: 100%;
   max-height: 360px;
   border-radius: 6px;
   background: var(--muted);
+  cursor: zoom-in;
 }
 
 /* Dark-mode carry-over guard (t151): Teams ships some bodies (email-style messages, quoted replies)

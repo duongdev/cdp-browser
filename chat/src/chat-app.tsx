@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
+import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
@@ -20,6 +21,7 @@ import { chatShell } from "./lib/chat-shell"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
   conversationLabel,
+  isMutedNow,
   isUnread,
   knownFolders,
   navigableConversations,
@@ -425,12 +427,17 @@ export function ChatApp() {
   // generated per conversation; the rest are static app/message actions. Only actions that work
   // TODAY are listed — no dead entries (settings/mark-read land in later workstreams).
   const actions: ChatAction[] = useMemo(() => {
-    const jumps: ChatAction[] = conversations.slice(0, 50).map((c) => ({
-      id: `jump:${c.id}`,
-      label: c.title?.trim() || c.topic?.trim() || (c.kind === "self" ? "Notes" : "Direct message"),
-      group: "Conversation",
-      run: () => openConversation(c),
-    }))
+    const jumps: ChatAction[] = conversations.slice(0, 50).map((c) => {
+      const original =
+        c.title?.trim() || c.topic?.trim() || (c.kind === "self" ? "Notes" : "Direct message")
+      return {
+        id: `jump:${c.id}`,
+        // Local rename (t168): show "Custom (Original)" so the palette filter matches BOTH names.
+        label: c.customTitle ? `${c.customTitle} (${original})` : original,
+        group: "Conversation",
+        run: () => openConversation(c),
+      }
+    })
     return buildActions([
       { id: "go-inbox", label: "Go to inbox", group: "Navigation", keys: "g i", run: backToList },
       {
@@ -518,14 +525,28 @@ export function ChatApp() {
       // Per-conversation mute (t156). Label flips with the focused conversation's current state.
       {
         id: "mute-conv",
-        label: prefs[ctx.focusedConversationId ?? ""]?.muted
+        label: isMutedNow(prefs[ctx.focusedConversationId ?? ""])
           ? "Unmute conversation"
           : "Mute conversation",
         group: "Conversation",
         when: (c) => !!c.focusedConversationId,
         run: () => {
+          // ⌘K quick toggle mutes until-unmute (t167); the row menu has the timed presets.
           const id = ctx.focusedConversationId
-          if (id) patchPrefs(id, { muted: !prefs[id]?.muted })
+          if (id) patchPrefs(id, { muted: !isMutedNow(prefs[id]) })
+        },
+      },
+      // Rename chat (t168): local-only custom title; blank resets to the original.
+      {
+        id: "rename-conv",
+        label: "Rename chat…",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: () => {
+          const id = ctx.focusedConversationId
+          if (!id) return
+          const name = window.prompt("Chat name (blank to reset)", prefs[id]?.customTitle ?? "")
+          if (name !== null) patchPrefs(id, { customTitle: name.trim() || null })
         },
       },
       // Move to folder (t156). Palette-simple: prompt for a folder name (blank clears). The row menu
@@ -724,6 +745,25 @@ export function ChatApp() {
     [settings.nameDisplay, settings.nameRegex],
   )
 
+  // Profile card (t166): one dialog at the root, opened from any row's sender header. "Message"
+  // resolves an existing 1:1 by the row-avatar oid (never creates a conversation — grill Q11).
+  const [profileTarget, setProfileTarget] = useState<ProfileTarget | null>(null)
+  const oidTail = (id: string) => id.split(":").pop() || id
+  const profileDm = profileTarget
+    ? conversations.find(
+        (c) =>
+          c.kind === "oneOnOne" &&
+          c.avatarUserId &&
+          oidTail(c.avatarUserId) === oidTail(profileTarget.userId),
+      )
+    : undefined
+  const messageFromProfile = profileDm
+    ? () => {
+        setProfileTarget(null)
+        openConversationById(profileDm.id)
+      }
+    : undefined
+
   const threadPanes = keepAlive.mounted.map((id) => {
     const conv = convById[id]
     if (!conv) return null
@@ -735,6 +775,7 @@ export function ChatApp() {
         namePref={namePref}
         onBack={isWide ? undefined : backToList}
         onFocusChange={isActive ? setThreadFocus : undefined}
+        onOpenProfile={setProfileTarget}
         ref={isActive ? activeThreadRef : undefined}
         visible={isActive && (isWide || phoneView === "thread")}
       />
@@ -750,6 +791,11 @@ export function ChatApp() {
         open={paletteOpen}
       />
       <ShortcutOverlay actions={actions} onOpenChange={setOverlayOpen} open={overlayOpen} />
+      <ProfileDialog
+        onClose={() => setProfileTarget(null)}
+        onMessage={messageFromProfile}
+        target={profileTarget}
+      />
       <SettingsSheet
         onOpenChange={setSettingsOpen}
         onUpdate={updateSettings}

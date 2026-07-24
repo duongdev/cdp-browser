@@ -70,10 +70,13 @@ function purifier(): typeof DOMPurify {
       if (node.hasAttribute?.(attr)) node.removeAttribute(attr)
     }
     if (node.tagName === "IMG") node.setAttribute("loading", "lazy")
-    // AMS video arrives with no `controls` attr — force it so the clip is playable inline (t139).
+    // AMS video renders as a poster frame that opens the lightbox on tap (t165) — a native
+    // `controls` bar would swallow that tap, so it's dropped here; `preload=metadata` paints the
+    // first frame and `.teams-video` styles it as a tap target. Playback happens in the lightbox.
     if (node.tagName === "VIDEO") {
-      node.setAttribute("controls", "")
+      node.removeAttribute("controls")
       node.setAttribute("preload", "metadata")
+      node.setAttribute("class", `${node.getAttribute("class") ?? ""} teams-video`.trim())
     }
   })
   configured = DOMPurify

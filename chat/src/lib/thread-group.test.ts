@@ -176,3 +176,47 @@ describe("buildThreadItems", () => {
     expect(items.some((i) => i.type === "new")).toBe(false)
   })
 })
+
+describe("groupPos (t169, asymmetric bubble corners)", () => {
+  const now = AT(2026, 7, 23, 15)
+
+  const positions = (items: ReturnType<typeof buildThreadItems>) =>
+    items.filter((i) => i.type === "message").map((i) => (i.type === "message" ? i.groupPos : null))
+
+  it("a lone message is solo", () => {
+    const items = buildThreadItems([msg({ ts: AT(2026, 7, 23, 10, 0) })], now)
+    expect(positions(items)).toEqual(["solo"])
+  })
+
+  it("a same-sender run stamps first/middle/last", () => {
+    const items = buildThreadItems(
+      [
+        msg({ ts: AT(2026, 7, 23, 10, 0), id: "a" }),
+        msg({ ts: AT(2026, 7, 23, 10, 1), id: "b" }),
+        msg({ ts: AT(2026, 7, 23, 10, 2), id: "c" }),
+      ],
+      now,
+    )
+    expect(positions(items)).toEqual(["first", "middle", "last"])
+  })
+
+  it("a sender change splits runs (two-message run = first/last)", () => {
+    const items = buildThreadItems(
+      [
+        msg({ ts: AT(2026, 7, 23, 10, 0), id: "a" }),
+        msg({ ts: AT(2026, 7, 23, 10, 1), id: "b" }),
+        msg({ ts: AT(2026, 7, 23, 10, 2), id: "c", senderId: "u2", senderName: "Bob" }),
+      ],
+      now,
+    )
+    expect(positions(items)).toEqual(["first", "last", "solo"])
+  })
+
+  it("a group-window gap breaks the run into solos", () => {
+    const items = buildThreadItems(
+      [msg({ ts: AT(2026, 7, 23, 10, 0), id: "a" }), msg({ ts: AT(2026, 7, 23, 10, 10), id: "b" })],
+      now,
+    )
+    expect(positions(items)).toEqual(["solo", "solo"])
+  })
+})

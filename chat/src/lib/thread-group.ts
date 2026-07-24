@@ -11,11 +11,15 @@ const GROUP_WINDOW_MS = 5 * 60_000
 // PSN-90 Phase 2 #4) — sender grouping stays on the tighter window above.
 const SEPARATOR_WINDOW_MS = 20 * 60_000
 
+/** Position of a chat message inside its same-sender run (t169) — drives the asymmetric bubble
+ *  corners (the corners facing a group neighbour tighten; a solo bubble keeps the full radius). */
+export type GroupPos = "solo" | "first" | "middle" | "last"
+
 /** One render item in the thread, oldest→newest (the component reverses for flex-col-reverse). */
 export type ThreadItem =
   | { type: "date"; key: string; label: string }
   | { type: "new"; key: string }
-  | { type: "message"; key: string; message: TeamsMessage; showMeta: boolean }
+  | { type: "message"; key: string; message: TeamsMessage; showMeta: boolean; groupPos?: GroupPos }
 
 /** A stable identity for a sender within a group run: own messages are all "self", others key by
  *  senderId (falling back to senderName so an id-less optimistic/legacy message still groups). */
@@ -125,6 +129,28 @@ export function buildThreadItems(
     prevTs = m.ts
     prevDay = day
     prevSystem = isSystem
+  }
+
+  // Second pass (t169): stamp each chat message's position in its same-sender run. A run starts at
+  // a leader (showMeta) and continues through the showMeta=false messages that follow — separators/
+  // system lines already force the next message to be a leader, so runs derive from the item
+  // sequence alone.
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.type !== "message" || it.message.kind === "system" || !it.showMeta) continue
+    let end = i
+    while (end + 1 < items.length) {
+      const next = items[end + 1]
+      if (next.type !== "message" || next.message.kind === "system" || next.showMeta) break
+      end++
+    }
+    if (end === i) it.groupPos = "solo"
+    else {
+      it.groupPos = "first"
+      for (let j = i + 1; j < end; j++) (items[j] as { groupPos?: GroupPos }).groupPos = "middle"
+      ;(items[end] as { groupPos?: GroupPos }).groupPos = "last"
+    }
+    i = end
   }
   return items
 }

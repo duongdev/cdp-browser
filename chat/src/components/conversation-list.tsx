@@ -9,17 +9,29 @@ import {
   applyReadOverride,
   type ConvPrefs,
   type FolderSection,
+  filterConversations,
   folderLabel,
   groupByFolder,
+  type ListFilter,
   type ReadOverride,
 } from "../lib/conversation-view"
 import type { NamePref } from "../lib/display-name"
 import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
+import type { ConvPrefsPatch } from "../lib/use-conv-prefs"
 import { ConversationRow } from "./conversation-row"
 import { ConversationRowMenu } from "./conversation-row-menu"
 
 // Live sync (t135, poll-first): cadence for re-unioning the newest conversation page.
 const LIST_POLL_MS = 12_000
+// Live "ago" tick (t168): one list-level timer re-renders the relative times, so "5m" can't go
+// stale between polls. 30s matches the display granularity (minutes).
+const TIME_TICK_MS = 30_000
+
+const FILTERS: readonly { key: ListFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "unread", label: "Unread" },
+  { key: "mentions", label: "Mentions" },
+]
 
 type State =
   | { status: "loading" }
@@ -54,11 +66,8 @@ interface ConversationListProps {
   /** Collapsed folder names (per-device view state, t156). */
   collapsedFolders?: Set<string>
   onToggleFolder?: (folder: string) => void
-  /** Patch a conversation's prefs from the row menu (t156). */
-  onPatchPrefs?: (
-    convId: string,
-    patch: { labels?: string[]; folder?: string | null; muted?: boolean },
-  ) => void
+  /** Patch a conversation's prefs from the row menu (t156/t167/t168). */
+  onPatchPrefs?: (convId: string, patch: ConvPrefsPatch) => void
   /** Name display preference (t161) — applied to 1:1 row labels. */
   namePref?: NamePref
   /** Background poll health (PSN-91): false when a refresh fails, true when it succeeds. Drives the
@@ -86,6 +95,16 @@ export function ConversationList({
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
   const [loadingMore, setLoadingMore] = useState(false)
   const loadingMoreRef = useRef(false)
+  // Segmented list filter (t168): All / Unread / Mentions. View-state only, resets on reload.
+  const [filter, setFilter] = useState<ListFilter>("all")
+  // Live "ago" clock (t168): rows render times against this, so one tick refreshes them all.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) setNow(Date.now())
+    }, TIME_TICK_MS)
+    return () => clearInterval(timer)
+  }, [])
 
   const load = useCallback((signal?: AbortSignal) => {
     setState({ status: "loading" })
@@ -113,16 +132,19 @@ export function ConversationList({
   const display = useMemo(
     () =>
       conversations
-        ? conversations.map((c) =>
-            applyPrefs(applyReadOverride(c, readOverrides?.[c.id]), prefs?.[c.id]),
+        ? filterConversations(
+            conversations.map((c) =>
+              applyPrefs(applyReadOverride(c, readOverrides?.[c.id]), prefs?.[c.id]),
+            ),
+            filter,
           )
         : null,
-    [conversations, readOverrides, prefs],
+    [conversations, readOverrides, prefs, filter],
   )
 
   // Group into folder sections (t156): folders alpha-sorted on top, ungrouped rows below. A flat
   // list (no folders assigned) collapses to one null section — the render treats that as the plain,
-  // header-less list it was before.
+  // header-less list it was before. Filtering runs first (t168), so an empty folder drops out.
   const sections = useMemo(() => (display ? groupByFolder(display) : null), [display])
 
   // Report the override-applied list upward whenever it (referentially) changes, so the app's copy
@@ -254,6 +276,7 @@ export function ConversationList({
         focused={c.id === focusedId}
         key={c.id}
         namePref={namePref}
+        now={now}
         onOpen={onOpenConversation}
       />
     )
@@ -272,8 +295,44 @@ export function ConversationList({
     )
   }
 
+  // Segmented filter bar (t168): always visible once rows exist, so a filtered-empty view can
+  // switch back. j/k agrees automatically — the reported list IS the filtered list.
+  const filterBar = (
+    // pl-3 matches the row's px-3, so the first button's left edge lines up with the row avatars.
+    <div className="flex gap-1 pr-1 pb-1.5 pl-3">
+      {FILTERS.map((f) => (
+        <button
+          className={cn(
+            "rounded-full px-2.5 py-1 font-medium text-xs transition-colors",
+            filter === f.key
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          key={f.key}
+          onClick={() => setFilter(f.key)}
+          type="button"
+        >
+          {f.label}
+        </button>
+      ))}
+    </div>
+  )
+
+  if ((display?.length ?? 0) === 0) {
+    return (
+      <div className="flex flex-col p-2">
+        {filterBar}
+        <EmptyState
+          icon={InboxIcon}
+          title={filter === "unread" ? "Nothing unread" : "No unread mentions"}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-0.5 p-2">
+      {filterBar}
       {(sections ?? []).map((section) => (
         <FolderGroup
           collapsed={!!section.folder && !!collapsedFolders?.has(section.folder)}

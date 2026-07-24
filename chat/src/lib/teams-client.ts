@@ -34,6 +34,11 @@ export interface TeamsConversation {
   /** Up to the first few non-self member oids of a group chat (t161) — drives the Teams-style
    *  facepile avatar. Absent for 1:1/self (single avatar) or when the roster is unknown. */
   memberIds?: string[]
+  /** Unread @me count (t168) — a floor from locally-synced pages, not Teams' number. Server-set. */
+  mentionCount?: number
+  /** Local rename (t168): set by applyPrefs from the prefs map; the original title stays visible
+   *  as a muted subtitle. Never from the server conversation payload. */
+  customTitle?: string
 }
 
 interface ConversationsResponse {
@@ -396,12 +401,40 @@ export async function uploadFile(
   return { msgId: data.msgId }
 }
 
+/** A user's org-directory profile card (t166), server-fetched via Graph `$select`. Every field is
+ *  best-effort — empty string / empty array when the directory doesn't carry it. */
+export interface TeamsProfile {
+  displayName: string
+  mail: string
+  jobTitle: string
+  department: string
+  officeLocation: string
+  phones: string[]
+}
+
+/** Fetch one user's profile card (t166). `userId` is an oid or `8:orgid:` MRI. Throws TeamsApiError
+ *  with the server's typed code (`invalid_auth` / `not_found` / …) so the dialog shows honest states. */
+export async function fetchProfile(userId: string, signal?: AbortSignal): Promise<TeamsProfile> {
+  const res = await fetch(`/api/teams/profile?userId=${encodeURIComponent(userId)}`, { signal })
+  const data = (await res.json().catch(() => ({}))) as { profile?: TeamsProfile; error?: string }
+  if (!res.ok || data.error || !data.profile) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+  return data.profile
+}
+
 /** Local conversation prefs (t156): labels / folder / mute. Local to the chat store, shared across
  *  devices, never written to Teams. Mirror of the server's teams-store shape. */
 export interface ConvPrefsDto {
   labels: string[]
   folder: string | null
   muted: boolean
+  /** Timed-mute expiry, epoch ms; null/absent = muted forever while `muted` (t167). */
+  mutedUntil?: number | null
+  /** Push through the mute when a message @mentions the viewer (t167). */
+  notifyOnMention?: boolean
+  /** Local rename; null/absent = no rename (t168). */
+  customTitle?: string | null
 }
 
 /** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
@@ -420,7 +453,14 @@ export async function fetchPrefs(signal?: AbortSignal): Promise<Record<string, C
  *  conversation's full prefs after the write (or null on failure — the caller stays optimistic). */
 export async function setPrefs(
   convId: string,
-  patch: { labels?: string[]; folder?: string | null; muted?: boolean },
+  patch: {
+    labels?: string[]
+    folder?: string | null
+    muted?: boolean
+    mutedUntil?: number | null
+    notifyOnMention?: boolean
+    customTitle?: string | null
+  },
 ): Promise<ConvPrefsDto | null> {
   try {
     const res = await fetch("/api/teams/prefs", {

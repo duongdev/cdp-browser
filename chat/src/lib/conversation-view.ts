@@ -128,9 +128,8 @@ export function previewText(rawContent: string): string {
  *  `unreadSticky` sentinel forces unread even when `readTs` would otherwise cover it (server already
  *  zeroes `readTs` in that case, so the ts check suffices; the flag is kept for an explicit read). */
 export function isUnread(conv: TeamsConversation): boolean {
-  // A muted conversation (t156, local pref) contributes nothing to the unread/badge signal — mute
-  // wins over unread in display. The conv's `muted` is set by applyPrefs (or the server row).
-  if (conv.muted) return false
+  // Mute does NOT suppress unread (t167, grill decision #1): muting silences notifications only —
+  // the dot/semibold still show so nothing slips by silently. (Pre-t167 mute hid the dot.)
   if (conv.lastMessageFromMe) return false
   if (conv.lastMessageTs == null) return false
   return conv.lastMessageTs > (conv.readTs || 0)
@@ -173,18 +172,55 @@ export interface ConvPrefs {
   labels: string[]
   folder: string | null
   muted: boolean
+  /** Timed-mute expiry, epoch ms; null = muted forever while `muted` (t167). */
+  mutedUntil?: number | null
+  /** Push through the mute when a message @mentions the viewer (t167). */
+  notifyOnMention?: boolean
+  /** Local rename; null = no rename (t168). */
+  customTitle?: string | null
 }
 
 export const EMPTY_PREFS: ConvPrefs = { labels: [], folder: null, muted: false }
 
-/** Merge a conversation's prefs onto the server row: `muted` OR'd with the pref, `labels`/`folder`
- *  carried on the row for the UI. Returns the same reference when nothing changes. Pure. */
-export function applyPrefs(conv: TeamsConversation, prefs?: ConvPrefs): TeamsConversation {
+/** Whether a pref row is muted RIGHT NOW (t167): muted with no expiry = forever; a future
+ *  `mutedUntil` = still muted; past = expired (unmuted — the predicate is the truth, no cleanup
+ *  write). Mirrors core/teams-store.js `isMutedNow`. */
+export function isMutedNow(prefs?: ConvPrefs, now: number = Date.now()): boolean {
+  if (!prefs?.muted) return false
+  return prefs.mutedUntil == null || now < prefs.mutedUntil
+}
+
+/** Merge a conversation's prefs onto the server row: `muted` becomes the EFFECTIVE muted-now
+ *  verdict (t167 — an expired timed mute reads unmuted), `labels`/`folder` carried on the row for
+ *  the UI. Returns the same reference when nothing changes. Pure. */
+export function applyPrefs(
+  conv: TeamsConversation,
+  prefs?: ConvPrefs,
+  now: number = Date.now(),
+): TeamsConversation {
   if (!prefs) return conv
-  const muted = conv.muted || prefs.muted
+  const muted = conv.muted || isMutedNow(prefs, now)
   const hasLabels = prefs.labels.length > 0
-  if (muted === conv.muted && !hasLabels && !prefs.folder) return conv
-  return { ...conv, muted, labels: prefs.labels, folder: prefs.folder }
+  const customTitle = prefs.customTitle || undefined
+  if (muted === conv.muted && !hasLabels && !prefs.folder && !customTitle) return conv
+  return { ...conv, muted, labels: prefs.labels, folder: prefs.folder, customTitle }
+}
+
+// ── List filters (t168) ─────────────────────────────────────────────────────────────────────────
+
+/** The segmented list filter: everything / unread only / unread @me only. */
+export type ListFilter = "all" | "unread" | "mentions"
+
+/** Filter a (pref-applied) conversation list (t168). "unread" keeps unread rows; "mentions" keeps
+ *  rows with unread @me messages (`mentionCount` — a local floor). Folder grouping runs AFTER this,
+ *  so empty folders naturally drop out of the filtered view. Same ref for "all". Pure. */
+export function filterConversations(
+  conversations: TeamsConversation[],
+  filter: ListFilter,
+): TeamsConversation[] {
+  if (filter === "all") return conversations
+  if (filter === "unread") return conversations.filter(isUnread)
+  return conversations.filter((c) => (c.mentionCount ?? 0) > 0)
 }
 
 /** A folder section (or the ungrouped bucket) for the grouped list view. */

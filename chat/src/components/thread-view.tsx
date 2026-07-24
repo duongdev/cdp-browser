@@ -6,6 +6,7 @@ import {
   ReloadIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
+import { motion, useReducedMotion } from "motion/react"
 import {
   forwardRef,
   useCallback,
@@ -61,6 +62,10 @@ const THREAD_BOTTOM_SLACK = 64
 // A pending optimistic reaction is overlaid on every merge until the server confirms it, or until it
 // ages past this window — a lost write shouldn't pin a phantom reaction forever (t143).
 const PENDING_REACTION_TTL_MS = 20000
+// Staggered arrival (t169): per-message reveal delay for a multi-message poll burst, and the cap
+// past which the rest of the burst lands instantly (a 20-message backlog mustn't take seconds).
+const STAGGER_STEP_S = 0.1
+const STAGGER_CAP = 5
 // Click-to-jump backward-walk cap (PSN-92 B5, decision 7): never page more than this to find a quoted
 // original — past it, "Message too far back".
 const MAX_JUMP_PAGES = 5
@@ -151,13 +156,15 @@ interface ThreadViewProps {
   onFocusChange?: (focus: ThreadFocus | null) => void
   /** Name display preference (t161) — applied to the header label + sender names. */
   namePref?: NamePref
+  /** Open a sender's profile card (t166) — passed through to each row's sender header. */
+  onOpenProfile?: (target: { userId: string; name: string }) => void
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
 export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
-  { conversation, onBack, visible = true, onFocusChange, namePref },
+  { conversation, onBack, visible = true, onFocusChange, namePref, onOpenProfile },
   ref,
 ) {
   const [state, setState] = useState<State>({ status: "loading" })
@@ -765,6 +772,34 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [messages, lastReadTs],
   )
 
+  // Staggered arrival (t169): when one poll delivers several new messages at once, reveal them
+  // one-by-one so the eye can track. A message is "fresh" when its id is unseen AND newer than the
+  // newest previously-seen ts (an older-page prepend is old content — never staggered); own sends
+  // never stagger (their optimistic append already showed them). First load seeds silently. Delay
+  // caps at STAGGER_CAP entries; the rest of a big burst lands instantly. Reduced motion disables.
+  const reduceMotion = useReducedMotion()
+  const seenIds = useRef<Set<string>>(new Set())
+  const maxSeenTs = useRef(0)
+  const freshDelays = useMemo(() => {
+    const map = new Map<string, number>()
+    if (seenIds.current.size === 0) return map
+    let idx = 0
+    for (const m of messages ?? []) {
+      if (seenIds.current.has(m.id)) continue
+      if (m.self || m.pending || m.kind === "system") continue
+      if (m.ts <= maxSeenTs.current) continue
+      map.set(m.id, idx < STAGGER_CAP ? idx * STAGGER_STEP_S : 0)
+      idx++
+    }
+    return map
+  }, [messages])
+  useEffect(() => {
+    for (const m of messages ?? []) {
+      seenIds.current.add(m.id)
+      if (m.ts > maxSeenTs.current) maxSeenTs.current = m.ts
+    }
+  }, [messages])
+
   // Reset the keyboard cursor when the conversation changes (a stale id doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: convId is the deliberate reset trigger
   useEffect(() => {
@@ -849,11 +884,24 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />
           </Button>
         )}
-        <span className="min-w-0 flex-1 truncate px-1 font-heading font-semibold text-foreground text-sm">
-          {formatConversationLabel(
-            conversationLabel(conversation),
-            conversation,
-            namePref ?? FULL_NAME,
+        <span className="flex min-w-0 flex-1 items-baseline gap-1.5 px-1">
+          <span className="truncate font-heading font-semibold text-foreground text-sm">
+            {conversation.customTitle ||
+              formatConversationLabel(
+                conversationLabel(conversation),
+                conversation,
+                namePref ?? FULL_NAME,
+              )}
+          </span>
+          {/* Local rename (t168): the original title stays visible beside the custom one. */}
+          {conversation.customTitle && (
+            <span className="truncate text-muted-foreground text-xs">
+              {formatConversationLabel(
+                conversationLabel(conversation),
+                conversation,
+                namePref ?? FULL_NAME,
+              )}
+            </span>
           )}
         </span>
       </header>
@@ -892,15 +940,14 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             {threadItems
               .slice()
               .reverse()
-              .map((item) =>
-                item.type === "date" ? (
-                  <DateSeparator key={item.key} label={item.label} />
-                ) : item.type === "new" ? (
-                  <NewSeparator key={item.key} />
-                ) : (
+              .map((item) => {
+                if (item.type === "date") return <DateSeparator key={item.key} label={item.label} />
+                if (item.type === "new") return <NewSeparator key={item.key} />
+                const row = (
                   <MessageRow
                     command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
                     focused={item.message.id === focusedId}
+                    groupPos={item.groupPos}
                     highlighted={item.message.id === highlightId}
                     key={item.key}
                     message={item.message}
@@ -909,13 +956,28 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}
                     onJumpToMessage={jumpToMessage}
+                    onOpenProfile={onOpenProfile}
                     onReact={onReact}
                     onReply={onReply}
                     onRetrySend={onRetrySend}
                     showMeta={item.showMeta}
                   />
-                ),
-              )}
+                )
+                // Staggered arrival (t169): a fresh polled message fades/slides in on its own delay
+                // so a multi-message burst reads one-by-one. Everything else renders bare.
+                const delay = freshDelays.get(item.message.id)
+                if (delay === undefined || reduceMotion) return row
+                return (
+                  <motion.div
+                    animate={{ opacity: 1, y: 0 }}
+                    initial={{ opacity: 0, y: 8 }}
+                    key={item.key}
+                    transition={{ duration: 0.18, delay, ease: "easeOut" }}
+                  >
+                    {row}
+                  </motion.div>
+                )
+              })}
             {loadingOlder && (
               <div className="flex flex-col gap-2">
                 {[0, 1, 2].map((i) => (
