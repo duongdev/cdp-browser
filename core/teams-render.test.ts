@@ -1,13 +1,48 @@
 import { describe, expect, it } from "vitest"
 import {
+  applyQuoteAuthorNames,
   composeTitle,
   parseAttachments,
   parseEmotions,
   previewText,
+  quoteAuthorMris,
   renderBody,
   systemEventText,
   toReaderMessages,
 } from "./teams-render"
+
+describe("reply-quote author repair (PSN-92 A)", () => {
+  const broken = (name: string) =>
+    `<blockquote itemtype="http://schema.skype.com/Reply" itemid="1">` +
+    `<strong itemprop="mri" itemid="8:orgid:abc-123">${name}</strong>` +
+    `<p itemprop="preview">hi</p></blockquote>reply body`
+
+  it("lists broken authors (empty / literal placeholder), skips real names", () => {
+    expect(quoteAuthorMris(broken("Display Name"))).toEqual(["8:orgid:abc-123"])
+    expect(quoteAuthorMris(broken(""))).toEqual(["8:orgid:abc-123"])
+    expect(quoteAuthorMris(broken("Real Person"))).toEqual([])
+    expect(quoteAuthorMris("no quote here")).toEqual([])
+  })
+
+  it("rewrites a placeholder author from the name map (by mri or oid)", () => {
+    expect(
+      applyQuoteAuthorNames(broken("Display Name"), { "8:orgid:abc-123": "Dustin Do" }),
+    ).toContain('<strong itemprop="mri" itemid="8:orgid:abc-123">Dustin Do</strong>')
+    expect(applyQuoteAuthorNames(broken(""), { "abc-123": "Dustin Do" })).toContain(
+      ">Dustin Do</strong>",
+    )
+  })
+
+  it("leaves real/unresolved authors untouched and escapes the resolved name", () => {
+    expect(applyQuoteAuthorNames(broken("Real Person"), { "8:orgid:abc-123": "X" })).toContain(
+      ">Real Person</strong>",
+    )
+    expect(applyQuoteAuthorNames(broken("Display Name"), {})).toContain(">Display Name</strong>")
+    expect(applyQuoteAuthorNames(broken(""), { "8:orgid:abc-123": "A & <b>" })).toContain(
+      ">A &amp; &lt;b&gt;</strong>",
+    )
+  })
+})
 
 // A raw-ish Teams message (only the fields the renderer reads).
 const msg = (over = {}) => ({

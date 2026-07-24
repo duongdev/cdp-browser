@@ -449,6 +449,25 @@
   font-weight: 500;
   background: color-mix(in oklab, currentColor 14%, transparent);
 }
+/* A reply quote is a click target that jumps to the original message (PSN-92 B5). */
+.teams-message-body blockquote[data-reply-id] {
+  cursor: pointer;
+}
+/* Jump-landing flash (PSN-92 B5): a brief coral ring on the row the jump landed on. */
+@keyframes msg-jump-flash {
+  0%,
+  60% {
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 70%, transparent);
+    border-radius: 1rem;
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+    border-radius: 1rem;
+  }
+}
+.msg-jump-flash {
+  animation: msg-jump-flash 1.6s ease-out;
+}
 /* Inline media by kind (t139). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
    thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
    small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the
@@ -544,10 +563,31 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-
-/* Mention-of-me (t160): the viewer's own @mention pill pops in the coral accent; the bubble itself
-   also tints via message-row's mentionsMe class. Readable on both muted and primary bubbles. */
-.teams-message-body .mention-self {
+/* A mention pill in the composer (PSN-92 D): an atomic (contenteditable=false) chip. A mention of
+   SOMEONE ELSE is neutral (matches the message bubble); a mention of the viewer is coral (below). */
+.composer-editor .mention {
+  padding: 0.05em 0.35em;
+  border-radius: 6px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: color-mix(in oklab, currentColor 14%, transparent);
+}
+/* A mention of the viewer — coral accent + red text, consistent across the bubble and the input. */
+.teams-message-body .mention-self,
+.composer-editor .mention-self {
   font-weight: 600;
-  background: color-mix(in oklab, var(--ring) 22%, transparent);
+  color: var(--ring);
+  background: color-mix(in oklab, var(--ring) 16%, transparent);
+}
+
+/* Electron shell (PSN-91): the CDP Chats window uses a frameless titlebar (titleBarStyle
+   "hiddenInset"), so the top headers double as the OS drag region. The action buttons live on the
+   RIGHT, clear of the macOS traffic lights (top-left), so the empty left area is pure drag surface.
+   Gated by `.is-electron` (set by chat-app when window.chatShell exists) so the web/PWA build is
+   byte-unchanged. Interactive children opt back out of the drag region, or they couldn't be clicked. */
+.is-electron .titlebar {
+  -webkit-app-region: drag;
+}
+.is-electron .titlebar :where(button, input, a, [role="button"], select, textarea) {
+  -webkit-app-region: no-drag;
 }

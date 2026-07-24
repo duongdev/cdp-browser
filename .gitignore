@@ -2,6 +2,7 @@ node_modules
 dist
 dist-chat
 release
+release-chat
 
 # Web build runtime state (default paths write to repo root; override via env)
 web-settings.json

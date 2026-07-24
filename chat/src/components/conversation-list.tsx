@@ -70,6 +70,9 @@ interface ConversationListProps {
   onPatchPrefs?: (convId: string, patch: ConvPrefsPatch) => void
   /** Name display preference (t161) — applied to 1:1 row labels. */
   namePref?: NamePref
+  /** Background poll health (PSN-91): false when a refresh fails, true when it succeeds. Drives the
+   *  app's "Reconnecting…" banner. */
+  onConnectionChange?: (ok: boolean) => void
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
@@ -86,6 +89,7 @@ export function ConversationList({
   onToggleFolder,
   onPatchPrefs,
   namePref,
+  onConnectionChange,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
@@ -155,6 +159,7 @@ export function ConversationList({
   const refresh = useCallback(() => {
     fetchConversations()
       .then((page) => {
+        onConnectionChange?.(true)
         setState((s) => {
           if (s.status !== "ready") return s
           const merged = mergeConversations(s.conversations, page.conversations)
@@ -162,9 +167,10 @@ export function ConversationList({
         })
       })
       .catch(() => {
-        // Silent (t135) — the last-good list stays put.
+        // The last-good list stays put (t135); flag the connection so the app shows a banner.
+        onConnectionChange?.(false)
       })
-  }, [])
+  }, [onConnectionChange])
 
   // Refresh on a cadence + on the tab returning to foreground / window focus. Paused while hidden.
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import "./index.css"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { ChatApp } from "./chat-app"
 
 // Pre-paint theme: apply the OS preference before React mounts so there's no flash. useChatSettings
@@ -19,6 +20,8 @@ if ("serviceWorker" in navigator) {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ChatApp />
+    <TooltipProvider delayDuration={300}>
+      <ChatApp />
+    </TooltipProvider>
   </StrictMode>,
 )

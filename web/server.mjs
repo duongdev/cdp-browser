@@ -55,7 +55,11 @@ import {
   otherMrisFromId as teamsOtherMrisFromId,
 } from "../core/teams-names.js"
 import { planTeamsNotifications } from "../core/teams-notify-sweep.js"
-import { toReaderMessages as teamsToReaderMessages } from "../core/teams-render.js"
+import {
+  applyQuoteAuthorNames as teamsApplyQuoteAuthorNames,
+  quoteAuthorMris as teamsQuoteAuthorMris,
+  toReaderMessages as teamsToReaderMessages,
+} from "../core/teams-render.js"
 import {
   conversationKind as teamsConversationKind,
   getAllPrefs as teamsGetAllPrefs,
@@ -1304,6 +1308,65 @@ async function resolveTeamsNamesInPage(oids) {
   return res && typeof res === "object" ? res : {}
 }
 
+// ---- mention roster (PSN-92 D) --------------------------------------------
+// Conversation members → [{ mri, name }] for the composer's @-mention dropdown. A 1:1 id encodes both
+// members (no fetch); a group/thread reads /v1/threads/{id}. Names resolve cache-first + one Graph
+// batch (same seam as titles). Cached per conversation with a short TTL — a roster rarely changes and
+// the dropdown must feel instant. Best-effort: name misses drop that member rather than fail.
+const teamsRosterCache = new Map()
+const TEAMS_ROSTER_TTL_MS = 5 * 60 * 1000
+
+async function teamsRoster(convId) {
+  const cached = teamsRosterCache.get(convId)
+  if (cached && Date.now() - cached.at < TEAMS_ROSTER_TTL_MS) return { members: cached.members }
+
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  const selfMri = `8:orgid:${cred.userId || ""}`
+  let mris = []
+  if (/@unq\.gbl\.spaces$/.test(convId) && convId.includes("_")) {
+    mris = [...teamsOtherMrisFromId(convId, selfMri), selfMri] // 1:1 — id encodes both members
+  } else if (/^19:/.test(convId)) {
+    const rosters = await fetchTeamsGroupRostersInPage(cred, [convId])
+    mris = rosters[convId] || []
+    if (!mris.includes(selfMri)) mris.push(selfMri)
+  } else {
+    mris = [selfMri]
+  }
+  mris = [...new Set(mris.filter(Boolean))]
+
+  const nameByMri = new Map()
+  try {
+    for (const [mri, name] of teamsGetUsers(teamsDb, mris)) nameByMri.set(mri, name)
+    const misses = mris.filter((m) => !nameByMri.has(m))
+    if (misses.length) {
+      const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+      const resolved = []
+      for (const m of misses) {
+        const n = oidMap[teamsOidFromMri(m)]
+        if (n) {
+          nameByMri.set(m, n)
+          resolved.push({ mri: m, displayName: n })
+        }
+      }
+      if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+    }
+  } catch (e) {
+    console.error("[web] teams roster name resolution failed:", e.message)
+  }
+
+  const members = mris
+    .map((mri) => ({ mri, name: nameByMri.get(mri) || "", self: mri === selfMri }))
+    .filter((m) => m.name)
+  teamsRosterCache.set(convId, { at: Date.now(), members })
+  return { members }
+}
+
 // Attach a `title` to each conversation: topic'd convs keep their topic (composeTitle passes it
 // through); topic-less DMs/group-DMs resolve member names (id-derived for a 1:1, roster-fetched
 // for a group-DM), hitting the cache first and Graph-resolving only the misses in one batch.
@@ -1428,6 +1491,41 @@ async function attachTeamsReactorNames(cred, messages) {
     }
 }
 
+// Repair reply quotes that name their author "Display Name"/"" (PSN-92 workstream A): collect the
+// broken authors' MRIs across the rendered bodies, resolve names cache-first + one Graph batch (same
+// seam as reactor names — self MRI included, so a quote of you shows your real name, decision 4), and
+// rewrite each body. Best-effort: an unresolved MRI keeps the placeholder. Cache-warm after first hit.
+async function attachTeamsQuoteNames(cred, messages) {
+  const needed = new Set()
+  for (const m of messages)
+    if (typeof m.body === "string") for (const mri of teamsQuoteAuthorMris(m.body)) needed.add(mri)
+  if (needed.size === 0) return
+
+  const nameByMri = {}
+  try {
+    const cached = teamsGetUsers(teamsDb, [...needed])
+    for (const [mri, name] of cached) nameByMri[mri] = name
+    const misses = [...needed].filter((m) => !nameByMri[m])
+    if (misses.length) {
+      const oidMap = await resolveTeamsNamesInPage(misses.map(teamsOidFromMri))
+      const resolved = []
+      for (const m of misses) {
+        const name = oidMap[teamsOidFromMri(m)]
+        if (name) {
+          nameByMri[m] = name
+          resolved.push({ mri: m, displayName: name })
+        }
+      }
+      if (resolved.length) teamsUpsertUsers(teamsDb, resolved)
+    }
+  } catch (e) {
+    console.error("[web] teams quote author resolution failed:", e.message) // degrade to placeholder
+  }
+
+  for (const m of messages)
+    if (typeof m.body === "string") m.body = teamsApplyQuoteAuthorNames(m.body, nameByMri)
+}
+
 // ---- Teams conversation history (t129/t134, ADR-0019) ---------------------
 // CA-proof like the list: the messages GET runs IN-PAGE via the side-channel. First page = the
 // base URL; older pages = the previous response's `_metadata.backwardLink` (an opaque syncState
@@ -1484,6 +1582,7 @@ async function teamsHistory(convId, cursor, poll) {
   const messages = teamsToReaderMessages(out.messages, cred.userId)
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
   await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t143); strips userMris
+  await attachTeamsQuoteNames(cred, messages) // repair "Display Name" reply quotes (PSN-92 A)
   // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
   // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
   // A background `poll` of the open thread also advances it (live-viewing = reading) EXCEPT when a
@@ -1717,6 +1816,30 @@ function randomClientMessageId() {
 // passes plain text with messagetype "Text", the media paths pass the pre-built HTML with
 // "RichText/Html". `properties` carries the message extras — the file send passes a JSON-string
 // `files` there so Teams renders the SharePoint chip; every other caller omits it (→ {}).
+// Populate cred.displayName once from the self oid (users cache → one Graph getByIds), so every
+// outgoing message stamps the real `imdisplayname`. Without it Teams bakes the "Display Name"
+// placeholder into colleagues' reply quotes of our messages (PSN-92 workstream A). Best-effort:
+// a resolution failure leaves the name empty (today's behavior) and never blocks the send.
+async function ensureTeamsSelfName(cred) {
+  if (cred.displayName || !cred.userId) return
+  const selfMri = `8:orgid:${cred.userId}`
+  try {
+    const cached = teamsGetUsers(teamsDb, [selfMri]).get(selfMri)
+    if (cached) {
+      cred.displayName = cached
+      return
+    }
+    const oidMap = await resolveTeamsNamesInPage([cred.userId])
+    const name = oidMap[cred.userId]
+    if (name) {
+      cred.displayName = name
+      teamsUpsertUsers(teamsDb, [{ mri: selfMri, displayName: name }])
+    }
+  } catch (e) {
+    console.error("[web] teams self-name resolution failed:", e.message)
+  }
+}
+
 async function sendTeamsMessageInPage(
   cred,
   convId,
@@ -1725,6 +1848,7 @@ async function sendTeamsMessageInPage(
   properties = {},
 ) {
   if (!cred.chatServiceBase) return { error: "no_base" }
+  await ensureTeamsSelfName(cred)
   const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/messages`
   const clientmessageid = randomClientMessageId()
   const payload = {
@@ -1761,7 +1885,7 @@ async function sendTeamsMessageInPage(
 // re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations/teamsHistory).
 // `html` (t159, composer formatting) upgrades the wire format to a RichText/Html message; the
 // plain-text fast path stays the Text send. The echo persists whichever body was sent.
-async function teamsReply(convId, text, html) {
+async function teamsReply(convId, text, html, quoteRefs = [], mentions = []) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1771,12 +1895,31 @@ async function teamsReply(convId, text, html) {
 
   const content = html || text
   const messagetype = html ? "RichText/Html" : "Text"
-  let out = await sendTeamsMessageInPage(cred, convId, content, messagetype)
+  // A quoted reply carries `qtdMsgs` (+ formatVariant/hasValidMsgReferences) so Teams renders it as a
+  // native reply, not just inline blockquote markup (PSN-92, live-verified against a real reply's wire).
+  const properties = {}
+  if (quoteRefs.length) {
+    properties.qtdMsgs = quoteRefs.map((q) => ({
+      messageId: q.messageId,
+      sender: q.sender,
+      time: q.time,
+      message: null,
+      validationResult: "Valid",
+      sharedRefId: null,
+      replyChainId: null,
+    }))
+    properties.formatVariant = "TEAMS"
+    properties.hasValidMsgReferences = true
+  }
+  // @mentions ride as a JSON-STRING `properties.mentions` (per-token, live-verified) so recipients
+  // get a real mention (PSN-92 D). Teams' own wire keeps this as a string, not a nested array.
+  if (mentions.length) properties.mentions = JSON.stringify(mentions)
+  let out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
     cred = notificationCenter.getTeamsCreds(cred.tenant)
     if (!cred || cred.fresh === false) return { error: "invalid_auth" }
-    out = await sendTeamsMessageInPage(cred, convId, content, messagetype)
+    out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   }
   if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
 
@@ -2560,11 +2703,47 @@ const server = http.createServer(async (req, res) => {
     // Teams chat: send a text reply IN-PAGE (t130, ADR-0019). Persists the echo, returns the
     // new ts. A 401 → one re-authz + retry → typed invalid_auth. Web only.
     if (p === "/api/teams/reply" && POST) {
-      const { convId, text, html } = await body(req)
+      const { convId, text, html, quotes, mentions } = await body(req)
       if (!convId || !text?.trim()) return json(res, { error: "missing fields" }, 400)
       // Optional composer-formatted HTML body (t159): string-typed + size-capped, else ignored.
       const richHtml = typeof html === "string" && html.trim() && html.length <= 65536 ? html : null
-      const out = await teamsReply(convId, text, richHtml)
+      // Quoted-message references (PSN-92 B/C): shape-guard each so a proper native reply carries
+      // `qtdMsgs` (Teams renders it as a real reply — clickable jump — not just inline blockquote).
+      const refs = Array.isArray(quotes)
+        ? quotes
+            .filter(
+              (q) => q && Number.isFinite(Number(q.messageId)) && typeof q.sender === "string",
+            )
+            .slice(0, 10)
+            .map((q) => ({
+              messageId: Number(q.messageId),
+              sender: q.sender,
+              time: Number(q.time ?? q.messageId),
+            }))
+        : []
+      // @mention tokens (PSN-92 D): shape-guard each per-token entry before it rides properties.mentions.
+      const ments = Array.isArray(mentions)
+        ? mentions
+            .filter((m) => m && Number.isFinite(Number(m.itemid)) && typeof m.mri === "string")
+            .slice(0, 200)
+            .map((m) => ({
+              "@type": "http://schema.skype.com/Mention",
+              itemid: Number(m.itemid),
+              mri: m.mri,
+              mentionType: "person",
+              displayName: String(m.displayName ?? ""),
+            }))
+        : []
+      const out = await teamsReply(convId, text, richHtml, refs, ments)
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: conversation roster for the @-mention dropdown (PSN-92 D). Web only.
+    if (p === "/api/teams/roster" && POST) {
+      const { convId } = await body(req)
+      if (!convId) return json(res, { error: "missing fields" }, 400)
+      const out = await teamsRoster(convId)
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

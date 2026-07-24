@@ -10,6 +10,14 @@ describe("sanitize — strips dangerous content", () => {
     expect(sanitize("hi<script>alert(1)</script>bye")).toBe("hibye")
   })
 
+  it("keeps data-fullname on a mention pill (PSN-92 E tooltip anchor)", () => {
+    const out = sanitize(
+      '<span class="mention" data-fullname="Glory Nguyen - Group Office">@Glory</span>',
+    )
+    expect(out).toContain('data-fullname="Glory Nguyen - Group Office"')
+    expect(out).toContain('class="mention"')
+  })
+
   it("removes <style>", () => {
     expect(sanitize("a<style>.x{color:red}</style>b")).toBe("ab")
   })

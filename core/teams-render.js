@@ -660,6 +660,41 @@ function previewText(rawContent) {
   return quotePreview ? `↩ ${quotePreview}` : ""
 }
 
+// ---- reply-quote author repair (PSN-92, workstream A) ---------------------
+// A reply blockquote names its quoted author in `<strong itemprop="mri" itemid="{mri}">Name</strong>`.
+// Messages OUR app sent carried an empty imdisplayname, so a colleague's Teams client bakes the literal
+// placeholder "Display Name" (or an empty string) into that strong when quoting us — frozen in the
+// reply's content, only fixable render-side. quoteAuthorMris lists the mris whose strong text is broken
+// so the server can resolve real names; applyQuoteAuthorNames rewrites those strongs from a { mri: name }
+// map. Both pure; a body with no broken quote is returned unchanged. Self resolves to the real name too
+// (decision 4 — no "(You)"), since the server includes the self mri when it's the broken author.
+const REPLY_STRONG_RE =
+  /(<strong\b(?=[^>]*\bitemprop\s*=\s*(["'])mri\2)[^>]*\bitemid\s*=\s*(["'])([^"']+)\3[^>]*>)([\s\S]*?)(<\/strong>)/gi
+
+function isBrokenAuthor(inner) {
+  const t = inner.replace(/<[^>]+>/g, "").trim()
+  return t === "" || t.toLowerCase() === "display name"
+}
+
+function quoteAuthorMris(html) {
+  if (typeof html !== "string" || !html.includes("itemprop")) return []
+  const out = []
+  html.replace(REPLY_STRONG_RE, (_m, _open, _q1, _q2, mri, inner) => {
+    if (isBrokenAuthor(inner)) out.push(mri)
+    return _m
+  })
+  return out
+}
+
+function applyQuoteAuthorNames(html, nameByMri) {
+  if (typeof html !== "string" || !nameByMri) return html
+  return html.replace(REPLY_STRONG_RE, (m, open, _q1, _q2, mri, inner, close) => {
+    if (!isBrokenAuthor(inner)) return m
+    const name = nameByMri[mri] || nameByMri[oidOf(mri)]
+    return name ? `${open}${escapeHtml(name)}${close}` : m
+  })
+}
+
 // The <p itemprop="preview"> text inside a Reply blockquote, tag-stripped, or "".
 function quotedReplyPreview(html) {
   const m = html.match(
@@ -699,4 +734,6 @@ module.exports = {
   parseEmotions,
   systemEventText,
   previewText,
+  quoteAuthorMris,
+  applyQuoteAuthorNames,
 }

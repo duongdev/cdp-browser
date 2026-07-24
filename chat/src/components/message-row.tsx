@@ -1,4 +1,5 @@
 import {
+  ArrowTurnBackwardIcon,
   Cancel01Icon,
   Csv01Icon,
   Delete02Icon,
@@ -28,12 +29,16 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
+import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
+import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
+import { DisplayName } from "./display-name"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
@@ -79,6 +84,12 @@ interface MessageRowProps {
   /** Delete the viewer's OWN message (t144). The parent optimistically tombstones it + fires the
    *  best-effort call. Only passed for own, non-deleted messages. */
   onDelete?: (msgId: string) => void
+  /** Quote this message in the composer (PSN-92 B). Passed for any confirmed, non-deleted message. */
+  onReply?: (msg: TeamsMessage) => void
+  /** Jump to a quoted message when its reply block is clicked (PSN-92 B5). */
+  onJumpToMessage?: (msgId: string) => void
+  /** Briefly flash this row after a jump landed on it (PSN-92 B5). */
+  highlighted?: boolean
   /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
   onRetrySend?: (msgId: string) => void
   /** Discard a failed optimistic send — removes the bubble (t159). */
@@ -115,6 +126,9 @@ function ChatMessageRow({
   onReact,
   onEdit,
   onDelete,
+  onReply,
+  onJumpToMessage,
+  highlighted,
   onRetrySend,
   onDiscardSend,
   focused,
@@ -137,6 +151,8 @@ function ChatMessageRow({
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
   const canReact = !deleted && !unconfirmed && !!onReact
+  // Reply-with-quote (PSN-92 B): any confirmed, non-deleted message, own or others'.
+  const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
   const canManage = self && !deleted && !unconfirmed && (!!onEdit || !!onDelete)
 
@@ -218,10 +234,19 @@ function ChatMessageRow({
     onReact?.(message.id, key, emoji, false)
   }
 
-  // A tap on a content image (not an emoji/sticker) or an inline video opens the lightbox with that
-  // media. Delegated off the body so it covers every img/video the sanitized HTML produced.
+  // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
+  // content image (not an emoji/sticker) or an inline video opens the lightbox with that media.
   function onBodyClick(e: MouseEvent<HTMLDivElement>) {
     const el = e.target as HTMLElement
+    const quote = el.closest?.("blockquote[data-reply-id]") as HTMLElement | null
+    if (quote) {
+      const id = quote.getAttribute("data-reply-id")
+      if (id && onJumpToMessage) {
+        e.stopPropagation()
+        onJumpToMessage(id)
+      }
+      return
+    }
     if (el.tagName === "IMG") {
       const itemtype = el.getAttribute("itemtype") || ""
       if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
@@ -239,19 +264,27 @@ function ChatMessageRow({
         "flex flex-col gap-0.5 rounded-2xl",
         self ? "items-end" : "items-start",
         // Vertical rhythm (t158): a group leader opens with a larger gap (≈16px) so distinct groups
-        // read as blocks; a follower hugs the prior bubble (≈2px) for a tight Slack-style run.
-        showMeta ? "mt-4 first:mt-0" : "mt-0.5",
+        // read as blocks; a follower hugs the prior bubble (≈4px) for a tight Slack-style run. NOTE:
+        // the list is flex-col-reverse, so the NEWEST message is the FIRST DOM child — a `first:mt-0`
+        // here would (and did) zero the newest message's leader gap, gluing a reply to the bubble above
+        // it (PSN-92). The margin-top is the gap ABOVE each message; the oldest sits under a date
+        // separator, so no top trim is needed.
+        showMeta ? "mt-4" : "mt-1",
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
+        // Jump-landing flash (PSN-92 B5): a brief highlight so the eye finds the jumped-to message.
+        highlighted && "msg-jump-flash",
       )}
+      data-msg-id={message.id}
       ref={rowRef}
     >
       {showMeta &&
         !self &&
         !!message.senderName &&
         // Sender header — a button when a profile can open (t166: known senderId + handler), else
-        // the plain span it always was. Same layout either way, no shift.
+        // the plain span it always was. Same layout either way, no shift. Name via DisplayName
+        // (PSN-92 name-preference component).
         (onOpenProfile && message.senderId ? (
           <button
             className="flex items-center gap-1.5 rounded px-1 text-left hover:bg-accent/60"
@@ -268,9 +301,11 @@ function ChatMessageRow({
               label={message.senderName}
               userId={message.senderId}
             />
-            <span className="font-semibold text-foreground text-xs">
-              {formatName(message.senderName ?? "", namePref)}
-            </span>
+            <DisplayName
+              className="font-semibold text-foreground text-xs"
+              name={message.senderName ?? ""}
+              pref={namePref}
+            />
           </button>
         ) : (
           <span className="flex items-center gap-1.5 px-1">
@@ -279,9 +314,11 @@ function ChatMessageRow({
               label={message.senderName}
               userId={message.senderId}
             />
-            <span className="font-semibold text-foreground text-xs">
-              {formatName(message.senderName ?? "", namePref)}
-            </span>
+            <DisplayName
+              className="font-semibold text-foreground text-xs"
+              name={message.senderName ?? ""}
+              pref={namePref}
+            />
           </span>
         ))}
       {hasBody && editing && (
@@ -333,14 +370,19 @@ function ChatMessageRow({
               // density can shrink it and grouped runs get asymmetric corners without class soup.
               "teams-message-body max-w-[85%] px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
               self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
-              // Mention-of-me highlight (t160): a coral-tinted bubble, Slack's mention background.
-              message.mentionsMe && !self && "bg-ring/12 ring-1 ring-ring/30",
+              // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
+              // bubble is no longer tinted.
               deleted && "italic opacity-70",
               pending && "opacity-60",
               failed && "opacity-70 ring-1 ring-destructive/40",
             )}
+            // formatBodyNames applies the Names setting to mention pills + quote authors, and
+            // stampReplyIds tags reply blockquotes for click-to-jump — BOTH before the sanitizer (they
+            // read itemprop/itemid the sanitizer strips) — PSN-92 E + B5.
             // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
-            dangerouslySetInnerHTML={{ __html: sanitize(message.body) }}
+            dangerouslySetInnerHTML={{
+              __html: sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
+            }}
             data-pos={groupPos}
             data-side={self ? "self" : "other"}
             onClick={onBodyClick}
@@ -348,8 +390,9 @@ function ChatMessageRow({
             // style grouping; the tooltip is where "when exactly?" lives now.
             title={new Date(message.ts).toLocaleString()}
           />
-          {(canReact || canManage) && (
+          {(canReact || canManage || canReply) && (
             <div className="flex shrink-0 items-center gap-0.5">
+              {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
               {canReact && (
                 <QuickReact
                   coarse={coarse}
@@ -412,24 +455,30 @@ function ChatMessageRow({
         <div
           className={cn("flex max-w-[85%] flex-wrap gap-1", self ? "justify-end" : "justify-start")}
         >
-          {reactions.map((r) => (
-            <button
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
-                r.mine
-                  ? "border-primary bg-primary/15 text-foreground"
-                  : "border-border bg-background/60 text-muted-foreground hover:bg-accent",
-              )}
-              disabled={!onReact}
-              key={r.key}
-              onClick={() => toggleChip(r)}
-              title={reactorTitle(r, namePref)}
-              type="button"
-            >
-              <span aria-hidden>{r.emoji}</span>
-              <span className="font-mono">{r.count}</span>
-            </button>
-          ))}
+          {reactions.map((r) => {
+            const who = reactorTitle(r, namePref)
+            return (
+              <Tooltip key={r.key}>
+                <TooltipTrigger asChild>
+                  <button
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                      r.mine
+                        ? "border-primary bg-primary/15 text-foreground"
+                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent",
+                    )}
+                    disabled={!onReact}
+                    onClick={() => toggleChip(r)}
+                    type="button"
+                  >
+                    <span aria-hidden>{r.emoji}</span>
+                    <span className="font-mono">{r.count}</span>
+                  </button>
+                </TooltipTrigger>
+                {who && <TooltipContent>{who}</TooltipContent>}
+              </Tooltip>
+            )
+          })}
         </div>
       )}
       {/* Optimistic send status (t159): a quiet "Sending…" while in flight; a failed send keeps the
@@ -485,6 +534,24 @@ function SystemRow({ body }: { body: string }) {
         {body}
       </span>
     </div>
+  )
+}
+
+/** The reply affordance beside a bubble (PSN-92 B): quotes the message into the composer. Same reveal
+ *  as QuickReact — fade-in on hover for a fine pointer, always-visible for coarse. */
+function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void }) {
+  return (
+    <button
+      aria-label="Reply"
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+        coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      <HugeiconsIcon className="size-4" icon={ArrowTurnBackwardIcon} />
+    </button>
   )
 }
 

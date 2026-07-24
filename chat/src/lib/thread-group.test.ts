@@ -60,6 +60,22 @@ describe("buildThreadItems", () => {
     expect(metas).toEqual([true, false, false])
   })
 
+  it("a quoted reply always opens its own group even mid-run (PSN-92)", () => {
+    const items = buildThreadItems(
+      [
+        msg({ ts: AT(2026, 7, 23, 10, 0), id: "a" }),
+        msg({
+          ts: AT(2026, 7, 23, 10, 1),
+          id: "b",
+          body: '<blockquote itemtype="http://schema.skype.com/Reply">…</blockquote><p>re</p>',
+        }),
+      ],
+      now,
+    )
+    const metas = items.filter((i) => i.type === "message").map((i) => (i as any).showMeta)
+    expect(metas).toEqual([true, true]) // the reply (b) is a leader despite the 1-min gap
+  })
+
   it("breaks the group on a >5min gap", () => {
     const items = buildThreadItems(
       [msg({ ts: AT(2026, 7, 23, 10, 0) }), msg({ ts: AT(2026, 7, 23, 10, 6) })],
