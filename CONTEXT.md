@@ -108,6 +108,26 @@ _Avoid_: history entry, page visit, navigation event.
 The web server acting as the shared source of truth for **Pin**s and **Visit**s across a user's devices (ADR-0017). Web is a Sync Backend client by construction (`/api/pins*`, `/api/history*`); Electron opts in per device via `syncEnabled` + `syncServerUrl` (plaintext tailnet URL, no auth/E2E), proxying its Pin + Visit reads/writes there instead of its local `settings.json` / `history.json` and falling back to local on any network failure. First enable is server-wins.
 _Avoid_: sync server, sync service, cloud sync.
 
+**Chat BFF** (a.k.a. **chat-server**):
+The standalone backend-for-frontend (`apps/chat-server`, Hono + better-sqlite3 + `ws`) that sits between the Teams backend and the `/chat` FE (ADR-0020). It owns its own `chat.db`, sweeps Teams server-side, pushes deltas to the FE over WS, owns Teams web push, and exposes a service-agnostic **`/api/chat/*`** contract (a `service` discriminator, `teams` first provider). `web/server.mjs` reverse-proxies `/api/chat/*` + the WS upgrade to it. Its store is a durable **platform** (keeps the raw provider payload per message), not a render cache, so future background consumers can read it. Web-only (Electron has no scrapable Teams creds path).
+_Avoid_: chat API, teams server, message service.
+
+**Chat Provider**:
+The BFF's abstraction over one chat service (`apps/chat-server/src/providers/`): a `ChatProvider` interface (listConversations / fetchHistory / send / react / edit / delete / markRead / roster / media / avatar / profile / uploads). `TeamsProvider` is an HTTP client of the **Internal Teams Upstream**; `MockProvider` implements the same interface for hermetic e2e. A second service (e.g. Slack) is a new provider, not a route fork.
+_Avoid_: adapter (that's the notification-capture term), connector, backend driver.
+
+**Internal Teams Upstream** (`/internal/teams/*`):
+The provider seam on `web/server.mjs`: its existing in-page CA-proof Teams executors (list/history/send/react/edit/delete/mark-read/roster/media/avatar/profile/uploads) re-exposed as an internal-only API the Chat BFF calls as its Teams upstream. Guarded by an `x-internal-secret` header (`CHAT_INTERNAL_SECRET`; 403 without it) — reachable only from the BFF, never the public origin. The CDP side-channel + creds are unchanged; only the exposure moved.
+_Avoid_: teams API, internal API, provider API (ambiguous).
+
+**Sweep** (chat):
+The BFF's server-side freshness loop: it fetches the focused conversation's newest page (~4s) and the conversation list (~12s) through its **Chat Provider**, version-gated-upserts into `chat.db`, and emits `conversation-upsert` / `messages-upsert` / `read-state` deltas over WS. Runs at list cadence even with zero clients so web push still fires. (Distinct from the **Slack Content Sweep**, ADR-0011, which is server-side `fetch`, not in-page.)
+_Avoid_: poll, refresh loop, sync (ambiguous).
+
+**Backfill** (chat):
+A manual, resumable BFF job that cursor-chains a conversation's older history pages until it reaches `now − X days` (X selectable in Settings → Data: 30/60/90/120, default 30), streaming `backfill-progress` over WS. Serial per conversation + rate-limit-aware; changing X affects the next Run. Fills the durable store beyond what the live **Sweep** carries.
+_Avoid_: import, history fetch, sync.
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.

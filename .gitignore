@@ -14,6 +14,11 @@ web-teams.db
 web-teams.db-shm
 web-teams.db-wal
 
+# BFF chat store (apps/chat-server SQLite; dev/test runs write to repo root)
+chat.db
+chat.db-shm
+chat.db-wal
+
 # Baked build identity (Docker builder writes it; never committed)
 .gitsha
 

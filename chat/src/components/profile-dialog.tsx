@@ -10,7 +10,8 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { fetchProfile, TeamsApiError, type TeamsProfile } from "../lib/teams-client"
+import { ChatApiError, fetchProfile } from "../lib/chat-client"
+import type { TeamsProfile } from "../lib/teams-client"
 import { ImageLightbox } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
@@ -51,7 +52,7 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
       .then((profile) => setState({ s: "ready", profile }))
       .catch((e) => {
         if (ctl.signal.aborted) return
-        setState({ s: "error", code: e instanceof TeamsApiError ? e.code : "fetch_failed" })
+        setState({ s: "error", code: e instanceof ChatApiError ? e.code : "fetch_failed" })
       })
     return () => ctl.abort()
   }, [target])

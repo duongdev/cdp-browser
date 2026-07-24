@@ -21,6 +21,19 @@ import {
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
+import {
+  ChatApiError,
+  deleteMessage,
+  editMessage,
+  fetchHistory,
+  markRead,
+  react,
+  sendReply,
+  uploadFile,
+  uploadImage,
+  uploadImages,
+} from "../lib/chat-client"
+import { useChatWsFrames } from "../lib/chat-ws-context"
 import { conversationLabel } from "../lib/conversation-view"
 import { FULL_NAME, formatConversationLabel, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
@@ -33,22 +46,7 @@ import {
 } from "../lib/message-merge"
 import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
-import {
-  deleteMessage,
-  editMessage,
-  fetchHistory,
-  type MentionRef,
-  markRead,
-  type ReplyRef,
-  react,
-  sendReply,
-  TeamsApiError,
-  type TeamsConversation,
-  type TeamsMessage,
-  uploadFile,
-  uploadImage,
-  uploadImages,
-} from "../lib/teams-client"
+import type { MentionRef, ReplyRef, TeamsConversation, TeamsMessage } from "../lib/teams-client"
 import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
 import { shouldShowUnreadJump } from "../lib/unread-jump"
@@ -114,7 +112,7 @@ const pendingExt = (name: string): string => {
 }
 
 const errorMessage = (e: unknown): string => {
-  if (e instanceof TeamsApiError) {
+  if (e instanceof ChatApiError) {
     if (e.code === "invalid_auth")
       return "Teams sign-in expired — it refreshes when the Teams tab reloads. Retry in a moment."
     if (e.code === "rate_limited") return "Teams is rate-limiting. Try again in a moment."
@@ -461,79 +459,71 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     if (el) el.scrollTop = savedScrollTop.current
   }, [visible])
 
-  // Poll the newest history page and merge it in (t135). Only touches a "ready" state — a loading/
-  // error pane is left to the initial load. Errors are swallowed: a failed poll keeps the last-good
-  // thread rather than flipping to error. Sticks to the bottom only if the user was already there.
+  // Merge a freshly-arrived newest history page into the thread (t135), whether it came from a WS
+  // `messages-upsert` frame (PSN-93 WS-E) or a fallback poll. Only touches a "ready" state — a
+  // loading/error pane is left to the initial load. Sticks to the bottom only if the user was there.
+  const applyIncoming = useCallback((incoming: TeamsMessage[]) => {
+    if (incoming.length === 0) return
+    const el = scrollRef.current
+    // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
+    const nearBottom = el ? Math.abs(el.scrollTop) < THREAD_BOTTOM_SLACK : false
+    // Retire optimistic reactions the server now reflects (or that timed out) BEFORE overlaying,
+    // so a confirmed reaction stops being pinned and a later real change isn't masked (t143).
+    reconcilePendingReactions(pendingReactions.current, incoming, Date.now())
+    setState((s) => {
+      if (s.status !== "ready") return s
+      const merged = mergeMessages(s.messages, incoming)
+      // Overlay the still-pending reactions so a stale server page can't revert the optimistic chip.
+      // The overlay reuses the same-ref no-op, so an update that changes nothing re-renders nothing.
+      const overlaid = applyPendingReactions(merged.messages, pendingReactions.current)
+      return overlaid === s.messages ? s : { status: "ready", messages: overlaid }
+    })
+    if (nearBottom) {
+      requestAnimationFrame(() => {
+        const now = scrollRef.current
+        if (now) now.scrollTop = 0
+      })
+    }
+  }, [])
+
+  // Fetch the newest history page and merge it (fallback poll + catch-up on becoming visible).
+  // Errors are swallowed: a failed fetch keeps the last-good thread rather than flipping to error.
   const poll = useCallback(() => {
     fetchHistory(convId, null, true)
-      .then((page) => {
-        const el = scrollRef.current
-        // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
-        const nearBottom = el ? Math.abs(el.scrollTop) < THREAD_BOTTOM_SLACK : false
-        // Retire optimistic reactions the server now reflects (or that timed out) BEFORE overlaying,
-        // so a confirmed reaction stops being pinned and a later real change isn't masked (t143).
-        reconcilePendingReactions(pendingReactions.current, page.messages, Date.now())
-        setState((s) => {
-          if (s.status !== "ready") return s
-          const merged = mergeMessages(s.messages, page.messages)
-          // Overlay the still-pending reactions so a stale server page can't revert the optimistic
-          // chip. The overlay reuses the same-ref no-op, so a poll that changes nothing re-renders
-          // nothing.
-          const overlaid = applyPendingReactions(merged.messages, pendingReactions.current)
-          return overlaid === s.messages ? s : { status: "ready", messages: overlaid }
-        })
-        if (nearBottom) {
-          requestAnimationFrame(() => {
-            const now = scrollRef.current
-            if (now) now.scrollTop = 0
-          })
-        }
-      })
+      .then((page) => applyIncoming(page.messages))
       .catch(() => {
-        // Poll errors are silent (t135) — the last-good thread stays put.
+        // silent (t135) — the last-good thread stays put.
       })
-  }, [convId])
+  }, [convId, applyIncoming])
 
-  // Drive the poll off a stable ref so the interval survives a conversation switch (convId change
-  // only re-points the ref; `load` already refetches on switch) and doesn't reset every 4s.
+  // Live updates: the BFF sweep pushes this thread's new/changed messages over the WS focus lane
+  // (PSN-93 WS-E) — no steady 4s poll. Apply the frame's messages through the same merge path a poll
+  // used. Only the visible pane's convId is applied (an inactive kept-alive pane isn't focused
+  // server-side, so it won't receive frames; it catches up via the poll below when re-shown).
+  const wsStatus = useChatWsFrames((frame) => {
+    if (!visible) return
+    if (frame.type === "messages-upsert" && frame.convId === convId) applyIncoming(frame.messages)
+  })
+
+  // Catch-up + fallback. On becoming visible (or the tab returning to foreground) fire one immediate
+  // poll so a switched-back kept-alive thread reconciles at once — even while WS is up, since this
+  // pane wasn't focused server-side while hidden. Then, ONLY while the WS is down, keep a fallback
+  // poll running so reads survive a broken socket. A live WS needs no interval.
   const pollRef = useRef(poll)
-  useEffect(() => {
-    pollRef.current = poll
-  }, [poll])
-
-  // Only the active + visible pane polls, and only while the tab is foregrounded. Becoming visible
-  // (or the tab returning to foreground) fires one immediate poll so a switched-back kept-alive
-  // thread refreshes at once; going hidden clears the interval.
+  pollRef.current = poll
   useEffect(() => {
     if (!visible) return
-    let timer: ReturnType<typeof setInterval> | undefined
     const tick = () => pollRef.current()
-    const start = () => {
-      if (timer == null) timer = setInterval(tick, THREAD_POLL_MS)
-    }
-    const stop = () => {
-      if (timer != null) {
-        clearInterval(timer)
-        timer = undefined
-      }
-    }
-    const onVisibility = () => {
-      if (document.hidden) stop()
-      else {
-        tick()
-        start()
-      }
-    }
-    if (!document.hidden) {
-      tick()
-      start()
-    }
-    document.addEventListener("visibilitychange", onVisibility)
+    tick() // immediate catch-up on show
+    const onFocus = () => tick()
+    window.addEventListener("focus", onFocus)
+    let timer: ReturnType<typeof setInterval> | undefined
+    if (wsStatus !== "online") timer = setInterval(tick, THREAD_POLL_MS)
     return () => {
-      stop()
-      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("focus", onFocus)
+      if (timer) clearInterval(timer)
     }
-  }, [visible])
+  }, [visible, wsStatus])
 
   // Reactions (t142): the thread owns message state, so it applies the optimistic toggle here
   // (add/remove self + adjust count via the pure applyReaction) and fires the best-effort server
@@ -700,7 +690,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                   if (firstId === null) firstId = r.msgId
                 } catch (e) {
                   const name = imageFiles[i].name || "image"
-                  const msg = e instanceof TeamsApiError ? e.message : "Send failed"
+                  const msg = e instanceof ChatApiError ? e.message : "Send failed"
                   // Report per-file but keep going (the spec: remaining files keep sending).
                   console.warn(`[chat] upload failed for ${name}: ${msg}`)
                 }
@@ -715,12 +705,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               if (firstId === null) firstId = r.msgId
             } catch (e) {
               const name = file.name || "file"
-              const msg = e instanceof TeamsApiError ? e.message : "Send failed"
+              const msg = e instanceof ChatApiError ? e.message : "Send failed"
               console.warn(`[chat] upload failed for ${name}: ${msg}`)
             }
           }
 
-          if (firstId === null) throw new TeamsApiError("all_failed", 0)
+          if (firstId === null) throw new ChatApiError("all_failed", 0)
           return firstId
         }
         op = buildChain()
@@ -739,7 +729,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
         markRead(convId, id, id)
       }).catch((e) => {
-        const code = e instanceof TeamsApiError ? e.code : "network_error"
+        const code = e instanceof ChatApiError ? e.code : "network_error"
         setState((s) =>
           s.status === "ready"
             ? { status: "ready", messages: markSendFailed(s.messages, localId, code) }

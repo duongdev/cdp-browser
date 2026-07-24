@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 import "./index.css"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ChatApp } from "./chat-app"
+import { ChatWsProvider } from "./lib/chat-ws-context"
 
 // Pre-paint theme: apply the OS preference before React mounts so there's no flash. useChatSettings
 // (t154) then loads the persisted theme/density from server ui-state and takes over (system keeps
@@ -21,7 +22,9 @@ if ("serviceWorker" in navigator) {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <TooltipProvider delayDuration={300}>
-      <ChatApp />
+      <ChatWsProvider>
+        <ChatApp />
+      </ChatWsProvider>
     </TooltipProvider>
   </StrictMode>,
 )

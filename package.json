@@ -19,6 +19,7 @@
     "web:serve": "node web/server.mjs",
     "chat:build": "vite build --config vite.config.chat.ts",
     "chat:web": "vite build && vite build --config vite.config.chat.ts && node web/server.mjs",
+    "chat:bff": "concurrently -k -n bff,web \"pnpm --filter @cdp/chat-server start\" \"node web/server.mjs\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",

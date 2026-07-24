@@ -1,6 +1,6 @@
 import { Cancel01Icon, ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
@@ -20,6 +20,9 @@ import {
 import { isPointerFine, usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
 import { cn } from "@/lib/utils"
+import type { BackfillStatus } from "../../../apps/chat-server/src/contract"
+import { progressLabel, progressPercent } from "../lib/backfill-progress"
+import { fetchConversations, getBackfillStatus, startBackfill } from "../lib/chat-client"
 import type {
   ChatDensity,
   ChatFont,
@@ -30,6 +33,7 @@ import type {
   ChatTheme,
 } from "../lib/chat-settings"
 import { chatShell } from "../lib/chat-shell"
+import { useChatWsFrames } from "../lib/chat-ws-context"
 import { formatName } from "../lib/display-name"
 import { playNotifySound } from "../lib/notify-sound"
 import { NotifyControl } from "./notify-toggle"
@@ -151,6 +155,128 @@ function Segmented<T extends string>({
           {label}
         </button>
       ))}
+    </div>
+  )
+}
+
+const DAYS_OPTIONS = [
+  { id: "30", label: "30 days" },
+  { id: "60", label: "60 days" },
+  { id: "90", label: "90 days" },
+  { id: "120", label: "120 days" },
+] as const
+
+const POLL_MS = 3_000
+
+/** Data card: fetch-last-X-days backfill UI. */
+function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void }) {
+  const [days, setDays] = useState<string>("30")
+  const [status, setStatus] = useState<BackfillStatus | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+
+  // Init: GET status so a mid-run progress survives a page reload.
+  useEffect(() => {
+    getBackfillStatus().then((s) => {
+      if (s) setStatus(s)
+    })
+  }, [])
+
+  // WS live updates.
+  const wsStatus = useChatWsFrames(
+    useCallback((frame) => {
+      if (frame.type === "backfill-progress") setStatus(frame.status as BackfillStatus)
+    }, []),
+  )
+
+  // Poll fallback while WS is down and a run is active.
+  useEffect(() => {
+    clearInterval(pollRef.current)
+    if (wsStatus !== "online" && status?.running) {
+      pollRef.current = setInterval(async () => {
+        const s = await getBackfillStatus()
+        if (s) setStatus(s)
+      }, POLL_MS)
+    }
+    return () => clearInterval(pollRef.current)
+  }, [wsStatus, status?.running])
+
+  const running = status?.running ?? false
+
+  async function handleRun() {
+    // Guard: ensure the BFF has at least one synced conversation.
+    const { conversations } = await fetchConversations()
+    if (conversations.length === 0) {
+      setStatus({
+        running: false,
+        days: Number(days),
+        conversationsDone: 0,
+        conversationsTotal: 0,
+        messagesFetched: 0,
+        error: "No conversations synced yet — wait for the list to load then retry.",
+      })
+      return
+    }
+    await startBackfill(Number(days))
+    setStatus((prev) => ({
+      running: true,
+      days: Number(days),
+      conversationsDone: 0,
+      conversationsTotal: prev?.conversationsTotal ?? 0,
+      messagesFetched: 0,
+    }))
+  }
+
+  const pct = status ? progressPercent(status.conversationsDone, status.conversationsTotal) : 0
+  const label = status ? progressLabel(status) : ""
+  const isDone = !running && !status?.error && (status?.conversationsDone ?? 0) > 0
+
+  return (
+    <div className="space-y-3 border-border/60 border-t pt-3">
+      <Label className="text-[13px]">Data</Label>
+      <div className="flex items-center gap-2">
+        <Select onOpenChange={onSelectOpen} onValueChange={setDays} value={days}>
+          <SelectTrigger className="flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {DAYS_OPTIONS.map(({ id, label: l }) => (
+              <SelectItem key={id} value={id}>
+                {l}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button disabled={running} onClick={handleRun} size="default" variant="secondary">
+          {running ? "Running\u2026" : "Run"}
+        </Button>
+      </div>
+
+      {status && label && (
+        <div className="space-y-1.5">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all",
+                status.error ? "bg-destructive/70" : "bg-foreground/40",
+              )}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p
+            className={cn(
+              "text-[11px]",
+              status.error ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {label}
+            {isDone && (
+              <span className="ml-1.5 rounded-sm bg-foreground/10 px-1 py-0.5 text-[10px] font-medium">
+                Done
+              </span>
+            )}
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -375,6 +501,9 @@ export function SettingsSheet({
               onElectronChange={(v) => onUpdate({ notificationsEnabled: v })}
             />
           </div>
+
+          {/* Data — backfill last X days. */}
+          <BackfillCard onSelectOpen={setSelectOpen} />
 
           {/* Server URL — Electron shell only (the web build is served by its own origin). */}
           {shell && (

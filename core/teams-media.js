@@ -1,7 +1,8 @@
 // AMS media SSRF gate + HTML rewrite for the Teams chat backend (t139, ADR-0019). Teams inline
 // media (images/video) is hosted on AMS (`as-*.asm.skype.com`, `*.asyncgw.teams.microsoft.com`)
 // and 401s from a server-side or `mode:'no-cors'` fetch — it loads ONLY from an IN-PAGE fetch with
-// the `Authentication: skypetoken=…` header. So `/api/teams/media` proxies through the side-channel
+// the `Authentication: skypetoken=…` header. So `/api/chat/media` (→ BFF → `/internal/teams/media`)
+// proxies through the side-channel
 // (CA-proof, like teamsHistory). This module is the single gate + rewrite: only an https AMS object
 // URL is ever handed to the in-page fetch, so a garbled/hostile `src` can't steer it at another host
 // (skypetoken exfiltration / SSRF). Pure — no I/O, no DOM. Tested by teams-media.test.ts.
@@ -24,6 +25,14 @@ function isValidAmsUrl(url) {
   const amsHost = h.endsWith(".asm.skype.com") || h.endsWith(".asyncgw.teams.microsoft.com")
   if (!amsHost) return false
   return u.pathname.startsWith("/v1/objects/")
+}
+
+// The same-origin proxy URL for an AMS object. Post-PSN-93 the chat FE loads media through the BFF
+// (`/api/chat/media?service=teams&url=…`), which reverse-proxies to `/internal/teams/media` on this
+// server — so the authenticated in-page fetch is unchanged, only the FE-facing path moved off the
+// legacy `/api/teams/media`. Single owner of the baked path so the rewrite + thumb proxy agree.
+function mediaProxyUrl(decoded) {
+  return `/api/chat/media?service=teams&url=${encodeURIComponent(decoded)}`
 }
 
 // The immutable object id from an AMS url (`/v1/objects/{id}/views/…`), or null. The id is the
@@ -51,7 +60,7 @@ function rewriteMediaHtml(html) {
     tag.replace(SRC_RE, (full, pre, q, raw) => {
       const decoded = raw.replace(/&amp;/g, "&")
       if (!isValidAmsUrl(decoded)) return full
-      return `${pre}${q}/api/teams/media?url=${encodeURIComponent(decoded)}${q}`
+      return `${pre}${q}${mediaProxyUrl(decoded)}${q}`
     }),
   )
   return ensureMediaDimensions(rewritten)
@@ -81,4 +90,10 @@ function ensureMediaDimensions(html) {
   })
 }
 
-module.exports = { isValidAmsUrl, amsObjectId, rewriteMediaHtml, ensureMediaDimensions }
+module.exports = {
+  isValidAmsUrl,
+  amsObjectId,
+  mediaProxyUrl,
+  rewriteMediaHtml,
+  ensureMediaDimensions,
+}

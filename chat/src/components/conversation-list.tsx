@@ -25,7 +25,8 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { chatShell } from "../lib/chat-shell"
+import { ChatApiError, fetchConversations } from "../lib/chat-client"
+import { useChatWsFrames } from "../lib/chat-ws-context"
 import { mergeConversations } from "../lib/conversation-merge"
 import {
   applyPrefs,
@@ -41,13 +42,14 @@ import {
   type ReadOverride,
 } from "../lib/conversation-view"
 import type { NamePref } from "../lib/display-name"
-import { fetchConversations, TeamsApiError, type TeamsConversation } from "../lib/teams-client"
+import type { TeamsConversation } from "../lib/teams-client"
 import type { ConvPrefsPatch } from "../lib/use-conv-prefs"
 import { ConversationRow } from "./conversation-row"
 import { ConversationRowMenu } from "./conversation-row-menu"
 
-// Live sync (t135, poll-first): cadence for re-unioning the newest conversation page.
-const LIST_POLL_MS = 12_000
+// Live sync (PSN-93 WS-E): the BFF pushes conversation deltas over the WS, so no steady poll runs.
+// This cadence is only the FALLBACK when the WS can't connect (status stays "reconnecting").
+const LIST_FALLBACK_POLL_MS = 12_000
 // Live "ago" tick (t168): one list-level timer re-renders the relative times, so "5m" can't go
 // stale between polls. 30s matches the display granularity (minutes).
 const TIME_TICK_MS = 30_000
@@ -87,7 +89,7 @@ type State =
 const NOOP = () => {}
 
 const errorMessage = (e: unknown): string => {
-  if (e instanceof TeamsApiError) {
+  if (e instanceof ChatApiError) {
     if (e.code === "invalid_auth") return "Teams sign-in needed. Open Teams on the remote browser."
     if (e.code === "rate_limited") return "Teams is rate-limiting. Try again in a moment."
   }
@@ -167,7 +169,7 @@ export function ListFilterPills({
   )
 }
 
-/** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
+/** The conversation list — driven by the BFF WS snapshot + `/api/chat/*` deltas, covers all four
  *  states, and auto-pages older via infinite scroll (a bottom IntersectionObserver sentinel, t136)
  *  driven by the backwardLink cursor (t134). */
 export function ConversationList({
@@ -261,10 +263,10 @@ export function ConversationList({
   // Re-union page 1 into the list without disturbing the paging cursor / Load-more state (t135).
   // No-ops unless "ready"; mergeConversations returns the same ref when nothing changed, so we skip
   // the setState (and its re-render) then. Errors are swallowed — a failed refresh keeps the list.
+  // Used by the WS-down fallback poll + the on-focus refresh.
   const refresh = useCallback(() => {
     fetchConversations()
       .then((page) => {
-        onConnectionChange?.(true)
         setState((s) => {
           if (s.status !== "ready") return s
           const merged = mergeConversations(s.conversations, page.conversations)
@@ -272,44 +274,55 @@ export function ConversationList({
         })
       })
       .catch(() => {
-        // The last-good list stays put (t135); flag the connection so the app shows a banner.
-        onConnectionChange?.(false)
+        // The last-good list stays put (t135); the WS status already drives the banner.
       })
-  }, [onConnectionChange])
+  }, [])
 
-  // Refresh on a cadence + on the tab returning to foreground / window focus. Paused while hidden
-  // on the web build (saves battery on a backgrounded tab). The Electron shell keeps polling while
-  // hidden/minimized — that's the only signal driving desktop notifications, so pausing it there
-  // silently breaks notifications for the exact case ("app minimized") they exist for.
-  const isElectron = chatShell() != null
+  // Live list updates arrive as WS frames from the BFF sweep (PSN-93 WS-E) — no steady poll. Apply a
+  // `conversation-upsert` through the same mergeConversations reducer the poll used, and a
+  // `read-state` frame by patching the matching row's readTs/unreadSticky (the app's optimistic
+  // readOverrides still win via applyReadOverride's max-merge). The WS delivers frames regardless of
+  // document.hidden, so notify-new (fed by onConversations) keeps firing while backgrounded — the
+  // BFF sweep is the always-on signal source that the list poll used to be, minimized-safe.
+  const status = useChatWsFrames((frame) => {
+    if (frame.type === "conversation-upsert") {
+      setState((s) => {
+        if (s.status !== "ready") return s
+        const merged = mergeConversations(s.conversations, frame.conversations)
+        return merged === s.conversations ? s : { ...s, conversations: merged }
+      })
+    } else if (frame.type === "read-state") {
+      setState((s) => {
+        if (s.status !== "ready") return s
+        let changed = false
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== frame.convId) return c
+          if (c.readTs === frame.readTs && c.unreadSticky === frame.unreadSticky) return c
+          changed = true
+          return { ...c, readTs: frame.readTs, unreadSticky: frame.unreadSticky }
+        })
+        return changed ? { ...s, conversations } : s
+      })
+    }
+  })
+
+  // Connection banner: the WS status is the source of truth (online ⇄ reconnecting).
   useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | undefined
-    const start = () => {
-      if (timer == null) timer = setInterval(refresh, LIST_POLL_MS)
-    }
-    const stop = () => {
-      if (timer != null) {
-        clearInterval(timer)
-        timer = undefined
-      }
-    }
-    const onVisibility = () => {
-      if (document.hidden && !isElectron) stop()
-      else {
-        refresh()
-        start()
-      }
-    }
+    onConnectionChange?.(status === "online")
+  }, [status, onConnectionChange])
+
+  // Fallback poll: only while the WS is down. When online, the WS pushes deltas so no poll runs.
+  // Also refresh on window focus so a returning tab reconciles immediately even mid-reconnect.
+  useEffect(() => {
+    if (status === "online") return
+    const timer = setInterval(refresh, LIST_FALLBACK_POLL_MS)
     const onFocus = () => refresh()
-    if (isElectron || !document.hidden) start()
-    document.addEventListener("visibilitychange", onVisibility)
     window.addEventListener("focus", onFocus)
     return () => {
-      stop()
-      document.removeEventListener("visibilitychange", onVisibility)
+      clearInterval(timer)
       window.removeEventListener("focus", onFocus)
     }
-  }, [refresh, isElectron])
+  }, [status, refresh])
 
   const loadMore = useCallback(() => {
     if (loadingMoreRef.current) return

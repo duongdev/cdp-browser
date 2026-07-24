@@ -1,6 +1,8 @@
-// Typed client for the Teams chat backend (t128/t129, ADR-0019). The authenticated conversation
-// list (`GET /api/teams/conversations`) plus one conversation's history (`POST /api/teams/history`).
-// Kept behind this thin seam so t131 (live sync) extends it instead of re-fetching ad hoc.
+// Teams chat type home (PSN-93 WS-J). Once the typed fetch client for `/api/teams/*`, now a pure
+// type module: the FE talks only to the service-agnostic `/api/chat/*` BFF via `chat-client.ts`,
+// which re-exports these `Teams*` shapes. Kept as the single owner of the shared message/conversation
+// types (imported `import type` across the component tree); the fetch functions that hit `/api/teams/*`
+// were deleted with the legacy routes. `chat-client.ts` mirrors this surface over `/api/chat/*`.
 
 /** One conversation row as the server's `listConversations` returns it (core/teams-store.js). */
 export interface TeamsConversation {
@@ -29,7 +31,7 @@ export interface TeamsConversation {
   /** Local folder this row is filed under (t156): set by applyPrefs. null/absent = ungrouped. */
   folder?: string | null
   /** The user oid whose photo represents this row (t153): a 1:1's other member or the self chat's
-   *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/teams/avatar`. */
+   *  viewer. Absent for group chats (which keep the initials tile). Feeds `/api/chat/avatar`. */
   avatarUserId?: string
   /** Up to the first few non-self member oids of a group chat (t161) — drives the Teams-style
    *  facepile avatar. Absent for 1:1/self (single avatar) or when the roster is unknown. */
@@ -41,47 +43,10 @@ export interface TeamsConversation {
   customTitle?: string
 }
 
-interface ConversationsResponse {
-  conversations?: TeamsConversation[]
-  /** Opaque backwardLink for the next older page; null when there are no more (t134). */
-  cursor?: string | null
-  error?: string
-}
-
 /** One page of the conversation list plus the cursor to page older (null = end). */
 export interface ConversationsPage {
   conversations: TeamsConversation[]
   cursor: string | null
-}
-
-/** A failed conversation fetch, carrying the server's typed code (e.g. `invalid_auth`). */
-export class TeamsApiError extends Error {
-  constructor(
-    public code: string,
-    public status: number,
-  ) {
-    super(code)
-    this.name = "TeamsApiError"
-  }
-}
-
-/** One page of the conversation list (t134). No `cursor` → the newest page; a `cursor` (the prior
- *  page's backwardLink) → the next older page. Returns the page + the next cursor (null = end). */
-export async function fetchConversations(
-  cursor?: string | null,
-  signal?: AbortSignal,
-): Promise<ConversationsPage> {
-  const res = await fetch("/api/teams/conversations", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(cursor ? { cursor } : {}),
-    signal,
-  })
-  const data = (await res.json().catch(() => ({}))) as ConversationsResponse
-  if (!res.ok || data.error) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return { conversations: data.conversations ?? [], cursor: data.cursor ?? null }
 }
 
 /** A file / call-recording / Swift-card chip parsed from a message (t141). `url` opens in a new tab
@@ -140,43 +105,10 @@ export interface TeamsMessage {
   failed?: string
 }
 
-interface HistoryResponse {
-  messages?: TeamsMessage[]
-  /** Opaque backwardLink for the next older page; null when there are no more (t134). */
-  cursor?: string | null
-  error?: string
-}
-
 /** One page of a conversation's history plus the cursor to page older (null = end, t134). */
 export interface HistoryPage {
   messages: TeamsMessage[]
   cursor: string | null
-}
-
-/** One page of a conversation's history, oldest-first after render. No `cursor` → the newest page;
- *  a `cursor` (the prior page's backwardLink) → the next older page. `poll` marks a background
- *  refresh of an already-open thread (t155): the server then won't let its local-read write clear a
- *  mark-unread sentinel (only a real open/explicit action does). Throws TeamsApiError with the
- *  server's typed code. */
-export async function fetchHistory(
-  convId: string,
-  cursor?: string | null,
-  poll?: boolean,
-): Promise<HistoryPage> {
-  const res = await fetch("/api/teams/history", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      convId,
-      ...(cursor ? { cursor } : {}),
-      ...(poll ? { poll: true } : {}),
-    }),
-  })
-  const data = (await res.json().catch(() => ({}))) as HistoryResponse
-  if (!res.ok || data.error) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return { messages: data.messages ?? [], cursor: data.cursor ?? null }
 }
 
 /** The server's reply response: `ts` is the sent message's id/arrival-time (epoch ms as string). */
@@ -186,9 +118,7 @@ export interface SendReplyResult {
   clientmessageid: string
 }
 
-/** Send a reply to a conversation (t130). `html` (t159, composer formatting) upgrades the send to
- *  a `RichText/Html` message; without it the wire format stays the plain Text send. Throws
- *  TeamsApiError with the server's typed code so the failed bubble can show honest copy. */
+/** One quoted-reply reference sent to the server (t159). */
 export interface ReplyRef {
   /** The quoted message's id (epoch ms). */
   messageId: number
@@ -213,233 +143,6 @@ export interface RosterMember {
   self?: boolean
 }
 
-/** Fetch the conversation roster for the @-mention dropdown. Returns [] on any error (the dropdown
- *  just shows nothing rather than blocking the composer). Web only. */
-export async function fetchRoster(convId: string): Promise<RosterMember[]> {
-  try {
-    const res = await fetch("/api/teams/roster", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ convId }),
-    })
-    if (!res.ok) return []
-    const data = (await res.json()) as { members?: RosterMember[] }
-    return Array.isArray(data.members) ? data.members : []
-  } catch {
-    return []
-  }
-}
-
-export async function sendReply(
-  convId: string,
-  text: string,
-  html?: string | null,
-  quotes?: ReplyRef[],
-  mentions?: MentionRef[],
-): Promise<SendReplyResult> {
-  const res = await fetch("/api/teams/reply", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      convId,
-      text,
-      ...(html ? { html } : {}),
-      ...(quotes && quotes.length ? { quotes } : {}),
-      ...(mentions && mentions.length ? { mentions } : {}),
-    }),
-  })
-  const data = (await res.json().catch(() => ({}))) as SendReplyResult & { error?: string }
-  if (!res.ok || data.error) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return data
-}
-
-/** Add (`remove` false) or remove (`remove` true) the viewer's reaction on a message (t142). The
- *  server PUT/DELETEs the emotions property IN-PAGE. Best-effort like `markRead` — the optimistic UI
- *  already updated and the next poll reconciles, so a failure here is swallowed. */
-export async function react(
-  convId: string,
-  msgId: string,
-  key: string,
-  remove: boolean,
-): Promise<void> {
-  try {
-    await fetch("/api/teams/react", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ convId, msgId, key, remove }),
-    })
-  } catch {
-    // best-effort: the optimistic chip stands until the next poll reconciles
-  }
-}
-
-/** Edit the viewer's own message text (t144). The server PUTs the new RichText/Html content IN-PAGE.
- *  Throws TeamsApiError with the server's typed code on failure so the editor can keep the draft +
- *  show honest copy (like `sendReply`); the optimistic edit + next poll otherwise reconcile. */
-export async function editMessage(convId: string, msgId: string, text: string): Promise<void> {
-  const res = await fetch("/api/teams/edit", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, msgId, text }),
-  })
-  const data = (await res.json().catch(() => ({}))) as { ok?: true; error?: string }
-  if (!res.ok || data.error) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-}
-
-/** Delete the viewer's own message (t144). The server DELETEs it IN-PAGE, leaving Teams' tombstone.
- *  Throws TeamsApiError on failure so the UI can react; the optimistic tombstone + next poll's
- *  server-wins merge otherwise reconcile (a failed delete restores the message). */
-export async function deleteMessage(convId: string, msgId: string): Promise<void> {
-  const res = await fetch("/api/teams/delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, msgId }),
-  })
-  const data = (await res.json().catch(() => ({}))) as { ok?: true; error?: string }
-  if (!res.ok || data.error) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-}
-
-/** Read a File as base64 (the `data:…;base64,` prefix stripped) for JSON transport. */
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader()
-    fr.onload = () => {
-      const result = String(fr.result)
-      const comma = result.indexOf(",")
-      resolve(comma >= 0 ? result.slice(comma + 1) : result)
-    }
-    fr.onerror = () => reject(fr.error ?? new Error("read failed"))
-    fr.readAsDataURL(file)
-  })
-}
-
-/** An image File's natural dimensions (for the sent <img> box). Best-effort — a decode failure
- *  resolves 0×0, which the server treats as "no dims" rather than failing the upload. */
-function imageDimensions(file: File): Promise<{ width: number; height: number }> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file)
-    const img = new Image()
-    const done = (width: number, height: number) => {
-      URL.revokeObjectURL(url)
-      resolve({ width, height })
-    }
-    img.onload = () => done(img.naturalWidth, img.naturalHeight)
-    img.onerror = () => done(0, 0)
-    img.src = url
-  })
-}
-
-/** Upload a pasted/picked image to Teams' AMS store and post it inline (t145). Reads the file as
- *  base64 + its natural dimensions client-side, then POSTs the one atomic endpoint (create → PUT
- *  bytes → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer keeps
- *  the pending image + caption. Returns the sent message's id (its arrival ts). */
-export async function uploadImage(
-  convId: string,
-  file: File,
-  text?: string,
-): Promise<{ msgId: string }> {
-  const [base64, { width, height }] = await Promise.all([fileToBase64(file), imageDimensions(file)])
-  const res = await fetch("/api/teams/upload-image", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      convId,
-      filename: file.name || "image.png",
-      base64,
-      contentType: file.type || "image/png",
-      width,
-      height,
-      text: text?.trim() || undefined,
-    }),
-  })
-  const data = (await res.json().catch(() => ({}))) as {
-    ok?: true
-    msgId?: string
-    error?: string
-  }
-  if (!res.ok || data.error || !data.msgId) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return { msgId: data.msgId }
-}
-
-/** Upload multiple images to AMS in parallel + post them as ONE combined AMSImage message (PSN-96 J).
- *  Tries the combined `/api/teams/upload-images` endpoint first. Throws TeamsApiError on failure so
- *  the caller can fall back to sequential single-image sends. Returns the sent message's id. */
-export async function uploadImages(
-  convId: string,
-  files: File[],
-  text?: string,
-): Promise<{ msgId: string }> {
-  const prepared = await Promise.all(
-    files.map(async (file) => {
-      const [base64, { width, height }] = await Promise.all([
-        fileToBase64(file),
-        imageDimensions(file),
-      ])
-      return {
-        filename: file.name || "image.png",
-        base64,
-        contentType: file.type || "image/png",
-        width,
-        height,
-      }
-    }),
-  )
-  const res = await fetch("/api/teams/upload-images", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ convId, images: prepared, text: text?.trim() || undefined }),
-  })
-  const data = (await res.json().catch(() => ({}))) as {
-    ok?: true
-    msgId?: string
-    error?: string
-  }
-  if (!res.ok || data.error || !data.msgId) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return { msgId: data.msgId }
-}
-
-/** Upload a pasted/picked non-image file to the user's SharePoint drive and post it as a chip
- *  (t146). Reads the file as base64 client-side, then POSTs the one atomic endpoint (PUT bytes →
- *  createLink → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer
- *  keeps the pending file + caption. Returns the sent message's id (its arrival ts). */
-export async function uploadFile(
-  convId: string,
-  file: File,
-  text?: string,
-): Promise<{ msgId: string }> {
-  const base64 = await fileToBase64(file)
-  const res = await fetch("/api/teams/upload-file", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      convId,
-      filename: file.name || "file",
-      base64,
-      contentType: file.type || "application/octet-stream",
-      text: text?.trim() || undefined,
-    }),
-  })
-  const data = (await res.json().catch(() => ({}))) as {
-    ok?: true
-    msgId?: string
-    error?: string
-  }
-  if (!res.ok || data.error || !data.msgId) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return { msgId: data.msgId }
-}
-
 /** A user's org-directory profile card (t166), server-fetched via Graph `$select`. Every field is
  *  best-effort — empty string / empty array when the directory doesn't carry it. */
 export interface TeamsProfile {
@@ -449,17 +152,6 @@ export interface TeamsProfile {
   department: string
   officeLocation: string
   phones: string[]
-}
-
-/** Fetch one user's profile card (t166). `userId` is an oid or `8:orgid:` MRI. Throws TeamsApiError
- *  with the server's typed code (`invalid_auth` / `not_found` / …) so the dialog shows honest states. */
-export async function fetchProfile(userId: string, signal?: AbortSignal): Promise<TeamsProfile> {
-  const res = await fetch(`/api/teams/profile?userId=${encodeURIComponent(userId)}`, { signal })
-  const data = (await res.json().catch(() => ({}))) as { profile?: TeamsProfile; error?: string }
-  if (!res.ok || data.error || !data.profile) {
-    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
-  }
-  return data.profile
 }
 
 /** Local conversation prefs (t156): labels / folder / mute. Local to the chat store, shared across
@@ -479,102 +171,4 @@ export interface ConvPrefsDto {
 export interface PrefsResponse {
   prefs: Record<string, ConvPrefsDto>
   folderOrder: string[]
-}
-
-/** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
- *  app holds it beside the list and re-applies over polls. Null on failure — callers keep current
- *  state rather than applying a fake-empty payload. */
-export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse | null> {
-  try {
-    const res = await fetch("/api/teams/prefs", { signal })
-    if (!res.ok) return null
-    const data = (await res.json()) as {
-      prefs?: Record<string, ConvPrefsDto>
-      folderOrder?: string[]
-    }
-    return {
-      prefs: data.prefs ?? {},
-      folderOrder: Array.isArray(data.folderOrder) ? data.folderOrder : [],
-    }
-  } catch {
-    return null
-  }
-}
-
-/** Patch one conversation's prefs (t156). Only the provided keys change server-side. Returns the
- *  conversation's full prefs after the write (or null on failure — the caller stays optimistic). */
-export async function setPrefs(
-  convId: string,
-  patch: {
-    labels?: string[]
-    folder?: string | null
-    muted?: boolean
-    mutedUntil?: number | null
-    notifyOnMention?: boolean
-    customTitle?: string | null
-  },
-): Promise<ConvPrefsDto | null> {
-  try {
-    const res = await fetch("/api/teams/prefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ convId, ...patch }),
-    })
-    const data = (await res.json().catch(() => ({}))) as { prefs?: ConvPrefsDto }
-    return data.prefs ?? null
-  } catch {
-    return null
-  }
-}
-
-/** Persist the folder display order (Workstream I). POSTs `{ folderOrder }` with no `convId`.
- *  Best-effort — the caller is optimistic, so a failure is swallowed. Returns the server-cleaned
- *  order (trimmed, non-empty strings only) or null on failure. */
-export async function setFolderOrder(order: string[]): Promise<string[] | null> {
-  try {
-    const res = await fetch("/api/teams/prefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folderOrder: order }),
-    })
-    const data = (await res.json().catch(() => ({}))) as { ok?: true; folderOrder?: string[] }
-    return data.folderOrder ?? null
-  } catch {
-    return null
-  }
-}
-
-/** Write-through mark-read (t130, Q9 hybrid): push the conversation's read horizon to Teams.
- *  Best-effort — the server never fails this, and a network error here must never surface, so
- *  it swallows everything. Called after a successful reply (and on an explicit mark-read). */
-export async function markRead(convId: string, msgId: string, ts: string): Promise<void> {
-  try {
-    await fetch("/api/teams/mark-read", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ convId, msgId, ts }),
-    })
-  } catch {
-    // best-effort: the desktop unread just survives as a to-do trail
-  }
-}
-
-/** Local-only read state (t155): mark a conversation read or unread in the chat DB WITHOUT writing
- *  Teams' consumptionHorizon (Q9 hybrid — the desktop unread survives). `read` clears the dot (and
- *  any sticky sentinel); `unread` re-arms it. Best-effort — the list is updated optimistically, so a
- *  network error just leaves the server to reconcile on the next poll. */
-export async function markReadLocal(
-  convId: string,
-  action: "read" | "unread",
-  ts = 0,
-): Promise<void> {
-  try {
-    await fetch("/api/teams/read-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ convId, action, ts }),
-    })
-  } catch {
-    // best-effort: the poll reconciles
-  }
 }

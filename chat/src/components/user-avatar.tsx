@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 import { avatarGradient, avatarInitials } from "../lib/avatar-style"
+import { avatarUrl } from "../lib/chat-client"
 
 interface UserAvatarProps {
   /** The user oid/MRI whose Graph photo to load (t153). Absent → initials only (a group chat). */
@@ -16,7 +17,7 @@ interface UserAvatarProps {
 }
 
 /** A user avatar: the initial-letter tile always renders behind; when `userId` resolves a real
- *  Graph photo (`/api/teams/avatar`), the img fades in absolutely on top — same fixed box, so a
+ *  Graph photo (`/api/chat/avatar`), the img fades in absolutely on top — same fixed box, so a
  *  load/miss never shifts layout. A 204 (no photo) or any error keeps the initials (the img's
  *  `onError`, since a 204 has no decodable body). Photos are proxied + cached server-side. */
 /** Teams-style composite avatar for a group chat (t161): the first two members' photos as two
@@ -65,10 +66,7 @@ export function UserAvatar({ userId, label, className, size, onPhotoLoad }: User
   // biome-ignore lint/correctness/useExhaustiveDependencies: userId is the deliberate reset trigger
   useEffect(() => setFailed(false), [userId])
 
-  const src =
-    userId && !failed
-      ? `/api/teams/avatar?userId=${encodeURIComponent(userId)}${size ? `&size=${encodeURIComponent(size)}` : ""}`
-      : null
+  const src = userId && !failed ? avatarUrl(userId, size) : null
   // Seed hashed gradient: prefer the stable userId; fall back to the label so facepile members
   // without a known id still get a per-name color (consistent across renders).
   const gradient = avatarGradient(userId || label)
