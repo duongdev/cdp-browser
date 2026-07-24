@@ -57,7 +57,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
     return (
       <button
         className={cn(
-          "conv-row flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+          "conv-row flex w-full flex-col rounded-lg px-3 py-2.5 text-left transition-colors",
           "hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
           active && "bg-muted",
           focused && "ring-2 ring-ring/70 ring-inset",
@@ -72,81 +72,95 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         type="button"
         {...rest}
       >
-        {/* Avatar-anchored unread indicator (t168, unified t170): one badge on the avatar corner —
-            a plain coral dot for unread, the same badge grown into a numbered pill when there are
-            unread @mentions (a local floor — only synced pages count). Same spot for single +
-            facepile so it never shifts row layout. The wrapper is an explicitly sized block (t170
-            fix): a bare inline span collapsed and let the facepile circles spill across rows. */}
-        <span className="relative block size-10 shrink-0">
-          {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
-            <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
-          ) : (
-            <UserAvatar label={label} userId={conversation.avatarUserId} />
-          )}
-          {mentions > 0 ? (
-            <span
-              aria-label={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
-              className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-ring px-1 font-mono font-semibold text-[10px] text-background ring-2 ring-background"
-              role="status"
-              title={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
-            >
-              {mentions}
-            </span>
-          ) : (
-            unread && (
-              <span
-                aria-label="Unread"
-                className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-ring ring-2 ring-background"
-                role="img"
-                title="Unread"
-              />
-            )
-          )}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline justify-between gap-2">
-            <span className="flex min-w-0 items-baseline gap-1.5">
-              <span
-                className={cn("truncate text-foreground", unread ? "font-semibold" : "font-medium")}
-              >
-                {title}
-              </span>
-              {customTitle && (
-                <span className="hidden truncate text-[11px] text-muted-foreground sm:inline">
-                  {label}
-                </span>
-              )}
-              {labels.map((l) => (
-                <span
-                  className="shrink-0 rounded-full bg-muted px-1.5 py-px font-medium text-[10px] text-muted-foreground"
-                  key={l}
-                >
-                  {l}
-                </span>
-              ))}
-            </span>
-            <span className="flex shrink-0 items-center gap-1.5">
-              {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
-              {/* Unread + @mention indicators both live on the avatar corner now (unified t170);
-                  this column keeps only the mute bell. */}
-              {muted && (
-                <HugeiconsIcon
-                  aria-label="Muted"
-                  className="size-3.5 text-muted-foreground"
-                  icon={NotificationOff03Icon}
-                />
-              )}
-            </span>
-          </span>
-          <span
-            className={cn(
-              "mt-0.5 block truncate text-sm",
-              unread ? "text-foreground/80" : "text-muted-foreground",
+        {/* Avatar + the first two text rows (title, preview). The avatar is centered over these two
+            rows only (items-center here) — a third labels row below sits outside this flex, so the
+            avatar keeps its position instead of re-centering over three rows. */}
+        <span className="flex w-full items-center gap-3">
+          {/* Avatar-anchored unread indicator (t168, unified t170): one badge on the avatar corner —
+              a plain coral dot for unread, the same badge grown into a numbered pill when there are
+              unread @mentions (a local floor — only synced pages count). Same spot for single +
+              facepile so it never shifts row layout. The wrapper is an explicitly sized block (t170
+              fix): a bare inline span collapsed and let the facepile circles spill across rows. */}
+          <span className="relative block size-10 shrink-0">
+            {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
+              <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
+            ) : (
+              <UserAvatar label={label} userId={conversation.avatarUserId} />
             )}
-          >
-            {previewLine(conversation)}
+            {mentions > 0 ? (
+              <span
+                aria-label={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
+                className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-ring px-1 font-mono font-semibold text-[10px] text-background ring-2 ring-background"
+                role="status"
+                title={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
+              >
+                {mentions}
+              </span>
+            ) : (
+              unread && (
+                <span
+                  aria-label="Unread"
+                  className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-ring ring-2 ring-background"
+                  role="img"
+                  title="Unread"
+                />
+              )
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline justify-between gap-2">
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span
+                  className={cn(
+                    "truncate text-foreground",
+                    unread ? "font-semibold" : "font-medium",
+                  )}
+                >
+                  {title}
+                </span>
+                {customTitle && (
+                  <span className="hidden truncate text-[11px] text-muted-foreground sm:inline">
+                    {label}
+                  </span>
+                )}
+              </span>
+              <span className="flex shrink-0 items-center gap-1.5">
+                {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
+                {/* Unread + @mention indicators both live on the avatar corner now (unified t170);
+                    this column keeps only the mute bell. */}
+                {muted && (
+                  <HugeiconsIcon
+                    aria-label="Muted"
+                    className="size-3.5 text-muted-foreground"
+                    icon={NotificationOff03Icon}
+                  />
+                )}
+              </span>
+            </span>
+            <span
+              className={cn(
+                "mt-0.5 block truncate text-sm",
+                unread ? "text-foreground/80" : "text-muted-foreground",
+              )}
+            >
+              {previewLine(conversation)}
+            </span>
           </span>
         </span>
+        {/* Third row: labels. Indented past the avatar (size-10 + gap-3 = 3.25rem) so they align
+            under the title/preview text column, not under the avatar. */}
+        {labels.length > 0 && (
+          <span className="mt-1 flex flex-wrap gap-1 pl-13">
+            {labels.map((l) => (
+              <span
+                className="shrink-0 rounded-full border border-border/70 px-1.5 py-px font-medium text-[10px] text-muted-foreground"
+                key={l}
+              >
+                {l}
+              </span>
+            ))}
+          </span>
+        )}
       </button>
     )
   },

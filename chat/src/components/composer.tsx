@@ -1,10 +1,10 @@
 import {
+  ArrowUp01Icon,
   Attachment01Icon,
   Cancel01Icon,
   File01Icon,
   LeftToRightListBulletIcon,
   LeftToRightListNumberIcon,
-  SentIcon,
   TextBoldIcon,
   TextItalicIcon,
   TextStrikethroughIcon,
@@ -15,7 +15,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
-import { pickFile } from "../lib/image-attach"
+import { pickFiles } from "../lib/image-attach"
 import { filterRoster, mentionQuery } from "../lib/mention"
 import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 import { fetchRoster, type RosterMember } from "../lib/teams-client"
@@ -23,6 +23,8 @@ import { fetchRoster, type RosterMember } from "../lib/teams-client"
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
 export interface ComposerHandle {
   focus: () => void
+  /** Open the native file picker (the hidden <input type="file"> click). */
+  openFilePicker: () => void
 }
 
 interface ComposerProps {
@@ -30,8 +32,8 @@ interface ComposerProps {
   /** Clears the editor + staged file when it changes (the conversation switch). */
   resetKey: string
   /** Fires the send. Never blocks the editor — the parent appends an optimistic bubble (t159).
-   *  `file` is the staged attachment (its caption is `out.text`). */
-  onSend: (out: OutgoingMessage, file: File | null) => void
+   *  `files` are the staged attachments (their captions ride `out.text`). */
+  onSend: (out: OutgoingMessage, files: File[]) => void
   /** Mirrors focus into thread-view's composerFocusedRef so bare-key shortcuts stay suppressed. */
   onFocusChange: (focused: boolean) => void
   /** Auto-focus on mount / reset — wide pointer layouts only (a phone would pop the keyboard). */
@@ -57,6 +59,44 @@ const FORMAT_ACTIONS: readonly { cmd: string; icon: IconSvgElement; label: strin
   { cmd: "insertOrderedList", icon: LeftToRightListNumberIcon, label: "Numbered list" },
 ]
 
+/** Per-file chip in the pending-attachments row. Image files show a thumbnail; others show a name
+ *  chip. The ✕ button removes this file from the list without moving focus away from the editor. */
+function PendingFileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const isImage = file.type.startsWith("image/")
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isImage) return
+    const u = URL.createObjectURL(file)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file, isImage])
+
+  return (
+    <div className="relative inline-block">
+      {isImage && url ? (
+        <img
+          alt={file.name || "attachment"}
+          className="size-16 rounded-lg border border-border object-cover"
+          src={url}
+        />
+      ) : (
+        <div className="flex max-w-[16rem] items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={File01Icon} />
+          <span className="truncate text-sm">{file.name || "file"}</span>
+        </div>
+      )}
+      <button
+        aria-label="Remove attachment"
+        className="-right-1.5 -top-1.5 absolute flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent"
+        onClick={onRemove}
+        type="button"
+      >
+        <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+      </button>
+    </div>
+  )
+}
+
 /** The thread composer (t159): a rich contenteditable in a raised card. Sending never disables the
  *  editor — the parent owns the optimistic bubble lifecycle; this clears itself and refocuses so the
  *  next message can start immediately. Enter sends, Shift+Enter breaks a line, paste is
@@ -75,8 +115,7 @@ export function Composer({
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [hasContent, setHasContent] = useState(false)
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
 
   // @-mention autocomplete (PSN-92 D): the roster is lazy-loaded on the first `@`; `menu` holds the
   // open dropdown's filtered candidates + the highlighted index.
@@ -84,7 +123,14 @@ export function Composer({
   const rosterLoaded = useRef(false)
   const [menu, setMenu] = useState<{ items: RosterMember[]; active: number } | null>(null)
 
-  useImperativeHandle(ref, () => ({ focus: () => editorRef.current?.focus() }), [])
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => editorRef.current?.focus(),
+      openFilePicker: () => fileRef.current?.click(),
+    }),
+    [],
+  )
 
   // Reset on conversation switch (a half-typed draft / staged file doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the deliberate reset trigger
@@ -92,7 +138,7 @@ export function Composer({
     const el = editorRef.current
     if (el) el.innerHTML = ""
     setHasContent(false)
-    setPendingFile(null)
+    setPendingFiles([])
     setMenu(null)
     roster.current = []
     rosterLoaded.current = false
@@ -164,27 +210,16 @@ export function Composer({
     setHasContent(!!readEditor().text)
   }
 
-  // Object-URL thumbnail preview — images only; a non-image file shows a chip, not a thumbnail.
-  useEffect(() => {
-    if (!pendingFile?.type.startsWith("image/")) {
-      setPendingUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(pendingFile)
-    setPendingUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [pendingFile])
-
   const readEditor = (): OutgoingMessage => outgoingFromEditor(editorRef.current?.innerHTML ?? "")
 
   const doSend = () => {
     const out = readEditor()
-    if (!out.text && !pendingFile) return
-    onSend(out, pendingFile)
+    if (!out.text && pendingFiles.length === 0) return
+    onSend(out, pendingFiles)
     const el = editorRef.current
     if (el) el.innerHTML = ""
     setHasContent(false)
-    setPendingFile(null)
+    setPendingFiles([])
     // Keep typing: focus never leaves the composer across a send (t159).
     el?.focus()
   }
@@ -195,7 +230,7 @@ export function Composer({
     setHasContent(!!outgoingFromEditor(editorRef.current?.innerHTML ?? "").text)
   }
 
-  const canSend = hasContent || !!pendingFile
+  const canSend = hasContent || pendingFiles.length > 0
 
   // Is the caret inside a list item of THIS editor? Then Enter must add/exit a bullet (native), not
   // send — otherwise a list can't grow past one item (PSN-92).
@@ -249,7 +284,10 @@ export function Composer({
                 <button
                   aria-label="Remove quoted message"
                   className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
-                  onClick={q.onCancel}
+                  onClick={() => {
+                    q.onCancel()
+                    editorRef.current?.focus()
+                  }}
                   type="button"
                 >
                   <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
@@ -258,33 +296,23 @@ export function Composer({
             ))}
           </div>
         )}
-        {(pendingUrl || (pendingFile && !pendingUrl)) && (
-          <div className="px-3 pt-3">
-            <div className="relative inline-block">
-              {pendingUrl ? (
-                <img
-                  alt="Attachment preview"
-                  className="size-16 rounded-lg border border-border object-cover"
-                  src={pendingUrl}
-                />
-              ) : (
-                <div className="flex max-w-[16rem] items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-                  <HugeiconsIcon
-                    className="size-4 shrink-0 text-muted-foreground"
-                    icon={File01Icon}
-                  />
-                  <span className="truncate text-sm">{pendingFile?.name || "file"}</span>
-                </div>
-              )}
-              <button
-                aria-label="Remove attachment"
-                className="-right-1.5 -top-1.5 absolute flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent"
-                onClick={() => setPendingFile(null)}
-                type="button"
-              >
-                <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-              </button>
-            </div>
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {pendingFiles.map((file) => (
+              <PendingFileChip
+                file={file}
+                key={`${file.name}-${file.size}-${file.lastModified}`}
+                onRemove={() => {
+                  // Remove by reference: a user can add the same filename twice (different objects);
+                  // remove only the first matching identity so the other stays.
+                  setPendingFiles((cur) => {
+                    const i = cur.indexOf(file)
+                    return i === -1 ? cur : [...cur.slice(0, i), ...cur.slice(i + 1)]
+                  })
+                  editorRef.current?.focus()
+                }}
+              />
+            ))}
           </div>
         )}
         {/* biome-ignore lint/a11y/useSemanticElements: a rich-text editor is a contenteditable div */}
@@ -343,13 +371,14 @@ export function Composer({
             } else if (e.key === "Escape" && quotes && quotes.length > 0) {
               e.preventDefault()
               onEscape?.()
+              editorRef.current?.focus()
             }
           }}
           onPaste={(e) => {
-            const file = pickFile(e.clipboardData?.items)
-            if (file) {
+            const pasted = pickFiles(e.clipboardData?.items)
+            if (pasted.length > 0) {
               e.preventDefault()
-              setPendingFile(file)
+              setPendingFiles((cur) => [...cur, ...pasted])
               return
             }
             // Plain-text-forced paste: outside HTML never enters the editor (formatting stays ours).
@@ -365,9 +394,10 @@ export function Composer({
         <div className="flex items-center gap-0.5 px-2 pb-2">
           <input
             className="hidden"
+            multiple
             onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (f) setPendingFile(f)
+              const picked = Array.from(e.target.files ?? [])
+              if (picked.length > 0) setPendingFiles((cur) => [...cur, ...picked])
               e.target.value = "" // allow re-picking the same file
             }}
             ref={fileRef}
@@ -406,7 +436,7 @@ export function Composer({
             onClick={doSend}
             size="icon-sm"
           >
-            <HugeiconsIcon className="size-4" icon={SentIcon} />
+            <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
           </Button>
         </div>
       </div>

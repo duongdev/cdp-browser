@@ -73,6 +73,8 @@ const DEVICE_KEY_PREFIXES = [
   // t161 chat app per-device name display preference: mode + custom strip regex.
   "chatNameDisplay_",
   "chatNameRegex_",
+  // PSN-96 Electron-shell notification toggle.
+  "chatNotificationsEnabled_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

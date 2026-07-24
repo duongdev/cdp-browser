@@ -56,21 +56,51 @@ describe("routeKey — global modifier shortcuts", () => {
   })
 })
 
-describe("routeKey — conversation switch (⌥↑/⌥↓)", () => {
-  it("⌥↓ → conv-next, ⌥↑ → conv-prev", () => {
-    expect(routeKey(key("ArrowDown", { altKey: true }), thread, false)).toEqual({
+describe("routeKey — conversation switch (⌘⇧[/⌘⇧])", () => {
+  it("⌘⇧[ → conv-prev, ⌘⇧] → conv-next", () => {
+    expect(routeKey(key("[", { metaKey: true, shiftKey: true }), thread, false)).toEqual({
+      type: "conv-prev",
+    })
+    expect(routeKey(key("]", { metaKey: true, shiftKey: true }), list, false)).toEqual({
       type: "conv-next",
     })
-    expect(routeKey(key("ArrowUp", { altKey: true }), list, false)).toEqual({ type: "conv-prev" })
   })
-  it("is suppressed while the composer is focused (text nav wins)", () => {
+  it("fires even while the composer is focused", () => {
     expect(
-      routeKey(key("ArrowDown", { altKey: true }), { ...thread, composerFocused: true }, false),
-    ).toBeNull()
+      routeKey(
+        key("[", { metaKey: true, shiftKey: true }),
+        { ...thread, composerFocused: true },
+        false,
+      ),
+    ).toEqual({ type: "conv-prev" })
+    expect(
+      routeKey(
+        key("]", { metaKey: true, shiftKey: true }),
+        { ...thread, composerFocused: true },
+        false,
+      ),
+    ).toEqual({ type: "conv-next" })
+  })
+  it("fires even when the event target is a text field", () => {
+    const t = { tagName: "TEXTAREA" } as unknown as EventTarget
+    expect(routeKey(key("[", { metaKey: true, shiftKey: true, target: t }), thread, false)).toEqual(
+      {
+        type: "conv-prev",
+      },
+    )
+    expect(routeKey(key("]", { metaKey: true, shiftKey: true, target: t }), thread, false)).toEqual(
+      {
+        type: "conv-next",
+      },
+    )
+  })
+  it("⌥↑ / ⌥↓ no longer switch conversations", () => {
+    expect(routeKey(key("ArrowDown", { altKey: true }), thread, false)).toBeNull()
+    expect(routeKey(key("ArrowUp", { altKey: true }), list, false)).toBeNull()
   })
 })
 
-describe("routeKey — focus composer (i)", () => {
+describe("routeKey — focus composer (i / /)", () => {
   it("i → focus-composer only in a thread", () => {
     expect(routeKey(key("i"), thread, false)).toEqual({ type: "focus-composer" })
     expect(routeKey(key("i"), list, false)).toBeNull()
@@ -78,6 +108,17 @@ describe("routeKey — focus composer (i)", () => {
   it("does not fire while a text field is focused", () => {
     const t = { tagName: "TEXTAREA" } as unknown as EventTarget
     expect(routeKey(key("i", { target: t }), thread, false)).toBeNull()
+  })
+  it("/ → focus-composer only in a thread, only when not in a text field", () => {
+    expect(routeKey(key("/"), thread, false)).toEqual({ type: "focus-composer" })
+    expect(routeKey(key("/"), list, false)).toBeNull()
+  })
+  it("/ does not fire while a text field is focused", () => {
+    const t = { tagName: "TEXTAREA" } as unknown as EventTarget
+    expect(routeKey(key("/", { target: t }), thread, false)).toBeNull()
+  })
+  it("/ does not fire while composerFocused is true", () => {
+    expect(routeKey(key("/"), { ...thread, composerFocused: true }, false)).toBeNull()
   })
 })
 

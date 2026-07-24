@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { chatShell } from "../lib/chat-shell"
 import {
   applyPinch,
   IDENTITY,
@@ -47,6 +48,7 @@ export function ImageLightbox({ media, onClose }: ImageLightboxProps) {
 }
 
 function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: () => void }) {
+  const isElectron = !!chatShell()
   const reduce = useReducedMotion()
   const [zoom, setZoom] = useState<ZoomState>(IDENTITY)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -165,7 +167,15 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
       initial={{ opacity: 0 }}
       transition={{ duration: reduce ? 0.1 : 0.16 }}
     >
-      <div className="absolute top-3 right-3 z-10 flex gap-2">
+      <div
+        className="absolute right-3 z-10 flex gap-2"
+        style={
+          {
+            top: isElectron ? "60px" : "12px",
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties
+        }
+      >
         <a
           aria-label="Download"
           className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
@@ -178,7 +188,10 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
         <button
           aria-label="Close"
           className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
-          onClick={onClose}
+          onClick={(e) => {
+            e.stopPropagation()
+            onClose()
+          }}
           type="button"
         >
           <HugeiconsIcon className="size-5" icon={Cancel01Icon} />

@@ -369,6 +369,45 @@ export async function uploadImage(
   return { msgId: data.msgId }
 }
 
+/** Upload multiple images to AMS in parallel + post them as ONE combined AMSImage message (PSN-96 J).
+ *  Tries the combined `/api/teams/upload-images` endpoint first. Throws TeamsApiError on failure so
+ *  the caller can fall back to sequential single-image sends. Returns the sent message's id. */
+export async function uploadImages(
+  convId: string,
+  files: File[],
+  text?: string,
+): Promise<{ msgId: string }> {
+  const prepared = await Promise.all(
+    files.map(async (file) => {
+      const [base64, { width, height }] = await Promise.all([
+        fileToBase64(file),
+        imageDimensions(file),
+      ])
+      return {
+        filename: file.name || "image.png",
+        base64,
+        contentType: file.type || "image/png",
+        width,
+        height,
+      }
+    }),
+  )
+  const res = await fetch("/api/teams/upload-images", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ convId, images: prepared, text: text?.trim() || undefined }),
+  })
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: true
+    msgId?: string
+    error?: string
+  }
+  if (!res.ok || data.error || !data.msgId) {
+    throw new TeamsApiError(data.error || `http_${res.status}`, res.status)
+  }
+  return { msgId: data.msgId }
+}
+
 /** Upload a pasted/picked non-image file to the user's SharePoint drive and post it as a chip
  *  (t146). Reads the file as base64 client-side, then POSTs the one atomic endpoint (PUT bytes →
  *  createLink → send, all IN-PAGE on the server). Throws TeamsApiError on failure so the composer
@@ -437,15 +476,28 @@ export interface ConvPrefsDto {
   customTitle?: string | null
 }
 
+export interface PrefsResponse {
+  prefs: Record<string, ConvPrefsDto>
+  folderOrder: string[]
+}
+
 /** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
- *  app holds it beside the list and re-applies over polls. Best-effort — a failure yields {}. */
-export async function fetchPrefs(signal?: AbortSignal): Promise<Record<string, ConvPrefsDto>> {
+ *  app holds it beside the list and re-applies over polls. Null on failure — callers keep current
+ *  state rather than applying a fake-empty payload. */
+export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse | null> {
   try {
     const res = await fetch("/api/teams/prefs", { signal })
-    const data = (await res.json().catch(() => ({}))) as { prefs?: Record<string, ConvPrefsDto> }
-    return data.prefs ?? {}
+    if (!res.ok) return null
+    const data = (await res.json()) as {
+      prefs?: Record<string, ConvPrefsDto>
+      folderOrder?: string[]
+    }
+    return {
+      prefs: data.prefs ?? {},
+      folderOrder: Array.isArray(data.folderOrder) ? data.folderOrder : [],
+    }
   } catch {
-    return {}
+    return null
   }
 }
 
@@ -470,6 +522,23 @@ export async function setPrefs(
     })
     const data = (await res.json().catch(() => ({}))) as { prefs?: ConvPrefsDto }
     return data.prefs ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Persist the folder display order (Workstream I). POSTs `{ folderOrder }` with no `convId`.
+ *  Best-effort — the caller is optimistic, so a failure is swallowed. Returns the server-cleaned
+ *  order (trimmed, non-empty strings only) or null on failure. */
+export async function setFolderOrder(order: string[]): Promise<string[] | null> {
+  try {
+    const res = await fetch("/api/teams/prefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folderOrder: order }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { ok?: true; folderOrder?: string[] }
+    return data.folderOrder ?? null
   } catch {
     return null
   }

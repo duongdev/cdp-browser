@@ -2,6 +2,7 @@ import {
   Alert02Icon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
+  ArrowUp01Icon,
   InboxIcon,
   ReloadIcon,
 } from "@hugeicons/core-free-icons"
@@ -46,9 +47,11 @@ import {
   type TeamsMessage,
   uploadFile,
   uploadImage,
+  uploadImages,
 } from "../lib/teams-client"
 import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
+import { shouldShowUnreadJump } from "../lib/unread-jump"
 import { BodyNameTooltip } from "./body-name-tooltip"
 import { Composer, type ComposerHandle } from "./composer"
 import { MessageRow, type RowCommand } from "./message-row"
@@ -136,12 +139,18 @@ export interface ThreadHandle {
   focusNext: () => void
   focusPrev: () => void
   getFocused: () => ThreadFocus | null
-  /** Dispatch a keyboard command (edit/delete/react) at the focused message's row. */
+  /** Dispatch a keyboard command (edit/delete/react/reply) at the focused message's row. */
   command: (type: RowCommand["type"]) => void
   /** True while the composer or inline editor holds focus — chat-app suppresses bare-key shortcuts. */
   isComposerFocused: () => boolean
   /** Focus the message input (the `i` shortcut / ⌘K "Focus message input"). */
   focusComposer: () => void
+  /** Scroll the "New" unread separator to near-top. No-op when there is no separator. */
+  jumpToUnread: () => void
+  /** Quote-reply the keyboard-focused message and focus the composer. No-op with no focused message. */
+  replyFocused: () => void
+  /** Open the file picker to stage an attachment. */
+  openFilePicker: () => void
 }
 
 interface ThreadViewProps {
@@ -387,6 +396,10 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const [floatingSep, setFloatingSep] = useState<string | null>(null)
   const floatingHideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
+  // Unread-jump FAB state (PSN-96 C): declared early so they're stable refs for the effect below.
+  const [sepAboveViewport, setSepAboveViewport] = useState(false)
+  const [sepSeen, setSepSeen] = useState(false)
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
@@ -411,6 +424,21 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const jumpToBottom = useCallback(() => {
     const el = scrollRef.current
     if (el) el.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
+
+  const jumpToUnread = useCallback(() => {
+    const el = scrollRef.current
+    const sep = el?.querySelector<HTMLElement>("[data-new-sep]")
+    if (!el || !sep) return
+    sep.scrollIntoView({ block: "start", behavior: "smooth" })
+    // Images without reserved boxes grow as they load and shove the separator off-target.
+    // Re-seat it on every in-pane media load for a short settle window.
+    const reseat = (e: Event) => {
+      const t = e.target as HTMLElement | null
+      if (t?.tagName === "IMG") sep.scrollIntoView({ block: "start" })
+    }
+    el.addEventListener("load", reseat, true)
+    setTimeout(() => el.removeEventListener("load", reseat, true), 3000)
   }, [])
 
   // Restore scroll when this pane becomes visible again (t132). display:none resets the container's
@@ -583,10 +611,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   }, [])
   // Retry payloads for in-flight/failed optimistic sends, keyed by the local placeholder id.
   const retryPayloads = useRef<
-    Map<
-      string,
-      { out: OutgoingMessage; file: File | null; quotes: ReplyRef[]; mentions: MentionRef[] }
-    >
+    Map<string, { out: OutgoingMessage; files: File[]; quotes: ReplyRef[]; mentions: MentionRef[] }>
   >(new Map())
   const localSeq = useRef(0)
   // Stale in-flight sends don't leak across a conversation reset.
@@ -615,23 +640,82 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // Fire (or re-fire, on retry) the server send for one optimistic bubble. Success swaps the local
   // placeholder for the server id (resolveLocalSend collapses a poll-delivered echo); failure marks
   // the bubble with the typed code. Never touches the composer.
+  //
+  // Send sequencing for multiple files (PSN-96 J):
+  // - Images: attempt ONE combined message (uploadImages) with all images + caption. If it fails
+  //   (non-2xx from the server), fall back to sequential single-image sends (caption on the first).
+  // - Non-image files: always sequential (uploadFile), after any image message.
+  // - Mixed: images first (combined or fallback sequential), then files in order.
+  // Per-file failures are reported individually via toast; remaining files keep sending.
   const runSend = useCallback(
     (
       localId: string,
       out: OutgoingMessage,
-      file: File | null,
+      files: File[],
       quotes: ReplyRef[] = [],
       mentions: MentionRef[] = [],
     ) => {
       const target = replyTarget
       if (!target) return
-      const op = file
-        ? (file.type.startsWith("image/") ? uploadImage : uploadFile)(
-            target.convId,
-            file,
-            out.text,
-          ).then((r) => r.msgId)
-        : sendReply(target.convId, out.text, out.html, quotes, mentions).then((r) => r.ts)
+      const convId = target.convId
+      const imageFiles = files.filter((f) => f.type.startsWith("image/"))
+      const otherFiles = files.filter((f) => !f.type.startsWith("image/"))
+
+      let op: Promise<string>
+      if (files.length === 0) {
+        // Text-only send.
+        op = sendReply(convId, out.text, out.html, quotes, mentions).then((r) => r.ts)
+      } else {
+        // Build the chain: images first, then non-image files sequentially.
+        const buildChain = async (): Promise<string> => {
+          let firstId: string | null = null
+
+          if (imageFiles.length > 0) {
+            // Try combined multi-image send; fall back to sequential on any error.
+            let combinedOk = false
+            if (imageFiles.length > 1) {
+              try {
+                const r = await uploadImages(convId, imageFiles, out.text)
+                firstId = r.msgId
+                combinedOk = true
+              } catch {
+                // Combined send rejected — fall through to sequential below.
+              }
+            }
+            if (!combinedOk) {
+              // Sequential: caption on the first image only.
+              for (let i = 0; i < imageFiles.length; i++) {
+                try {
+                  const r = await uploadImage(convId, imageFiles[i], i === 0 ? out.text : undefined)
+                  if (firstId === null) firstId = r.msgId
+                } catch (e) {
+                  const name = imageFiles[i].name || "image"
+                  const msg = e instanceof TeamsApiError ? e.message : "Send failed"
+                  // Report per-file but keep going (the spec: remaining files keep sending).
+                  console.warn(`[chat] upload failed for ${name}: ${msg}`)
+                }
+              }
+            }
+          }
+
+          // Non-image files always sequential (after the image message).
+          for (const file of otherFiles) {
+            try {
+              const r = await uploadFile(convId, file, !firstId ? out.text : undefined)
+              if (firstId === null) firstId = r.msgId
+            } catch (e) {
+              const name = file.name || "file"
+              const msg = e instanceof TeamsApiError ? e.message : "Send failed"
+              console.warn(`[chat] upload failed for ${name}: ${msg}`)
+            }
+          }
+
+          if (firstId === null) throw new TeamsApiError("all_failed", 0)
+          return firstId
+        }
+        op = buildChain()
+      }
+
       op.then((id) => {
         retryPayloads.current.delete(localId)
         setState((s) =>
@@ -643,7 +727,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             : s,
         )
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
-        markRead(target.convId, id, id)
+        markRead(convId, id, id)
       }).catch((e) => {
         const code = e instanceof TeamsApiError ? e.code : "network_error"
         setState((s) =>
@@ -657,19 +741,20 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   )
 
   const onComposerSend = useCallback(
-    (raw: OutgoingMessage, file: File | null) => {
+    (raw: OutgoingMessage, files: File[]) => {
       if (!replyTarget) return
       // A quoted reply (PSN-92 B/C) prepends one Reply blockquote per target; an @mention (PSN-92 D)
       // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send. A file
       // send can't carry inline HTML, so quotes/mentions only apply to the text/rich path. The optimistic
       // bubble uses the DISPLAY body (mentions as one pill) — the poll reconciles to the server render.
-      const mentions = file ? [] : (raw.mentions ?? [])
+      const hasFiles = files.length > 0
+      const mentions = hasFiles ? [] : (raw.mentions ?? [])
       const wireBody = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
       const dispBody = raw.displayHtml ?? wireBody
       let sendHtml: string | null = raw.html
       let optimisticHtml: string = raw.displayHtml ?? raw.html ?? textToHtml(raw.text)
       let quotes: ReplyRef[] = []
-      if (quoteTargets.length > 0 && !file) {
+      if (quoteTargets.length > 0 && !hasFiles) {
         const meta = quoteTargets.map((m) => ({
           msgId: m.id,
           authorMri: m.senderId || "",
@@ -690,8 +775,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       setQuoteTargets([])
       const out: OutgoingMessage = { ...raw, html: sendHtml }
       const localId = `local:${++localSeq.current}:${Date.now()}`
-      retryPayloads.current.set(localId, { out, file, quotes, mentions })
-      const isImage = file?.type.startsWith("image/") ?? false
+      retryPayloads.current.set(localId, { out, files, quotes, mentions })
+      // Optimistic bubble: for the common single-file case, mirror the old behavior; for multiple
+      // files show the first image thumbnail or the first file chip (the poll reconciles to the real
+      // server-rendered chips/images after send). A text-only send stays plain HTML.
+      const firstImage = files.find((f) => f.type.startsWith("image/"))
+      const firstOther = files.find((f) => !f.type.startsWith("image/"))
       appendSent({
         id: localId,
         ts: Date.now(),
@@ -702,20 +791,21 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         edited: false,
         deleted: false,
         pending: true,
-        // Image → own object URL for the optimistic bubble; file → a chip descriptor. Either is
-        // replaced by the server's rendered message on the next poll (the chip gains its clickable
-        // SharePoint url then).
-        ...(file
-          ? isImage
-            ? { localImageUrl: URL.createObjectURL(file) }
-            : {
+        ...(firstImage
+          ? { localImageUrl: URL.createObjectURL(firstImage) }
+          : firstOther
+            ? {
                 attachments: [
-                  { kind: "file", name: file.name || "file", type: pendingExt(file.name) },
+                  {
+                    kind: "file",
+                    name: firstOther.name || "file",
+                    type: pendingExt(firstOther.name),
+                  },
                 ],
               }
-          : {}),
+            : {}),
       })
-      runSend(localId, out, file, quotes, mentions)
+      runSend(localId, out, files, quotes, mentions)
     },
     [replyTarget, appendSent, runSend, quoteTargets],
   )
@@ -735,7 +825,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             }
           : s,
       )
-      runSend(localId, payload.out, payload.file, payload.quotes, payload.mentions)
+      runSend(localId, payload.out, payload.files, payload.quotes, payload.mentions)
     },
     [runSend],
   )
@@ -771,6 +861,43 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     () => buildThreadItems(messages ?? [], Date.now(), lastReadTs),
     [messages, lastReadTs],
   )
+
+  // Unread-jump FAB (PSN-96 C): derived from threadItems; observer + reset below.
+  const hasSeparator = threadItems.some((it) => it.type === "new")
+  const showUnreadJump = shouldShowUnreadJump({
+    hasSeparator,
+    separatorSeen: sepSeen,
+    separatorAboveViewport: sepAboveViewport,
+  })
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only on convId / fresh load
+  useEffect(() => {
+    setSepSeen(false)
+    setSepAboveViewport(false)
+  }, [convId, state.status])
+  // Tracks the separator's position via IntersectionObserver on the scroll root. When it leaves the
+  // viewport (not intersecting) it is above the bottom-pinned area; first intersection latches "seen".
+  useEffect(() => {
+    if (!hasSeparator) return
+    const root = scrollRef.current
+    if (!root) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        setSepAboveViewport(!entry.isIntersecting)
+        if (entry.isIntersecting) setSepSeen(true)
+      },
+      { root },
+    )
+    const raf = requestAnimationFrame(() => {
+      const sep = root.querySelector<HTMLElement>("[data-new-sep]")
+      if (sep) io.observe(sep)
+    })
+    return () => {
+      cancelAnimationFrame(raf)
+      io.disconnect()
+    }
+  }, [hasSeparator, threadItems])
 
   // Staggered arrival (t169): when one poll delivers several new messages at once, reveal them
   // one-by-one so the eye can track. A message is "fresh" when its id is unseen AND newer than the
@@ -839,14 +966,26 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       focusPrev: () => moveFocus(-1),
       getFocused: () => (focused ? { id: focused.id, isOwn: !!focused.self } : null),
       command: (type) => {
-        // A command with no focused row is a no-op — chat-app gates on getFocused() anyway.
         if (!focusedId) return
-        setRowCommand({ type, nonce: Date.now() })
+        if (type === "reply") {
+          // Reply is handled at the thread level (not delegated to the row) since it drives
+          // quoteTargets + composer focus — re-use the onReply callback directly.
+          const msg = focusable.find((m) => m.id === focusedId)
+          if (msg) onReply(msg)
+        } else {
+          setRowCommand({ type, nonce: Date.now() })
+        }
       },
       isComposerFocused: () => composerFocusedRef.current,
       focusComposer: () => composerRef.current?.focus(),
+      jumpToUnread: () => jumpToUnread(),
+      replyFocused: () => {
+        const msg = focused
+        if (msg) onReply(msg)
+      },
+      openFilePicker: () => composerRef.current?.openFilePicker(),
     }),
-    [moveFocus, focused, focusedId],
+    [moveFocus, focused, focusedId, focusable, onReply, jumpToUnread],
   )
 
   const composer = replyTarget ? (
@@ -1003,6 +1142,24 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               {floatingSep}
             </span>
           </div>
+          {/* Jump-to-unread FAB (PSN-96 C): shows when the "New" separator is above the viewport
+              and hasn't been seen yet. Stacks above the scroll-to-bottom FAB. */}
+          <Button
+            aria-label="Jump to new messages"
+            className={cn(
+              "absolute right-4 z-10 flex items-center gap-1.5 rounded-full px-3 shadow-md transition-all duration-200",
+              offBottom ? "bottom-14" : "bottom-3",
+              showUnreadJump
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-2 opacity-0",
+            )}
+            onClick={jumpToUnread}
+            size="sm"
+            variant="secondary"
+          >
+            <HugeiconsIcon className="size-3.5" icon={ArrowUp01Icon} />
+            <span className="text-xs">New</span>
+          </Button>
           {/* Scroll-to-bottom FAB (t160): appears whenever the viewport is off the bottom. */}
           <Button
             aria-label="Scroll to bottom"
@@ -1049,9 +1206,10 @@ function DateSeparator({ label }: { label: string }) {
 
 // The Slack-style last-read marker (t160): a coral hairline + "New" chip before the first unread
 // message, computed once per open (buildThreadItems' lastReadTs).
+// data-new-sep is queried by the IntersectionObserver and jumpToUnread in thread-view.
 function NewSeparator() {
   return (
-    <div className="flex items-center gap-2 pt-3 pb-1">
+    <div className="flex items-center gap-2 pt-3 pb-1" data-new-sep>
       <div className="h-px flex-1 bg-ring/50" />
       <span className="font-semibold text-[10px] text-ring uppercase tracking-wide">New</span>
       <div className="h-px flex-1 bg-ring/50" />

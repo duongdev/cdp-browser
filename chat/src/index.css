@@ -422,6 +422,33 @@
   border-left: 2px solid color-mix(in oklab, currentColor 30%, transparent);
   opacity: 0.85;
 }
+/* Reply-quote bubble styling (H): a schema.skype.com/Reply blockquote (stamped with data-reply-id)
+   renders like the composer chip — colored left bar + tinted background + distinct author line.
+   Uses currentColor mixes so it reads on both the muted (other) and primary (self) bubble. */
+.teams-message-body blockquote[data-reply-id] {
+  border-left: 3px solid color-mix(in oklab, var(--ring) 60%, currentColor 40%);
+  background: color-mix(in oklab, currentColor 8%, transparent);
+  border-radius: 0 6px 6px 0;
+  padding: 0.35em 0.6em 0.35em 0.6em;
+  opacity: 1;
+}
+/* Author line: the <strong itemprop="mri"> inside the blockquote */
+.teams-message-body blockquote[data-reply-id] > strong {
+  display: block;
+  font-size: 0.78em;
+  font-weight: 600;
+  color: color-mix(in oklab, var(--ring) 80%, currentColor 20%);
+  margin-bottom: 0.15em;
+}
+/* Preview text: the <p itemprop="preview"> */
+.teams-message-body blockquote[data-reply-id] > p {
+  margin: 0;
+  font-size: 0.85em;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .teams-message-body code,
 .teams-message-body kbd,
 .teams-message-body pre {
