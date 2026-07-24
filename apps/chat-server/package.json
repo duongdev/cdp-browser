@@ -8,8 +8,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "node --watch --experimental-strip-types src/index.ts",
-    "start": "node --experimental-strip-types src/index.ts",
+    "dev": "node --watch --experimental-transform-types src/index.ts",
+    "start": "node --experimental-transform-types src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

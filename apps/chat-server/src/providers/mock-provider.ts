@@ -7,6 +7,7 @@ import type {
   ChatConversation,
   ChatMessage,
   ChatProfile,
+  ChatService,
   ConversationsPage,
   HistoryPage,
   MentionRef,
@@ -131,12 +132,18 @@ function seed(): Fixture[] {
 const HISTORY_PAGE = 2
 
 export class MockProvider implements ChatProvider {
-  readonly service = SERVICE
+  readonly service: ChatService
   private fixtures: Fixture[]
   private nextTs = 9000
 
-  constructor() {
-    this.fixtures = seed()
+  // `service` defaults to "teams" (the harness/tests that stamp Teams shapes), overridable so it
+  // can register under a "mock" service id for hermetic e2e without a Teams tab.
+  constructor(service: ChatService = SERVICE) {
+    this.service = service
+    this.fixtures = seed().map((f) => ({
+      conv: { ...f.conv, service },
+      messages: f.messages.map((m) => ({ ...m, service })),
+    }))
   }
 
   private find(convId: string): Fixture {

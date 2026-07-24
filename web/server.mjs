@@ -2554,6 +2554,71 @@ function serveChat(req, res, pathname) {
   createReadStream(file).pipe(res)
 }
 
+// Chat BFF reverse proxy (PSN-93, Workstream C). `/api/chat/*` HTTP + the `/api/chat/ws` upgrade are
+// forwarded to apps/chat-server (CHAT_SERVER_URL, default http://localhost:7810). The chat surface is
+// plaintext today — these bodies do NOT ride the public E2E envelope (parity with /internal/*). One
+// public origin; the BFF port stays internal to compose.
+const CHAT_SERVER_URL = process.env.CHAT_SERVER_URL || "http://localhost:7810"
+
+// Stream an `/api/chat/*` request straight through to the BFF and pipe the response back verbatim
+// (status, headers, body — including streamed avatar/media bytes). A BFF connection error is a clean
+// 502, never a crash of this server.
+function proxyChatHttp(req, res, pathname, search) {
+  const target = new URL(CHAT_SERVER_URL)
+  const opts = {
+    protocol: target.protocol,
+    hostname: target.hostname,
+    port: target.port || (target.protocol === "https:" ? 443 : 80),
+    method: req.method,
+    path: pathname + (search || ""),
+    headers: { ...req.headers, host: target.host },
+  }
+  const upstream = http.request(opts, (up) => {
+    res.writeHead(up.statusCode || 502, up.headers)
+    up.pipe(res)
+  })
+  upstream.on("error", () => {
+    if (!res.headersSent) res.writeHead(502, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ error: "chat_upstream_unreachable" }))
+  })
+  req.pipe(upstream)
+}
+
+// Proxy a `/api/chat/ws` WebSocket upgrade to the BFF as a raw socket tunnel: re-issue the upgrade
+// to chat-server, then pipe the two sockets both ways (transport-agnostic — no ws framing here). A
+// BFF that's down closes the client socket cleanly; it never crashes this server.
+function proxyChatWs(req, clientSocket, head) {
+  const target = new URL(CHAT_SERVER_URL)
+  const upstream = http.request({
+    protocol: target.protocol,
+    hostname: target.hostname,
+    port: target.port || (target.protocol === "https:" ? 443 : 80),
+    method: req.method,
+    path: req.url,
+    headers: { ...req.headers, host: target.host },
+  })
+  upstream.on("upgrade", (upRes, upSocket, upHead) => {
+    const head2 = [
+      `HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage}`,
+      ...Object.entries(upRes.headers).map(([k, v]) => `${k}: ${v}`),
+      "\r\n",
+    ].join("\r\n")
+    clientSocket.write(head2)
+    if (upHead?.length) clientSocket.write(upHead)
+    upSocket.pipe(clientSocket)
+    clientSocket.pipe(upSocket)
+    const drop = () => {
+      upSocket.destroy()
+      clientSocket.destroy()
+    }
+    upSocket.on("error", drop)
+    clientSocket.on("error", drop)
+  })
+  upstream.on("error", () => clientSocket.destroy())
+  if (head?.length) upstream.write(head)
+  upstream.end()
+}
+
 // Verbose request log (greppable [req]/[err]) for prod issue-detection. The hot input +
 // long-poll paths are suppressed unless they error, so per-frame/per-input traffic never
 // floods the log (and never degrades the prod we're watching); every other request logs
@@ -2573,6 +2638,12 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname
   const POST = req.method === "POST"
   reqLog(req, res, p)
+
+  // Chat BFF proxy — matched before the E2E body decode + the /api/ 404, so it stays plaintext and
+  // reaches apps/chat-server untouched (WS upgrades are handled in the `upgrade` listener below).
+  if (p === "/api/chat" || p.startsWith("/api/chat/")) {
+    return proxyChatHttp(req, res, p, url.search)
+  }
 
   if (p === "/api/events") {
     res.writeHead(200, {
@@ -3200,6 +3271,11 @@ server.requestTimeout = 0
 const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://localhost")
+  // Chat BFF WS (PSN-93) — tunnel to apps/chat-server before the CDP-transport path.
+  if (url.pathname === "/api/chat/ws") {
+    proxyChatWs(req, socket, head)
+    return
+  }
   if (url.pathname !== "/api/ws") {
     socket.destroy()
     return
