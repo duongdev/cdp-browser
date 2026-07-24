@@ -450,6 +450,10 @@ function ChatMessageRow({
                 onMouseEnter={() => {
                   /* keep hoveredLink alive while the cursor moves to this button */
                 }}
+                onMouseLeave={(e) => {
+                  const related = e.relatedTarget as HTMLElement | null
+                  if (!related?.closest?.("[data-side]")) setHoveredLink(null)
+                }}
                 style={{
                   bottom: 4,
                   right: 4,

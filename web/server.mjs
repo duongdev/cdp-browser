@@ -2987,10 +2987,13 @@ const server = http.createServer(async (req, res) => {
     // A non-2xx here signals the caller to fall back to sequential single-image sends.
     if (p === "/api/teams/upload-images" && POST) {
       const { convId, images, text } = await body(req, IMAGE_BODY_LIMIT * 8)
-      if (!convId || !Array.isArray(images) || images.length === 0)
+      if (!convId || !Array.isArray(images) || images.length === 0 || images.length > 10)
         return json(res, { error: "missing fields" }, 400)
       for (const img of images) {
-        if (!img.base64) return json(res, { error: "missing fields" }, 400)
+        if (!img.base64 || typeof img.base64 !== "string")
+          return json(res, { error: "missing fields" }, 400)
+        if (img.base64.length > IMAGE_BODY_LIMIT * 1.4)
+          return json(res, { error: "too_large" }, 413)
         if (img.contentType && !String(img.contentType).startsWith("image/"))
           return json(res, { error: "not_image" }, 400)
       }

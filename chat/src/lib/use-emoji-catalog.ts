@@ -14,6 +14,11 @@ function loadCatalog(): Promise<EmojiCatalog> {
         catalogGlyphMap = new Map(cat.emoji.map((e) => [e.i, e.u]))
         return cat
       })
+      .catch(() => {
+        // Failed load retries on the next picker open instead of caching the failure.
+        catalogPromise = null
+        return { categories: [], emoji: [] }
+      })
   }
   return catalogPromise
 }

@@ -482,11 +482,13 @@ export interface PrefsResponse {
 }
 
 /** All conversations' prefs → a map keyed by convId (t156). Fetched on boot + after each write; the
- *  app holds it beside the list and re-applies over polls. Best-effort — a failure yields {}. */
-export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse> {
+ *  app holds it beside the list and re-applies over polls. Null on failure — callers keep current
+ *  state rather than applying a fake-empty payload. */
+export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse | null> {
   try {
     const res = await fetch("/api/teams/prefs", { signal })
-    const data = (await res.json().catch(() => ({}))) as {
+    if (!res.ok) return null
+    const data = (await res.json()) as {
       prefs?: Record<string, ConvPrefsDto>
       folderOrder?: string[]
     }
@@ -495,7 +497,7 @@ export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse> {
       folderOrder: Array.isArray(data.folderOrder) ? data.folderOrder : [],
     }
   } catch {
-    return { prefs: {}, folderOrder: [] }
+    return null
   }
 }
 

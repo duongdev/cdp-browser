@@ -57,9 +57,9 @@ export function useConvPrefs() {
   useEffect(() => {
     const ac = new AbortController()
 
-    // Boot fetch (not a poll — always apply).
+    // Boot fetch (not a poll — always apply). Null = fetch failed; keep current state.
     fetchPrefs(ac.signal).then((p) => {
-      if (!ac.signal.aborted) applyFetched(p, false)
+      if (p && !ac.signal.aborted) applyFetched(p, false)
     })
 
     // Collapse state from ui-state.
@@ -78,7 +78,7 @@ export function useConvPrefs() {
       if (document.hidden) return
       fetchPrefs(ac.signal)
         .then((p) => {
-          if (!ac.signal.aborted) applyFetched(p, true)
+          if (p && !ac.signal.aborted) applyFetched(p, true)
         })
         .catch(() => {})
     }
