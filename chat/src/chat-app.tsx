@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
+import { ConnectionStatus } from "./components/connection-status"
 import { ConversationList } from "./components/conversation-list"
 import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
 import { PromptDialog, prompt } from "./components/prompt-dialog"
@@ -1002,13 +1003,7 @@ export function ChatApp() {
         open={settingsOpen}
         settings={settings}
       />
-      {!online && (
-        <div className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center pt-[max(0.75rem,env(safe-area-inset-top))]">
-          <div className="rounded-full bg-foreground/85 px-3 py-1 text-background text-xs shadow-md backdrop-blur">
-            Reconnecting…
-          </div>
-        </div>
-      )}
+      {/* ConnectionStatus strip is rendered inside each layout's sidebar column (C3). */}
     </>
   )
 
@@ -1033,11 +1028,13 @@ export function ChatApp() {
               onPatchPrefs={patchPrefs}
               onReorderFolders={setFolderOrder}
               onToggleFolder={toggleFolderCollapsed}
+              onToggleRead={toggleReadUnread}
               prefs={prefs}
               readOverrides={readOverrides}
               selectedId={keepAlive.active || null}
             />
           </div>
+          <ConnectionStatus online={online} />
         </aside>
         <section className="min-w-0 flex-1">
           {threadPanes}
@@ -1072,11 +1069,13 @@ export function ChatApp() {
             onPatchPrefs={patchPrefs}
             onReorderFolders={setFolderOrder}
             onToggleFolder={toggleFolderCollapsed}
+            onToggleRead={toggleReadUnread}
             prefs={prefs}
             readOverrides={readOverrides}
             selectedId={keepAlive.active || null}
           />
         </main>
+        <ConnectionStatus online={online} />
       </div>
       <div className={cn("min-h-0 flex-1", phoneView === "list" && "hidden")}>{threadPanes}</div>
       {palette}

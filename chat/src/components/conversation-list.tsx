@@ -36,6 +36,7 @@ import {
   filterConversations,
   folderLabel,
   groupByFolder,
+  isUnread,
   type ListFilter,
   type ReadOverride,
 } from "../lib/conversation-view"
@@ -124,6 +125,9 @@ interface ConversationListProps {
   /** Background poll health (PSN-91): false when a refresh fails, true when it succeeds. Drives the
    *  app's "Reconnecting…" banner. */
   onConnectionChange?: (ok: boolean) => void
+  /** Toggle read ↔ unread from the row context menu (C4). Routes to the same patchConvRead path as
+   *  the `u` key; the conversation's current unread state gates the label. */
+  onToggleRead?: (convId: string) => void
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
@@ -143,6 +147,7 @@ export function ConversationList({
   onReorderFolders,
   namePref,
   onConnectionChange,
+  onToggleRead,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -409,7 +414,9 @@ export function ConversationList({
         convId={c.id}
         key={c.id}
         onPatch={onPatchPrefs}
+        onToggleRead={onToggleRead ?? (() => {})}
         prefs={prefs?.[c.id] ?? { labels: [], folder: null, muted: false }}
+        unread={isUnread(c)}
       >
         {row}
       </ConversationRowMenu>
@@ -425,9 +432,10 @@ export function ConversationList({
 
   // Segmented filter bar (t168): always visible once rows exist, so a filtered-empty view can
   // switch back. j/k agrees automatically — the reported list IS the filtered list.
+  // Sticky (C2): sticks to the top of the scroll container; solid bg so rows slide under it cleanly.
   const filterBar = (
     // pl-3 matches the row's px-3, so the first button's left edge lines up with the row avatars.
-    <div className="flex gap-1 pr-1 pb-1.5 pl-3">
+    <div className="sticky top-0 z-10 flex gap-1 bg-background pr-1 pb-1.5 pl-3 pt-0.5">
       {FILTERS.map((f) => (
         <button
           className={cn(
@@ -547,7 +555,7 @@ function FolderGroup({
   section,
   collapsed,
   onToggle,
-  onPatchPrefs,
+  onPatchPrefs: _onPatchPrefs,
   dragging,
   children,
 }: {
@@ -606,10 +614,12 @@ function FolderGroup({
           : setDropRef
       }
     >
+      {/* Sticky below the filter bar (C2): top-8 = 2rem ≈ the filter bar's 32px height.
+          Solid bg so conversation rows scroll under the header without bleed-through. */}
       <button
         aria-expanded={!collapsed}
         className={cn(
-          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
+          "sticky top-8 z-[9] flex w-full items-center gap-1.5 rounded-md bg-background px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
           sortable.isDragging && "opacity-40",
         )}
         onClick={() => onToggle?.(section.folder as string)}

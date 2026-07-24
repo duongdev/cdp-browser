@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
+import { avatarGradient, avatarInitials } from "../lib/avatar-style"
 
 interface UserAvatarProps {
   /** The user oid/MRI whose Graph photo to load (t153). Absent → initials only (a group chat). */
@@ -61,15 +62,20 @@ export function UserAvatar({ userId, label, className }: UserAvatarProps) {
   useEffect(() => setFailed(false), [userId])
 
   const src = userId && !failed ? `/api/teams/avatar?userId=${encodeURIComponent(userId)}` : null
+  // Seed hashed gradient: prefer the stable userId; fall back to the label so facepile members
+  // without a known id still get a per-name color (consistent across renders).
+  const gradient = avatarGradient(userId || label)
+  const initials = avatarInitials(label)
 
   return (
     <span
       className={cn(
-        "relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-medium text-primary",
+        "relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full text-sm font-semibold text-white",
         className,
       )}
+      style={{ background: gradient }}
     >
-      {label.charAt(0).toUpperCase()}
+      {initials}
       {src && (
         <img
           alt={label}
