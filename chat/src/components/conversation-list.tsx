@@ -1,10 +1,13 @@
 import {
+  type CollisionDetection,
   closestCenter,
   DndContext,
   type DragEndEvent,
   DragOverlay,
   type DragStartEvent,
   PointerSensor,
+  pointerWithin,
+  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
@@ -53,10 +56,33 @@ const FILTERS: readonly { key: ListFilter; label: string }[] = [
   { key: "mentions", label: "Mentions" },
 ]
 
+// Two drag kinds share one DndContext, so collision detection must switch by what's being dragged —
+// closestCenter for everything picks the wrong target (a folder's center stays "closest" even after
+// the pointer leaves it, so a conv dragged out still lands back inside). Folder reorder wants
+// closestCenter among the folder sortables; a conversation drop wants the drop zone the POINTER is
+// literally inside (pointerWithin), which is what makes "drag out to ungrouped" actually clear the
+// folder and makes the hovered zone light up.
+const dndCollision: CollisionDetection = (args) => {
+  const activeId = String(args.active.id)
+  if (activeId.startsWith("folder:")) {
+    return closestCenter({
+      ...args,
+      droppableContainers: args.droppableContainers.filter((c) =>
+        String(c.id).startsWith("folder:"),
+      ),
+    })
+  }
+  const zones = args.droppableContainers.filter((c) => String(c.id).startsWith("drop:"))
+  const within = pointerWithin({ ...args, droppableContainers: zones })
+  return within.length ? within : rectIntersection({ ...args, droppableContainers: zones })
+}
+
 type State =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ready"; conversations: TeamsConversation[]; cursor: string | null }
+
+const NOOP = () => {}
 
 const errorMessage = (e: unknown): string => {
   if (e instanceof TeamsApiError) {
@@ -329,11 +355,13 @@ export function ConversationList({
       if (activeId.startsWith("conv:")) {
         const convId = activeId.slice(5)
         const folder = overFolder === CHATS_FOLDER || overFolder === "__null__" ? null : overFolder
+        // No-op when it's already there — skip the write + its grace window.
+        if ((prefs?.[convId]?.folder ?? null) === folder) return
         onPatchPrefs?.(convId, { folder })
         return
       }
     },
-    [sections, onPatchPrefs, onReorderFolders],
+    [sections, prefs, onPatchPrefs, onReorderFolders],
   )
 
   if (state.status === "loading") return <ListSkeleton />
@@ -447,7 +475,7 @@ export function ConversationList({
       {filterBar}
       {hasFolders ? (
         <DndContext
-          collisionDetection={closestCenter}
+          collisionDetection={dndCollision}
           onDragEnd={handleDragEnd}
           onDragStart={handleDragStart}
           sensors={sensors}
@@ -456,13 +484,25 @@ export function ConversationList({
             {sectionsList}
           </SortableContext>
           <DragOverlay>
-            {draggingId ? (
-              <div className="rounded-md bg-muted px-2 py-1.5 font-semibold text-muted-foreground text-xs shadow-md opacity-90">
-                {draggingId.startsWith("folder:")
-                  ? folderLabel(draggingId.slice(7))
-                  : (display?.find((c) => c.id === draggingId.slice(5))?.title ?? "Conversation")}
-              </div>
-            ) : null}
+            {(() => {
+              if (!draggingId) return null
+              // Folder drag → a compact header pill. Conv drag → the real row, so the cursor carries
+              // a faithful copy of what's being moved (dnd-kit sizes the overlay to the source rect).
+              if (draggingId.startsWith("folder:")) {
+                return (
+                  <div className="rounded-md bg-muted px-2 py-1.5 font-semibold text-muted-foreground text-xs uppercase tracking-wide shadow-md opacity-90">
+                    {folderLabel(draggingId.slice(7))}
+                  </div>
+                )
+              }
+              const c = display?.find((x) => x.id === draggingId.slice(5))
+              if (!c) return null
+              return (
+                <div className="rounded-lg border border-border bg-popover shadow-lg">
+                  <ConversationRow conversation={c} namePref={namePref} now={now} onOpen={NOOP} />
+                </div>
+              )
+            })()}
           </DragOverlay>
         </DndContext>
       ) : (
