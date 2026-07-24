@@ -374,7 +374,7 @@ export function SettingsSheet({
           </Button>
         </SheetHeader>
 
-        <div className="flex flex-col gap-5 p-4 pt-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4 pt-2">
           <div className="space-y-2">
             <Label className="text-[13px]">Theme</Label>
             <Segmented
