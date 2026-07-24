@@ -25,11 +25,13 @@ import type {
   ChatFont,
   ChatMono,
   ChatNameDisplay,
+  ChatNotifySound,
   ChatSettings,
   ChatTheme,
 } from "../lib/chat-settings"
 import { chatShell } from "../lib/chat-shell"
 import { formatName } from "../lib/display-name"
+import { playNotifySound } from "../lib/notify-sound"
 import { NotifyToggle } from "./notify-toggle"
 
 const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = [
@@ -41,6 +43,13 @@ const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = 
 const DENSITY_OPTIONS: { id: ChatDensity; label: string }[] = [
   { id: "comfortable", label: "Comfortable" },
   { id: "compact", label: "Compact" },
+]
+
+const NOTIFY_SOUND_OPTIONS: { id: ChatNotifySound; label: string }[] = [
+  { id: "none", label: "None" },
+  { id: "chime-1", label: "Chime 1" },
+  { id: "chime-2", label: "Chime 2" },
+  { id: "chime-3", label: "Chime 3" },
 ]
 
 const NAME_OPTIONS: { id: ChatNameDisplay; label: string }[] = [
@@ -303,6 +312,29 @@ export function SettingsSheet({
               options={MONO_OPTIONS}
               value={settings.mono}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-[13px]">Notification sound</Label>
+            <Select
+              onValueChange={(v) => {
+                const sound = v as ChatNotifySound
+                onUpdate({ notifySound: sound })
+                playNotifySound(sound)
+              }}
+              value={settings.notifySound}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {NOTIFY_SOUND_OPTIONS.map(({ id, label }) => (
+                  <SelectItem key={id} value={id}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="flex items-center justify-between border-border/60 border-t pt-3">

@@ -1,5 +1,18 @@
 import type { TeamsConversation } from "./teams-client"
 
+/** Returns true if we should fire a notification for this conversation. */
+export function shouldNotifyConv(
+  convId: string,
+  openConvId: string | null,
+  appVisible: boolean,
+  muted: boolean,
+): boolean {
+  if (muted) return false
+  // Suppress only when the conversation is BOTH open AND visible
+  if (appVisible && openConvId === convId) return false
+  return true
+}
+
 // Diff two conversation-list polls → conversations whose newest message is a
 // fresh *incoming* (not-from-me) one, so the shell can fire a desktop
 // Notification. `prev` maps conv id → last-seen `lastMessageTs`. A conversation

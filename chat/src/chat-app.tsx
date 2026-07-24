@@ -20,6 +20,7 @@ import { parsePath, pathFor } from "./lib/chat-route"
 import { chatShell } from "./lib/chat-shell"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
 import {
+  type ConvPrefs,
   conversationLabel,
   isMutedNow,
   isUnread,
@@ -29,7 +30,8 @@ import {
   type ReadOverride,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
-import { newlyArrived } from "./lib/notify-new"
+import { newlyArrived, shouldNotifyConv } from "./lib/notify-new"
+import { playNotifySound } from "./lib/notify-sound"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
@@ -174,26 +176,42 @@ export function ChatApp() {
   // `openConvRef` lets a notification click jump to the conversation (set after openConversationById).
   const seenTsRef = useRef<Map<string, number>>(new Map())
   const openConvRef = useRef<(id: string) => void>(() => {})
+  // Refs so the stable onConversations callback (deps []) can read the latest active conv + sound.
+  const activeConvRef = useRef<string | null>(null)
+  const notifySoundRef = useRef<string>("chime-1")
+  const prefsRef = useRef<Record<string, ConvPrefs>>({})
   const onConversations = useCallback((list: TeamsConversation[]) => {
     conversationsRef.current = list
     setConversations(list)
     const { arrived, seen } = newlyArrived(seenTsRef.current, list)
     seenTsRef.current = seen
     const shell = chatShell()
-    if (arrived.length > 0 && !document.hasFocus()) {
-      for (const c of arrived) {
-        if (shell) {
-          // Electron shell: fire through the native main process (CDP-Browser mechanism).
-          shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
-        } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-          const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
-          n.onclick = () => {
-            window.focus()
-            openConvRef.current(c.id)
-          }
+    const appVisible = document.hasFocus()
+    let notified = false
+    for (const c of arrived) {
+      if (
+        !shouldNotifyConv(
+          c.id,
+          activeConvRef.current,
+          appVisible,
+          isMutedNow(prefsRef.current[c.id]),
+        )
+      )
+        continue
+      notified = true
+      if (shell) {
+        // Electron shell: fire through the native main process (CDP-Browser mechanism).
+        shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+      } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
+        n.onclick = () => {
+          window.focus()
+          openConvRef.current(c.id)
         }
       }
     }
+    if (notified)
+      playNotifySound(notifySoundRef.current as "none" | "chime-1" | "chime-2" | "chime-3")
     // Dock badge in the Electron shell mirrors the unread count (the web PWA drives its own
     // badge via the service worker's setAppBadge).
     if (shell) shell.setBadge(list.filter((c) => isUnread(c)).length)
@@ -354,6 +372,10 @@ export function ChatApp() {
   // Local conversation prefs (t156): labels/folder/mute (shared server-side) + per-device folder
   // collapse state. Applied over the list rows inside ConversationList (poll-proof, like read overrides).
   const { prefs, patch: patchPrefs, collapsed, toggleFolderCollapsed } = useConvPrefs()
+  // Keep notification refs in sync so the stable onConversations callback reads fresh values.
+  activeConvRef.current = keepAlive.active ?? null
+  notifySoundRef.current = settings.notifySound
+  prefsRef.current = prefs
   const pendingG = useRef(false)
   const gTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
