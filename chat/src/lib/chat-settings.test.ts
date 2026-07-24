@@ -30,6 +30,7 @@ describe("readChatSettings", () => {
       nameDisplay: "full",
       nameRegex: "",
       notifySound: "polite",
+      notificationsEnabled: true,
     })
   })
 

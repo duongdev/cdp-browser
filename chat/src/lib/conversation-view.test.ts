@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  applyFolderOrder,
   applyPrefs,
   applyReadOverride,
   CHATS_FOLDER,
@@ -337,5 +338,32 @@ describe("conversation prefs shaping (t156)", () => {
     expect(toggleLabel([], "x")).toEqual(["x"])
     expect(toggleLabel(["x"], "x")).toEqual([])
     expect(toggleLabel(["x"], " ")).toEqual(["x"])
+  })
+
+  it("applyFolderOrder: ordered first, remaining alpha, CHATS_FOLDER never in order", () => {
+    expect(applyFolderOrder(["Zeta", "Alpha", "Beta"], ["Beta", "Zeta"])).toEqual([
+      "Beta",
+      "Zeta",
+      "Alpha",
+    ])
+    expect(applyFolderOrder(["Zeta", "Alpha"], [])).toEqual(["Alpha", "Zeta"])
+    // Unknown order entries are ignored (folder doesn't exist).
+    expect(applyFolderOrder(["Alpha"], ["Ghost", "Alpha"])).toEqual(["Alpha"])
+  })
+
+  it("groupByFolder with folderOrder overrides alpha sort", () => {
+    const rows = [
+      applyPrefs(conv({ id: "a" }), { labels: [], folder: "Zeta", muted: false }),
+      applyPrefs(conv({ id: "b" }), { labels: [], folder: "Alpha", muted: false }),
+      applyPrefs(conv({ id: "c" }), { labels: [], folder: "Beta", muted: false }),
+    ]
+    // Without order: Alpha, Beta, Zeta.
+    expect(groupByFolder(rows).map((s) => s.folder)).toEqual(["Alpha", "Beta", "Zeta"])
+    // With order ["Zeta", "Beta"]: Zeta first, Beta second, Alpha (unordered) last alpha.
+    expect(groupByFolder(rows, ["Zeta", "Beta"]).map((s) => s.folder)).toEqual([
+      "Zeta",
+      "Beta",
+      "Alpha",
+    ])
   })
 })

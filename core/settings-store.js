@@ -75,6 +75,8 @@ const DEVICE_KEY_PREFIXES = [
   "chatNameRegex_",
   // PSN-98 chat app per-device notification sound selection.
   "chatNotifySound_",
+  // PSN-96 Electron-shell notification toggle.
+  "chatNotificationsEnabled_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

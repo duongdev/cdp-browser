@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
 import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
+import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
@@ -25,9 +26,11 @@ import {
   isMutedNow,
   isUnread,
   knownFolders,
+  knownLabels,
   navigableConversations,
   previewLine,
   type ReadOverride,
+  toggleLabel,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
 import { newlyArrived, shouldNotifyConv } from "./lib/notify-new"
@@ -180,12 +183,16 @@ export function ChatApp() {
   const activeConvRef = useRef<string | null>(null)
   const notifySoundRef = useRef<NotifySound>("polite")
   const prefsRef = useRef<Record<string, ConvPrefs>>({})
+  const notifEnabledRef = useRef(true)
   const onConversations = useCallback((list: TeamsConversation[]) => {
     conversationsRef.current = list
     setConversations(list)
     const { arrived, seen } = newlyArrived(seenTsRef.current, list)
     seenTsRef.current = seen
     const shell = chatShell()
+    // Notify for any arrived message that isn't the currently open+visible conversation (t: notify
+    // while active) and isn't muted (PSN-98). The Electron-shell notification also honors the
+    // enable toggle (PSN-96). Sound plays only when a notification actually fired.
     const appVisible = document.hasFocus()
     let notified = false
     for (const c of arrived) {
@@ -198,22 +205,28 @@ export function ChatApp() {
         )
       )
         continue
-      notified = true
       if (shell) {
         // Electron shell: fire through the native main process (CDP-Browser mechanism).
-        shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+        if (notifEnabledRef.current) {
+          shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+          notified = true
+        }
       } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
         n.onclick = () => {
           window.focus()
           openConvRef.current(c.id)
         }
+        notified = true
       }
     }
     if (notified) playNotifySound(notifySoundRef.current)
     // Dock badge in the Electron shell mirrors the unread count (the web PWA drives its own
     // badge via the service worker's setAppBadge).
-    if (shell) shell.setBadge(list.filter((c) => isUnread(c)).length)
+    if (shell) {
+      const badge = notifEnabledRef.current ? list.filter((c) => isUnread(c)).length : 0
+      shell.setBadge(badge)
+    }
     // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
     // (id only). When the list loads/merges, swap any tracked entry for the real object so the
     // thread header picks up the resolved title. Only ids already tracked are stored.
@@ -368,9 +381,17 @@ export function ChatApp() {
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { settings, update: updateSettings } = useChatSettings()
+  notifEnabledRef.current = settings.notificationsEnabled
   // Local conversation prefs (t156): labels/folder/mute (shared server-side) + per-device folder
   // collapse state. Applied over the list rows inside ConversationList (poll-proof, like read overrides).
-  const { prefs, patch: patchPrefs, collapsed, toggleFolderCollapsed } = useConvPrefs()
+  const {
+    prefs,
+    patch: patchPrefs,
+    collapsed,
+    toggleFolderCollapsed,
+    folderOrder,
+    setFolderOrder,
+  } = useConvPrefs()
   // Keep notification refs in sync so the stable onConversations callback reads fresh values.
   activeConvRef.current = keepAlive.active ?? null
   notifySoundRef.current = settings.notifySound
@@ -479,14 +500,14 @@ export function ChatApp() {
         id: "conv-next",
         label: "Next conversation",
         group: "Navigation",
-        keys: "⌥↓",
+        keys: "⌘⇧]",
         run: () => switchConversation(1),
       },
       {
         id: "conv-prev",
         label: "Previous conversation",
         group: "Navigation",
-        keys: "⌥↑",
+        keys: "⌘⇧[",
         run: () => switchConversation(-1),
       },
       {
@@ -500,7 +521,7 @@ export function ChatApp() {
         id: "focus-input",
         label: "Focus message input",
         group: "Message",
-        keys: "i",
+        keys: "i  /",
         when: (c) => c.view === "thread",
         run: () => activeThreadRef.current?.focusComposer(),
       },
@@ -563,10 +584,15 @@ export function ChatApp() {
         label: "Rename chat…",
         group: "Conversation",
         when: (c) => !!c.focusedConversationId,
-        run: () => {
+        run: async () => {
           const id = ctx.focusedConversationId
           if (!id) return
-          const name = window.prompt("Chat name (blank to reset)", prefs[id]?.customTitle ?? "")
+          const name = await prompt({
+            title: "Rename chat",
+            description: "Leave blank to reset to the original name.",
+            initialValue: prefs[id]?.customTitle ?? "",
+            placeholder: "Chat name",
+          })
           if (name !== null) patchPrefs(id, { customTitle: name.trim() || null })
         },
       },
@@ -577,15 +603,18 @@ export function ChatApp() {
         label: "Move to folder…",
         group: "Conversation",
         when: (c) => !!c.focusedConversationId,
-        run: () => {
+        run: async () => {
           const id = ctx.focusedConversationId
           if (!id) return
           const existing = knownFolders(prefs)
-          const hint = existing.length ? ` (${existing.join(", ")})` : ""
-          const name = window.prompt(
-            `Move to folder${hint} — blank to remove`,
-            prefs[id]?.folder ?? "",
-          )
+          const name = await prompt({
+            title: "Move to folder",
+            description: existing.length
+              ? `Existing folders: ${existing.join(", ")}. Leave blank to remove from folder.`
+              : "Leave blank to remove from folder.",
+            initialValue: prefs[id]?.folder ?? "",
+            placeholder: "Folder name",
+          })
           if (name === null) return
           patchPrefs(id, { folder: name.trim() || null })
         },
@@ -615,6 +644,151 @@ export function ChatApp() {
         when: (c) => c.view === "thread" && !!c.isOwnMessage,
         run: () => activeThreadRef.current?.command("delete"),
       },
+      // ── Group B: new-feature commands (thread context) ─────────────────────────
+      {
+        id: "msg-reply",
+        label: "Reply to message",
+        group: "Message",
+        when: (c) => c.view === "thread" && !!c.focusedMessageId,
+        run: () => activeThreadRef.current?.replyFocused(),
+      },
+      {
+        id: "msg-jump-unread",
+        label: "Jump to unread",
+        group: "Message",
+        when: (c) => c.view === "thread",
+        run: () => activeThreadRef.current?.jumpToUnread(),
+      },
+      {
+        id: "msg-attach",
+        label: "Attach files",
+        group: "Message",
+        when: (c) => c.view === "thread",
+        run: () => activeThreadRef.current?.openFilePicker(),
+      },
+      // ── Group A: settings toggles ───────────────────────────────────────────────
+      {
+        id: "theme-light",
+        label: "Theme: Light",
+        group: "App",
+        when: () => settings.theme !== "light",
+        run: () => updateSettings({ theme: "light" }),
+      },
+      {
+        id: "theme-dark",
+        label: "Theme: Dark",
+        group: "App",
+        when: () => settings.theme !== "dark",
+        run: () => updateSettings({ theme: "dark" }),
+      },
+      {
+        id: "theme-system",
+        label: "Theme: System",
+        group: "App",
+        when: () => settings.theme !== "system",
+        run: () => updateSettings({ theme: "system" }),
+      },
+      {
+        id: "density-comfortable",
+        label: "Density: Comfortable",
+        group: "App",
+        when: () => settings.density !== "comfortable",
+        run: () => updateSettings({ density: "comfortable" }),
+      },
+      {
+        id: "density-compact",
+        label: "Density: Compact",
+        group: "App",
+        when: () => settings.density !== "compact",
+        run: () => updateSettings({ density: "compact" }),
+      },
+      {
+        id: "names-full",
+        label: "Names: Full name",
+        group: "App",
+        when: () => settings.nameDisplay !== "full",
+        run: () => updateSettings({ nameDisplay: "full" }),
+      },
+      {
+        id: "names-first",
+        label: "Names: First name",
+        group: "App",
+        when: () => settings.nameDisplay !== "first",
+        run: () => updateSettings({ nameDisplay: "first" }),
+      },
+      {
+        id: "notifications-on",
+        label: "Notifications: On",
+        group: "App",
+        when: () => !settings.notificationsEnabled,
+        run: () => updateSettings({ notificationsEnabled: true }),
+      },
+      {
+        id: "notifications-off",
+        label: "Notifications: Off",
+        group: "App",
+        when: () => settings.notificationsEnabled,
+        run: () => updateSettings({ notificationsEnabled: false }),
+      },
+      // ── Group C: conversation management (list / thread context) ───────────────
+      // Add label: one command per known label (toggle). Blank slate: no-op (prompt handles creation).
+      ...knownLabels(prefs).map(
+        (lbl): ChatAction => ({
+          id: `label:${lbl}`,
+          label: prefs[ctx.focusedConversationId ?? ""]?.labels?.includes(lbl)
+            ? `Remove label "${lbl}"`
+            : `Add label "${lbl}"`,
+          group: "Conversation",
+          when: (c) => !!c.focusedConversationId,
+          run: () => {
+            const id = ctx.focusedConversationId
+            if (!id) return
+            const cur = prefs[id]?.labels ?? []
+            patchPrefs(id, { labels: toggleLabel(cur, lbl) })
+          },
+        }),
+      ),
+      {
+        id: "add-label-new",
+        label: "Add label…",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: async () => {
+          const id = ctx.focusedConversationId
+          if (!id) return
+          const name = await prompt({
+            title: "Add label",
+            description: "Enter a label name to add or remove it.",
+            initialValue: "",
+            placeholder: "Label name",
+          })
+          if (!name) return
+          const cur = prefs[id]?.labels ?? []
+          patchPrefs(id, { labels: toggleLabel(cur, name) })
+        },
+      },
+      {
+        id: "collapse-all-folders",
+        label: "Collapse all folders",
+        group: "Conversation",
+        when: () => knownFolders(prefs).some((f) => !collapsed.has(f)),
+        run: () => {
+          for (const f of knownFolders(prefs)) {
+            if (!collapsed.has(f)) toggleFolderCollapsed(f)
+          }
+        },
+      },
+      {
+        id: "expand-all-folders",
+        label: "Expand all folders",
+        group: "Conversation",
+        when: () => knownFolders(prefs).some((f) => collapsed.has(f)),
+        run: () => {
+          for (const f of knownFolders(prefs)) {
+            if (collapsed.has(f)) toggleFolderCollapsed(f)
+          }
+        },
+      },
     ])
   }, [
     conversations,
@@ -628,6 +802,10 @@ export function ChatApp() {
     patchPrefs,
     switchConversation,
     openConvByIndex,
+    settings,
+    updateSettings,
+    collapsed,
+    toggleFolderCollapsed,
   ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
@@ -817,6 +995,7 @@ export function ChatApp() {
         onMessage={messageFromProfile}
         target={profileTarget}
       />
+      <PromptDialog />
       <SettingsSheet
         onOpenChange={setSettingsOpen}
         onUpdate={updateSettings}
@@ -846,11 +1025,13 @@ export function ChatApp() {
             <ConversationList
               collapsedFolders={collapsed}
               focusedId={view === "list" ? focusedConvId : null}
+              folderOrder={folderOrder}
               namePref={namePref}
               onConnectionChange={setOnline}
               onConversations={onConversations}
               onOpenConversation={openConversation}
               onPatchPrefs={patchPrefs}
+              onReorderFolders={setFolderOrder}
               onToggleFolder={toggleFolderCollapsed}
               prefs={prefs}
               readOverrides={readOverrides}
@@ -883,11 +1064,13 @@ export function ChatApp() {
           <ConversationList
             collapsedFolders={collapsed}
             focusedId={focusedConvId}
+            folderOrder={folderOrder}
             namePref={namePref}
             onConnectionChange={setOnline}
             onConversations={onConversations}
             onOpenConversation={openConversation}
             onPatchPrefs={patchPrefs}
+            onReorderFolders={setFolderOrder}
             onToggleFolder={toggleFolderCollapsed}
             prefs={prefs}
             readOverrides={readOverrides}

@@ -32,7 +32,7 @@ import type {
 import { chatShell } from "../lib/chat-shell"
 import { formatName } from "../lib/display-name"
 import { playNotifySound } from "../lib/notify-sound"
-import { NotifyToggle } from "./notify-toggle"
+import { NotifyControl } from "./notify-toggle"
 
 const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = [
   { id: "system", label: "System", icon: ComputerIcon },
@@ -342,9 +342,14 @@ export function SettingsSheet({
           <div className="flex items-center justify-between border-border/60 border-t pt-3">
             <div>
               <Label className="text-[13px]">Notifications</Label>
-              <p className="text-[11px] text-muted-foreground">Push to this device.</p>
+              <p className="text-[11px] text-muted-foreground">
+                {shell ? "Alert on new messages." : "Push to this device."}
+              </p>
             </div>
-            <NotifyToggle />
+            <NotifyControl
+              electronEnabled={settings.notificationsEnabled}
+              onElectronChange={(v) => onUpdate({ notificationsEnabled: v })}
+            />
           </div>
 
           {/* Server URL — Electron shell only (the web build is served by its own origin). */}
@@ -353,7 +358,7 @@ export function SettingsSheet({
               <Label className="text-[13px]">Server</Label>
               <div className="flex gap-1.5">
                 <input
-                  className="min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 py-1.5 text-[13px] outline-none focus:ring-1 focus:ring-ring"
+                  className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 py-1.5 text-[13px] outline-none focus:ring-1 focus:ring-ring"
                   onChange={(e) => setServerUrlInput(e.target.value)}
                   placeholder="https://…"
                   spellCheck={false}
@@ -362,7 +367,7 @@ export function SettingsSheet({
                 <Button
                   disabled={!serverUrl.trim() || serverUrl.trim() === serverSaved}
                   onClick={() => shell.setServerUrl(serverUrl.trim())}
-                  size="sm"
+                  size="default"
                   variant="secondary"
                 >
                   Save

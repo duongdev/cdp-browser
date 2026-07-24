@@ -29,4 +29,23 @@ function buildAmsImageContent({ host, objId, width, height, caption } = {}) {
   return cap + img
 }
 
-module.exports = { buildAmsImageContent, escapeHtml }
+// Build the RichText/Html message content for multiple uploaded AMS images in a single message.
+// Each image in `images` is `{ host, objId, width, height }`. The optional caption is prepended
+// before the first image (HTML-escaped). Emits one <img> per image, separated by a <br>.
+function buildAmsImageContentMulti(images, caption) {
+  if (!images || images.length === 0) return ""
+  const cap =
+    caption && String(caption).trim() ? `${escapeHtml(caption).replace(/\n/g, "<br>")}<br>` : ""
+  const imgs = images
+    .map(({ host, objId, width, height }) => {
+      const src = `${String(host).replace(/\/$/, "")}/v1/objects/${objId}/views/imgo`
+      const w = Number(width) > 0 ? Math.round(Number(width)) : 0
+      const h = Number(height) > 0 ? Math.round(Number(height)) : 0
+      const dims = w && h ? ` width="${w}" height="${h}"` : ""
+      return `<img itemtype="http://schema.skype.com/AMSImage" src="${src}" itemscope="itemscope"${dims}>`
+    })
+    .join("<br>")
+  return cap + imgs
+}
+
+module.exports = { buildAmsImageContent, buildAmsImageContentMulti, escapeHtml }

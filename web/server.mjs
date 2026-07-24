@@ -44,7 +44,7 @@ import {
   upsertWorkspace as slackUpsertWorkspace,
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
-import { buildAmsImageContent } from "../core/teams-ams.js"
+import { buildAmsImageContent, buildAmsImageContentMulti } from "../core/teams-ams.js"
 import { isValidTeamsCursor } from "../core/teams-cursor.js"
 import { buildTeamsFilePayload } from "../core/teams-files.js"
 import { isValidAmsUrl, rewriteMediaHtml } from "../core/teams-media.js"
@@ -63,6 +63,7 @@ import {
 import {
   conversationKind as teamsConversationKind,
   getAllPrefs as teamsGetAllPrefs,
+  getFolderOrder as teamsGetFolderOrder,
   getReadState as teamsGetReadState,
   getUsers as teamsGetUsers,
   isMutedNow as teamsIsMutedNow,
@@ -70,6 +71,7 @@ import {
   markConversationRead as teamsMarkConversationRead,
   markConversationUnread as teamsMarkConversationUnread,
   migrate as teamsMigrate,
+  setFolderOrder as teamsSetFolderOrder,
   setLocalRead as teamsSetLocalRead,
   setPrefs as teamsSetPrefs,
   setReadHorizon as teamsSetReadHorizon,
@@ -2253,6 +2255,62 @@ async function teamsUploadImage({ convId, filename, base64, width, height, text 
   return { ok: true, msgId: ts }
 }
 
+// Upload multiple images to AMS and post them as a single inline message (multi-AMSImage probe).
+// Each entry in `images` is { filename, base64, width, height }. All AMS uploads run in parallel;
+// if any fails the whole call returns its error. The combined body is ONE RichText/Html message.
+// Falls back to sequential single-image sends in the caller when this returns a non-ok response.
+async function teamsUploadImagesMulti({ convId, images, text }) {
+  let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) {
+    await notificationCenter.refreshTeamsCreds()
+    cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  }
+  if (!cred) return { error: "invalid_auth" }
+
+  let content = null
+  const run = async () => {
+    // Upload all images in parallel — fail fast on the first error.
+    const results = await Promise.all(
+      images.map(({ filename, base64 }) => createTeamsAmsObjectInPage(convId, filename, base64)),
+    )
+    const failed = results.find((r) => r.error)
+    if (failed) return failed
+    const imgParams = results.map((r, i) => ({
+      host: r.host,
+      objId: r.objId,
+      width: images[i].width,
+      height: images[i].height,
+    }))
+    content = buildAmsImageContentMulti(imgParams, text)
+    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html")
+  }
+
+  let out = await run()
+  if (out.error === "invalid_auth") {
+    await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
+    cred = notificationCenter.getTeamsCreds(cred.tenant)
+    if (!cred || cred.fresh === false) return { error: "invalid_auth" }
+    out = await run()
+  }
+  if (out.error) return { error: out.error === "invalid_auth" ? "invalid_auth" : out.error }
+
+  const ts = String(out.OriginalArrivalTime)
+  const tsMs = Number(out.OriginalArrivalTime) || Date.now()
+  teamsUpsertMessages(teamsDb, cred.tenant, convId, [
+    {
+      id: ts,
+      ts: tsMs,
+      senderId: cred.userId || null,
+      senderName: cred.displayName || "",
+      body: rewriteMediaHtml(content),
+      self: true,
+      edited: false,
+      deleted: false,
+    },
+  ])
+  return { ok: true, msgId: ts }
+}
+
 // Upload the raw bytes to the user's SharePoint drive + mint a share link, all IN-PAGE (CA-proof
 // like the AMS image path). Returns { driveItem:{id, sharepointIds}, shareUrl, myHost, userPath } or
 // a typed { error }. The SharePoint bearer + host are read from the page's MSAL cache; a missing
@@ -2844,10 +2902,26 @@ const server = http.createServer(async (req, res) => {
     // every conversation's prefs (a map the client holds beside the list + re-applies over polls);
     // POST patches one conversation (only the provided keys). Web only. No cred needed — prefs are
     // keyed by convId, not tenant.
-    if (p === "/api/teams/prefs" && !POST) return json(res, { prefs: teamsGetAllPrefs(teamsDb) })
+    if (p === "/api/teams/prefs" && !POST)
+      return json(res, {
+        prefs: teamsGetAllPrefs(teamsDb),
+        folderOrder: teamsGetFolderOrder(teamsDb),
+      })
     if (p === "/api/teams/prefs" && POST) {
-      const { convId, labels, folder, muted, mutedUntil, notifyOnMention, customTitle } =
-        await body(req)
+      const {
+        convId,
+        folderOrder,
+        labels,
+        folder,
+        muted,
+        mutedUntil,
+        notifyOnMention,
+        customTitle,
+      } = await body(req)
+      if (folderOrder !== undefined && !convId) {
+        if (!Array.isArray(folderOrder)) return json(res, { error: "invalid folderOrder" }, 400)
+        return json(res, { ok: true, folderOrder: teamsSetFolderOrder(teamsDb, folderOrder) })
+      }
       if (!convId) return json(res, { error: "missing fields" }, 400)
       const patch = {}
       if (labels !== undefined) patch.labels = labels
@@ -2913,6 +2987,26 @@ const server = http.createServer(async (req, res) => {
         height,
         text,
       })
+      if (out.error === "invalid_auth") return json(res, out, 401)
+      if (out.error) return json(res, out, 502)
+      return json(res, out)
+    }
+    // Teams chat: upload multiple images in parallel + post them as ONE combined AMSImage message
+    // (Workstream J, PSN-96). `images` is an array of { filename, base64, contentType, width, height }.
+    // A non-2xx here signals the caller to fall back to sequential single-image sends.
+    if (p === "/api/teams/upload-images" && POST) {
+      const { convId, images, text } = await body(req, IMAGE_BODY_LIMIT * 8)
+      if (!convId || !Array.isArray(images) || images.length === 0 || images.length > 10)
+        return json(res, { error: "missing fields" }, 400)
+      for (const img of images) {
+        if (!img.base64 || typeof img.base64 !== "string")
+          return json(res, { error: "missing fields" }, 400)
+        if (img.base64.length > IMAGE_BODY_LIMIT * 1.4)
+          return json(res, { error: "too_large" }, 413)
+        if (img.contentType && !String(img.contentType).startsWith("image/"))
+          return json(res, { error: "not_image" }, 400)
+      }
+      const out = await teamsUploadImagesMulti({ convId, images, text })
       if (out.error === "invalid_auth") return json(res, out, 401)
       if (out.error) return json(res, out, 502)
       return json(res, out)

@@ -33,6 +33,8 @@ export interface ChatSettings {
   /** The strip pattern for nameDisplay "regex"; ignored otherwise. */
   nameRegex: string
   notifySound: ChatNotifySound
+  /** Electron-shell notification toggle. Web push is managed separately by NotifyToggle. */
+  notificationsEnabled: boolean
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -43,6 +45,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   nameDisplay: "full",
   nameRegex: "",
   notifySound: "polite",
+  notificationsEnabled: true,
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
@@ -54,6 +57,7 @@ export const CHAT_MONO_BASE = "chatMono"
 export const CHAT_NAME_DISPLAY_BASE = "chatNameDisplay"
 export const CHAT_NAME_REGEX_BASE = "chatNameRegex"
 export const CHAT_NOTIFY_SOUND_BASE = "chatNotifySound"
+export const CHAT_NOTIFICATIONS_BASE = "chatNotificationsEnabled"
 
 const THEMES: ChatTheme[] = ["system", "light", "dark"]
 const DENSITIES: ChatDensity[] = ["comfortable", "compact"]
@@ -113,6 +117,10 @@ export function parseNotifySound(raw: unknown): ChatNotifySound {
     : DEFAULT_CHAT_SETTINGS.notifySound
 }
 
+function parseNotificationsEnabled(raw: unknown): boolean {
+  return raw === false ? false : true
+}
+
 export function deviceKey(base: string, deviceId: string): string {
   return `${base}_${deviceId}`
 }
@@ -127,6 +135,9 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
     nameDisplay: parseNameDisplay(ui[deviceKey(CHAT_NAME_DISPLAY_BASE, deviceId)]),
     nameRegex: parseNameRegex(ui[deviceKey(CHAT_NAME_REGEX_BASE, deviceId)]),
     notifySound: parseNotifySound(ui[deviceKey(CHAT_NOTIFY_SOUND_BASE, deviceId)]),
+    notificationsEnabled: parseNotificationsEnabled(
+      ui[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)],
+    ),
   }
 }
 
@@ -147,6 +158,8 @@ export function writeChatSettings(
     out[deviceKey(CHAT_NAME_REGEX_BASE, deviceId)] = partial.nameRegex
   if (partial.notifySound !== undefined)
     out[deviceKey(CHAT_NOTIFY_SOUND_BASE, deviceId)] = partial.notifySound
+  if (partial.notificationsEnabled !== undefined)
+    out[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)] = partial.notificationsEnabled
   return out
 }
 

@@ -1,6 +1,8 @@
 import {
+  Add01Icon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
+  Copy01Icon,
   Csv01Icon,
   Delete02Icon,
   Doc01Icon,
@@ -12,12 +14,11 @@ import {
   PencilEdit02Icon,
   PlayCircleIcon,
   Ppt01Icon,
-  SmileIcon,
   Tick01Icon,
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,9 +39,25 @@ import { htmlToPlain } from "../lib/html-to-plain"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
+import { getCatalogGlyph } from "../lib/use-emoji-catalog"
 import { DisplayName } from "./display-name"
+import { EmojiPicker } from "./emoji-picker"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
+
+/** Copy `text` to clipboard; briefly flip to a "copied" tick for ~1.2 s. Fine-pointer only. */
+function useCopy(): [copied: boolean, copy: (text: string) => void] {
+  const [copied, setCopied] = useState(false)
+  const t = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      if (t.current) clearTimeout(t.current)
+      t.current = setTimeout(() => setCopied(false), 1200)
+    })
+  }, [])
+  return [copied, copy]
+}
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
 // DEFAULT_REACTIONS — a frozen, closed set, kept local so the browser build needn't import the CJS
@@ -68,7 +85,7 @@ function reactorTitle(r: TeamsReaction, pref: NamePref): string | undefined {
 /** A keyboard command targeted at the focused row (t152). The `nonce` changes on each dispatch so a
  *  repeat of the same key re-fires the effect. chat-app → thread-view → the focused MessageRow. */
 export interface RowCommand {
-  type: "edit" | "delete" | "react"
+  type: "edit" | "delete" | "react" | "reply"
   nonce: number
 }
 
@@ -147,6 +164,10 @@ function ChatMessageRow({
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
+  // Link hover-copy overlay (G): tracks the hovered <a> inside the sanitized body.
+  // Null when no link is hovered. Fine pointer only — coarse skips the delegation entirely.
+  const [hoveredLink, setHoveredLink] = useState<{ href: string; rect: DOMRect } | null>(null)
+  const [linkCopied, copyLink] = useCopy()
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
@@ -228,10 +249,16 @@ function ChatMessageRow({
 
   // Clicking a chip toggles my own reaction for that key (mine → remove, else join).
   const toggleChip = (r: TeamsReaction) => onReact?.(message.id, r.key, r.emoji, r.mine)
-  // Tapping a quick-bar emoji adds it (a re-tap of one I already made is a no-op upstream).
+  // Tapping a quick-bar emoji or picking from the full picker adds a reaction.
   const quickReact = (key: string, emoji: string) => {
     setPickerOpen(false)
     onReact?.(message.id, key, emoji, false)
+  }
+
+  // Called by the Teams catalog picker — key is already a Teams catalog ID.
+  const pickerReact = (key: string) => {
+    const emoji = getCatalogGlyph(key) ?? key
+    quickReact(key, emoji)
   }
 
   // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
@@ -362,34 +389,82 @@ function ChatMessageRow({
         >
           {/* XSS BOUNDARY: message.body is site-authored HTML. It MUST pass through sanitize()
               (DOMPurify, strict allowlist) before it hits the DOM — never render body raw. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap opens a lightbox. */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable. */}
-          <div
-            className={cn(
-              // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
-              // density can shrink it and grouped runs get asymmetric corners without class soup.
-              "teams-message-body max-w-[85%] px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere] md:max-w-[65ch]",
-              self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
-              // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
-              // bubble is no longer tinted.
-              deleted && "italic opacity-70",
-              pending && "opacity-60",
-              failed && "opacity-70 ring-1 ring-destructive/40",
+          <div className="relative max-w-[85%] md:max-w-[65ch]">
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
+            {/* biome-ignore lint/a11y/useKeyWithMouseEvents: link hover-copy is a fine-pointer visual affordance; keyboard users access links natively via Tab */}
+            <div
+              className={cn(
+                // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
+                // density can shrink it and grouped runs get asymmetric corners without class soup.
+                "teams-message-body w-full px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
+                self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
+                // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
+                // bubble is no longer tinted.
+                deleted && "italic opacity-70",
+                pending && "opacity-60",
+                failed && "opacity-70 ring-1 ring-destructive/40",
+              )}
+              // formatBodyNames applies the Names setting to mention pills + quote authors, and
+              // stampReplyIds tags reply blockquotes for click-to-jump — BOTH before the sanitizer (they
+              // read itemprop/itemid the sanitizer strips) — PSN-92 E + B5.
+              // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
+              dangerouslySetInnerHTML={{
+                __html: sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
+              }}
+              data-pos={groupPos}
+              data-side={self ? "self" : "other"}
+              onClick={onBodyClick}
+              onMouseOut={
+                coarse
+                  ? undefined
+                  : (e) => {
+                      const related = e.relatedTarget as HTMLElement | null
+                      if (!related?.closest?.(".link-copy-btn")) setHoveredLink(null)
+                    }
+              }
+              onMouseOver={
+                coarse
+                  ? undefined
+                  : (e) => {
+                      const a = (e.target as HTMLElement).closest?.(
+                        "a[href]",
+                      ) as HTMLAnchorElement | null
+                      if (a?.href) setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
+                      else setHoveredLink(null)
+                    }
+              }
+              // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
+              // style grouping; the tooltip is where "when exactly?" lives now.
+              title={new Date(message.ts).toLocaleString()}
+            />
+            {/* Link copy button (G): absolutely positioned at the hovered link's bottom-right corner.
+                Uses a fixed-positioned inner div so it sits outside the bubble overflow boundary. */}
+            {!coarse && hoveredLink && (
+              <button
+                className="link-copy-btn absolute z-10 flex size-6 items-center justify-center rounded-md border border-border bg-popover text-muted-foreground shadow-sm transition-colors hover:bg-accent"
+                onClick={(e) => {
+                  e.preventDefault()
+                  copyLink(hoveredLink.href)
+                }}
+                onMouseEnter={() => {
+                  /* keep hoveredLink alive while the cursor moves to this button */
+                }}
+                onMouseLeave={(e) => {
+                  const related = e.relatedTarget as HTMLElement | null
+                  if (!related?.closest?.("[data-side]")) setHoveredLink(null)
+                }}
+                style={{
+                  bottom: 4,
+                  right: 4,
+                }}
+                title="Copy link"
+                type="button"
+              >
+                <HugeiconsIcon className="size-3" icon={linkCopied ? Tick01Icon : Copy01Icon} />
+              </button>
             )}
-            // formatBodyNames applies the Names setting to mention pills + quote authors, and
-            // stampReplyIds tags reply blockquotes for click-to-jump — BOTH before the sanitizer (they
-            // read itemprop/itemid the sanitizer strips) — PSN-92 E + B5.
-            // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
-            dangerouslySetInnerHTML={{
-              __html: sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
-            }}
-            data-pos={groupPos}
-            data-side={self ? "self" : "other"}
-            onClick={onBodyClick}
-            // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
-            // style grouping; the tooltip is where "when exactly?" lives now.
-            title={new Date(message.ts).toLocaleString()}
-          />
+          </div>
           {(canReact || canManage || canReply) && (
             <div className="flex shrink-0 items-center gap-0.5">
               {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
@@ -397,8 +472,9 @@ function ChatMessageRow({
                 <QuickReact
                   coarse={coarse}
                   onPick={quickReact}
-                  onToggleOpen={() => setPickerOpen((v) => !v)}
-                  open={pickerOpen}
+                  onPickerOpenChange={setPickerOpen}
+                  onPickerPick={pickerReact}
+                  pickerOpen={pickerOpen}
                   side={self ? "end" : "start"}
                 />
               )}
@@ -555,62 +631,81 @@ function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void
   )
 }
 
-/** The react affordance beside a bubble (t142): a smiley that reveals the six-default quick-react
- *  bar. Fine pointer → the smiley fades in on bubble hover; coarse pointer → it stays visible and a
- *  tap opens the bar (no hover to rely on). An open bar closes on an outside tap or after a pick. */
+/** The react affordance beside a bubble (F — reactions revamp): the 6-default quick-react bar is
+ *  revealed directly on hover (fine pointer) / always-visible (coarse) — one click reacts, no
+ *  intermediate toggle. A "+" at the end opens the Teams catalog emoji picker in a popover.
+ *  The `r` keyboard command opens the full picker (`pickerOpen`). */
 function QuickReact({
   coarse,
-  open,
-  onToggleOpen,
+  pickerOpen,
+  onPickerOpenChange,
   onPick,
+  onPickerPick,
   side,
 }: {
   coarse: boolean
-  open: boolean
-  onToggleOpen: () => void
+  pickerOpen: boolean
+  onPickerOpenChange: (open: boolean) => void
   onPick: (key: string, emoji: string) => void
+  onPickerPick: (key: string) => void
   side: "start" | "end"
 }) {
+  const plusRef = useRef<HTMLButtonElement>(null)
   return (
-    <div className="relative shrink-0">
-      <button
-        aria-expanded={open}
-        aria-label="Add reaction"
-        className={cn(
-          "flex size-7 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
-          coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
-        )}
-        onClick={onToggleOpen}
-        type="button"
-      >
-        <HugeiconsIcon className="size-4" icon={SmileIcon} />
-      </button>
-      {open && (
-        <>
-          {/* Outside-tap catcher — closes the bar without a document listener. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: Esc-independent dismiss; the bar buttons are focusable */}
-          <div className="fixed inset-0 z-40" onClick={onToggleOpen} />
-          <div
-            className={cn(
-              "absolute bottom-full z-50 mb-1 flex gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 shadow-md",
-              side === "end" ? "right-0" : "left-0",
-            )}
-          >
-            {QUICK_REACTIONS.map((r) => (
-              <button
-                aria-label={r.key}
-                className="flex size-8 items-center justify-center rounded-full text-lg transition-transform hover:scale-125"
-                key={r.key}
-                onClick={() => onPick(r.key, r.emoji)}
-                type="button"
-              >
-                {r.emoji}
-              </button>
-            ))}
-          </div>
-        </>
+    <div
+      className={cn(
+        "relative flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 shadow-sm transition-opacity",
+        coarse ? "opacity-70" : "opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100",
       )}
+    >
+      {QUICK_REACTIONS.map((r) => (
+        <button
+          aria-label={r.key}
+          className="flex size-7 items-center justify-center rounded-full text-base transition-transform hover:scale-125"
+          key={r.key}
+          onClick={() => onPick(r.key, r.emoji)}
+          type="button"
+        >
+          {r.emoji}
+        </button>
+      ))}
+      {/* "+" opens the Teams catalog emoji picker */}
+      <div className="relative">
+        <button
+          aria-expanded={pickerOpen}
+          aria-label="More reactions"
+          className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent"
+          onClick={() => onPickerOpenChange(!pickerOpen)}
+          ref={plusRef}
+          type="button"
+        >
+          <HugeiconsIcon className="size-3.5" icon={Add01Icon} />
+        </button>
+        {pickerOpen && (
+          <>
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => onPickerOpenChange(false)}
+              onKeyDown={(e) => e.key === "Escape" && onPickerOpenChange(false)}
+            />
+            <div
+              className={cn(
+                "absolute bottom-full z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg",
+                side === "end" ? "right-0" : "left-0",
+              )}
+            >
+              <EmojiPicker
+                onClose={() => onPickerOpenChange(false)}
+                onSelect={(key) => {
+                  onPickerOpenChange(false)
+                  onPickerPick(key)
+                }}
+              />
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -716,6 +811,28 @@ function fileIcon(type?: string): IconSvgElement {
 const CHIP_CLASS =
   "inline-flex max-w-full items-center gap-2 rounded-lg border bg-background/60 px-2.5 py-1.5 text-left text-xs text-foreground no-underline transition-colors hover:bg-accent"
 
+/** Copy button shown on chip hover (G, fine pointer). Copies `url` and ticks for 1.2 s. */
+function ChipCopyButton({ url }: { url: string }) {
+  const [copied, copy] = useCopy()
+  return (
+    <button
+      aria-label="Copy link"
+      className="ml-auto shrink-0 opacity-0 transition-opacity group-hover/chip:opacity-100 [@media(pointer:coarse)]:hidden"
+      onClick={(e) => {
+        e.preventDefault()
+        copy(url)
+      }}
+      title="Copy link"
+      type="button"
+    >
+      <HugeiconsIcon
+        className="size-3.5 text-muted-foreground"
+        icon={copied ? Tick01Icon : Copy01Icon}
+      />
+    </button>
+  )
+}
+
 /** A file / call-recording / card chip below the message body (t141). A file opens SharePoint in a
  *  new tab; recordings/cards show a proxied thumbnail preview (no inline playback). */
 function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
@@ -724,10 +841,16 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
       <>
         <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={fileIcon(a.type)} />
         <span className="truncate">{a.name || "file"}</span>
+        {a.url && <ChipCopyButton url={a.url} />}
       </>
     )
     return a.url ? (
-      <a className={CHIP_CLASS} href={a.url} rel="noopener noreferrer" target="_blank">
+      <a
+        className={cn(CHIP_CLASS, "group/chip")}
+        href={a.url}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
         {inner}
       </a>
     ) : (
@@ -762,10 +885,16 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
             {a.url ? "Play recording" : "Recording"}
           </span>
         </span>
+        {a.url && <ChipCopyButton url={a.url} />}
       </>
     )
     return a.url ? (
-      <a className={CHIP_CLASS} href={a.url} rel="noopener noreferrer" target="_blank">
+      <a
+        className={cn(CHIP_CLASS, "group/chip")}
+        href={a.url}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
         {inner}
       </a>
     ) : (
