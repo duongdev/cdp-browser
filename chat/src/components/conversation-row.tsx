@@ -153,7 +153,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
           <span className="mt-1 flex flex-wrap gap-1 pl-13">
             {labels.map((l) => (
               <span
-                className="shrink-0 rounded-full bg-muted px-1.5 py-px font-medium text-[10px] text-muted-foreground"
+                className="shrink-0 rounded-full border border-border/70 px-1.5 py-px font-medium text-[10px] text-muted-foreground"
                 key={l}
               >
                 {l}
