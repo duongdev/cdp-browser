@@ -475,14 +475,14 @@ export function ChatApp() {
         id: "conv-next",
         label: "Next conversation",
         group: "Navigation",
-        keys: "⌘]",
+        keys: "⌘⇧]",
         run: () => switchConversation(1),
       },
       {
         id: "conv-prev",
         label: "Previous conversation",
         group: "Navigation",
-        keys: "⌘[",
+        keys: "⌘⇧[",
         run: () => switchConversation(-1),
       },
       {

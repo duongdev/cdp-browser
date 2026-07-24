@@ -56,27 +56,43 @@ describe("routeKey — global modifier shortcuts", () => {
   })
 })
 
-describe("routeKey — conversation switch (⌘[/⌘])", () => {
-  it("⌘[ → conv-prev, ⌘] → conv-next", () => {
-    expect(routeKey(key("[", { metaKey: true }), thread, false)).toEqual({ type: "conv-prev" })
-    expect(routeKey(key("]", { metaKey: true }), list, false)).toEqual({ type: "conv-next" })
+describe("routeKey — conversation switch (⌘⇧[/⌘⇧])", () => {
+  it("⌘⇧[ → conv-prev, ⌘⇧] → conv-next", () => {
+    expect(routeKey(key("[", { metaKey: true, shiftKey: true }), thread, false)).toEqual({
+      type: "conv-prev",
+    })
+    expect(routeKey(key("]", { metaKey: true, shiftKey: true }), list, false)).toEqual({
+      type: "conv-next",
+    })
   })
   it("fires even while the composer is focused", () => {
     expect(
-      routeKey(key("[", { metaKey: true }), { ...thread, composerFocused: true }, false),
+      routeKey(
+        key("[", { metaKey: true, shiftKey: true }),
+        { ...thread, composerFocused: true },
+        false,
+      ),
     ).toEqual({ type: "conv-prev" })
     expect(
-      routeKey(key("]", { metaKey: true }), { ...thread, composerFocused: true }, false),
+      routeKey(
+        key("]", { metaKey: true, shiftKey: true }),
+        { ...thread, composerFocused: true },
+        false,
+      ),
     ).toEqual({ type: "conv-next" })
   })
   it("fires even when the event target is a text field", () => {
     const t = { tagName: "TEXTAREA" } as unknown as EventTarget
-    expect(routeKey(key("[", { metaKey: true, target: t }), thread, false)).toEqual({
-      type: "conv-prev",
-    })
-    expect(routeKey(key("]", { metaKey: true, target: t }), thread, false)).toEqual({
-      type: "conv-next",
-    })
+    expect(routeKey(key("[", { metaKey: true, shiftKey: true, target: t }), thread, false)).toEqual(
+      {
+        type: "conv-prev",
+      },
+    )
+    expect(routeKey(key("]", { metaKey: true, shiftKey: true, target: t }), thread, false)).toEqual(
+      {
+        type: "conv-next",
+      },
+    )
   })
   it("⌥↑ / ⌥↓ no longer switch conversations", () => {
     expect(routeKey(key("ArrowDown", { altKey: true }), thread, false)).toBeNull()
