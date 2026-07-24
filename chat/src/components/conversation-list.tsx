@@ -25,6 +25,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { chatShell } from "../lib/chat-shell"
 import { mergeConversations } from "../lib/conversation-merge"
 import {
   applyPrefs,
@@ -228,7 +229,11 @@ export function ConversationList({
       })
   }, [onConnectionChange])
 
-  // Refresh on a cadence + on the tab returning to foreground / window focus. Paused while hidden.
+  // Refresh on a cadence + on the tab returning to foreground / window focus. Paused while hidden
+  // on the web build (saves battery on a backgrounded tab). The Electron shell keeps polling while
+  // hidden/minimized — that's the only signal driving desktop notifications, so pausing it there
+  // silently breaks notifications for the exact case ("app minimized") they exist for.
+  const isElectron = chatShell() != null
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined
     const start = () => {
@@ -241,14 +246,14 @@ export function ConversationList({
       }
     }
     const onVisibility = () => {
-      if (document.hidden) stop()
+      if (document.hidden && !isElectron) stop()
       else {
         refresh()
         start()
       }
     }
     const onFocus = () => refresh()
-    if (!document.hidden) start()
+    if (isElectron || !document.hidden) start()
     document.addEventListener("visibilitychange", onVisibility)
     window.addEventListener("focus", onFocus)
     return () => {
@@ -256,7 +261,7 @@ export function ConversationList({
       document.removeEventListener("visibilitychange", onVisibility)
       window.removeEventListener("focus", onFocus)
     }
-  }, [refresh])
+  }, [refresh, isElectron])
 
   const loadMore = useCallback(() => {
     if (loadingMoreRef.current) return
