@@ -35,6 +35,7 @@ import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
+import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
@@ -383,13 +384,25 @@ function ChatMessageRow({
       {hasBody && !editing && (
         <div
           className={cn(
-            "group/msg flex max-w-full items-center gap-1",
+            "group/msg flex min-w-0 max-w-full items-center gap-1",
             self ? "flex-row-reverse" : "flex-row",
           )}
         >
           {/* XSS BOUNDARY: message.body is site-authored HTML. It MUST pass through sanitize()
               (DOMPurify, strict allowlist) before it hits the DOM — never render body raw. */}
-          <div className="relative max-w-[85%] md:max-w-[65ch]">
+          <div className="group/bubble relative min-w-0 max-w-[85%] md:max-w-[65ch]">
+            {/* Floating quick-react bar anchored above the bubble's top edge (PSN-99 B1) — keeps the
+                side cluster narrow so the row never overflows the viewport. Fine pointer reveals it
+                on hover; coarse pointer reaches reactions via the "…"/tap-reveal path below. */}
+            {canReact && !coarse && (
+              <QuickReact
+                onPick={quickReact}
+                onPickerOpenChange={setPickerOpen}
+                onPickerPick={pickerReact}
+                pickerOpen={pickerOpen}
+                side={self ? "end" : "start"}
+              />
+            )}
             {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
             {/* biome-ignore lint/a11y/useKeyWithMouseEvents: link hover-copy is a fine-pointer visual affordance; keyboard users access links natively via Tab */}
@@ -397,8 +410,13 @@ function ChatMessageRow({
               className={cn(
                 // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
                 // density can shrink it and grouped runs get asymmetric corners without class soup.
-                "teams-message-body w-full px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
-                self ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
+                "teams-message-body w-full min-w-0 px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
+                // Self bubble (B6): solid coral fill in light; in dark, a near-transparent fill with a
+                // coral border + foreground text (low glare). The dark treatment lives in the CSS
+                // .teams-self-bubble rule so it can override the primary utilities under .dark.
+                self
+                  ? "teams-self-bubble bg-primary text-primary-foreground"
+                  : "bg-muted text-foreground",
                 // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
                 // bubble is no longer tinted.
                 deleted && "italic opacity-70",
@@ -434,9 +452,6 @@ function ChatMessageRow({
                       else setHoveredLink(null)
                     }
               }
-              // Exact sent time on hover (t160) — inline timestamps left the bubbles with Messenger-
-              // style grouping; the tooltip is where "when exactly?" lives now.
-              title={new Date(message.ts).toLocaleString()}
             />
             {/* Link copy button (G): absolutely positioned at the hovered link's bottom-right corner.
                 Uses a fixed-positioned inner div so it sits outside the bubble overflow boundary. */}
@@ -465,30 +480,38 @@ function ChatMessageRow({
               </button>
             )}
           </div>
-          {(canReact || canManage || canReply) && (
-            <div className="flex shrink-0 items-center gap-0.5">
-              {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
-              {canReact && (
-                <QuickReact
-                  coarse={coarse}
-                  onPick={quickReact}
-                  onPickerOpenChange={setPickerOpen}
-                  onPickerPick={pickerReact}
-                  pickerOpen={pickerOpen}
-                  side={self ? "end" : "start"}
-                />
-              )}
-              {canManage && (
-                <MessageActions
-                  canDelete={!!onDelete}
-                  canEdit={!!onEdit}
-                  coarse={coarse}
-                  onDelete={() => setConfirmOpen(true)}
-                  onEdit={startEdit}
-                  side={self ? "end" : "start"}
-                />
-              )}
-            </div>
+          {/* Narrow side cluster (B1): visible HH:mm:ss + Reply + own-message "…" menu. The wide
+              quick-react pill moved to the floating top-edge bar above, so this row stays slim and
+              the message never exceeds the viewport width. */}
+          <div className="flex shrink-0 items-center gap-0.5">
+            <time
+              className="px-0.5 text-[10px] text-muted-foreground tabular-nums opacity-0 transition-opacity group-hover/msg:opacity-100 [@media(pointer:coarse)]:opacity-60"
+              dateTime={new Date(message.ts).toISOString()}
+              title={new Date(message.ts).toLocaleString()}
+            >
+              {formatHms(message.ts)}
+            </time>
+            {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
+            {(canManage || (canReact && coarse)) && (
+              <MessageActions
+                canDelete={canManage && !!onDelete}
+                canEdit={canManage && !!onEdit}
+                coarse={coarse}
+                onDelete={() => setConfirmOpen(true)}
+                onEdit={startEdit}
+                onReact={canReact && coarse ? () => setPickerOpen(true) : undefined}
+                side={self ? "end" : "start"}
+              />
+            )}
+          </div>
+          {/* Coarse-pointer reaction reach (B1): the picker opens full-screen-anchored from the "…"
+              menu's React item. On coarse we mount the picker popover here (no hover bar). */}
+          {canReact && coarse && pickerOpen && (
+            <CoarseReactSheet
+              onClose={() => setPickerOpen(false)}
+              onPick={quickReact}
+              onPickerPick={pickerReact}
+            />
           )}
         </div>
       )}
@@ -538,17 +561,21 @@ function ChatMessageRow({
                 <TooltipTrigger asChild>
                   <button
                     className={cn(
-                      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                      // Softer filled pill, tighter padding, subtle ring for "mine" (B3). Reference:
+                      // Slack/iMessage reaction pills — no hard border, count in a quieter weight.
+                      "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs leading-none transition-colors",
                       r.mine
-                        ? "border-primary bg-primary/15 text-foreground"
-                        : "border-border bg-background/60 text-muted-foreground hover:bg-accent",
+                        ? "bg-primary/15 text-foreground ring-1 ring-primary/60"
+                        : "bg-muted/70 text-muted-foreground hover:bg-muted",
                     )}
                     disabled={!onReact}
                     onClick={() => toggleChip(r)}
                     type="button"
                   >
-                    <span aria-hidden>{r.emoji}</span>
-                    <span className="font-mono">{r.count}</span>
+                    <span aria-hidden className="text-sm leading-none">
+                      {r.emoji}
+                    </span>
+                    <span className="font-medium tabular-nums">{r.count}</span>
                   </button>
                 </TooltipTrigger>
                 {who && <TooltipContent>{who}</TooltipContent>}
@@ -631,19 +658,17 @@ function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void
   )
 }
 
-/** The react affordance beside a bubble (F — reactions revamp): the 6-default quick-react bar is
- *  revealed directly on hover (fine pointer) / always-visible (coarse) — one click reacts, no
- *  intermediate toggle. A "+" at the end opens the Teams catalog emoji picker in a popover.
- *  The `r` keyboard command opens the full picker (`pickerOpen`). */
+/** The quick-react bar floating above the bubble's top edge (PSN-99 B1). The 6 Teams defaults + a "+"
+ *  reveal on bubble hover (fine pointer only — coarse reaches reactions via the "…" menu). One click
+ *  reacts. The "+" opens the Teams catalog picker. `r` keyboard command opens the picker (pickerOpen).
+ *  Anchored top-right for self, top-left for others so it hugs the bubble corner. */
 function QuickReact({
-  coarse,
   pickerOpen,
   onPickerOpenChange,
   onPick,
   onPickerPick,
   side,
 }: {
-  coarse: boolean
   pickerOpen: boolean
   onPickerOpenChange: (open: boolean) => void
   onPick: (key: string, emoji: string) => void
@@ -654,8 +679,8 @@ function QuickReact({
   return (
     <div
       className={cn(
-        "relative flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 shadow-sm transition-opacity",
-        coarse ? "opacity-70" : "opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100",
+        "absolute -top-4 z-20 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover/bubble:opacity-100",
+        side === "end" ? "right-1" : "left-1",
       )}
     >
       {QUICK_REACTIONS.map((r) => (
@@ -710,6 +735,64 @@ function QuickReact({
   )
 }
 
+/** Coarse-pointer reaction sheet (PSN-99 B1): a centered popover with the 6 quick reactions + a "+"
+ *  for the full catalog. Mounted only when the "…" → React item is tapped on touch, since coarse
+ *  pointers have no hover-revealed quick-react bar. Backdrop tap / Escape dismiss. */
+function CoarseReactSheet({
+  onClose,
+  onPick,
+  onPickerPick,
+}: {
+  onClose: () => void
+  onPick: (key: string, emoji: string) => void
+  onPickerPick: (key: string) => void
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  return (
+    <>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: the emoji buttons are focusable */}
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="-translate-x-1/2 fixed bottom-24 left-1/2 z-50 flex flex-col items-center gap-1 rounded-2xl border border-border bg-popover p-2 shadow-md">
+        {pickerOpen ? (
+          <EmojiPicker
+            onClose={() => setPickerOpen(false)}
+            onSelect={(key) => {
+              onPickerPick(key)
+              onClose()
+            }}
+          />
+        ) : (
+          <div className="flex items-center gap-1">
+            {QUICK_REACTIONS.map((r) => (
+              <button
+                aria-label={r.key}
+                className="flex size-10 items-center justify-center rounded-full text-xl hover:bg-accent"
+                key={r.key}
+                onClick={() => {
+                  onPick(r.key, r.emoji)
+                  onClose()
+                }}
+                type="button"
+              >
+                {r.emoji}
+              </button>
+            ))}
+            <button
+              aria-label="More reactions"
+              className="flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
+              onClick={() => setPickerOpen(true)}
+              type="button"
+            >
+              <HugeiconsIcon className="size-5" icon={Add01Icon} />
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
 /** The own-message action affordance beside a bubble (t144): a ⋯ button that reveals an Edit/Delete
  *  menu. Same reveal as QuickReact — fade-in on hover for a fine pointer, always-visible for coarse —
  *  and the same outside-tap catcher to dismiss (no document listener). */
@@ -719,6 +802,7 @@ function MessageActions({
   canDelete,
   onEdit,
   onDelete,
+  onReact,
   side,
 }: {
   coarse: boolean
@@ -726,6 +810,8 @@ function MessageActions({
   canDelete: boolean
   onEdit: () => void
   onDelete: () => void
+  /** Open the reaction picker (B1) — passed only on coarse pointers, where there's no hover bar. */
+  onReact?: () => void
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
@@ -754,6 +840,19 @@ function MessageActions({
               side === "end" ? "right-0" : "left-0",
             )}
           >
+            {onReact && (
+              <button
+                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                onClick={() => {
+                  setOpen(false)
+                  onReact()
+                }}
+                type="button"
+              >
+                <HugeiconsIcon className="size-4" icon={Add01Icon} />
+                React
+              </button>
+            )}
             {canEdit && (
               <button
                 className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"

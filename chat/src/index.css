@@ -350,13 +350,11 @@
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
 }
+/* Compact density is PADDING-ONLY (PSN-99 B4): same font-size, line-height, and paragraph spacing as
+   comfortable — only the bubble padding, inter-message gap, and radius tighten. The font-scale slider
+   composes unchanged because the shared .teams-message-body base below owns the size for both densities. */
 [data-density="compact"] .teams-message-body {
   padding: 0.3rem 0.6rem;
-  /* Base size for compact density; PSN-99 font-scale var multiplies against this base so density
-     and scale compose correctly. Another workstream will make density padding-only; the var works
-     regardless because it multiplies against whatever base font-size density sets (or inherits). */
-  font-size: calc(0.8125rem * var(--chat-font-scale, 1));
-  line-height: 1.2;
   /* Compact bubbles read tighter with a smaller radius (t169). */
   --bubble-r: 0.7rem;
 }
@@ -404,6 +402,15 @@
 }
 .teams-message-body[data-side="self"][data-pos="last"] {
   border-top-right-radius: var(--bubble-tight);
+}
+
+/* Self bubble in dark mode (PSN-99 B6): drop the glary solid coral fill for a near-transparent fill
+   with a coral border + foreground text — easier on the eyes at night. Light mode keeps the solid
+   coral fill (the Tailwind bg-primary/text-primary-foreground utilities). */
+.dark .teams-self-bubble {
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+  color: var(--foreground);
+  border: 1px solid color-mix(in oklab, var(--primary) 70%, transparent);
 }
 
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
@@ -484,7 +491,13 @@
 .teams-message-body pre {
   margin: 0.35em 0;
   padding: 0.5em 0.6em;
+  /* Scroll internally so a wide code block never widens the bubble past its max-width (B2). max-width
+     bounds it to the bubble; the inner code stays on one line and scrolls within. */
+  max-width: 100%;
   overflow-x: auto;
+}
+.teams-message-body pre code {
+  white-space: pre;
 }
 .teams-message-body pre code {
   padding: 0;
