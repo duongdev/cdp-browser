@@ -8,17 +8,27 @@
 
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
-import type { ChatMessage, ChatService } from "./contract.ts"
+import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
 import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
 import * as store from "./store.ts"
+import { toConversationInput, toMessageInput } from "./upsert-map.ts"
 
 type Db = BetterSqlite3.Database
+
+/** The backfill accessor a service's engine exposes to the routes (WS-D wires the real one; absent
+ *  → the routes report an idle status and reject a start). */
+export interface BackfillAccessor {
+  startBackfill(opts: { days?: number }): BackfillStatus
+  getBackfillStatus(): BackfillStatus
+}
 
 export interface RoutesDeps {
   db: Db
   /** service id → provider. `service` defaults to "teams". */
   providers: Map<ChatService, ChatProvider>
+  /** service id → backfill engine. Optional so tests/boot without an engine still serve the route. */
+  backfills?: Map<ChatService, BackfillAccessor>
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -29,46 +39,6 @@ function pick(deps: RoutesDeps, raw: unknown): { service: ChatService; provider:
   const provider = deps.providers.get(service)
   if (!provider) throw new ProviderError("unknown_service", 400)
   return { service, provider }
-}
-
-/** A ChatMessage → the store's MessageInput (keeps the whole message as `raw`, decision 10). */
-function toMessageInput(m: ChatMessage): store.MessageInput {
-  return {
-    id: m.id,
-    senderId: m.senderId ?? null,
-    senderName: m.senderName ?? null,
-    ts: m.ts,
-    body: m.body,
-    raw: m,
-    deleted: m.deleted,
-    edited: m.edited,
-    mentionsMe: m.mentionsMe,
-  }
-}
-
-/** A ChatConversation → the store's ConversationInput. */
-function toConversationInput(c: {
-  id: string
-  kind?: string
-  topic?: string | null
-  lastMessageId?: string | null
-  lastMessageVersion?: number
-  lastMessageTs?: number | null
-  lastMessagePreview?: string
-  lastMessageFromMe?: boolean
-  readTs?: number
-}): store.ConversationInput {
-  return {
-    id: c.id,
-    kind: c.kind,
-    topic: c.topic,
-    lastMessageId: c.lastMessageId,
-    lastMessageVersion: c.lastMessageVersion,
-    lastMessageTs: c.lastMessageTs,
-    lastMessagePreview: c.lastMessagePreview,
-    lastMessageFromMe: c.lastMessageFromMe,
-    readHorizonTs: c.readTs,
-  }
 }
 
 export function createRoutes(deps: RoutesDeps) {
@@ -259,17 +229,21 @@ export function createRoutes(deps: RoutesDeps) {
     return c.json({ ok: true })
   })
 
-  // ---- backfill (WS-D fills the engine; stub the status for now) ----------
+  // ---- backfill (WS-D engine; idle status when no engine is wired) --------
 
   app.get("/backfill", (c) => {
     const service = c.req.query("service") || DEFAULT_SERVICE
-    return c.json(stubBackfill(service))
+    const engine = deps.backfills?.get(service)
+    return c.json(engine ? engine.getBackfillStatus() : idleBackfill(service))
   })
 
   app.post("/backfill", async (c) => {
     const b = await readBody(c)
-    // The run loop lands in WS-D; accept the request shape so the FE contract is stable.
-    return c.json({ ok: true, ...stubBackfill(b.service || DEFAULT_SERVICE) })
+    const service = b.service || DEFAULT_SERVICE
+    const engine = deps.backfills?.get(service)
+    if (!engine) return c.json({ ok: true, ...idleBackfill(service) })
+    if (b.action === "start") return c.json({ ok: true, ...engine.startBackfill({ days: b.days }) })
+    return c.json({ ok: true, ...engine.getBackfillStatus() })
   })
 
   return app
@@ -313,7 +287,7 @@ function persistSenders(db: Db, service: string, messages: ChatMessage[]): void 
     )
 }
 
-function stubBackfill(service: string) {
+function idleBackfill(service: string) {
   return {
     service,
     running: false,

@@ -385,6 +385,112 @@ function parseRaw(raw: string | null): unknown {
   }
 }
 
+// ---- sweep / backfill helpers ---------------------------------------------
+// Prior-state readers the sweep (WS-D) diffs a fresh fetch against, plus the sync cursors + conv id
+// list the backfill engine resumes from. Keep them minimal — the sweep planner is pure.
+
+/** The prior conversation view (version + effective readTs + sticky) keyed by id — what the sweep
+ *  planner diffs a fresh page against. Reuses `listConversations` so readTs math stays in one place. */
+export function priorConversations(
+  db: Db,
+  service: string,
+): Map<string, { lastMessageVersion: number; readTs: number; unreadSticky: boolean }> {
+  const map = new Map<
+    string,
+    { lastMessageVersion: number; readTs: number; unreadSticky: boolean }
+  >()
+  for (const c of listConversations(db, service)) {
+    map.set(c.id, {
+      lastMessageVersion: c.lastMessageVersion,
+      readTs: c.readTs,
+      unreadSticky: c.unreadSticky,
+    })
+  }
+  return map
+}
+
+/** Prior stored messages for a conversation keyed by id, carrying only the fields the sweep planner
+ *  compares (body/edited/deleted + a reaction signature parsed out of `raw`). Bounded to the newest
+ *  `limit` (a sweep only re-fetches the newest page). */
+export function priorMessages(
+  db: Db,
+  service: string,
+  convId: string,
+  limit = 60,
+): Map<string, { body: string; edited: boolean; deleted: boolean; reactionSig: string }> {
+  const map = new Map<
+    string,
+    { body: string; edited: boolean; deleted: boolean; reactionSig: string }
+  >()
+  for (const m of listMessages(db, service, convId, { limit })) {
+    const reactions = (m.raw as { reactions?: { key: string; count: number; mine?: boolean }[] })
+      ?.reactions
+    const reactionSig =
+      Array.isArray(reactions) && reactions.length
+        ? reactions
+            .map((r) => `${r.key}:${r.count}:${r.mine ? 1 : 0}`)
+            .sort()
+            .join("|")
+        : ""
+    map.set(m.id, { body: m.body, edited: m.edited, deleted: m.deleted, reactionSig })
+  }
+  return map
+}
+
+/** Every conversation id for a service, newest-first — the backfill engine's work list. */
+export function listConversationIds(db: Db, service: string): string[] {
+  const rows = db
+    .prepare(
+      "SELECT id FROM conversations WHERE service = ? ORDER BY last_message_ts DESC NULLS LAST, id",
+    )
+    .all(service) as { id: string }[]
+  return rows.map((r) => r.id)
+}
+
+/** The sync cursors for a conversation — how far paging has reached. `oldestSyncedTs` is the backfill
+ *  resume point (paging continues from below it). Null when the conversation has no synced messages. */
+export function getSyncCursors(
+  db: Db,
+  service: string,
+  convId: string,
+): { newestSyncedTs: number | null; oldestSyncedTs: number | null } | null {
+  const r = db
+    .prepare(
+      "SELECT newest_synced_ts, oldest_synced_ts FROM conversations WHERE service = ? AND id = ?",
+    )
+    .get(service, convId) as
+    | { newest_synced_ts: number | null; oldest_synced_ts: number | null }
+    | undefined
+  if (!r) return null
+  return { newestSyncedTs: r.newest_synced_ts, oldestSyncedTs: r.oldest_synced_ts }
+}
+
+/** Persist a per-conversation backfill cursor so a restart resumes mid-run instead of re-paging from
+ *  the top. Stored in `settings` keyed `backfill.cursor.<convId>` (opaque provider cursor string).
+ *  `null` clears it (conversation finished). */
+export function setBackfillCursor(
+  db: Db,
+  service: string,
+  convId: string,
+  cursor: string | null,
+): void {
+  const key = `backfill.cursor.${convId}`
+  if (cursor == null) {
+    db.prepare("DELETE FROM settings WHERE service = ? AND key = ?").run(service, key)
+    return
+  }
+  db.prepare(
+    "INSERT INTO settings (service, key, value) VALUES (?, ?, ?) ON CONFLICT(service, key) DO UPDATE SET value = excluded.value",
+  ).run(service, key, cursor)
+}
+
+export function getBackfillCursor(db: Db, service: string, convId: string): string | null {
+  const r = db
+    .prepare("SELECT value FROM settings WHERE service = ? AND key = ?")
+    .get(service, `backfill.cursor.${convId}`) as { value: string } | undefined
+  return r?.value ?? null
+}
+
 // ---- users (display-name cache) -------------------------------------------
 
 export function upsertUsers(
