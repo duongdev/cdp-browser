@@ -333,3 +333,24 @@ export async function markReadLocal(
     // best-effort: the sweep reconciles
   }
 }
+
+// ---- backfill (PSN-93 WS-H) ------------------------------------------------
+
+import type { BackfillStatus } from "../../../apps/chat-server/src/contract"
+
+/** Start a backfill run for the last `days` days. No-op while one is already running (the server
+ *  ignores a second start). Throws ChatApiError on a hard failure (e.g. no keeper tab). */
+export async function startBackfill(days: number): Promise<void> {
+  await post("backfill", { action: "start", days })
+}
+
+/** Poll the current backfill status. Returns null on network failure (caller keeps prior state). */
+export async function getBackfillStatus(): Promise<BackfillStatus | null> {
+  try {
+    const res = await fetch(`/api/chat/backfill?service=${SERVICE}`)
+    if (!res.ok) return null
+    return (await res.json()) as BackfillStatus
+  } catch {
+    return null
+  }
+}
