@@ -52,14 +52,23 @@ export function PromptDialog() {
     }
   }, [])
 
-  // Select-all on open so the user can type to replace without backspacing.
+  // Focus + select-all on open. A single rAF loses to the closing context menu / palette, whose
+  // Radix focus-restore lands AFTER the dialog opens and yanks focus back — retry until it sticks.
   useEffect(() => {
-    if (state) {
-      // rAF: DialogContent animates in, input may not be focusable synchronously.
-      requestAnimationFrame(() => {
-        inputRef.current?.select()
-      })
+    if (!state) return
+    const start = performance.now()
+    let raf = 0
+    const tick = () => {
+      const el = inputRef.current
+      if (el && document.activeElement !== el) {
+        el.focus()
+        el.select()
+      }
+      if (document.activeElement !== inputRef.current && performance.now() - start < 400)
+        raf = requestAnimationFrame(tick)
     }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
   }, [state])
 
   const confirm = () => {

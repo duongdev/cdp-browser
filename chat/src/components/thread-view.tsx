@@ -429,7 +429,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const jumpToUnread = useCallback(() => {
     const el = scrollRef.current
     const sep = el?.querySelector<HTMLElement>("[data-new-sep]")
-    if (sep) sep.scrollIntoView({ block: "start", behavior: "smooth" })
+    if (!el || !sep) return
+    sep.scrollIntoView({ block: "start", behavior: "smooth" })
+    // Images without reserved boxes grow as they load and shove the separator off-target.
+    // Re-seat it on every in-pane media load for a short settle window.
+    const reseat = (e: Event) => {
+      const t = e.target as HTMLElement | null
+      if (t?.tagName === "IMG") sep.scrollIntoView({ block: "start" })
+    }
+    el.addEventListener("load", reseat, true)
+    setTimeout(() => el.removeEventListener("load", reseat, true), 3000)
   }, [])
 
   // Restore scroll when this pane becomes visible again (t132). display:none resets the container's
