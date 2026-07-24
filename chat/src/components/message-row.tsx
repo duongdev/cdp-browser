@@ -400,7 +400,7 @@ function ChatMessageRow({
                 onPickerOpenChange={setPickerOpen}
                 onPickerPick={pickerReact}
                 pickerOpen={pickerOpen}
-                side={self ? "end" : "start"}
+                side={self ? "start" : "end"}
               />
             )}
             {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
@@ -453,25 +453,23 @@ function ChatMessageRow({
                     }
               }
             />
-            {/* Link copy button (G): absolutely positioned at the hovered link's bottom-right corner.
-                Uses a fixed-positioned inner div so it sits outside the bubble overflow boundary. */}
+            {/* Link copy button (G, PSN-99 fix): FIXED at the hovered link's own end (from its
+                viewport rect) — not the bubble corner — so it sits right next to the link and the
+                cursor can travel to it. Clamped to the viewport's right edge. */}
             {!coarse && hoveredLink && (
               <button
-                className="link-copy-btn absolute z-10 flex size-6 items-center justify-center rounded-md border border-border bg-popover text-muted-foreground shadow-sm transition-colors hover:bg-accent"
+                className="link-copy-btn fixed z-30 flex size-6 items-center justify-center rounded-md border border-border bg-popover text-muted-foreground shadow-sm transition-colors hover:bg-accent"
                 onClick={(e) => {
                   e.preventDefault()
                   copyLink(hoveredLink.href)
-                }}
-                onMouseEnter={() => {
-                  /* keep hoveredLink alive while the cursor moves to this button */
                 }}
                 onMouseLeave={(e) => {
                   const related = e.relatedTarget as HTMLElement | null
                   if (!related?.closest?.("[data-side]")) setHoveredLink(null)
                 }}
                 style={{
-                  bottom: 4,
-                  right: 4,
+                  top: Math.max(4, hoveredLink.rect.top - 2),
+                  left: Math.min(hoveredLink.rect.right + 4, window.innerWidth - 28),
                 }}
                 title="Copy link"
                 type="button"
@@ -680,7 +678,7 @@ function QuickReact({
     <div
       className={cn(
         "absolute -top-4 z-20 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover/bubble:opacity-100",
-        side === "end" ? "right-1" : "left-1",
+        side === "end" ? "-right-1" : "-left-1",
       )}
     >
       {QUICK_REACTIONS.map((r) => (

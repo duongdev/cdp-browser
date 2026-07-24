@@ -408,9 +408,11 @@
    with a coral border + foreground text — easier on the eyes at night. Light mode keeps the solid
    coral fill (the Tailwind bg-primary/text-primary-foreground utilities). */
 .dark .teams-self-bubble {
-  background: color-mix(in oklab, var(--primary) 12%, transparent);
+  /* Soft muted pill (PSN-99 refine): a low-glare coral-tinted fill with only a faint border — the
+     bright 70% border read as "light & bold". Still clearly "yours" without straining the eyes. */
+  background: color-mix(in oklab, var(--primary) 16%, transparent);
   color: var(--foreground);
-  border: 1px solid color-mix(in oklab, var(--primary) 70%, transparent);
+  border: 1px solid color-mix(in oklab, var(--primary) 28%, transparent);
 }
 
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use

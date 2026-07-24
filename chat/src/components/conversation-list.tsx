@@ -520,6 +520,7 @@ export function ConversationList({
           onPatchPrefs={onPatchPrefs}
           onToggle={onToggleFolder}
           section={section}
+          stickyTop={showFilterBar ? "top-8" : "top-0"}
         >
           {section.conversations.map(renderRow)}
         </FolderGroup>
@@ -601,6 +602,7 @@ function FolderGroup({
   onToggle,
   onPatchPrefs: _onPatchPrefs,
   dragging,
+  stickyTop,
   children,
 }: {
   section: FolderSection
@@ -608,6 +610,9 @@ function FolderGroup({
   onToggle?: (folder: string) => void
   onPatchPrefs?: (convId: string, patch: ConvPrefsPatch) => void
   dragging?: string | null
+  /** Where the sticky header parks: below the in-list filter bar (Electron) or at the very top
+   *  when the filters are hoisted to the app bar (web/PWA) — PSN-99 sticky-folder fix. */
+  stickyTop: string
   children: React.ReactNode
 }) {
   const folderId = section.folder ?? "__null__"
@@ -658,12 +663,14 @@ function FolderGroup({
           : setDropRef
       }
     >
-      {/* Sticky below the filter bar (C2): top-8 = 2rem ≈ the filter bar's 32px height.
-          Solid bg so conversation rows scroll under the header without bleed-through. */}
+      {/* Sticky header. Parks below the in-list filter bar (Electron, top-8 ≈ 32px) or at the very
+          top when filters are hoisted to the app bar (web, top-0) — PSN-99. Solid bg so rows scroll
+          under it without bleed-through. */}
       <button
         aria-expanded={!collapsed}
         className={cn(
-          "sticky top-8 z-[9] flex w-full items-center gap-1.5 rounded-md bg-background px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
+          "sticky z-[9] flex w-full items-center gap-1.5 rounded-md bg-background px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
+          stickyTop,
           sortable.isDragging && "opacity-40",
         )}
         onClick={() => onToggle?.(section.folder as string)}

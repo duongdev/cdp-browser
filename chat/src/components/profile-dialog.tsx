@@ -10,7 +10,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { ChatApiError, fetchProfile } from "../lib/chat-client"
+import { avatarUrl, ChatApiError, fetchProfile } from "../lib/chat-client"
 import type { TeamsProfile } from "../lib/teams-client"
 import { ImageLightbox } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
@@ -59,9 +59,7 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
 
   const profile = state.s === "ready" ? state.profile : null
   const name = profile?.displayName || target?.name || ""
-  const lightboxSrc = target?.userId
-    ? `/api/teams/avatar?userId=${encodeURIComponent(target.userId)}&size=648x648`
-    : null
+  const lightboxSrc = target?.userId ? avatarUrl(target.userId, "648x648") : null
 
   return (
     <>

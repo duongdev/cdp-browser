@@ -1,13 +1,27 @@
 import { describe, expect, it } from "vitest"
-import { avatarGradient, avatarInitials } from "./avatar-style"
+import { avatarGradient, avatarInitials, realName } from "./avatar-style"
+
+describe("realName", () => {
+  it("keeps only the part before ' - ' (person, not org)", () => {
+    expect(realName("Forbes Elyser - Group Office [C]")).toBe("Forbes Elyser")
+    expect(realName("Bhanu - Group Office")).toBe("Bhanu")
+  })
+  it("strips [tags] and (you)", () => {
+    expect(realName("Dustin Do - Group Office [C] (You)")).toBe("Dustin Do")
+    expect(realName("[TG] GenAI knowledge sharing session")).toBe("GenAI knowledge sharing session")
+  })
+  it("falls back to the cleaned full string when stripping empties it", () => {
+    expect(realName("[TG]")).toBe("[TG]")
+  })
+})
 
 describe("avatarInitials", () => {
-  it("returns first+last initials for 'Firstname Lastname'", () => {
-    expect(avatarInitials("Alice Smith")).toBe("AS")
-  })
-
-  it("uses first and last word for 3+ word names", () => {
-    expect(avatarInitials("Mary Jane Watson")).toBe("MW")
+  it("takes the first two words of the real name", () => {
+    expect(avatarInitials("Forbes Elyser - Group Office [C]")).toBe("FE")
+    expect(avatarInitials("Ethan Nguyen - Group Office [C]")).toBe("EN")
+    expect(avatarInitials("Dustin Do - Group Office [C] (You)")).toBe("DD")
+    expect(avatarInitials("[TG] GenAI knowledge sharing session")).toBe("GK")
+    expect(avatarInitials("Trainer Lego Architecture, Tech Stack")).toBe("TL")
   })
 
   it("returns first 2 letters for a single word", () => {
@@ -31,10 +45,8 @@ describe("avatarInitials", () => {
     expect(avatarInitials("alice smith")).toBe("AS")
   })
 
-  it("handles emoji/non-latin gracefully (returns first code point)", () => {
-    const result = avatarInitials("😀 World")
-    // First word starts with emoji, last word starts with 'W'
-    expect(result.length).toBeGreaterThan(0)
+  it("handles emoji/non-latin gracefully", () => {
+    expect(avatarInitials("😀 World").length).toBeGreaterThan(0)
   })
 })
 

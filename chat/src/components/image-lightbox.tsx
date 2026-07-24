@@ -185,7 +185,7 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
   return (
     <motion.div
       animate={{ opacity: 1 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"
       exit={{ opacity: 0 }}
       initial={{ opacity: 0 }}
       transition={{ duration: reduce ? 0.1 : 0.16 }}
