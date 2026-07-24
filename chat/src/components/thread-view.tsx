@@ -21,7 +21,18 @@ import {
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
-import { ChatApiError, fetchHistory } from "../lib/chat-client"
+import {
+  ChatApiError,
+  deleteMessage,
+  editMessage,
+  fetchHistory,
+  markRead,
+  react,
+  sendReply,
+  uploadFile,
+  uploadImage,
+  uploadImages,
+} from "../lib/chat-client"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { conversationLabel } from "../lib/conversation-view"
 import { FULL_NAME, formatConversationLabel, formatName, type NamePref } from "../lib/display-name"
@@ -35,21 +46,7 @@ import {
 } from "../lib/message-merge"
 import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
-import {
-  deleteMessage,
-  editMessage,
-  type MentionRef,
-  markRead,
-  type ReplyRef,
-  react,
-  sendReply,
-  TeamsApiError,
-  type TeamsConversation,
-  type TeamsMessage,
-  uploadFile,
-  uploadImage,
-  uploadImages,
-} from "../lib/teams-client"
+import type { MentionRef, ReplyRef, TeamsConversation, TeamsMessage } from "../lib/teams-client"
 import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
 import { shouldShowUnreadJump } from "../lib/unread-jump"
@@ -115,7 +112,7 @@ const pendingExt = (name: string): string => {
 }
 
 const errorMessage = (e: unknown): string => {
-  if (e instanceof ChatApiError || e instanceof TeamsApiError) {
+  if (e instanceof ChatApiError) {
     if (e.code === "invalid_auth")
       return "Teams sign-in expired — it refreshes when the Teams tab reloads. Retry in a moment."
     if (e.code === "rate_limited") return "Teams is rate-limiting. Try again in a moment."
@@ -683,7 +680,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                   if (firstId === null) firstId = r.msgId
                 } catch (e) {
                   const name = imageFiles[i].name || "image"
-                  const msg = e instanceof TeamsApiError ? e.message : "Send failed"
+                  const msg = e instanceof ChatApiError ? e.message : "Send failed"
                   // Report per-file but keep going (the spec: remaining files keep sending).
                   console.warn(`[chat] upload failed for ${name}: ${msg}`)
                 }
@@ -698,12 +695,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               if (firstId === null) firstId = r.msgId
             } catch (e) {
               const name = file.name || "file"
-              const msg = e instanceof TeamsApiError ? e.message : "Send failed"
+              const msg = e instanceof ChatApiError ? e.message : "Send failed"
               console.warn(`[chat] upload failed for ${name}: ${msg}`)
             }
           }
 
-          if (firstId === null) throw new TeamsApiError("all_failed", 0)
+          if (firstId === null) throw new ChatApiError("all_failed", 0)
           return firstId
         }
         op = buildChain()
@@ -722,7 +719,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         // Write-through mark-read (best-effort). For Teams, the message id IS its arrival ts.
         markRead(convId, id, id)
       }).catch((e) => {
-        const code = e instanceof TeamsApiError ? e.code : "network_error"
+        const code = e instanceof ChatApiError ? e.code : "network_error"
         setState((s) =>
           s.status === "ready"
             ? { status: "ready", messages: markSendFailed(s.messages, localId, code) }

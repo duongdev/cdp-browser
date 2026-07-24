@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { fetchPrefs, setFolderOrder, setPrefs } from "./chat-client"
 import type { ConvPrefs } from "./conversation-view"
 import { EMPTY_PREFS } from "./conversation-view"
 import { prefsSignature, shouldApplyPoll } from "./prefs-sync"
-import { type ConvPrefsDto, fetchPrefs, setFolderOrder, setPrefs } from "./teams-client"
+import type { ConvPrefsDto } from "./teams-client"
 
 // Reuse the / build's device identity so folder-collapse state is per-device (like chat settings,
 // t154). Prefs THEMSELVES are shared server-side; only the collapse view-state is device-local.
