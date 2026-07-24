@@ -24,7 +24,8 @@ import { migrate } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
 import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
 
-const dbPath = process.env.CHAT_DB || "chat.db"
+const dbPath =
+  process.env.CHAT_DB_PATH || (process.env.DATA_DIR ? `${process.env.DATA_DIR}/chat.db` : "chat.db")
 const db = migrate(new Database(dbPath))
 
 // VAPID keys for Teams web push (WS-G, decision 8). These MUST match the keys server.mjs used for

@@ -23,6 +23,15 @@ services:
       # E2E_SALT (base64) keeps the key stable across restarts; omit for a per-boot salt.
       E2E_PASSPHRASE: ${E2E_PASSPHRASE:-}
       E2E_SALT: ${E2E_SALT:-}
+      # BFF (chat-server) shared secret — the /internal/teams/* guard checks this header.
+      # REQUIRED in prod: set a strong random value (e.g. openssl rand -hex 32).
+      CHAT_INTERNAL_SECRET: ${CHAT_INTERNAL_SECRET:-dev-internal-secret}
+      # VAPID keys for Teams web push. Use the SAME keys server.mjs Teams push used so
+      # already-installed PWA subscriptions survive the migration (don't regenerate).
+      # Generate once: node -e "const {generateVAPIDKeys: g}=require('web-push'); console.log(g())"
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     volumes:
       - cdp-web-data:/data
     # Bridge networking NATs out to the host's LAN, so a LAN CDP_HOST (e.g.
