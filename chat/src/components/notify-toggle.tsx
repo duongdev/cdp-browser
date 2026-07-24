@@ -2,11 +2,13 @@ import { Notification03Icon, NotificationOff03Icon } from "@hugeicons/core-free-
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import {
   ensureChatPushSubscription,
   isChatPushSubscribed,
   removeChatPushSubscription,
 } from "../lib/chat-push"
+import { chatShell } from "../lib/chat-shell"
 
 // Web Push needs a standalone PWA (installed to home screen) — Safari-tab mode can't subscribe.
 // Mirrors the main app's isStandalone gate; the display-mode query covers Android/desktop PWAs,
@@ -24,9 +26,26 @@ function pushCapable(): boolean {
   return !!standalone
 }
 
-/** Header bell that enables/disables Web Push for this device (t147). Hidden entirely when the
- *  environment can't do push (no APIs or a browser tab, not an installed PWA). Reflects the live
- *  subscription state; enabling requests notification permission first. */
+/** Electron shell: a Switch that persists the notifications-enabled flag via the settings system.
+ *  Accepts the current value + an onChange to stay in sync with useChatSettings. */
+export function ElectronNotifyToggle({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <Switch
+      aria-label={enabled ? "Disable notifications" : "Enable notifications"}
+      checked={enabled}
+      onCheckedChange={onChange}
+    />
+  )
+}
+
+/** Web Push: header bell that enables/disables Web Push for this device (t147). Hidden entirely when
+ *  the environment can't do push (no APIs or a browser tab, not an installed PWA). */
 export function NotifyToggle() {
   const [capable] = useState(pushCapable)
   const [subscribed, setSubscribed] = useState(false)
@@ -77,4 +96,19 @@ export function NotifyToggle() {
       />
     </Button>
   )
+}
+
+/** Unified notifications row control: Switch on Electron, web-push bell on web.
+ *  Returns null when neither is applicable (web + not push-capable). */
+export function NotifyControl({
+  electronEnabled,
+  onElectronChange,
+}: {
+  electronEnabled: boolean
+  onElectronChange: (v: boolean) => void
+}) {
+  if (chatShell()) {
+    return <ElectronNotifyToggle enabled={electronEnabled} onChange={onElectronChange} />
+  }
+  return <NotifyToggle />
 }

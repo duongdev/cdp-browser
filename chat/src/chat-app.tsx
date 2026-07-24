@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
 import { ConversationList } from "./components/conversation-list"
 import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
+import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
@@ -174,6 +175,7 @@ export function ChatApp() {
   // `openConvRef` lets a notification click jump to the conversation (set after openConversationById).
   const seenTsRef = useRef<Map<string, number>>(new Map())
   const openConvRef = useRef<(id: string) => void>(() => {})
+  const notifEnabledRef = useRef(true)
   const onConversations = useCallback((list: TeamsConversation[]) => {
     conversationsRef.current = list
     setConversations(list)
@@ -183,8 +185,10 @@ export function ChatApp() {
     if (arrived.length > 0 && !document.hasFocus()) {
       for (const c of arrived) {
         if (shell) {
-          // Electron shell: fire through the native main process (CDP-Browser mechanism).
-          shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+          if (notifEnabledRef.current) {
+            // Electron shell: fire through the native main process (CDP-Browser mechanism).
+            shell.notify({ title: conversationLabel(c), body: previewLine(c), convId: c.id })
+          }
         } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
           const n = new Notification(conversationLabel(c), { body: previewLine(c), tag: c.id })
           n.onclick = () => {
@@ -196,7 +200,10 @@ export function ChatApp() {
     }
     // Dock badge in the Electron shell mirrors the unread count (the web PWA drives its own
     // badge via the service worker's setAppBadge).
-    if (shell) shell.setBadge(list.filter((c) => isUnread(c)).length)
+    if (shell) {
+      const badge = notifEnabledRef.current ? list.filter((c) => isUnread(c)).length : 0
+      shell.setBadge(badge)
+    }
     // Late-arriving list metadata (t150 fix): a deep-linked pane mounts with a stub conversation
     // (id only). When the list loads/merges, swap any tracked entry for the real object so the
     // thread header picks up the resolved title. Only ids already tracked are stored.
@@ -351,6 +358,7 @@ export function ChatApp() {
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { settings, update: updateSettings } = useChatSettings()
+  notifEnabledRef.current = settings.notificationsEnabled
   // Local conversation prefs (t156): labels/folder/mute (shared server-side) + per-device folder
   // collapse state. Applied over the list rows inside ConversationList (poll-proof, like read overrides).
   const { prefs, patch: patchPrefs, collapsed, toggleFolderCollapsed } = useConvPrefs()
@@ -458,14 +466,14 @@ export function ChatApp() {
         id: "conv-next",
         label: "Next conversation",
         group: "Navigation",
-        keys: "⌥↓",
+        keys: "⌘]",
         run: () => switchConversation(1),
       },
       {
         id: "conv-prev",
         label: "Previous conversation",
         group: "Navigation",
-        keys: "⌥↑",
+        keys: "⌘[",
         run: () => switchConversation(-1),
       },
       {
@@ -479,7 +487,7 @@ export function ChatApp() {
         id: "focus-input",
         label: "Focus message input",
         group: "Message",
-        keys: "i",
+        keys: "i  /",
         when: (c) => c.view === "thread",
         run: () => activeThreadRef.current?.focusComposer(),
       },
@@ -542,10 +550,15 @@ export function ChatApp() {
         label: "Rename chat…",
         group: "Conversation",
         when: (c) => !!c.focusedConversationId,
-        run: () => {
+        run: async () => {
           const id = ctx.focusedConversationId
           if (!id) return
-          const name = window.prompt("Chat name (blank to reset)", prefs[id]?.customTitle ?? "")
+          const name = await prompt({
+            title: "Rename chat",
+            description: "Leave blank to reset to the original name.",
+            initialValue: prefs[id]?.customTitle ?? "",
+            placeholder: "Chat name",
+          })
           if (name !== null) patchPrefs(id, { customTitle: name.trim() || null })
         },
       },
@@ -556,15 +569,18 @@ export function ChatApp() {
         label: "Move to folder…",
         group: "Conversation",
         when: (c) => !!c.focusedConversationId,
-        run: () => {
+        run: async () => {
           const id = ctx.focusedConversationId
           if (!id) return
           const existing = knownFolders(prefs)
-          const hint = existing.length ? ` (${existing.join(", ")})` : ""
-          const name = window.prompt(
-            `Move to folder${hint} — blank to remove`,
-            prefs[id]?.folder ?? "",
-          )
+          const name = await prompt({
+            title: "Move to folder",
+            description: existing.length
+              ? `Existing folders: ${existing.join(", ")}. Leave blank to remove from folder.`
+              : "Leave blank to remove from folder.",
+            initialValue: prefs[id]?.folder ?? "",
+            placeholder: "Folder name",
+          })
           if (name === null) return
           patchPrefs(id, { folder: name.trim() || null })
         },
@@ -796,6 +812,7 @@ export function ChatApp() {
         onMessage={messageFromProfile}
         target={profileTarget}
       />
+      <PromptDialog />
       <SettingsSheet
         onOpenChange={setSettingsOpen}
         onUpdate={updateSettings}

@@ -35,8 +35,8 @@ export type KeyIntent =
   | { type: "toggle-read" } // u — toggle read/unread on the focused/open conversation
   | { type: "focus-composer" } // i — focus the message input (thread view)
   | { type: "settings" } // ⌘, — open settings
-  | { type: "conv-next" } // ⌥↓ — switch to the next conversation
-  | { type: "conv-prev" } // ⌥↑ — switch to the previous conversation
+  | { type: "conv-next" } // ⌘] — switch to the next conversation
+  | { type: "conv-prev" } // ⌘[ — switch to the previous conversation
   | { type: "conv-index"; index: number } // ⌘1..⌘9 — open the Nth conversation
 
 /** True when the event target is a text-editing surface (input/textarea/select/contenteditable).
@@ -72,11 +72,11 @@ export function routeKey(e: KeyLike, ctx: ChatContext, pendingG: boolean): KeyIn
   // ⌘1..⌘9 — open the Nth conversation. Global; a digit chord is never a text op.
   if ((e.metaKey || e.ctrlKey) && !e.altKey && /^[1-9]$/.test(e.key))
     return { type: "conv-index", index: Number(e.key) }
-  // ⌥↑ / ⌥↓ — previous/next conversation (Slack-style). Global, EXCEPT while the composer is
-  // focused, where ⌥↑/↓ is a text-navigation key we must not hijack.
-  if (e.altKey && !e.metaKey && !e.ctrlKey && !ctx.composerFocused) {
-    if (e.key === "ArrowDown") return { type: "conv-next" }
-    if (e.key === "ArrowUp") return { type: "conv-prev" }
+  // ⌘[ / ⌘] — previous/next conversation. Global, including while the composer is focused
+  // (opt+arrows are reserved for text navigation in text fields; these chords are not).
+  if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+    if (e.key === "[") return { type: "conv-prev" }
+    if (e.key === "]") return { type: "conv-next" }
   }
 
   // Everything below is a bare-key shortcut: suppressed in a text field / when a chord modifier is
@@ -114,6 +114,7 @@ export function routeKey(e: KeyLike, ctx: ChatContext, pendingG: boolean): KeyIn
       // Toggle read/unread on the focused (list) or open (thread) conversation.
       return ctx.focusedConversationId ? { type: "toggle-read" } : null
     case "i":
+    case "/":
       // Focus the message input — only meaningful with a thread open.
       return ctx.view === "thread" ? { type: "focus-composer" } : null
     default:

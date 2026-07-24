@@ -1,10 +1,10 @@
 import {
+  ArrowUp01Icon,
   Attachment01Icon,
   Cancel01Icon,
   File01Icon,
   LeftToRightListBulletIcon,
   LeftToRightListNumberIcon,
-  SentIcon,
   TextBoldIcon,
   TextItalicIcon,
   TextStrikethroughIcon,
@@ -249,7 +249,10 @@ export function Composer({
                 <button
                   aria-label="Remove quoted message"
                   className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
-                  onClick={q.onCancel}
+                  onClick={() => {
+                    q.onCancel()
+                    editorRef.current?.focus()
+                  }}
                   type="button"
                 >
                   <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
@@ -343,6 +346,7 @@ export function Composer({
             } else if (e.key === "Escape" && quotes && quotes.length > 0) {
               e.preventDefault()
               onEscape?.()
+              editorRef.current?.focus()
             }
           }}
           onPaste={(e) => {
@@ -406,7 +410,7 @@ export function Composer({
             onClick={doSend}
             size="icon-sm"
           >
-            <HugeiconsIcon className="size-4" icon={SentIcon} />
+            <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
           </Button>
         </div>
       </div>

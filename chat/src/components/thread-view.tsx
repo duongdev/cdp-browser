@@ -2,6 +2,7 @@ import {
   Alert02Icon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
+  ArrowUp01Icon,
   InboxIcon,
   ReloadIcon,
 } from "@hugeicons/core-free-icons"
@@ -49,6 +50,7 @@ import {
 } from "../lib/teams-client"
 import { selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
+import { shouldShowUnreadJump } from "../lib/unread-jump"
 import { BodyNameTooltip } from "./body-name-tooltip"
 import { Composer, type ComposerHandle } from "./composer"
 import { MessageRow, type RowCommand } from "./message-row"
@@ -387,6 +389,10 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const [floatingSep, setFloatingSep] = useState<string | null>(null)
   const floatingHideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
+  // Unread-jump FAB state (PSN-96 C): declared early so they're stable refs for the effect below.
+  const [sepAboveViewport, setSepAboveViewport] = useState(false)
+  const [sepSeen, setSepSeen] = useState(false)
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
@@ -411,6 +417,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const jumpToBottom = useCallback(() => {
     const el = scrollRef.current
     if (el) el.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
+
+  const jumpToUnread = useCallback(() => {
+    const el = scrollRef.current
+    const sep = el?.querySelector<HTMLElement>("[data-new-sep]")
+    if (sep) sep.scrollIntoView({ block: "start", behavior: "smooth" })
   }, [])
 
   // Restore scroll when this pane becomes visible again (t132). display:none resets the container's
@@ -772,6 +784,43 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [messages, lastReadTs],
   )
 
+  // Unread-jump FAB (PSN-96 C): derived from threadItems; observer + reset below.
+  const hasSeparator = threadItems.some((it) => it.type === "new")
+  const showUnreadJump = shouldShowUnreadJump({
+    hasSeparator,
+    separatorSeen: sepSeen,
+    separatorAboveViewport: sepAboveViewport,
+  })
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only on convId / fresh load
+  useEffect(() => {
+    setSepSeen(false)
+    setSepAboveViewport(false)
+  }, [convId, state.status])
+  // Tracks the separator's position via IntersectionObserver on the scroll root. When it leaves the
+  // viewport (not intersecting) it is above the bottom-pinned area; first intersection latches "seen".
+  useEffect(() => {
+    if (!hasSeparator) return
+    const root = scrollRef.current
+    if (!root) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        setSepAboveViewport(!entry.isIntersecting)
+        if (entry.isIntersecting) setSepSeen(true)
+      },
+      { root },
+    )
+    const raf = requestAnimationFrame(() => {
+      const sep = root.querySelector<HTMLElement>("[data-new-sep]")
+      if (sep) io.observe(sep)
+    })
+    return () => {
+      cancelAnimationFrame(raf)
+      io.disconnect()
+    }
+  }, [hasSeparator, threadItems])
+
   // Staggered arrival (t169): when one poll delivers several new messages at once, reveal them
   // one-by-one so the eye can track. A message is "fresh" when its id is unseen AND newer than the
   // newest previously-seen ts (an older-page prepend is old content — never staggered); own sends
@@ -1003,6 +1052,24 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               {floatingSep}
             </span>
           </div>
+          {/* Jump-to-unread FAB (PSN-96 C): shows when the "New" separator is above the viewport
+              and hasn't been seen yet. Stacks above the scroll-to-bottom FAB. */}
+          <Button
+            aria-label="Jump to new messages"
+            className={cn(
+              "absolute right-4 z-10 flex items-center gap-1.5 rounded-full px-3 shadow-md transition-all duration-200",
+              offBottom ? "bottom-14" : "bottom-3",
+              showUnreadJump
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-2 opacity-0",
+            )}
+            onClick={jumpToUnread}
+            size="sm"
+            variant="secondary"
+          >
+            <HugeiconsIcon className="size-3.5" icon={ArrowUp01Icon} />
+            <span className="text-xs">New</span>
+          </Button>
           {/* Scroll-to-bottom FAB (t160): appears whenever the viewport is off the bottom. */}
           <Button
             aria-label="Scroll to bottom"
@@ -1049,9 +1116,10 @@ function DateSeparator({ label }: { label: string }) {
 
 // The Slack-style last-read marker (t160): a coral hairline + "New" chip before the first unread
 // message, computed once per open (buildThreadItems' lastReadTs).
+// data-new-sep is queried by the IntersectionObserver and jumpToUnread in thread-view.
 function NewSeparator() {
   return (
-    <div className="flex items-center gap-2 pt-3 pb-1">
+    <div className="flex items-center gap-2 pt-3 pb-1" data-new-sep>
       <div className="h-px flex-1 bg-ring/50" />
       <span className="font-semibold text-[10px] text-ring uppercase tracking-wide">New</span>
       <div className="h-px flex-1 bg-ring/50" />
