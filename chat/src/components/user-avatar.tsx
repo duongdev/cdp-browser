@@ -9,6 +9,10 @@ interface UserAvatarProps {
   label: string
   /** Tailwind size class for the square box (default size-10, a conversation row). */
   className?: string
+  /** Graph photo size to request (e.g. "240x240"). Omit → server default (48x48). */
+  size?: string
+  /** Called when the photo loads successfully — useful to gate a zoom affordance. */
+  onPhotoLoad?: () => void
 }
 
 /** A user avatar: the initial-letter tile always renders behind; when `userId` resolves a real
@@ -54,14 +58,17 @@ export function FacepileAvatar({
   )
 }
 
-export function UserAvatar({ userId, label, className }: UserAvatarProps) {
+export function UserAvatar({ userId, label, className, size, onPhotoLoad }: UserAvatarProps) {
   const [failed, setFailed] = useState(false)
 
   // Reset the error state when the user changes (a keep-alive row reused for another conversation).
   // biome-ignore lint/correctness/useExhaustiveDependencies: userId is the deliberate reset trigger
   useEffect(() => setFailed(false), [userId])
 
-  const src = userId && !failed ? `/api/teams/avatar?userId=${encodeURIComponent(userId)}` : null
+  const src =
+    userId && !failed
+      ? `/api/teams/avatar?userId=${encodeURIComponent(userId)}${size ? `&size=${encodeURIComponent(size)}` : ""}`
+      : null
   // Seed hashed gradient: prefer the stable userId; fall back to the label so facepile members
   // without a known id still get a per-name color (consistent across renders).
   const gradient = avatarGradient(userId || label)
@@ -81,6 +88,7 @@ export function UserAvatar({ userId, label, className }: UserAvatarProps) {
           alt={label}
           className="absolute inset-0 size-full rounded-full object-cover"
           onError={() => setFailed(true)}
+          onLoad={onPhotoLoad}
           src={src}
         />
       )}

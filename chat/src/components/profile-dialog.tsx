@@ -11,6 +11,7 @@ import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { fetchProfile, TeamsApiError, type TeamsProfile } from "../lib/teams-client"
+import { ImageLightbox } from "./image-lightbox"
 import { UserAvatar } from "./user-avatar"
 
 /** Who the dialog is about: the sender oid/MRI + the display name we already know (renders
@@ -38,10 +39,13 @@ type LoadState =
  *  known display name rendering instantly while the card loads. Four-state per convention. */
 export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps) {
   const [state, setState] = useState<LoadState>({ s: "loading" })
+  const [photoLoaded, setPhotoLoaded] = useState(false)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
 
   useEffect(() => {
     if (!target) return
     setState({ s: "loading" })
+    setPhotoLoaded(false)
     const ctl = new AbortController()
     fetchProfile(target.userId, ctl.signal)
       .then((profile) => setState({ s: "ready", profile }))
@@ -54,72 +58,96 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
 
   const profile = state.s === "ready" ? state.profile : null
   const name = profile?.displayName || target?.name || ""
+  const lightboxSrc = target?.userId
+    ? `/api/teams/avatar?userId=${encodeURIComponent(target.userId)}&size=648x648`
+    : null
 
   return (
-    <Dialog onOpenChange={(open) => !open && onClose()} open={!!target}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <div className="flex items-center gap-4">
-            <UserAvatar className="size-16 text-xl" label={name} userId={target?.userId} />
-            <div className="min-w-0">
-              <DialogTitle className="truncate">{name}</DialogTitle>
-              {profile?.jobTitle && (
-                <p className="truncate text-muted-foreground text-sm">{profile.jobTitle}</p>
-              )}
+    <>
+      <Dialog onOpenChange={(open) => !open && onClose()} open={!!target}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <div className="flex items-center gap-4">
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: avatar is a supplementary affordance, keyboard nav opens the dialog itself */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: same as above */}
+              <span
+                className={photoLoaded ? "cursor-zoom-in" : undefined}
+                onClick={photoLoaded ? () => setLightboxOpen(true) : undefined}
+              >
+                <UserAvatar
+                  className="size-16 text-xl"
+                  label={name}
+                  onPhotoLoad={() => setPhotoLoaded(true)}
+                  size="240x240"
+                  userId={target?.userId}
+                />
+              </span>
+              <div className="min-w-0">
+                <DialogTitle className="truncate">{name}</DialogTitle>
+                {profile?.jobTitle && (
+                  <p className="truncate text-muted-foreground text-sm">{profile.jobTitle}</p>
+                )}
+              </div>
             </div>
-          </div>
-        </DialogHeader>
+          </DialogHeader>
 
-        {state.s === "loading" && (
-          <div className="flex flex-col gap-2.5 py-1">
-            {[0, 1, 2].map((i) => (
-              <div className="h-4 w-3/4 animate-pulse rounded bg-muted" key={i} />
-            ))}
-          </div>
-        )}
+          {state.s === "loading" && (
+            <div className="flex flex-col gap-2.5 py-1">
+              {[0, 1, 2].map((i) => (
+                <div className="h-4 w-3/4 animate-pulse rounded bg-muted" key={i} />
+              ))}
+            </div>
+          )}
 
-        {state.s === "error" && (
-          <p className="py-1 text-muted-foreground text-sm">{profileErrorCopy(state.code)}</p>
-        )}
+          {state.s === "error" && (
+            <p className="py-1 text-muted-foreground text-sm">{profileErrorCopy(state.code)}</p>
+          )}
 
-        {profile && (
-          <div className="flex flex-col gap-2.5 py-1">
-            <ProfileField icon={Mail01Icon} label="Email">
-              {profile.mail ? (
-                <a className="text-primary hover:underline" href={`mailto:${profile.mail}`}>
-                  {profile.mail}
-                </a>
-              ) : null}
-            </ProfileField>
-            <ProfileField icon={Building03Icon} label="Department">
-              {profile.department || null}
-            </ProfileField>
-            <ProfileField icon={Location01Icon} label="Office">
-              {profile.officeLocation || null}
-            </ProfileField>
-            <ProfileField icon={Call02Icon} label="Phone">
-              {profile.phones.length > 0 ? profile.phones.join(" · ") : null}
-            </ProfileField>
-            {!profile.mail &&
-              !profile.department &&
-              !profile.officeLocation &&
-              profile.phones.length === 0 && (
-                <p className="flex items-center gap-2 text-muted-foreground text-sm">
-                  <HugeiconsIcon className="size-4" icon={UserIcon} />
-                  No directory details available.
-                </p>
-              )}
-          </div>
-        )}
+          {profile && (
+            <div className="flex flex-col gap-2.5 py-1">
+              <ProfileField icon={Mail01Icon} label="Email">
+                {profile.mail ? (
+                  <a className="text-primary hover:underline" href={`mailto:${profile.mail}`}>
+                    {profile.mail}
+                  </a>
+                ) : null}
+              </ProfileField>
+              <ProfileField icon={Building03Icon} label="Department">
+                {profile.department || null}
+              </ProfileField>
+              <ProfileField icon={Location01Icon} label="Office">
+                {profile.officeLocation || null}
+              </ProfileField>
+              <ProfileField icon={Call02Icon} label="Phone">
+                {profile.phones.length > 0 ? profile.phones.join(" · ") : null}
+              </ProfileField>
+              {!profile.mail &&
+                !profile.department &&
+                !profile.officeLocation &&
+                profile.phones.length === 0 && (
+                  <p className="flex items-center gap-2 text-muted-foreground text-sm">
+                    <HugeiconsIcon className="size-4" icon={UserIcon} />
+                    No directory details available.
+                  </p>
+                )}
+            </div>
+          )}
 
-        {onMessage && target && (
-          <Button className="w-full" onClick={() => onMessage(target.userId)}>
-            <HugeiconsIcon className="size-4" icon={Message01Icon} />
-            Message
-          </Button>
-        )}
-      </DialogContent>
-    </Dialog>
+          {onMessage && target && (
+            <Button className="w-full" onClick={() => onMessage(target.userId)}>
+              <HugeiconsIcon className="size-4" icon={Message01Icon} />
+              Message
+            </Button>
+          )}
+        </DialogContent>
+      </Dialog>
+      {lightboxSrc && (
+        <ImageLightbox
+          media={lightboxOpen ? { src: lightboxSrc, kind: "image" } : null}
+          onClose={() => setLightboxOpen(false)}
+        />
+      )}
+    </>
   )
 }
 

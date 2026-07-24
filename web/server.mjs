@@ -1683,31 +1683,48 @@ async function teamsMedia(url) {
 }
 
 // ---- Teams user avatars (t153) --------------------------------------------
-// Real user photos via Graph `/v1.0/users/{oid}/photos/48x48/$value`, fetched IN-PAGE with the
+// Real user photos via Graph `/v1.0/users/{oid}/photos/{size}/$value`, fetched IN-PAGE with the
 // page's own Graph bearer (the same MSAL accesstoken teamsResolveTitles uses for getByIds) so
 // Conditional Access can't reject it. Best-effort: a user with no photo 404s (common) — that miss
-// is cached as a negative so the list can't hammer Graph. Keyed by bare oid (immutable), LRU + neg.
-const TEAMS_AVATAR_CACHE = new Map() // oid -> { ct, buf } | { miss: true }
+// is cached as a negative so the list can't hammer Graph. Keyed by oid+size (immutable), LRU + neg.
+const TEAMS_AVATAR_SIZES = new Set([
+  "48x48",
+  "64x64",
+  "96x96",
+  "120x120",
+  "240x240",
+  "360x360",
+  "432x432",
+  "504x504",
+  "648x648",
+])
+const TEAMS_AVATAR_DEFAULT_SIZE = "48x48"
+
+/** Validate a Graph photo size string; returns the size if valid, else the default. */
+function teamsAvatarSize(raw) {
+  return TEAMS_AVATAR_SIZES.has(raw) ? raw : TEAMS_AVATAR_DEFAULT_SIZE
+}
+
+const TEAMS_AVATAR_CACHE = new Map() // `${oid}:${size}` -> { ct, buf } | { miss: true }
 const TEAMS_AVATAR_CACHE_MAX = 256
 
-function teamsAvatarCacheGet(oid) {
-  const hit = TEAMS_AVATAR_CACHE.get(oid)
+function teamsAvatarCacheGet(key) {
+  const hit = TEAMS_AVATAR_CACHE.get(key)
   if (!hit) return null
-  TEAMS_AVATAR_CACHE.delete(oid)
-  TEAMS_AVATAR_CACHE.set(oid, hit)
+  TEAMS_AVATAR_CACHE.delete(key)
+  TEAMS_AVATAR_CACHE.set(key, hit)
   return hit
 }
 
-function teamsAvatarCacheSet(oid, entry) {
-  TEAMS_AVATAR_CACHE.set(oid, entry)
+function teamsAvatarCacheSet(key, entry) {
+  TEAMS_AVATAR_CACHE.set(key, entry)
   while (TEAMS_AVATAR_CACHE.size > TEAMS_AVATAR_CACHE_MAX) {
     TEAMS_AVATAR_CACHE.delete(TEAMS_AVATAR_CACHE.keys().next().value)
   }
 }
 
-async function fetchTeamsAvatarInPage(oid) {
-  // 48px is enough for a chat avatar; the bearer is a localStorage read (CA doesn't apply), the
-  // GET is the browser's own authenticated request. 404 = no photo (negative-cache it).
+async function fetchTeamsAvatarInPage(oid, size) {
+  // The bearer is a localStorage read (CA doesn't apply); 404 = no photo (negative-cache it).
   const script = `(async () => {
     try {
       let key = null
@@ -1718,7 +1735,7 @@ async function fetchTeamsAvatarInPage(oid) {
       let bearer = ""
       try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { error: "no_bearer" } }
       if (!bearer) return { error: "no_bearer" }
-      const r = await fetch("https://graph.microsoft.com/v1.0/users/${oid}/photos/48x48/$value", {
+      const r = await fetch("https://graph.microsoft.com/v1.0/users/${oid}/photos/${size}/$value", {
         headers: { Authorization: "Bearer " + bearer },
       })
       if (r.status === 404) return { miss: true }
@@ -1742,8 +1759,8 @@ async function fetchTeamsAvatarInPage(oid) {
 // Resolve one user's avatar → { ct, buf } | { miss: true } | { error }. The in-page Graph fetch
 // needs only a Teams tab (any tenant's bearer resolves any oid in that tenant's directory); no
 // per-tenant cred juggling like media.
-async function teamsAvatar(oid) {
-  const out = await fetchTeamsAvatarInPage(oid)
+async function teamsAvatar(oid, size) {
+  const out = await fetchTeamsAvatarInPage(oid, size)
   if (out.miss) return { miss: true }
   if (out.error) return { error: out.error }
   const comma = typeof out.dataUrl === "string" ? out.dataUrl.indexOf(",") : -1
@@ -2843,10 +2860,12 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/teams/avatar" && !POST) {
       const oid = teamsNormalizeUserOid(url.searchParams.get("userId") || "")
       if (!oid) return res.writeHead(400).end("bad userId")
-      let hit = teamsAvatarCacheGet(oid)
+      const size = teamsAvatarSize(url.searchParams.get("size") || "")
+      const cacheKey = `${oid}:${size}`
+      let hit = teamsAvatarCacheGet(cacheKey)
       if (!hit) {
-        hit = await teamsAvatar(oid)
-        if (hit.miss || (hit.ct && /^image\//.test(hit.ct))) teamsAvatarCacheSet(oid, hit)
+        hit = await teamsAvatar(oid, size)
+        if (hit.miss || (hit.ct && /^image\//.test(hit.ct))) teamsAvatarCacheSet(cacheKey, hit)
       }
       if (hit.miss) return res.writeHead(204).end()
       if (hit.error) return res.writeHead(502).end(hit.error)
