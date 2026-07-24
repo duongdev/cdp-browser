@@ -19,3 +19,15 @@ export function pickFile(items: ArrayLike<FileItemLike> | null | undefined): Fil
   }
   return null
 }
+
+/** All Files from a clipboard `DataTransferItemList` — a multi-paste yields multiple files (e.g.
+ *  dragging several images). Returns an empty array when no item is backed by a File. */
+export function pickFiles(items: ArrayLike<FileItemLike> | null | undefined): File[] {
+  if (!items) return []
+  const files: File[] = []
+  for (let i = 0; i < items.length; i++) {
+    const file = items[i]?.getAsFile()
+    if (file) files.push(file)
+  }
+  return files
+}

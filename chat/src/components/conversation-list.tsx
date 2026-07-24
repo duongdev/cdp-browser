@@ -1,3 +1,21 @@
+import {
+  closestCenter,
+  DndContext,
+  type DragEndEvent,
+  DragOverlay,
+  type DragStartEvent,
+  PointerSensor,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import { Alert02Icon, ArrowRight01Icon, InboxIcon, ReloadIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -7,6 +25,7 @@ import { mergeConversations } from "../lib/conversation-merge"
 import {
   applyPrefs,
   applyReadOverride,
+  CHATS_FOLDER,
   type ConvPrefs,
   type FolderSection,
   filterConversations,
@@ -68,6 +87,10 @@ interface ConversationListProps {
   onToggleFolder?: (folder: string) => void
   /** Patch a conversation's prefs from the row menu (t156/t167/t168). */
   onPatchPrefs?: (convId: string, patch: ConvPrefsPatch) => void
+  /** Folder display order for DnD-sortable sections (Workstream I). */
+  folderOrder?: string[]
+  /** Called when the user drops a folder header to a new position. */
+  onReorderFolders?: (order: string[]) => void
   /** Name display preference (t161) — applied to 1:1 row labels. */
   namePref?: NamePref
   /** Background poll health (PSN-91): false when a refresh fails, true when it succeeds. Drives the
@@ -88,10 +111,13 @@ export function ConversationList({
   collapsedFolders,
   onToggleFolder,
   onPatchPrefs,
+  folderOrder,
+  onReorderFolders,
   namePref,
   onConnectionChange,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
+  const [draggingId, setDraggingId] = useState<string | null>(null)
   // Older-page paging (t134): true while a "Load more" fetch is in flight (dedup guard + affordance).
   const [loadingMore, setLoadingMore] = useState(false)
   const loadingMoreRef = useRef(false)
@@ -145,7 +171,10 @@ export function ConversationList({
   // Group into folder sections (t156): folders alpha-sorted on top, ungrouped rows below. A flat
   // list (no folders assigned) collapses to one null section — the render treats that as the plain,
   // header-less list it was before. Filtering runs first (t168), so an empty folder drops out.
-  const sections = useMemo(() => (display ? groupByFolder(display) : null), [display])
+  const sections = useMemo(
+    () => (display ? groupByFolder(display, folderOrder) : null),
+    [display, folderOrder],
+  )
 
   // Report the override-applied list upward whenever it (referentially) changes, so the app's copy
   // (keyboard toggle, ⌘K predicates) agrees with what's on screen.
@@ -251,6 +280,54 @@ export function ConversationList({
     return () => io.disconnect()
   }, [hasMore])
 
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
+
+  const realFolderIds = useMemo(
+    () =>
+      (sections ?? [])
+        .filter((s) => s.folder && s.folder !== CHATS_FOLDER)
+        .map((s) => `folder:${s.folder}`),
+    [sections],
+  )
+
+  const handleDragStart = useCallback((e: DragStartEvent) => {
+    setDraggingId(String(e.active.id))
+  }, [])
+
+  const handleDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      setDraggingId(null)
+      const { active, over } = e
+      if (!over || active.id === over.id) return
+      const activeId = String(active.id)
+      const overId = String(over.id)
+
+      // Folder-to-folder reorder.
+      if (activeId.startsWith("folder:") && overId.startsWith("folder:")) {
+        const allRealFolders = (sections ?? [])
+          .filter((s) => s.folder && s.folder !== CHATS_FOLDER)
+          .map((s) => s.folder as string)
+        const fromIdx = allRealFolders.indexOf(activeId.slice(7))
+        const toIdx = allRealFolders.indexOf(overId.slice(7))
+        if (fromIdx !== -1 && toIdx !== -1) {
+          const next = arrayMove(allRealFolders, fromIdx, toIdx)
+          onReorderFolders?.(next)
+        }
+        return
+      }
+
+      // Conv dragged onto a folder header → move it to that folder.
+      if (activeId.startsWith("conv:") && overId.startsWith("folder:")) {
+        const convId = activeId.slice(5)
+        const targetFolder = overId.slice(7)
+        const folder = targetFolder === CHATS_FOLDER ? null : targetFolder
+        onPatchPrefs?.(convId, { folder })
+        return
+      }
+    },
+    [sections, onPatchPrefs, onReorderFolders],
+  )
+
   if (state.status === "loading") return <ListSkeleton />
 
   if (state.status === "error") {
@@ -330,19 +407,49 @@ export function ConversationList({
     )
   }
 
-  return (
-    <div className="flex flex-col gap-0.5 p-2">
-      {filterBar}
+  const hasFolders = (sections ?? []).some((s) => s.folder && s.folder !== CHATS_FOLDER)
+
+  const sectionsList = (
+    <>
       {(sections ?? []).map((section) => (
         <FolderGroup
           collapsed={!!section.folder && !!collapsedFolders?.has(section.folder)}
+          dragging={draggingId}
           key={section.folder ?? "__ungrouped"}
+          onPatchPrefs={onPatchPrefs}
           onToggle={onToggleFolder}
           section={section}
         >
           {section.conversations.map(renderRow)}
         </FolderGroup>
       ))}
+    </>
+  )
+
+  return (
+    <div className="flex flex-col gap-0.5 p-2">
+      {filterBar}
+      {hasFolders ? (
+        <DndContext
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+          onDragStart={handleDragStart}
+          sensors={sensors}
+        >
+          <SortableContext items={realFolderIds} strategy={verticalListSortingStrategy}>
+            {sectionsList}
+          </SortableContext>
+          <DragOverlay>
+            {draggingId ? (
+              <div className="rounded-md bg-muted px-2 py-1.5 text-muted-foreground text-xs font-semibold uppercase tracking-wide shadow-md opacity-90">
+                {draggingId.startsWith("folder:") ? draggingId.slice(7) : draggingId.slice(5)}
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+      ) : (
+        sectionsList
+      )}
       {hasMore && (
         // Keep the sentinel mounted (with a little idle height so the observer keeps firing); while
         // paging, fill it with ~3 row skeletons — a reserved-height placeholder the real rows swap
@@ -365,21 +472,58 @@ function FolderGroup({
   section,
   collapsed,
   onToggle,
+  onPatchPrefs,
+  dragging,
   children,
 }: {
   section: FolderSection
   collapsed: boolean
   onToggle?: (folder: string) => void
+  onPatchPrefs?: (convId: string, patch: ConvPrefsPatch) => void
+  dragging?: string | null
   children: React.ReactNode
 }) {
+  const folderId = section.folder ?? "__null__"
+  const isRealFolder = section.folder !== null && section.folder !== CHATS_FOLDER
+  const sortable = useSortable({
+    id: `folder:${folderId}`,
+    disabled: !isRealFolder,
+  })
+  const { isOver, setNodeRef: setDropRef } = useDroppable({ id: `folder:${folderId}` })
+
   if (section.folder == null) return <>{children}</>
+
+  const isDraggingConv = dragging?.startsWith("conv:")
+
+  const headerStyle = isRealFolder
+    ? { transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition }
+    : {}
+
   return (
-    <div className="flex flex-col gap-0.5">
+    <div
+      className="flex flex-col gap-0.5"
+      ref={
+        isRealFolder
+          ? (node) => {
+              sortable.setNodeRef(node)
+              setDropRef(node)
+            }
+          : setDropRef
+      }
+    >
       <button
         aria-expanded={!collapsed}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+        className={cn(
+          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
+          isDraggingConv && isOver && "bg-muted/60 ring-1 ring-primary/30",
+          sortable.isDragging && "opacity-40",
+        )}
         onClick={() => onToggle?.(section.folder as string)}
+        ref={isRealFolder ? sortable.setActivatorNodeRef : undefined}
+        style={headerStyle}
         type="button"
+        {...(isRealFolder ? sortable.attributes : {})}
+        {...(isRealFolder ? sortable.listeners : {})}
       >
         <HugeiconsIcon
           className={cn("size-3.5 transition-transform", !collapsed && "rotate-90")}

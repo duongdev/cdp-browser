@@ -243,14 +243,31 @@ export function folderLabel(folder: string): string {
   return folder === CHATS_FOLDER ? "Chats" : folder
 }
 
+/** Given the discovered folder names and a persisted order array, returns: ordered folders first
+ *  (in order array position), then remaining unordered folders alpha-sorted, appended. Pure. The
+ *  CHATS_FOLDER sentinel must never appear in `order` — it is filtered out defensively. */
+export function applyFolderOrder(folders: string[], order: string[]): string[] {
+  const set = new Set(folders)
+  const ordered = order.filter((f) => set.has(f))
+  const orderedSet = new Set(ordered)
+  const rest = folders
+    .filter((f) => !orderedSet.has(f))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+  return [...ordered, ...rest]
+}
+
 /** Group a (pref-applied, already list-sorted) conversation list into folder sections. Real folder
  *  sections come first, alpha-sorted by name (locale-aware, case-insensitive); the ungrouped rows
  *  follow. When real folders exist, the ungrouped rows get their own collapsible "Chats" section
  *  (CHATS_FOLDER, t158) below them; when NO real folder exists, they render as one header-less flat
  *  section (folder: null) — a single flat list needs no header noise. Each section keeps the incoming
  *  order (the list is already newest-first). A conversation's folder is read from `conv.folder` (set
- *  by applyPrefs). Pure — the row/section rendering is presentation over this. */
-export function groupByFolder(conversations: TeamsConversation[]): FolderSection[] {
+ *  by applyPrefs). An optional `folderOrder` array overrides the alpha sort for named folders. Pure —
+ *  the row/section rendering is presentation over this. */
+export function groupByFolder(
+  conversations: TeamsConversation[],
+  folderOrder?: string[],
+): FolderSection[] {
   const folders = new Map<string, TeamsConversation[]>()
   const ungrouped: TeamsConversation[] = []
   for (const c of conversations) {
@@ -262,7 +279,18 @@ export function groupByFolder(conversations: TeamsConversation[]): FolderSection
     } else ungrouped.push(c)
   }
   const sections: FolderSection[] = [...folders.keys()]
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .sort(
+      folderOrder?.length
+        ? (a, b) => {
+            const ai = folderOrder.indexOf(a)
+            const bi = folderOrder.indexOf(b)
+            if (ai !== -1 && bi !== -1) return ai - bi
+            if (ai !== -1) return -1
+            if (bi !== -1) return 1
+            return a.localeCompare(b, undefined, { sensitivity: "base" })
+          }
+        : (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }),
+    )
     .map((folder) => ({ folder, conversations: folders.get(folder) as TeamsConversation[] }))
   // Trailing ungrouped rows: a "Chats" pseudo-folder section when real folders exist (so the
   // ungrouped rows read as a deliberate group, not orphans), else a header-less flat section.
@@ -280,9 +308,10 @@ export function groupByFolder(conversations: TeamsConversation[]): FolderSection
 export function navigableConversations(
   conversations: TeamsConversation[],
   collapsed?: ReadonlySet<string>,
+  folderOrder?: string[],
 ): TeamsConversation[] {
   const out: TeamsConversation[] = []
-  for (const section of groupByFolder(conversations)) {
+  for (const section of groupByFolder(conversations, folderOrder)) {
     if (section.folder && collapsed?.has(section.folder)) continue
     out.push(...section.conversations)
   }

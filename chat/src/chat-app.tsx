@@ -361,7 +361,14 @@ export function ChatApp() {
   notifEnabledRef.current = settings.notificationsEnabled
   // Local conversation prefs (t156): labels/folder/mute (shared server-side) + per-device folder
   // collapse state. Applied over the list rows inside ConversationList (poll-proof, like read overrides).
-  const { prefs, patch: patchPrefs, collapsed, toggleFolderCollapsed } = useConvPrefs()
+  const {
+    prefs,
+    patch: patchPrefs,
+    collapsed,
+    toggleFolderCollapsed,
+    folderOrder,
+    setFolderOrder,
+  } = useConvPrefs()
   const pendingG = useRef(false)
   const gTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -842,11 +849,13 @@ export function ChatApp() {
             <ConversationList
               collapsedFolders={collapsed}
               focusedId={view === "list" ? focusedConvId : null}
+              folderOrder={folderOrder}
               namePref={namePref}
               onConnectionChange={setOnline}
               onConversations={onConversations}
               onOpenConversation={openConversation}
               onPatchPrefs={patchPrefs}
+              onReorderFolders={setFolderOrder}
               onToggleFolder={toggleFolderCollapsed}
               prefs={prefs}
               readOverrides={readOverrides}
@@ -879,11 +888,13 @@ export function ChatApp() {
           <ConversationList
             collapsedFolders={collapsed}
             focusedId={focusedConvId}
+            folderOrder={folderOrder}
             namePref={namePref}
             onConnectionChange={setOnline}
             onConversations={onConversations}
             onOpenConversation={openConversation}
             onPatchPrefs={patchPrefs}
+            onReorderFolders={setFolderOrder}
             onToggleFolder={toggleFolderCollapsed}
             prefs={prefs}
             readOverrides={readOverrides}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { ConvPrefs } from "./conversation-view"
 import { EMPTY_PREFS } from "./conversation-view"
-import { type ConvPrefsDto, fetchPrefs, setPrefs } from "./teams-client"
+import { type ConvPrefsDto, fetchPrefs, setFolderOrder, setPrefs } from "./teams-client"
 
 // Reuse the / build's device identity so folder-collapse state is per-device (like chat settings,
 // t154). Prefs THEMSELVES are shared server-side; only the collapse view-state is device-local.
@@ -28,12 +28,16 @@ const collapseKey = (deviceId: string) => `chatFolders_${deviceId}`
 export function useConvPrefs() {
   const [prefs, setPrefsState] = useState<Record<string, ConvPrefs>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [folderOrder, setFolderOrderState] = useState<string[]>([])
   const deviceId = useRef(getDeviceId()).current
 
   useEffect(() => {
     const ac = new AbortController()
     fetchPrefs(ac.signal).then((p) => {
-      if (!ac.signal.aborted) setPrefsState(normalize(p))
+      if (!ac.signal.aborted) {
+        setPrefsState(normalize(p.prefs))
+        setFolderOrderState(p.folderOrder)
+      }
     })
     // Collapse state from ui-state.
     fetch("/api/ui-state")
@@ -74,7 +78,19 @@ export function useConvPrefs() {
     [deviceId],
   )
 
-  return { prefs, patch, collapsed, toggleFolderCollapsed }
+  const updateFolderOrder = useCallback((order: string[]) => {
+    setFolderOrderState(order)
+    setFolderOrder(order) // best-effort POST, swallowed on error
+  }, [])
+
+  return {
+    prefs,
+    patch,
+    collapsed,
+    toggleFolderCollapsed,
+    folderOrder,
+    setFolderOrder: updateFolderOrder,
+  }
 }
 
 function normalize(p: Record<string, ConvPrefsDto>): Record<string, ConvPrefs> {

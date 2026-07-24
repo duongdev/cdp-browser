@@ -74,6 +74,7 @@ const SCHEMA = [
     folder  TEXT,
     muted   INTEGER DEFAULT 0
   )`,
+  `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)`,
 ]
 
 // Columns added after t127's original schema. `CREATE TABLE IF NOT EXISTS` won't add a column to a
@@ -600,6 +601,27 @@ function sanitizeLabels(v) {
   return out
 }
 
+// Folder display order (Workstream I): a JSON-serialized array of real folder names. Persisted
+// here so any device that talks to this server sees the same DnD-arranged order.
+function getFolderOrder(db) {
+  const r = db.prepare("SELECT value FROM settings WHERE key = 'folderOrder'").get()
+  if (!r) return []
+  try {
+    return JSON.parse(r.value)
+  } catch {
+    return []
+  }
+}
+
+function setFolderOrder(db, order) {
+  if (!Array.isArray(order)) return []
+  const clean = order.filter((s) => typeof s === "string" && s.trim())
+  db.prepare(
+    "INSERT INTO settings (key, value) VALUES ('folderOrder', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(JSON.stringify(clean))
+  return clean
+}
+
 module.exports = {
   migrate,
   getPrefs,
@@ -622,4 +644,6 @@ module.exports = {
   getReadState,
   upsertUsers,
   getUsers,
+  getFolderOrder,
+  setFolderOrder,
 }
