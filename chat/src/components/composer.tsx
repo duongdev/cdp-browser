@@ -23,6 +23,8 @@ import { fetchRoster, type RosterMember } from "../lib/teams-client"
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
 export interface ComposerHandle {
   focus: () => void
+  /** Open the native file picker (the hidden <input type="file"> click). */
+  openFilePicker: () => void
 }
 
 interface ComposerProps {
@@ -121,7 +123,14 @@ export function Composer({
   const rosterLoaded = useRef(false)
   const [menu, setMenu] = useState<{ items: RosterMember[]; active: number } | null>(null)
 
-  useImperativeHandle(ref, () => ({ focus: () => editorRef.current?.focus() }), [])
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => editorRef.current?.focus(),
+      openFilePicker: () => fileRef.current?.click(),
+    }),
+    [],
+  )
 
   // Reset on conversation switch (a half-typed draft / staged file doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the deliberate reset trigger

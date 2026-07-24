@@ -25,9 +25,11 @@ import {
   isMutedNow,
   isUnread,
   knownFolders,
+  knownLabels,
   navigableConversations,
   previewLine,
   type ReadOverride,
+  toggleLabel,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
 import { newlyArrived } from "./lib/notify-new"
@@ -617,6 +619,151 @@ export function ChatApp() {
         when: (c) => c.view === "thread" && !!c.isOwnMessage,
         run: () => activeThreadRef.current?.command("delete"),
       },
+      // ── Group B: new-feature commands (thread context) ─────────────────────────
+      {
+        id: "msg-reply",
+        label: "Reply to message",
+        group: "Message",
+        when: (c) => c.view === "thread" && !!c.focusedMessageId,
+        run: () => activeThreadRef.current?.replyFocused(),
+      },
+      {
+        id: "msg-jump-unread",
+        label: "Jump to unread",
+        group: "Message",
+        when: (c) => c.view === "thread",
+        run: () => activeThreadRef.current?.jumpToUnread(),
+      },
+      {
+        id: "msg-attach",
+        label: "Attach files",
+        group: "Message",
+        when: (c) => c.view === "thread",
+        run: () => activeThreadRef.current?.openFilePicker(),
+      },
+      // ── Group A: settings toggles ───────────────────────────────────────────────
+      {
+        id: "theme-light",
+        label: "Theme: Light",
+        group: "App",
+        when: () => settings.theme !== "light",
+        run: () => updateSettings({ theme: "light" }),
+      },
+      {
+        id: "theme-dark",
+        label: "Theme: Dark",
+        group: "App",
+        when: () => settings.theme !== "dark",
+        run: () => updateSettings({ theme: "dark" }),
+      },
+      {
+        id: "theme-system",
+        label: "Theme: System",
+        group: "App",
+        when: () => settings.theme !== "system",
+        run: () => updateSettings({ theme: "system" }),
+      },
+      {
+        id: "density-comfortable",
+        label: "Density: Comfortable",
+        group: "App",
+        when: () => settings.density !== "comfortable",
+        run: () => updateSettings({ density: "comfortable" }),
+      },
+      {
+        id: "density-compact",
+        label: "Density: Compact",
+        group: "App",
+        when: () => settings.density !== "compact",
+        run: () => updateSettings({ density: "compact" }),
+      },
+      {
+        id: "names-full",
+        label: "Names: Full name",
+        group: "App",
+        when: () => settings.nameDisplay !== "full",
+        run: () => updateSettings({ nameDisplay: "full" }),
+      },
+      {
+        id: "names-first",
+        label: "Names: First name",
+        group: "App",
+        when: () => settings.nameDisplay !== "first",
+        run: () => updateSettings({ nameDisplay: "first" }),
+      },
+      {
+        id: "notifications-on",
+        label: "Notifications: On",
+        group: "App",
+        when: () => !settings.notificationsEnabled,
+        run: () => updateSettings({ notificationsEnabled: true }),
+      },
+      {
+        id: "notifications-off",
+        label: "Notifications: Off",
+        group: "App",
+        when: () => settings.notificationsEnabled,
+        run: () => updateSettings({ notificationsEnabled: false }),
+      },
+      // ── Group C: conversation management (list / thread context) ───────────────
+      // Add label: one command per known label (toggle). Blank slate: no-op (prompt handles creation).
+      ...knownLabels(prefs).map(
+        (lbl): ChatAction => ({
+          id: `label:${lbl}`,
+          label: prefs[ctx.focusedConversationId ?? ""]?.labels?.includes(lbl)
+            ? `Remove label "${lbl}"`
+            : `Add label "${lbl}"`,
+          group: "Conversation",
+          when: (c) => !!c.focusedConversationId,
+          run: () => {
+            const id = ctx.focusedConversationId
+            if (!id) return
+            const cur = prefs[id]?.labels ?? []
+            patchPrefs(id, { labels: toggleLabel(cur, lbl) })
+          },
+        }),
+      ),
+      {
+        id: "add-label-new",
+        label: "Add label…",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: async () => {
+          const id = ctx.focusedConversationId
+          if (!id) return
+          const name = await prompt({
+            title: "Add label",
+            description: "Enter a label name to add or remove it.",
+            initialValue: "",
+            placeholder: "Label name",
+          })
+          if (!name) return
+          const cur = prefs[id]?.labels ?? []
+          patchPrefs(id, { labels: toggleLabel(cur, name) })
+        },
+      },
+      {
+        id: "collapse-all-folders",
+        label: "Collapse all folders",
+        group: "Conversation",
+        when: () => knownFolders(prefs).some((f) => !collapsed.has(f)),
+        run: () => {
+          for (const f of knownFolders(prefs)) {
+            if (!collapsed.has(f)) toggleFolderCollapsed(f)
+          }
+        },
+      },
+      {
+        id: "expand-all-folders",
+        label: "Expand all folders",
+        group: "Conversation",
+        when: () => knownFolders(prefs).some((f) => collapsed.has(f)),
+        run: () => {
+          for (const f of knownFolders(prefs)) {
+            if (collapsed.has(f)) toggleFolderCollapsed(f)
+          }
+        },
+      },
     ])
   }, [
     conversations,
@@ -630,6 +777,10 @@ export function ChatApp() {
     patchPrefs,
     switchConversation,
     openConvByIndex,
+    settings,
+    updateSettings,
+    collapsed,
+    toggleFolderCollapsed,
   ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).

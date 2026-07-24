@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { ConvPrefs } from "./conversation-view"
 import { EMPTY_PREFS } from "./conversation-view"
+import { prefsSignature, shouldApplyPoll } from "./prefs-sync"
 import { type ConvPrefsDto, fetchPrefs, setFolderOrder, setPrefs } from "./teams-client"
 
 // Reuse the / build's device identity so folder-collapse state is per-device (like chat settings,
@@ -21,24 +22,46 @@ function getDeviceId(): string {
 
 const collapseKey = (deviceId: string) => `chatFolders_${deviceId}`
 
+const POLL_INTERVAL_MS = 12_000
+
 /** Conversation prefs (t156): the shared labels/folder/mute map + a per-device folder-collapse set.
- *  Prefs are fetched once on boot and re-fetched after each write (the server is the source of
- *  truth); a write is optimistic so the UI reacts instantly. Collapse state persists per device in
- *  server ui-state (localStorage wipes on the iPad PWA). */
+ *  Prefs are fetched on boot, re-fetched after each write, and polled every ~12 s so another
+ *  device's folder/label/rename/mute change appears without reload (Workstream K, PSN-96).
+ *  Collapse state persists per device in server ui-state (localStorage wipes on the iPad PWA). */
 export function useConvPrefs() {
   const [prefs, setPrefsState] = useState<Record<string, ConvPrefs>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [folderOrder, setFolderOrderState] = useState<string[]>([])
   const deviceId = useRef(getDeviceId()).current
 
+  // Refs for grace-window and change-detection inside the poll callback (avoids stale closures).
+  const lastLocalWriteAtRef = useRef(0)
+  const currentSigRef = useRef<string | null>(null)
+
+  // Apply a fetched prefs payload to state; skips if nothing changed.
+  const applyFetched = useCallback(
+    (p: { prefs: Record<string, ConvPrefsDto>; folderOrder: string[] }, fromPoll: boolean) => {
+      const sig = prefsSignature(p)
+      if (
+        fromPoll &&
+        !shouldApplyPoll(sig, currentSigRef.current ?? "", lastLocalWriteAtRef.current, Date.now())
+      )
+        return
+      currentSigRef.current = sig
+      setPrefsState(normalize(p.prefs))
+      setFolderOrderState(p.folderOrder)
+    },
+    [],
+  )
+
   useEffect(() => {
     const ac = new AbortController()
+
+    // Boot fetch (not a poll — always apply).
     fetchPrefs(ac.signal).then((p) => {
-      if (!ac.signal.aborted) {
-        setPrefsState(normalize(p.prefs))
-        setFolderOrderState(p.folderOrder)
-      }
+      if (!ac.signal.aborted) applyFetched(p, false)
     })
+
     // Collapse state from ui-state.
     fetch("/api/ui-state")
       .then((r) => (r.ok ? r.json() : {}))
@@ -49,12 +72,33 @@ export function useConvPrefs() {
           setCollapsed(new Set(raw.filter((x): x is string => typeof x === "string")))
       })
       .catch(() => {})
-    return () => ac.abort()
-  }, [deviceId])
+
+    // Poll every ~12 s; pause when hidden, refresh immediately on re-focus.
+    const poll = () => {
+      if (document.hidden) return
+      fetchPrefs(ac.signal)
+        .then((p) => {
+          if (!ac.signal.aborted) applyFetched(p, true)
+        })
+        .catch(() => {})
+    }
+    const timer = setInterval(poll, POLL_INTERVAL_MS)
+    const onVisible = () => {
+      if (!document.hidden) poll()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+
+    return () => {
+      ac.abort()
+      clearInterval(timer)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [deviceId, applyFetched])
 
   // Patch one conversation's prefs: optimistic local update, then POST; the server returns the row's
   // full prefs which we fold back in (authoritative — e.g. sanitized labels).
   const patch = useCallback((convId: string, next: ConvPrefsPatch) => {
+    lastLocalWriteAtRef.current = Date.now()
     setPrefsState((m) => ({ ...m, [convId]: applyPatch(m[convId], next) }))
     setPrefs(convId, next).then((row) => {
       if (row) setPrefsState((m) => ({ ...m, [convId]: fromDto(row) }))
@@ -79,6 +123,7 @@ export function useConvPrefs() {
   )
 
   const updateFolderOrder = useCallback((order: string[]) => {
+    lastLocalWriteAtRef.current = Date.now()
     setFolderOrderState(order)
     setFolderOrder(order) // best-effort POST, swallowed on error
   }, [])

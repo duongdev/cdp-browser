@@ -139,12 +139,18 @@ export interface ThreadHandle {
   focusNext: () => void
   focusPrev: () => void
   getFocused: () => ThreadFocus | null
-  /** Dispatch a keyboard command (edit/delete/react) at the focused message's row. */
+  /** Dispatch a keyboard command (edit/delete/react/reply) at the focused message's row. */
   command: (type: RowCommand["type"]) => void
   /** True while the composer or inline editor holds focus — chat-app suppresses bare-key shortcuts. */
   isComposerFocused: () => boolean
   /** Focus the message input (the `i` shortcut / ⌘K "Focus message input"). */
   focusComposer: () => void
+  /** Scroll the "New" unread separator to near-top. No-op when there is no separator. */
+  jumpToUnread: () => void
+  /** Quote-reply the keyboard-focused message and focus the composer. No-op with no focused message. */
+  replyFocused: () => void
+  /** Open the file picker to stage an attachment. */
+  openFilePicker: () => void
 }
 
 interface ThreadViewProps {
@@ -951,14 +957,26 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       focusPrev: () => moveFocus(-1),
       getFocused: () => (focused ? { id: focused.id, isOwn: !!focused.self } : null),
       command: (type) => {
-        // A command with no focused row is a no-op — chat-app gates on getFocused() anyway.
         if (!focusedId) return
-        setRowCommand({ type, nonce: Date.now() })
+        if (type === "reply") {
+          // Reply is handled at the thread level (not delegated to the row) since it drives
+          // quoteTargets + composer focus — re-use the onReply callback directly.
+          const msg = focusable.find((m) => m.id === focusedId)
+          if (msg) onReply(msg)
+        } else {
+          setRowCommand({ type, nonce: Date.now() })
+        }
       },
       isComposerFocused: () => composerFocusedRef.current,
       focusComposer: () => composerRef.current?.focus(),
+      jumpToUnread: () => jumpToUnread(),
+      replyFocused: () => {
+        const msg = focused
+        if (msg) onReply(msg)
+      },
+      openFilePicker: () => composerRef.current?.openFilePicker(),
     }),
-    [moveFocus, focused, focusedId],
+    [moveFocus, focused, focusedId, focusable, onReply, jumpToUnread],
   )
 
   const composer = replyTarget ? (

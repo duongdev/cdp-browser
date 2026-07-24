@@ -85,7 +85,7 @@ function reactorTitle(r: TeamsReaction, pref: NamePref): string | undefined {
 /** A keyboard command targeted at the focused row (t152). The `nonce` changes on each dispatch so a
  *  repeat of the same key re-fires the effect. chat-app → thread-view → the focused MessageRow. */
 export interface RowCommand {
-  type: "edit" | "delete" | "react"
+  type: "edit" | "delete" | "react" | "reply"
   nonce: number
 }
 
