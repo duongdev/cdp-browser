@@ -28,14 +28,24 @@ export function FacepileAvatar({
 }) {
   const [a, b] = memberIds
   return (
-    <span aria-label={label} className={cn("relative size-10 shrink-0", className)} role="img">
+    // `block` is load-bearing (t170 regression fix): as a plain inline span, `size-10` is ignored
+    // whenever this ISN'T a direct flex item (e.g. inside a positioning wrapper), and the absolute
+    // circles anchor to a collapsed box and spill across the row.
+    // Circles sit top-RIGHT + bottom-LEFT (t170 redesign): the top-right circle anchors the
+    // avatar-corner unread dot exactly like a single avatar, so the dot never floats in an empty
+    // quadrant of the facepile box.
+    <span
+      aria-label={label}
+      className={cn("relative block size-10 shrink-0", className)}
+      role="img"
+    >
       <UserAvatar
-        className="absolute top-0 left-0 size-7 text-[11px]"
+        className="absolute top-0 right-0 size-[26px] text-[10px]"
         label={label.split(",")[0]?.trim() || label}
         userId={a}
       />
       <UserAvatar
-        className="absolute right-0 bottom-0 size-7 text-[11px] ring-2 ring-background"
+        className="absolute bottom-0 left-0 size-[26px] text-[10px] ring-2 ring-background"
         label={label.split(",")[1]?.trim() || label}
         userId={b}
       />

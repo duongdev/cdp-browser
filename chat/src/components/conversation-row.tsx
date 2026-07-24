@@ -73,8 +73,10 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         {...rest}
       >
         {/* Avatar-anchored unread dot (t168): the coral dot rides the avatar's fixed box corner —
-            same spot for single + facepile — so unread state never shifts the row layout. */}
-        <span className="relative shrink-0">
+            same spot for single + facepile — so unread state never shifts the row layout. The
+            wrapper is an explicitly sized block (t170 fix): a bare inline span collapsed and let
+            the facepile circles spill across neighbouring rows. */}
+        <span className="relative block size-10 shrink-0">
           {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
             <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
           ) : (

@@ -6,6 +6,17 @@ Scope: `/chat`. Plan: PSN-95 workstream G.
 
 ## Findings + fixes
 
+- **Facepile rows exploded with the avatar dot** (user-reported on the preview):
+  the t168 dot wrapper was a bare inline `<span>`; `FacepileAvatar`'s root had no
+  display class, so outside a direct flex item its `size-10` was ignored and the
+  absolute circles anchored to a collapsed box, spilling across neighbouring
+  rows. Fix: the wrapper is an explicitly sized block and `FacepileAvatar`'s root
+  is `block` (robust in any container). Redesign while at it: facepile circles
+  moved to top-RIGHT + bottom-LEFT (26px, was 28px at TL/BR) so the unread dot
+  anchors a circle exactly like the single avatar and letters aren't clipped by
+  the overlap. Verified with a playwright harness against the built app
+  (mocked `/api/teams/*`), light + dark, single/facepile/read/mention rows.
+
 - **Lightbox wheel-zoom scrolled the page behind** (found in review, fixed here):
   React root-attaches `wheel` listeners passively, so the React `onWheel`'s
   `preventDefault` silently failed. Wheel zoom now rides a **non-passive native
