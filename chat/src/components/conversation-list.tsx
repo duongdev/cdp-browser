@@ -128,6 +128,43 @@ interface ConversationListProps {
   /** Toggle read ↔ unread from the row context menu (C4). Routes to the same patchConvRead path as
    *  the `u` key; the conversation's current unread state gates the label. */
   onToggleRead?: (convId: string) => void
+  /** Controlled list filter (PSN-99): when provided the filter lives in the parent so the pills can
+   *  render in the top bar (web/PWA). Omitted → internal state (Electron keeps the in-list bar). */
+  filter?: ListFilter
+  onFilterChange?: (f: ListFilter) => void
+  /** Hide the in-list filter bar when the pills are hoisted into the top header (web/PWA). */
+  showFilterBar?: boolean
+}
+
+/** The All / Unread / Mentions segmented pills. Shared by the in-list bar and the top-bar (web). */
+export function ListFilterPills({
+  filter,
+  onFilterChange,
+  className,
+}: {
+  filter: ListFilter
+  onFilterChange: (f: ListFilter) => void
+  className?: string
+}) {
+  return (
+    <div className={cn("flex gap-1", className)}>
+      {FILTERS.map((f) => (
+        <button
+          className={cn(
+            "rounded-full px-2.5 py-1 font-medium text-xs transition-colors",
+            filter === f.key
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          key={f.key}
+          onClick={() => onFilterChange(f.key)}
+          type="button"
+        >
+          {f.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 /** The conversation list — loads `POST /api/teams/conversations` (first page), covers all four
@@ -148,6 +185,9 @@ export function ConversationList({
   namePref,
   onConnectionChange,
   onToggleRead,
+  filter: filterProp,
+  onFilterChange,
+  showFilterBar = true,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -155,7 +195,10 @@ export function ConversationList({
   const [loadingMore, setLoadingMore] = useState(false)
   const loadingMoreRef = useRef(false)
   // Segmented list filter (t168): All / Unread / Mentions. View-state only, resets on reload.
-  const [filter, setFilter] = useState<ListFilter>("all")
+  // Controlled by the parent when `filterProp` is passed (web hoists the pills to the top bar, PSN-99).
+  const [internalFilter, setInternalFilter] = useState<ListFilter>("all")
+  const filter = filterProp ?? internalFilter
+  const setFilter = onFilterChange ?? setInternalFilter
   // Live "ago" clock (t168): rows render times against this, so one tick refreshes them all.
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -433,26 +476,14 @@ export function ConversationList({
   // Segmented filter bar (t168): always visible once rows exist, so a filtered-empty view can
   // switch back. j/k agrees automatically — the reported list IS the filtered list.
   // Sticky (C2): sticks to the top of the scroll container; solid bg so rows slide under it cleanly.
-  const filterBar = (
+  const filterBar = showFilterBar ? (
     // pl-3 matches the row's px-3, so the first button's left edge lines up with the row avatars.
-    <div className="sticky top-0 z-10 flex gap-1 bg-background pr-1 pb-1.5 pl-3 pt-0.5">
-      {FILTERS.map((f) => (
-        <button
-          className={cn(
-            "rounded-full px-2.5 py-1 font-medium text-xs transition-colors",
-            filter === f.key
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-          key={f.key}
-          onClick={() => setFilter(f.key)}
-          type="button"
-        >
-          {f.label}
-        </button>
-      ))}
-    </div>
-  )
+    <ListFilterPills
+      className="sticky top-0 z-10 bg-background pr-1 pb-1.5 pl-3 pt-0.5"
+      filter={filter}
+      onFilterChange={setFilter}
+    />
+  ) : null
 
   if ((display?.length ?? 0) === 0) {
     return (
