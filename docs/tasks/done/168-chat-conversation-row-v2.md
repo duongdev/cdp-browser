@@ -21,8 +21,11 @@ grouping, empty folders hidden).
 - **Mention counter**: `messages.mentions_me` persisted at upsert (from
   `toReaderMessages`' `mentionsMe`); `listConversations` counts unread @me
   messages per row (`ts > readTs AND mentions_me AND NOT deleted`) →
-  `mentionCount` → a coral `@N` badge. A local floor by design (only synced pages
-  count); `mergeConversations` diffs it so a poll re-renders the badge.
+  `mentionCount`. **Unified with the unread indicator (t170 follow-up):** the
+  avatar-corner badge is a plain dot for unread and grows into a numbered coral
+  pill when there are unread @mentions — one indicator, not a separate
+  right-column `@N`. A local floor by design (only synced pages count);
+  `mergeConversations` diffs it so a poll re-renders the badge.
 - **Filters**: segmented All / Unread / Mentions pill bar above the list (pure
   `filterConversations`, runs before `groupByFolder` so empty folders drop).
   The reported list is the filtered list, so keyboard j/k and ⌘K agree with the

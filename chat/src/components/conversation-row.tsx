@@ -72,23 +72,35 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         type="button"
         {...rest}
       >
-        {/* Avatar-anchored unread dot (t168): the coral dot rides the avatar's fixed box corner —
-            same spot for single + facepile — so unread state never shifts the row layout. The
-            wrapper is an explicitly sized block (t170 fix): a bare inline span collapsed and let
-            the facepile circles spill across neighbouring rows. */}
+        {/* Avatar-anchored unread indicator (t168, unified t170): one badge on the avatar corner —
+            a plain coral dot for unread, the same badge grown into a numbered pill when there are
+            unread @mentions (a local floor — only synced pages count). Same spot for single +
+            facepile so it never shifts row layout. The wrapper is an explicitly sized block (t170
+            fix): a bare inline span collapsed and let the facepile circles spill across rows. */}
         <span className="relative block size-10 shrink-0">
           {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
             <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
           ) : (
             <UserAvatar label={label} userId={conversation.avatarUserId} />
           )}
-          {unread && (
+          {mentions > 0 ? (
             <span
-              aria-label="Unread"
-              className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-ring ring-2 ring-background"
-              role="img"
-              title="Unread"
-            />
+              aria-label={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
+              className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-ring px-1 font-mono font-semibold text-[10px] text-background ring-2 ring-background"
+              role="status"
+              title={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
+            >
+              {mentions}
+            </span>
+          ) : (
+            unread && (
+              <span
+                aria-label="Unread"
+                className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-ring ring-2 ring-background"
+                role="img"
+                title="Unread"
+              />
+            )
           )}
         </span>
         <span className="min-w-0 flex-1">
@@ -115,22 +127,14 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
               {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
-              {/* The unread dot moved onto the avatar (t168); this column keeps the mute bell and
-                  the unread-@me counter (a local floor — only synced pages count). */}
+              {/* Unread + @mention indicators both live on the avatar corner now (unified t170);
+                  this column keeps only the mute bell. */}
               {muted && (
                 <HugeiconsIcon
                   aria-label="Muted"
                   className="size-3.5 text-muted-foreground"
                   icon={NotificationOff03Icon}
                 />
-              )}
-              {mentions > 0 && (
-                <span
-                  className="rounded-full bg-ring px-1.5 py-px font-mono font-semibold text-[10px] text-background"
-                  title={`${mentions} unread mention${mentions === 1 ? "" : "s"}`}
-                >
-                  @{mentions}
-                </span>
               )}
             </span>
           </span>

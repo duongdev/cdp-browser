@@ -292,7 +292,8 @@ export function ConversationList({
   // Segmented filter bar (t168): always visible once rows exist, so a filtered-empty view can
   // switch back. j/k agrees automatically — the reported list IS the filtered list.
   const filterBar = (
-    <div className="flex gap-1 px-1 pb-1.5">
+    // pl-3 matches the row's px-3, so the first button's left edge lines up with the row avatars.
+    <div className="flex gap-1 pr-1 pb-1.5 pl-3">
       {FILTERS.map((f) => (
         <button
           className={cn(
