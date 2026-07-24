@@ -530,8 +530,8 @@ function FolderGroup({
     return (
       <div
         className={cn(
-          "flex flex-col gap-0.5",
-          isDraggingConv && isOver && "rounded-md bg-muted/60 ring-1 ring-primary/30",
+          "flex flex-col gap-0.5 rounded-md ring-2 ring-transparent transition-[background-color,box-shadow]",
+          isDraggingConv && isOver && "bg-primary/5 ring-primary",
         )}
         ref={setDropRef}
       >
@@ -543,9 +543,15 @@ function FolderGroup({
     ? { transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition }
     : {}
 
+  // Outline the whole folder (header + rows) when a conversation is hovering over it.
+  const dropTarget = isDraggingConv && isOver
+
   return (
     <div
-      className="flex flex-col gap-0.5"
+      className={cn(
+        "flex flex-col gap-0.5 rounded-md ring-2 ring-transparent transition-[background-color,box-shadow]",
+        dropTarget && "bg-primary/5 ring-primary",
+      )}
       ref={
         isRealFolder
           ? (node) => {
@@ -559,7 +565,6 @@ function FolderGroup({
         aria-expanded={!collapsed}
         className={cn(
           "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
-          isDraggingConv && isOver && "bg-muted/60 ring-1 ring-primary/30",
           sortable.isDragging && "opacity-40",
         )}
         onClick={() => onToggle?.(section.folder as string)}

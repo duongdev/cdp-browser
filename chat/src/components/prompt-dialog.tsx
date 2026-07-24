@@ -52,20 +52,25 @@ export function PromptDialog() {
     }
   }, [])
 
-  // Focus + select-all on open. A single rAF loses to the closing context menu / palette, whose
-  // Radix focus-restore lands AFTER the dialog opens and yanks focus back — retry until it sticks.
+  // Focus + select-all on open. The triggering context menu / palette restores focus to its own
+  // trigger on close — that restore lands AFTER the dialog opens and steals the caret. Re-assert
+  // focus every frame for the whole settle window (not just until it first lands, or the late
+  // restore wins), selecting once so the caret stays put after it sticks.
   useEffect(() => {
     if (!state) return
     const start = performance.now()
     let raf = 0
+    let selected = false
     const tick = () => {
       const el = inputRef.current
       if (el && document.activeElement !== el) {
         el.focus()
-        el.select()
+        if (!selected) {
+          el.select()
+          selected = true
+        }
       }
-      if (document.activeElement !== inputRef.current && performance.now() - start < 400)
-        raf = requestAnimationFrame(tick)
+      if (performance.now() - start < 350) raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
