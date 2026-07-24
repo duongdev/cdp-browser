@@ -50,6 +50,8 @@ const NOTIFY_SOUND_OPTIONS: { id: ChatNotifySound; label: string }[] = [
   { id: "tap", label: "Tap" },
   { id: "polite", label: "Polite" },
   { id: "calm", label: "Calm" },
+  { id: "glass", label: "Glass" },
+  { id: "whistle", label: "Whistle" },
 ]
 
 const NAME_OPTIONS: { id: ChatNameDisplay; label: string }[] = [

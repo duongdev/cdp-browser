@@ -6,4 +6,6 @@ describe("soundFileFor", () => {
   it("maps tap", () => expect(soundFileFor("tap")).toBe("/chat/sounds/tap.wav"))
   it("maps polite", () => expect(soundFileFor("polite")).toBe("/chat/sounds/polite.wav"))
   it("maps calm", () => expect(soundFileFor("calm")).toBe("/chat/sounds/calm.wav"))
+  it("maps glass", () => expect(soundFileFor("glass")).toBe("/chat/sounds/glass.wav"))
+  it("maps whistle", () => expect(soundFileFor("whistle")).toBe("/chat/sounds/whistle.wav"))
 })
