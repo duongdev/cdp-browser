@@ -352,10 +352,30 @@
 }
 [data-density="compact"] .teams-message-body {
   padding: 0.3rem 0.6rem;
-  font-size: 0.8125rem;
+  /* Base size for compact density; PSN-99 font-scale var multiplies against this base so density
+     and scale compose correctly. Another workstream will make density padding-only; the var works
+     regardless because it multiplies against whatever base font-size density sets (or inherits). */
+  font-size: calc(0.8125rem * var(--chat-font-scale, 1));
   line-height: 1.2;
   /* Compact bubbles read tighter with a smaller radius (t169). */
   --bubble-r: 0.7rem;
+}
+
+/* PSN-99 font-scale: applies to text-only surfaces — message bubbles (comfortable density base),
+   conversation-row title/preview, and the composer textarea. Icons, padding, avatars, timestamps
+   are NOT scaled (they use Tailwind utility classes with fixed sizes). The var is set on :root by
+   useChatSettings; default 1 so omitting it is byte-identical to the pre-PSN-99 layout. */
+.teams-message-body {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+}
+.conv-row-title {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+}
+.conv-row-preview {
+  font-size: calc(0.75rem * var(--chat-font-scale, 1));
+}
+.composer-editor {
+  font-size: calc(1rem * var(--chat-font-scale, 1));
 }
 
 /* Bubble geometry (t169): CSS owns the radius (not a Tailwind class) so density can scale it and
@@ -616,5 +636,12 @@
   -webkit-app-region: drag;
 }
 .is-electron .titlebar :where(button, input, a, [role="button"], select, textarea) {
+  -webkit-app-region: no-drag;
+}
+/* A3 (PSN-99): the settings Sheet renders in a Radix portal outside .titlebar, but its top edge
+   overlaps the macOS drag band (~28px, hiddenInset) which has no -webkit-app-region set — clicks
+   land in the OS drag handler and never reach the X button. Force no-drag on the whole panel so
+   every click inside it (including the close button) is delivered to the renderer. */
+.is-electron [data-slot="sheet-content"] {
   -webkit-app-region: no-drag;
 }

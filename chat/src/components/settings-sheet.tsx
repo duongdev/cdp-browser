@@ -235,6 +235,7 @@ export function SettingsSheet({
         }}
         showCloseButton={false}
         showOverlay={false}
+        side="left"
       >
         <SheetHeader className="flex-row items-center justify-between">
           <div>
@@ -266,6 +267,29 @@ export function SettingsSheet({
               options={DENSITY_OPTIONS}
               value={settings.density}
             />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-[13px]">Font size</Label>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {Math.round(settings.fontScale * 100)}%
+              </span>
+            </div>
+            {/* ponytail: native range — no new dep. Style matches the sheet's muted palette. */}
+            <input
+              className="w-full accent-foreground"
+              max={1.4}
+              min={0.85}
+              onChange={(e) => onUpdate({ fontScale: Number(e.target.value) })}
+              step={0.05}
+              type="range"
+              value={settings.fontScale}
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground">
+              <span>A</span>
+              <span className="text-sm">A</span>
+            </div>
           </div>
 
           <div className="space-y-2">

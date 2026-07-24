@@ -112,7 +112,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
               <span className="flex min-w-0 items-baseline gap-1.5">
                 <span
                   className={cn(
-                    "truncate text-foreground",
+                    "conv-row-title truncate text-foreground",
                     unread ? "font-semibold" : "font-medium",
                   )}
                 >
@@ -139,7 +139,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             </span>
             <span
               className={cn(
-                "mt-0.5 block truncate text-sm",
+                "conv-row-preview mt-0.5 block truncate text-sm",
                 unread ? "text-foreground/80" : "text-muted-foreground",
               )}
             >
