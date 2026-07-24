@@ -31,7 +31,7 @@ import {
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
 import { newlyArrived, shouldNotifyConv } from "./lib/notify-new"
-import { playNotifySound } from "./lib/notify-sound"
+import { type NotifySound, playNotifySound } from "./lib/notify-sound"
 import { markReadLocal, type TeamsConversation } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
@@ -178,7 +178,7 @@ export function ChatApp() {
   const openConvRef = useRef<(id: string) => void>(() => {})
   // Refs so the stable onConversations callback (deps []) can read the latest active conv + sound.
   const activeConvRef = useRef<string | null>(null)
-  const notifySoundRef = useRef<string>("chime-1")
+  const notifySoundRef = useRef<NotifySound>("polite")
   const prefsRef = useRef<Record<string, ConvPrefs>>({})
   const onConversations = useCallback((list: TeamsConversation[]) => {
     conversationsRef.current = list
@@ -210,8 +210,7 @@ export function ChatApp() {
         }
       }
     }
-    if (notified)
-      playNotifySound(notifySoundRef.current as "none" | "chime-1" | "chime-2" | "chime-3")
+    if (notified) playNotifySound(notifySoundRef.current)
     // Dock badge in the Electron shell mirrors the unread count (the web PWA drives its own
     // badge via the service worker's setAppBadge).
     if (shell) shell.setBadge(list.filter((c) => isUnread(c)).length)

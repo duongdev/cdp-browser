@@ -22,7 +22,7 @@ export type ChatMono = "maple" | "anthropic-mono" | "dm-mono" | "geist-mono" | "
 // Name display preference (t161): how person names render (see display-name.ts formatName).
 export type ChatNameDisplay = "full" | "first" | "regex"
 // Notification sound played on incoming message (PSN-98, Workstream C).
-export type ChatNotifySound = "none" | "chime-1" | "chime-2" | "chime-3"
+export type ChatNotifySound = "none" | "tap" | "polite" | "calm"
 
 export interface ChatSettings {
   theme: ChatTheme
@@ -42,7 +42,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   mono: "maple",
   nameDisplay: "full",
   nameRegex: "",
-  notifySound: "chime-1",
+  notifySound: "polite",
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
@@ -105,7 +105,7 @@ function parseNameRegex(raw: unknown): string {
   return typeof raw === "string" ? raw : ""
 }
 
-const NOTIFY_SOUNDS: ChatNotifySound[] = ["none", "chime-1", "chime-2", "chime-3"]
+const NOTIFY_SOUNDS: ChatNotifySound[] = ["none", "tap", "polite", "calm"]
 
 export function parseNotifySound(raw: unknown): ChatNotifySound {
   return typeof raw === "string" && (NOTIFY_SOUNDS as string[]).includes(raw)

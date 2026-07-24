@@ -47,9 +47,9 @@ const DENSITY_OPTIONS: { id: ChatDensity; label: string }[] = [
 
 const NOTIFY_SOUND_OPTIONS: { id: ChatNotifySound; label: string }[] = [
   { id: "none", label: "None" },
-  { id: "chime-1", label: "Chime 1" },
-  { id: "chime-2", label: "Chime 2" },
-  { id: "chime-3", label: "Chime 3" },
+  { id: "tap", label: "Tap" },
+  { id: "polite", label: "Polite" },
+  { id: "calm", label: "Calm" },
 ]
 
 const NAME_OPTIONS: { id: ChatNameDisplay; label: string }[] = [

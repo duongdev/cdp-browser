@@ -29,7 +29,7 @@ describe("readChatSettings", () => {
       mono: "dm-mono",
       nameDisplay: "full",
       nameRegex: "",
-      notifySound: "chime-1",
+      notifySound: "polite",
     })
   })
 

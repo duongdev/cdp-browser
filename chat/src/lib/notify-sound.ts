@@ -1,5 +1,6 @@
 // Pure mapping + thin player for notification sounds (PSN-98, Workstream C).
-export type NotifySound = "none" | "chime-1" | "chime-2" | "chime-3"
+// Files are CC0 tones from akx/Notifications (see chat/public/sounds/CREDITS.txt).
+export type NotifySound = "none" | "tap" | "polite" | "calm"
 
 /** Returns the URL for a sound file, or null for "none". Chat assets are served under the /chat/
  *  base (like sw.js + the manifest), so the path is /chat/sounds/... not /sounds/... */
