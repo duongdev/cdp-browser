@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 // @ts-expect-error — CJS core module, no types (backend-shared, run under vitest only)
-import { DEFAULT_REACTIONS, reactionEmoji } from "./teams-emoji"
+import { DEFAULT_REACTIONS, emojiToKey, reactionEmoji } from "./teams-emoji"
 
 describe("reactionEmoji", () => {
   it("maps the six default Teams emotion keys", () => {
@@ -37,6 +37,48 @@ describe("reactionEmoji", () => {
 
   it("falls back for an unknown custom org emoji (name;objectId)", () => {
     expect(reactionEmoji("hajimi_run;0-ea-d11-abc")).toBe("🙂")
+  })
+})
+
+describe("emojiToKey", () => {
+  it("returns the canonical named key for the 6 defaults (round-trip)", () => {
+    expect(emojiToKey("👍")).toBe("like")
+    expect(emojiToKey("❤️")).toBe("heart")
+    expect(emojiToKey("😆")).toBe("laugh")
+    expect(emojiToKey("😮")).toBe("surprised")
+    expect(emojiToKey("😢")).toBe("sad")
+    expect(emojiToKey("😠")).toBe("angry")
+  })
+
+  it("round-trips via reactionEmoji for codepoint-encoded glyphs", () => {
+    // Single-codepoint: 💯 (U+1F4AF) → "1f4af_e" (suffix ensures the decoder's regex fires)
+    const key100 = emojiToKey("💯")
+    expect(key100).toBe("1f4af_e")
+    expect(reactionEmoji(key100)).toBe("💯")
+
+    // Single-codepoint: 🎉 (U+1F389)
+    const keyParty = emojiToKey("🎉")
+    expect(keyParty).toBe("1f389_e")
+    expect(reactionEmoji(keyParty)).toBe("🎉")
+
+    // Single-codepoint: 🧡 (U+1F9E1)
+    const keyOrange = emojiToKey("🧡")
+    expect(keyOrange).toBe("1f9e1_e")
+    expect(reactionEmoji(keyOrange)).toBe("🧡")
+
+    // Multi-codepoint: ❤️ = U+2764 + U+FE0F — naturally has "_", no suffix needed
+    // But ❤️ is in the named map, so emojiToKey returns "heart"
+    expect(emojiToKey("❤️")).toBe("heart")
+
+    // Multi-codepoint non-named: 👍🏽 (U+1F44D + U+1F3FD)
+    const keyThumbsMed = emojiToKey("👍🏽")
+    expect(keyThumbsMed).toBe("1f44d_1f3fd")
+    expect(reactionEmoji(keyThumbsMed)).toBe("👍")
+  })
+
+  it("returns null for empty input", () => {
+    expect(emojiToKey("")).toBeNull()
+    expect(emojiToKey(null)).toBeNull()
   })
 })
 
