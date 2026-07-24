@@ -28,17 +28,18 @@ const dbPath =
   process.env.CHAT_DB_PATH || (process.env.DATA_DIR ? `${process.env.DATA_DIR}/chat.db` : "chat.db")
 const db = migrate(new Database(dbPath))
 
-// VAPID keys for Teams web push (WS-G, decision 8). These MUST match the keys server.mjs used for
-// /api/teams/push (the same defaults below) — regenerating them would silently kill every already-
-// installed PWA's subscription. Override in prod via VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY /
-// VAPID_SUBJECT; the same env the browser PWA push already reads, so both surfaces stay in sync.
+// VAPID keys for Teams web push (WS-G, decision 8). The public key is non-secret (it ships to every
+// browser at subscribe time), so it keeps a default; the PRIVATE key is a secret and comes from env
+// ONLY — no source default. Set VAPID_PRIVATE_KEY (+ optionally VAPID_PUBLIC_KEY/VAPID_SUBJECT) in
+// prod to the same pair the browser PWA push uses, so both surfaces stay in sync and installed
+// subscriptions survive. Without a private key, push is simply disabled (subscribe still works).
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:admin@example.com"
 const VAPID_PUBLIC_KEY =
   process.env.VAPID_PUBLIC_KEY ||
   "BDIDtkQnVIAwcjjpgXgUSKLj6DGvZx_E9UMe4vzn1S-ih2rTIlZMGU_unzeBfIW6VSG_6bF8gUqMvMJUuHeZyzo"
-const VAPID_PRIVATE_KEY =
-  process.env.VAPID_PRIVATE_KEY || process.env.VAPID_PRIVATE_KEY
-webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY
+if (VAPID_PRIVATE_KEY) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
+else console.warn("[chat-server] VAPID_PRIVATE_KEY unset — Teams web push disabled")
 
 const providers = new Map<ChatService, ChatProvider>()
 if (process.env.CHAT_PROVIDER === "mock") providers.set("mock", new MockProvider("mock"))
@@ -65,7 +66,9 @@ attachWsHub(nodeServer, db)
 // Start the sweep once the hub is attached so `broadcast` reaches live clients. One engine per
 // provider; each drives its own list + focus lanes off the shared hub.
 for (const [service, provider] of providers) {
-  const pushSender = createPushSender({ db, service, webpush })
+  // Only wire a push sender when a private key is configured — otherwise webpush has no VAPID
+  // details and every sweep-triggered send would throw (swallowed, but noisy).
+  const pushSender = VAPID_PRIVATE_KEY ? createPushSender({ db, service, webpush }) : undefined
   const sweep = createSweepEngine({
     db,
     provider,
