@@ -20,8 +20,10 @@ import {
   TextUnderlineIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { useEffect, useImperativeHandle, useRef, useState } from "react"
+import { useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { fetchRoster } from "../lib/chat-client"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
@@ -67,7 +69,8 @@ interface ComposerProps {
  *  instead of sitting inline (PSN-94 A — width-responsive action bar). */
 const FORMAT_INLINE_MIN_WIDTH = 480
 
-// A tooltip-only info line so the info doesn't spill: title lives on each button.
+// A ghost icon button with a shadcn Tooltip (replaces the native `title`, PSN-94). The mousedown
+// preventDefault keeps the editor selection so the action lands on it.
 function FmtButton({
   icon,
   label,
@@ -78,19 +81,37 @@ function FmtButton({
   onRun: () => void
 }) {
   return (
-    <Button
-      aria-label={label}
-      className="text-muted-foreground"
-      onClick={onRun}
-      // Keep the editor selection: a mousedown on a button would blur + collapse it.
-      onMouseDown={(e) => e.preventDefault()}
-      size="icon-sm"
-      title={label}
-      variant="ghost"
-    >
-      <HugeiconsIcon className="size-4" icon={icon} />
-    </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={label}
+          className="text-muted-foreground"
+          onClick={onRun}
+          onMouseDown={(e) => e.preventDefault()}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <HugeiconsIcon className="size-4" icon={icon} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   )
+}
+
+// The toggleable inline marks — real on/off state, so they live in a shadcn ToggleGroup that
+// highlights whichever are active at the caret (PSN-94, addressing the "format UX isn't good" note).
+const MARKS: { v: string; icon: IconSvgElement; label: string }[] = [
+  { v: "bold", icon: TextBoldIcon, label: "Bold (⌘B)" },
+  { v: "italic", icon: TextItalicIcon, label: "Italic (⌘I)" },
+  { v: "underline", icon: TextUnderlineIcon, label: "Underline (⌘U)" },
+  { v: "strike", icon: TextStrikethroughIcon, label: "Strikethrough" },
+]
+const MARK_CMD: Record<string, string> = {
+  bold: "bold",
+  italic: "italic",
+  underline: "underline",
+  strike: "strikeThrough",
 }
 
 /** Per-file chip in the pending-attachments row. Image files show a thumbnail; others show a name
@@ -159,6 +180,8 @@ export function Composer({
   const [emojiOpen, setEmojiOpen] = useState(false)
   // Which Giphy picker is open (GIF vs sticker), or null. Both share one popover (PSN-94 D/E).
   const [gifKind, setGifKind] = useState<GiphyKind | null>(null)
+  // The inline marks active at the caret — drives the ToggleGroup's highlighted state.
+  const [activeMarks, setActiveMarks] = useState<string[]>([])
   const catalog = useEmojiCatalog()
 
   // @-mention autocomplete (PSN-92 D): the roster is lazy-loaded on the first `@`; `menu` holds the
@@ -187,6 +210,27 @@ export function Composer({
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // Reflect the marks under the caret in the ToggleGroup. Guarded to a selection inside THIS editor,
+  // so a selection elsewhere on the page never lights the toggles.
+  const refreshActiveMarks = useCallback(() => {
+    const el = editorRef.current
+    const sel = window.getSelection()
+    if (!el || !sel?.anchorNode || !el.contains(sel.anchorNode)) return
+    const marks: string[] = []
+    try {
+      for (const { v } of MARKS) if (document.queryCommandState(MARK_CMD[v])) marks.push(v)
+    } catch {
+      // queryCommandState can throw on a detached selection — leave the marks as-is.
+    }
+    setActiveMarks(marks)
+  }, [])
+
+  // Track the caret's formatting as it moves (selectionchange fires on every caret/selection move).
+  useEffect(() => {
+    document.addEventListener("selectionchange", refreshActiveMarks)
+    return () => document.removeEventListener("selectionchange", refreshActiveMarks)
+  }, [refreshActiveMarks])
 
   // Reset on conversation switch (a half-typed draft / staged file doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the deliberate reset trigger
@@ -294,6 +338,13 @@ export function Composer({
     syncHasContent()
   }
 
+  // ToggleGroup change → toggle whichever mark flipped, then re-read the active set.
+  const onMarksChange = (next: string[]) => {
+    const toggled = MARKS.map((m) => m.v).find((v) => next.includes(v) !== activeMarks.includes(v))
+    if (toggled) exec(MARK_CMD[toggled])
+    refreshActiveMarks()
+  }
+
   // formatBlock wraps the caret's block in a tag (blockquote / pre). Toggling back to a plain block
   // isn't offered — clear-formatting flattens everything.
   const execBlock = (tag: string) => {
@@ -387,17 +438,33 @@ export function Composer({
     return !!li && !!editorRef.current?.contains(li)
   }
 
-  // The formatting cluster — rendered inline when wide, or in a collapsible row when narrow.
+  // The formatting cluster — rendered inline when wide, or in a collapsible row when narrow. The
+  // toggleable marks sit in a shadcn ToggleGroup (active-state highlighted); one-shot block/list/link
+  // actions stay Tooltip buttons.
   const formatButtons = (
     <>
-      <FmtButton icon={TextBoldIcon} label="Bold (⌘B)" onRun={() => exec("bold")} />
-      <FmtButton icon={TextItalicIcon} label="Italic (⌘I)" onRun={() => exec("italic")} />
-      <FmtButton icon={TextUnderlineIcon} label="Underline (⌘U)" onRun={() => exec("underline")} />
-      <FmtButton
-        icon={TextStrikethroughIcon}
-        label="Strikethrough"
-        onRun={() => exec("strikeThrough")}
-      />
+      <ToggleGroup
+        className="gap-0.5"
+        onValueChange={onMarksChange}
+        size="sm"
+        type="multiple"
+        value={activeMarks}
+      >
+        {/* No Tooltip wrapper on the toggles: TooltipTrigger's asChild merge would overwrite the
+            item's data-state (on/off) with the tooltip's (open/closed), killing the active highlight.
+            The icon + aria-label + the highlighted on-state are self-explanatory. */}
+        {MARKS.map((m) => (
+          <ToggleGroupItem
+            aria-label={m.label}
+            className="text-muted-foreground data-[state=on]:bg-accent data-[state=on]:text-foreground"
+            key={m.v}
+            onMouseDown={(e) => e.preventDefault()}
+            value={m.v}
+          >
+            <HugeiconsIcon className="size-4" icon={m.icon} />
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
       <div className="mx-1 h-4 w-px bg-border" />
       <FmtButton icon={CodeIcon} label="Inline code" onRun={wrapInlineCode} />
       <FmtButton icon={SourceCodeIcon} label="Code block" onRun={() => execBlock("pre")} />
@@ -569,130 +636,163 @@ export function Composer({
           role="textbox"
           tabIndex={0}
         />
-        {/* Narrow layout: the formatting row lives above the bar and toggles open. */}
-        {!wide && formatOpen && (
-          <div className="flex flex-wrap items-center gap-0.5 px-2 pb-1">{formatButtons}</div>
-        )}
-        <div className="flex items-center gap-0.5 px-2 pb-2">
-          <input
-            className="hidden"
-            multiple
-            onChange={(e) => {
-              const picked = Array.from(e.target.files ?? [])
-              if (picked.length > 0) setPendingFiles((cur) => [...cur, ...picked])
-              e.target.value = "" // allow re-picking the same file
-            }}
-            ref={fileRef}
-            type="file"
-          />
-          <Button
-            aria-label="Attach file"
-            className="text-muted-foreground"
-            onClick={() => fileRef.current?.click()}
-            size="icon-sm"
-            title="Attach file"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
-          </Button>
-          <div className="relative">
-            <Button
-              aria-label="Emoji"
-              className={cn("text-muted-foreground", emojiOpen && "bg-accent text-foreground")}
-              onClick={() => setEmojiOpen((v) => !v)}
-              onMouseDown={(e) => e.preventDefault()}
-              size="icon-sm"
-              title="Emoji"
-              variant="ghost"
-            >
-              <HugeiconsIcon className="size-4" icon={SmileIcon} />
-            </Button>
-            {emojiOpen && (
-              <>
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setEmojiOpen(false)}
-                  onKeyDown={(e) => e.key === "Escape" && setEmojiOpen(false)}
-                />
-                <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
-                  <EmojiPicker onClose={() => setEmojiOpen(false)} onSelect={insertEmoji} />
-                </div>
-              </>
-            )}
-          </div>
-          {/* GIF + sticker (PSN-94 D/E): both open one Giphy picker keyed by kind. */}
-          <div className="relative">
-            <Button
-              aria-label="GIF"
-              className={cn(
-                "text-muted-foreground",
-                gifKind === "gifs" && "bg-accent text-foreground",
-              )}
-              onClick={() => setGifKind((k) => (k === "gifs" ? null : "gifs"))}
-              onMouseDown={(e) => e.preventDefault()}
-              size="icon-sm"
-              title="GIF"
-              variant="ghost"
-            >
-              <HugeiconsIcon className="size-4" icon={GifIcon} />
-            </Button>
-            <Button
-              aria-label="Sticker"
-              className={cn(
-                "text-muted-foreground",
-                gifKind === "stickers" && "bg-accent text-foreground",
-              )}
-              onClick={() => setGifKind((k) => (k === "stickers" ? null : "stickers"))}
-              onMouseDown={(e) => e.preventDefault()}
-              size="icon-sm"
-              title="Sticker"
-              variant="ghost"
-            >
-              <HugeiconsIcon className="size-4" icon={StickerIcon} />
-            </Button>
-            {gifKind && (
-              <>
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setGifKind(null)}
-                  onKeyDown={(e) => e.key === "Escape" && setGifKind(null)}
-                />
-                <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
-                  <GifPicker kind={gifKind} onClose={() => setGifKind(null)} onSelect={sendGif} />
-                </div>
-              </>
-            )}
-          </div>
-          {wide ? (
-            <>
-              <div className="mx-1 h-4 w-px bg-border" />
-              {formatButtons}
-            </>
-          ) : (
-            <Button
-              aria-label="Formatting"
-              className={cn("text-muted-foreground", formatOpen && "bg-accent text-foreground")}
-              onClick={() => setFormatOpen((v) => !v)}
-              size="icon-sm"
-              title="Formatting"
-              variant="ghost"
-            >
-              <HugeiconsIcon className="size-4" icon={TextFontIcon} />
-            </Button>
+        <TooltipProvider delayDuration={300}>
+          {/* Narrow layout: the formatting row lives above the bar and toggles open. */}
+          {!wide && formatOpen && (
+            <div className="flex flex-wrap items-center gap-0.5 px-2 pb-1">{formatButtons}</div>
           )}
-          <div className="flex-1" />
-          <Button
-            aria-label="Send"
-            className="rounded-full"
-            disabled={!canSend}
-            onClick={doSend}
-            size="icon-sm"
-          >
-            <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
-          </Button>
-        </div>
+          <div className="flex items-center gap-0.5 px-2 pb-2">
+            <input
+              className="hidden"
+              multiple
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? [])
+                if (picked.length > 0) setPendingFiles((cur) => [...cur, ...picked])
+                e.target.value = "" // allow re-picking the same file
+              }}
+              ref={fileRef}
+              type="file"
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Attach file"
+                  className="text-muted-foreground"
+                  onClick={() => fileRef.current?.click()}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Attach file</TooltipContent>
+            </Tooltip>
+            <div className="relative">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Emoji"
+                    className={cn(
+                      "text-muted-foreground",
+                      emojiOpen && "bg-accent text-foreground",
+                    )}
+                    onClick={() => setEmojiOpen((v) => !v)}
+                    onMouseDown={(e) => e.preventDefault()}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <HugeiconsIcon className="size-4" icon={SmileIcon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Emoji</TooltipContent>
+              </Tooltip>
+              {emojiOpen && (
+                <>
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setEmojiOpen(false)}
+                    onKeyDown={(e) => e.key === "Escape" && setEmojiOpen(false)}
+                  />
+                  <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
+                    <EmojiPicker onClose={() => setEmojiOpen(false)} onSelect={insertEmoji} />
+                  </div>
+                </>
+              )}
+            </div>
+            {/* GIF + sticker (PSN-94 D/E): both open one Giphy picker keyed by kind. */}
+            <div className="relative">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="GIF"
+                    className={cn(
+                      "text-muted-foreground",
+                      gifKind === "gifs" && "bg-accent text-foreground",
+                    )}
+                    onClick={() => setGifKind((k) => (k === "gifs" ? null : "gifs"))}
+                    onMouseDown={(e) => e.preventDefault()}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <HugeiconsIcon className="size-4" icon={GifIcon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>GIF</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Sticker"
+                    className={cn(
+                      "text-muted-foreground",
+                      gifKind === "stickers" && "bg-accent text-foreground",
+                    )}
+                    onClick={() => setGifKind((k) => (k === "stickers" ? null : "stickers"))}
+                    onMouseDown={(e) => e.preventDefault()}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <HugeiconsIcon className="size-4" icon={StickerIcon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Sticker</TooltipContent>
+              </Tooltip>
+              {gifKind && (
+                <>
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setGifKind(null)}
+                    onKeyDown={(e) => e.key === "Escape" && setGifKind(null)}
+                  />
+                  <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
+                    <GifPicker kind={gifKind} onClose={() => setGifKind(null)} onSelect={sendGif} />
+                  </div>
+                </>
+              )}
+            </div>
+            {wide ? (
+              <>
+                <div className="mx-1 h-4 w-px bg-border" />
+                {formatButtons}
+              </>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Formatting"
+                    className={cn(
+                      "text-muted-foreground",
+                      formatOpen && "bg-accent text-foreground",
+                    )}
+                    onClick={() => setFormatOpen((v) => !v)}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <HugeiconsIcon className="size-4" icon={TextFontIcon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Formatting</TooltipContent>
+              </Tooltip>
+            )}
+            <div className="flex-1" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Send"
+                  className="rounded-full"
+                  disabled={!canSend}
+                  onClick={doSend}
+                  size="icon-sm"
+                >
+                  <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Send (↵)</TooltipContent>
+            </Tooltip>
+          </div>
+        </TooltipProvider>
       </div>
     </div>
   )
