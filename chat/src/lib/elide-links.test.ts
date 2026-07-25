@@ -38,6 +38,16 @@ describe("elideLinkText", () => {
     expect(out).toContain(`href="${long}"`)
     expect(out).toContain(`title="${long}"`)
   })
+  it("elides from the HREF, not a Teams-pre-shortened display text (no double ellipsis)", () => {
+    // Teams already shortened the visible text with its own "…"; we must re-render from the clean href
+    // and produce exactly ONE ellipsis.
+    const shown = "https://dev.azure.com/FWDGODev…ce/pullrequest/156680"
+    const out = elideLinkText(`<a href="${long}">${shown}</a>`)
+    const text = out.slice(out.indexOf(">") + 1, out.lastIndexOf("<"))
+    expect((text.match(/…/g) ?? []).length).toBe(1)
+    expect(text.startsWith("https://dev.azure.com/FWDGODev")).toBe(true)
+    expect(text.endsWith("156680")).toBe(true)
+  })
   it("leaves a labelled link untouched", () => {
     const html = `<a href="${long}">the PR</a>`
     expect(elideLinkText(html)).toBe(html)
