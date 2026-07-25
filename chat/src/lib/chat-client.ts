@@ -128,9 +128,11 @@ export async function fetchProfile(userId: string, signal?: AbortSignal): Promis
   return data.profile
 }
 
-/** The URL for a user's avatar image (proxied through the BFF provider). */
-export function avatarUrl(userId: string): string {
-  return `/api/chat/avatar?service=${SERVICE}&userId=${encodeURIComponent(userId)}`
+/** The URL for a user's avatar image (proxied through the BFF provider). `size` requests a larger
+ *  Graph photo (e.g. "240x240") for the profile modal + lightbox (PSN-99); omit → provider default. */
+export function avatarUrl(userId: string, size?: string): string {
+  const s = size ? `&size=${encodeURIComponent(size)}` : ""
+  return `/api/chat/avatar?service=${SERVICE}&userId=${encodeURIComponent(userId)}${s}`
 }
 
 /** The URL for a provider-hosted media object (proxied + SSRF-gated by the BFF provider). */

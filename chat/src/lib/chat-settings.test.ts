@@ -3,6 +3,7 @@ import {
   type ChatSettings,
   DEFAULT_CHAT_SETTINGS,
   deviceKey,
+  parseFontScale,
   readChatSettings,
   resolveDark,
   writeChatSettings,
@@ -31,6 +32,7 @@ describe("readChatSettings", () => {
       nameRegex: "",
       notifySound: "polite",
       notificationsEnabled: true,
+      fontScale: 1.0,
     })
   })
 
@@ -82,6 +84,10 @@ describe("writeChatSettings", () => {
     })
   })
 
+  it("emits fontScale slot", () => {
+    expect(writeChatSettings({ fontScale: 1.2 }, DEV)).toEqual({ chatFontScale_device_abc: 1.2 })
+  })
+
   it("emits nothing for an empty partial", () => {
     expect(writeChatSettings({}, DEV)).toEqual({})
   })
@@ -90,6 +96,19 @@ describe("writeChatSettings", () => {
 describe("deviceKey", () => {
   it("joins base + deviceId", () => {
     expect(deviceKey("chatTheme", DEV)).toBe("chatTheme_device_abc")
+  })
+})
+
+describe("parseFontScale", () => {
+  it("clamps to [0.85, 1.4] and rounds to step", () => {
+    expect(parseFontScale(1.0)).toBe(1.0)
+    expect(parseFontScale(0.5)).toBe(0.85)
+    expect(parseFontScale(2.0)).toBe(1.4)
+  })
+  it("falls back to default on garbage", () => {
+    expect(parseFontScale("big")).toBe(DEFAULT_CHAT_SETTINGS.fontScale)
+    expect(parseFontScale(null)).toBe(DEFAULT_CHAT_SETTINGS.fontScale)
+    expect(parseFontScale(Number.NaN)).toBe(DEFAULT_CHAT_SETTINGS.fontScale)
   })
 })
 

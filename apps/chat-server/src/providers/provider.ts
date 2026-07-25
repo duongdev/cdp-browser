@@ -80,7 +80,7 @@ export interface ChatProvider {
     text?: string,
   ): Promise<UploadResult>
   profile(userId: string): Promise<ChatProfile>
-  avatar(userId: string): Promise<AvatarResult>
+  avatar(userId: string, size?: string): Promise<AvatarResult>
   media(url: string): Promise<MediaBytes>
 }
 

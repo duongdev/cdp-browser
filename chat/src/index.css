@@ -350,12 +350,30 @@
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
 }
+/* Compact density is PADDING-ONLY (PSN-99 B4): same font-size, line-height, and paragraph spacing as
+   comfortable — only the bubble padding, inter-message gap, and radius tighten. The font-scale slider
+   composes unchanged because the shared .teams-message-body base below owns the size for both densities. */
 [data-density="compact"] .teams-message-body {
   padding: 0.3rem 0.6rem;
-  font-size: 0.8125rem;
-  line-height: 1.2;
   /* Compact bubbles read tighter with a smaller radius (t169). */
   --bubble-r: 0.7rem;
+}
+
+/* PSN-99 font-scale: applies to text-only surfaces — message bubbles (comfortable density base),
+   conversation-row title/preview, and the composer textarea. Icons, padding, avatars, timestamps
+   are NOT scaled (they use Tailwind utility classes with fixed sizes). The var is set on :root by
+   useChatSettings; default 1 so omitting it is byte-identical to the pre-PSN-99 layout. */
+.teams-message-body {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+}
+.conv-row-title {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+}
+.conv-row-preview {
+  font-size: calc(0.75rem * var(--chat-font-scale, 1));
+}
+.composer-editor {
+  font-size: calc(1rem * var(--chat-font-scale, 1));
 }
 
 /* Bubble geometry (t169): CSS owns the radius (not a Tailwind class) so density can scale it and
@@ -386,6 +404,17 @@
   border-top-right-radius: var(--bubble-tight);
 }
 
+/* Self bubble in dark mode (PSN-99 B6): drop the glary solid coral fill for a near-transparent fill
+   with a coral border + foreground text — easier on the eyes at night. Light mode keeps the solid
+   coral fill (the Tailwind bg-primary/text-primary-foreground utilities). */
+.dark .teams-self-bubble {
+  /* Soft muted pill (PSN-99 refine): a low-glare coral-tinted fill with only a faint border — the
+     bright 70% border read as "light & bold". Still clearly "yours" without straining the eyes. */
+  background: color-mix(in oklab, var(--primary) 16%, transparent);
+  color: var(--foreground);
+  border: 1px solid color-mix(in oklab, var(--primary) 28%, transparent);
+}
+
 /* Rich message body (t133): the sanitized Teams HTML rendered inside a message bubble. Styles use
    currentColor mixes so they read on both the muted (others) and primary (self) bubbles. Tailwind's
    preflight resets margins/list styles, so lists and block spacing are restored here. */
@@ -404,6 +433,14 @@
 .teams-message-body a {
   text-decoration: underline;
   text-underline-offset: 2px;
+  border-radius: 4px;
+  transition: background-color 0.12s ease;
+}
+/* Soft highlight while the cursor is over a link (PSN-99) — same muted tint as a mention pill, so the
+   floating copy button at the link's end reads as part of one highlighted element. Pure CSS :hover
+   (robust — a JS class gets wiped when the row re-renders its innerHTML). No padding = no reflow. */
+.teams-message-body a:hover {
+  background: color-mix(in oklab, currentColor 14%, transparent);
 }
 .teams-message-body ul,
 .teams-message-body ol {
@@ -464,11 +501,22 @@
 .teams-message-body pre {
   margin: 0.35em 0;
   padding: 0.5em 0.6em;
+  /* Scroll internally so a wide code block never widens the bubble past its max-width (B2). max-width
+     bounds it to the bubble; the inner code stays on one line and scrolls within. */
+  max-width: 100%;
   overflow-x: auto;
 }
 .teams-message-body pre code {
+  white-space: pre;
   padding: 0;
   background: none;
+}
+/* A wide rich-HTML table scrolls within the bubble instead of widening it past its max-width and
+   pushing a page-level horizontal scrollbar (PSN-99 hardening; pre/img are already constrained). */
+.teams-message-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }
 .teams-message-body .mention {
   padding: 0 0.25em;
@@ -616,5 +664,12 @@
   -webkit-app-region: drag;
 }
 .is-electron .titlebar :where(button, input, a, [role="button"], select, textarea) {
+  -webkit-app-region: no-drag;
+}
+/* A3 (PSN-99): the settings Sheet renders in a Radix portal outside .titlebar, but its top edge
+   overlaps the macOS drag band (~28px, hiddenInset) which has no -webkit-app-region set — clicks
+   land in the OS drag handler and never reach the X button. Force no-drag on the whole panel so
+   every click inside it (including the close button) is delivered to the renderer. */
+.is-electron [data-slot="sheet-content"] {
   -webkit-app-region: no-drag;
 }

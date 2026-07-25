@@ -77,6 +77,8 @@ const DEVICE_KEY_PREFIXES = [
   "chatNotifySound_",
   // PSN-96 Electron-shell notification toggle.
   "chatNotificationsEnabled_",
+  // PSN-99 per-device font-scale slider (0.85–1.4).
+  "chatFontScale_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

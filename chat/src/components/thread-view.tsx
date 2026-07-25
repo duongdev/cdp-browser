@@ -391,7 +391,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // sticky pill (flex-col-reverse breaks CSS position:sticky, so this is a scroll-driven overlay),
   // fading out shortly after the scroll rests.
   const [offBottom, setOffBottom] = useState(false)
-  const [floatingSep, setFloatingSep] = useState<string | null>(null)
+  // Floating date pill (B5): the label text (`sepLabel`) is kept while the pill fades out so the
+  // whole pill — bg/border/text — fades as ONE unit; `sepVisible` alone drives opacity. Blanking the
+  // label on hide (the old bug) left an empty bordered box lingering after the text vanished.
+  const [sepLabel, setSepLabel] = useState<string>("")
+  const [sepVisible, setSepVisible] = useState(false)
   const floatingHideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Unread-jump FAB state (PSN-96 C): declared early so they're stable refs for the effect below.
@@ -413,9 +417,15 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         best = { top, label: sep.dataset.threadSep || "" }
       }
     }
-    setFloatingSep(best?.label || null)
-    clearTimeout(floatingHideTimer.current)
-    floatingHideTimer.current = setTimeout(() => setFloatingSep(null), 1200)
+    if (best?.label) {
+      setSepLabel(best.label)
+      setSepVisible(true)
+      clearTimeout(floatingHideTimer.current)
+      // Hide by fading opacity only — the label text stays so the pill fades as one unit (B5).
+      floatingHideTimer.current = setTimeout(() => setSepVisible(false), 1200)
+    } else {
+      setSepVisible(false)
+    }
   }, [])
   useEffect(() => () => clearTimeout(floatingHideTimer.current), [])
 
@@ -1121,16 +1131,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           <BodyNameTooltip containerRef={scrollRef} />
           {/* Floating current-period pill (t160): flex-col-reverse breaks position:sticky, so the
               topmost-passed separator's label floats here while scrolling, then fades. */}
+          {/* Opacity lives on the single pill element (B5) — bg, border, text, shadow fade together;
+              the label persists during the fade so no empty box lingers. */}
           <div
             aria-hidden
             className={cn(
-              "pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 transition-opacity duration-300",
-              floatingSep ? "opacity-100" : "opacity-0",
+              "pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border bg-popover px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground shadow-sm transition-opacity duration-300",
+              sepVisible ? "opacity-100" : "opacity-0",
             )}
           >
-            <span className="rounded-full border border-border bg-popover px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground shadow-sm">
-              {floatingSep}
-            </span>
+            {sepLabel}
           </div>
           {/* Jump-to-unread FAB (PSN-96 C): shows when the "New" separator is above the viewport
               and hasn't been seen yet. Stacks above the scroll-to-bottom FAB. */}
@@ -1139,8 +1149,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             className={cn(
               "absolute right-4 z-10 flex items-center gap-1.5 rounded-full px-3 shadow-md transition-all duration-200",
               offBottom ? "bottom-14" : "bottom-3",
+              // Translucent at rest, solid on hover (B7).
               showUnreadJump
-                ? "translate-y-0 opacity-100"
+                ? "translate-y-0 opacity-70 hover:opacity-100"
                 : "pointer-events-none translate-y-2 opacity-0",
             )}
             onClick={jumpToUnread}
@@ -1155,8 +1166,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             aria-label="Scroll to bottom"
             className={cn(
               "absolute right-4 bottom-3 z-10 rounded-full shadow-md transition-all duration-200",
+              // Translucent at rest, solid on hover (B7).
               offBottom
-                ? "translate-y-0 opacity-100"
+                ? "translate-y-0 opacity-70 hover:opacity-100"
                 : "pointer-events-none translate-y-2 opacity-0",
             )}
             onClick={jumpToBottom}

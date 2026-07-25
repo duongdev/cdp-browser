@@ -233,9 +233,11 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
   return (
     <div className="space-y-3 border-border/60 border-t pt-3">
       <Label className="text-[13px]">Data</Label>
+      {/* Dropdown + Run pinned to the same explicit height (h-8) + shared rounded-lg so their borders
+          line up pixel-for-pixel regardless of theme/density (PSN-99 polish). */}
       <div className="flex items-center gap-2">
         <Select onOpenChange={onSelectOpen} onValueChange={setDays} value={days}>
-          <SelectTrigger className="flex-1">
+          <SelectTrigger className="h-8 flex-1">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -246,7 +248,13 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
             ))}
           </SelectContent>
         </Select>
-        <Button disabled={running} onClick={handleRun} size="default" variant="secondary">
+        <Button
+          className="h-8"
+          disabled={running}
+          onClick={handleRun}
+          size="default"
+          variant="secondary"
+        >
           {running ? "Running\u2026" : "Run"}
         </Button>
       </div>
@@ -361,6 +369,7 @@ export function SettingsSheet({
         }}
         showCloseButton={false}
         showOverlay={false}
+        side="left"
       >
         <SheetHeader className="flex-row items-center justify-between">
           <div>
@@ -373,7 +382,7 @@ export function SettingsSheet({
           </Button>
         </SheetHeader>
 
-        <div className="flex flex-col gap-5 p-4 pt-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4 pt-2">
           <div className="space-y-2">
             <Label className="text-[13px]">Theme</Label>
             <Segmented
@@ -392,6 +401,29 @@ export function SettingsSheet({
               options={DENSITY_OPTIONS}
               value={settings.density}
             />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-[13px]">Font size</Label>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {Math.round(settings.fontScale * 100)}%
+              </span>
+            </div>
+            {/* ponytail: native range — no new dep. Style matches the sheet's muted palette. */}
+            <input
+              className="w-full accent-foreground"
+              max={1.4}
+              min={0.85}
+              onChange={(e) => onUpdate({ fontScale: Number(e.target.value) })}
+              step={0.05}
+              type="range"
+              value={settings.fontScale}
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground">
+              <span>A</span>
+              <span className="text-sm">A</span>
+            </div>
           </div>
 
           <div className="space-y-2">
