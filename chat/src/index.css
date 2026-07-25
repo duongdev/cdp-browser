@@ -501,6 +501,13 @@
 .teams-message-body pre code {
   white-space: pre;
 }
+/* A wide rich-HTML table scrolls within the bubble instead of widening it past its max-width and
+   pushing a page-level horizontal scrollbar (PSN-99 hardening; pre/img are already constrained). */
+.teams-message-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
 .teams-message-body pre code {
   padding: 0;
   background: none;

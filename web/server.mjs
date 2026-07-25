@@ -50,6 +50,7 @@ import { buildTeamsFilePayload } from "../core/teams-files.js"
 import { rewriteMediaHtml } from "../core/teams-media.js"
 import {
   composeTitle as teamsComposeTitle,
+  normalizeUserOid as teamsNormalizeUserOid,
   oidFromMri as teamsOidFromMri,
   otherMrisFromId as teamsOtherMrisFromId,
 } from "../core/teams-names.js"
@@ -1550,11 +1551,22 @@ async function fetchTeamsAvatarInPage(oid, size) {
       let bearer = ""
       try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { error: "no_bearer" } }
       if (!bearer) return { error: "no_bearer" }
-      const r = await fetch("https://graph.microsoft.com/v1.0/users/${oid}/photos/${size}/$value", {
-        headers: { Authorization: "Bearer " + bearer },
-      })
-      if (r.status === 404) return { miss: true }
-      if (r.status === 401 || r.status === 403) return { error: "invalid_auth" }
+      // Try the requested size, then fall back to the default photo (/photo/$value = largest
+      // available). Graph 404s a size it didn't pre-generate, so a 240/648 request would otherwise
+      // miss for a user who DOES have a (smaller) photo — the "photo → initials" bug (PSN-99).
+      const urls = [
+        "https://graph.microsoft.com/v1.0/users/${oid}/photos/${size}/$value",
+        "https://graph.microsoft.com/v1.0/users/${oid}/photo/$value",
+      ]
+      let r = null
+      for (const u of urls) {
+        const resp = await fetch(u, { headers: { Authorization: "Bearer " + bearer } })
+        if (resp.status === 401 || resp.status === 403) return { error: "invalid_auth" }
+        if (resp.status === 404) continue
+        r = resp
+        break
+      }
+      if (!r) return { miss: true }
       if (!r.ok) return { error: "http_" + r.status }
       const blob = await r.blob()
       const dataUrl = await new Promise((resolve, reject) => {
@@ -1574,7 +1586,12 @@ async function fetchTeamsAvatarInPage(oid, size) {
 // Resolve one user's avatar → { ct, buf } | { miss: true } | { error }. The in-page Graph fetch
 // needs only a Teams tab (any tenant's bearer resolves any oid in that tenant's directory); no
 // per-tenant cred juggling like media.
-async function teamsAvatar(oid, size) {
+async function teamsAvatar(rawOid, size) {
+  // Normalize to the bare AAD oid: message senders arrive as `8:orgid:{oid}` MRIs, not bare oids like
+  // the conversation avatarUserId — Graph 404s the MRI form, so sender avatars fell back to initials
+  // (PSN-99). Also the SSRF/shape guard (bare UUID only) the removed public route used to apply.
+  const oid = teamsNormalizeUserOid(rawOid)
+  if (!oid) return { miss: true }
   const out = await fetchTeamsAvatarInPage(oid, size)
   if (out.miss) return { miss: true }
   if (out.error) return { error: out.error }
@@ -1591,7 +1608,11 @@ async function teamsAvatar(oid, size) {
 const TEAMS_PROFILE_SELECT =
   "displayName,mail,userPrincipalName,jobTitle,department,officeLocation,businessPhones,mobilePhone"
 
-async function teamsProfile(oid) {
+async function teamsProfile(rawOid) {
+  // Same normalization as teamsAvatar: a sender MRI (`8:orgid:{oid}`) must become the bare oid or
+  // Graph 404s and the profile modal reads "couldn't load" (PSN-99). SSRF guard: bare UUID only.
+  const oid = teamsNormalizeUserOid(rawOid)
+  if (!oid) return { error: "not_found" }
   const script = `(async () => {
     try {
       let key = null

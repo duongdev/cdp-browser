@@ -30,6 +30,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
@@ -169,6 +170,21 @@ function ChatMessageRow({
   // Null when no link is hovered. Fine pointer only — coarse skips the delegation entirely.
   const [hoveredLink, setHoveredLink] = useState<{ href: string; rect: DOMRect } | null>(null)
   const [linkCopied, copyLink] = useCopy()
+  // Hover-bridge (PSN-99): the copy button floats away from the link, so leaving the link doesn't
+  // hide it instantly — a short grace timer lets the cursor cross the gap onto the button, which
+  // cancels the timer on enter. Without this the button vanished before it could be clicked.
+  const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelLinkHide = useCallback(() => {
+    if (linkHideTimer.current) {
+      clearTimeout(linkHideTimer.current)
+      linkHideTimer.current = null
+    }
+  }, [])
+  const scheduleLinkHide = useCallback(() => {
+    cancelLinkHide()
+    linkHideTimer.current = setTimeout(() => setHoveredLink(null), 180)
+  }, [cancelLinkHide])
+  useEffect(() => cancelLinkHide, [cancelLinkHide])
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
@@ -433,14 +449,7 @@ function ChatMessageRow({
               data-pos={groupPos}
               data-side={self ? "self" : "other"}
               onClick={onBodyClick}
-              onMouseOut={
-                coarse
-                  ? undefined
-                  : (e) => {
-                      const related = e.relatedTarget as HTMLElement | null
-                      if (!related?.closest?.(".link-copy-btn")) setHoveredLink(null)
-                    }
-              }
+              onMouseOut={coarse ? undefined : scheduleLinkHide}
               onMouseOver={
                 coarse
                   ? undefined
@@ -448,8 +457,12 @@ function ChatMessageRow({
                       const a = (e.target as HTMLElement).closest?.(
                         "a[href]",
                       ) as HTMLAnchorElement | null
-                      if (a?.href) setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
-                      else setHoveredLink(null)
+                      if (a?.href) {
+                        cancelLinkHide()
+                        setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
+                      } else {
+                        scheduleLinkHide()
+                      }
                     }
               }
             />
@@ -463,10 +476,8 @@ function ChatMessageRow({
                   e.preventDefault()
                   copyLink(hoveredLink.href)
                 }}
-                onMouseLeave={(e) => {
-                  const related = e.relatedTarget as HTMLElement | null
-                  if (!related?.closest?.("[data-side]")) setHoveredLink(null)
-                }}
+                onMouseEnter={cancelLinkHide}
+                onMouseLeave={scheduleLinkHide}
                 style={{
                   top: Math.max(4, hoveredLink.rect.top - 2),
                   left: Math.min(hoveredLink.rect.right + 4, window.innerWidth - 28),
@@ -673,11 +684,12 @@ function QuickReact({
   onPickerPick: (key: string) => void
   side: "start" | "end"
 }) {
-  const plusRef = useRef<HTMLButtonElement>(null)
   return (
     <div
       className={cn(
         "absolute -top-4 z-20 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover/bubble:opacity-100",
+        // Stay visible while the catalog popover is open (it portals out of the hover group).
+        pickerOpen && "opacity-100",
         side === "end" ? "-right-1" : "-left-1",
       )}
     >
@@ -692,43 +704,26 @@ function QuickReact({
           {r.emoji}
         </button>
       ))}
-      {/* "+" opens the Teams catalog emoji picker */}
-      <div className="relative">
-        <button
-          aria-expanded={pickerOpen}
+      {/* "+" opens the Teams catalog picker in a shadcn Popover — portaled + collision-aware, so it
+          flips/clamps at the viewport edge and dismisses on click-away/Escape (no hand-rolled backdrop
+          or absolute panel that could clip off-screen). PSN-99 refine. */}
+      <Popover onOpenChange={onPickerOpenChange} open={pickerOpen}>
+        <PopoverTrigger
           aria-label="More reactions"
           className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent"
-          onClick={() => onPickerOpenChange(!pickerOpen)}
-          ref={plusRef}
-          type="button"
         >
           <HugeiconsIcon className="size-3.5" icon={Add01Icon} />
-        </button>
-        {pickerOpen && (
-          <>
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-            <div
-              className="fixed inset-0 z-40"
-              onClick={() => onPickerOpenChange(false)}
-              onKeyDown={(e) => e.key === "Escape" && onPickerOpenChange(false)}
-            />
-            <div
-              className={cn(
-                "absolute bottom-full z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg",
-                side === "end" ? "right-0" : "left-0",
-              )}
-            >
-              <EmojiPicker
-                onClose={() => onPickerOpenChange(false)}
-                onSelect={(key) => {
-                  onPickerOpenChange(false)
-                  onPickerPick(key)
-                }}
-              />
-            </div>
-          </>
-        )}
-      </div>
+        </PopoverTrigger>
+        <PopoverContent align={side === "end" ? "end" : "start"} className="w-auto p-0" side="top">
+          <EmojiPicker
+            onClose={() => onPickerOpenChange(false)}
+            onSelect={(key) => {
+              onPickerOpenChange(false)
+              onPickerPick(key)
+            }}
+          />
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }
