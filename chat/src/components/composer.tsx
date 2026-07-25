@@ -21,6 +21,7 @@ import {
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import Mention from "@tiptap/extension-mention"
+import Placeholder from "@tiptap/extension-placeholder"
 import { type Editor, EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import { useEffect, useImperativeHandle, useRef, useState } from "react"
@@ -243,6 +244,7 @@ export function Composer({
           HTMLAttributes: { rel: "noopener noreferrer nofollow", target: "_blank" },
         },
       }),
+      Placeholder.configure({ placeholder: "Type a message…" }),
       RosterMention.configure({
         suggestion: {
           char: "@",

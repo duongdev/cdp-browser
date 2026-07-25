@@ -376,6 +376,16 @@
   font-size: calc(1rem * var(--chat-font-scale, 1));
 }
 
+/* Tiptap placeholder (PSN-94): the empty editor's first paragraph shows "Type a message…" via the
+   @tiptap/extension-placeholder attr, mirroring the old contenteditable's empty:before hint. */
+.composer-editor p.is-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
 /* Bubble geometry (t169): CSS owns the radius (not a Tailwind class) so density can scale it and
    grouped same-sender runs get asymmetric corners — the corners facing a group neighbour tighten
    (Messenger-style), driven by data-pos (solo/first/middle/last) + data-side (self/other). */
