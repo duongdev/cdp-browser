@@ -1,6 +1,14 @@
 # PSN-94 — Chat input rich enhancement (plan)
 
-Status: built — A/C/D/E shipped, B cut (unreliable) · 2026-07-25
+Status: built — A/C/D/E shipped; B delivered via Tiptap migration · 2026-07-25
+
+## Round 2 (2026-07-25) — Tiptap migration + fixes
+
+After review, merged `origin/main` (PSN-99) and:
+- **GIF e2e proven with the real key** — `scripts/gif-roundtrip-e2e.mjs` (Giphy search → build → send → Teams stores it as native `AnimatedImage` `x_{id}` → cleanup). Needs `GIPHY_API_KEY` set on the server (BFF). Giphy "SDK vs API" → pick **API**.
+- **Electron regressions from PSN-99 fixed** — sidebar nav buttons wrapped in one flex group (right-packed); settings sheet (left drawer) header gets an Electron-only top offset so the title clears the macOS traffic lights. Web/PWA byte-unchanged (verified).
+- **Composer toolbar → shadcn ToggleGroup + Tooltip** (active-mark highlight; HTML `title` dropped).
+- **B revisited → Composer migrated to Tiptap** (grilled decision: GO). Tiptap v3 StarterKit gives live markdown input rules with **no caret bleed** (the reason B was cut on the execCommand contenteditable), active-state toolbar via `editor.isActive`, and @mention via the Mention extension emitting the existing `data-mri`/`data-name` pill so `outgoingFromEditor` + the Teams wire mapping are unchanged. Verified live: `**bold**`/`` `code` `` convert with text after outside the mark; a formatted message round-trips to self-note as `<p>…<strong>…</strong>…<code>…</code>…</p>`; the mention dropdown + pill insert work. Cost ~+130KB gzip.
 Issue: https://linear.app/withdustin/issue/PSN-94
 
 ## Build results (2026-07-25)
