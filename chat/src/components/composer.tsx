@@ -35,8 +35,10 @@ import {
 import { filterRoster, mentionQuery } from "../lib/mention"
 import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 import type { RosterMember } from "../lib/teams-client"
+import { type GifItem, type GiphyKind, gifToOutgoing } from "../lib/teams-gif"
 import { useEmojiCatalog } from "../lib/use-emoji-catalog"
 import { EmojiPicker } from "./emoji-picker"
+import { GifPicker } from "./gif-picker"
 import { prompt } from "./prompt-dialog"
 
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
@@ -161,6 +163,8 @@ export function Composer({
   const [wide, setWide] = useState(true)
   const [formatOpen, setFormatOpen] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
+  // Which Giphy picker is open (GIF vs sticker), or null. Both share one popover (PSN-94 D/E).
+  const [gifKind, setGifKind] = useState<GiphyKind | null>(null)
   const catalog = useEmojiCatalog()
 
   // @-mention autocomplete (PSN-92 D): the roster is lazy-loaded on the first `@`; `menu` holds the
@@ -199,6 +203,7 @@ export function Composer({
     setPendingFiles([])
     setMenu(null)
     setEmojiOpen(false)
+    setGifKind(null)
     roster.current = []
     rosterLoaded.current = false
     if (autoFocus) el?.focus()
@@ -366,6 +371,14 @@ export function Composer({
     editorRef.current?.focus()
     if (u) document.execCommand("insertText", false, u)
     syncHasContent()
+  }
+
+  // A picked GIF/sticker sends immediately (like Teams) — shaped into an OutgoingMessage the parent's
+  // onSend already routes as a RichText/Html message (it can't ride the contenteditable; see teams-gif).
+  const sendGif = (item: GifItem) => {
+    setGifKind(null)
+    onSend(gifToOutgoing(item), [])
+    editorRef.current?.focus()
   }
 
   // --- Live markdown auto-convert (PSN-94 B) --------------------------------
@@ -685,27 +698,50 @@ export function Composer({
               </>
             )}
           </div>
-          {/* GIF + sticker land in workstreams D + E — placeholders reserve the slot. */}
-          <Button
-            aria-label="GIF (coming soon)"
-            className="text-muted-foreground"
-            disabled
-            size="icon-sm"
-            title="GIF (coming soon)"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={GifIcon} />
-          </Button>
-          <Button
-            aria-label="Sticker (coming soon)"
-            className="text-muted-foreground"
-            disabled
-            size="icon-sm"
-            title="Sticker (coming soon)"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={StickerIcon} />
-          </Button>
+          {/* GIF + sticker (PSN-94 D/E): both open one Giphy picker keyed by kind. */}
+          <div className="relative">
+            <Button
+              aria-label="GIF"
+              className={cn(
+                "text-muted-foreground",
+                gifKind === "gifs" && "bg-accent text-foreground",
+              )}
+              onClick={() => setGifKind((k) => (k === "gifs" ? null : "gifs"))}
+              onMouseDown={(e) => e.preventDefault()}
+              size="icon-sm"
+              title="GIF"
+              variant="ghost"
+            >
+              <HugeiconsIcon className="size-4" icon={GifIcon} />
+            </Button>
+            <Button
+              aria-label="Sticker"
+              className={cn(
+                "text-muted-foreground",
+                gifKind === "stickers" && "bg-accent text-foreground",
+              )}
+              onClick={() => setGifKind((k) => (k === "stickers" ? null : "stickers"))}
+              onMouseDown={(e) => e.preventDefault()}
+              size="icon-sm"
+              title="Sticker"
+              variant="ghost"
+            >
+              <HugeiconsIcon className="size-4" icon={StickerIcon} />
+            </Button>
+            {gifKind && (
+              <>
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setGifKind(null)}
+                  onKeyDown={(e) => e.key === "Escape" && setGifKind(null)}
+                />
+                <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
+                  <GifPicker kind={gifKind} onClose={() => setGifKind(null)} onSelect={sendGif} />
+                </div>
+              </>
+            )}
+          </div>
           {wide ? (
             <>
               <div className="mx-1 h-4 w-px bg-border" />

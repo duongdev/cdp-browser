@@ -180,6 +180,48 @@ export function createRoutes(deps: RoutesDeps) {
     return bytes(c, await provider.media(murl))
   })
 
+  // ---- Giphy proxy (PSN-94 D/E, no provider) ------------------------------
+  // GIF + sticker search for the composer. The API key lives server-side (GIPHY_API_KEY) so it never
+  // ships in the client bundle. Empty query → trending. Any failure (no key, Giphy down) returns an
+  // empty list so the picker degrades to its empty state, never a hard error.
+  app.get("/giphy", async (c) => {
+    const key = process.env.GIPHY_API_KEY
+    if (!key) return c.json({ items: [], error: "no_giphy_key" })
+    const kind = c.req.query("kind") === "stickers" ? "stickers" : "gifs"
+    const q = (c.req.query("q") || "").trim()
+    const base = `https://api.giphy.com/v1/${kind}`
+    const common = `api_key=${key}&limit=24&rating=pg-13`
+    const url = q
+      ? `${base}/search?${common}&q=${encodeURIComponent(q)}`
+      : `${base}/trending?${common}`
+    try {
+      const r = await fetch(url)
+      if (!r.ok) return c.json({ items: [], error: `giphy_${r.status}` })
+      const j = (await r.json()) as { data?: unknown[] }
+      const items = (j.data ?? [])
+        .map((g) => {
+          const e = g as {
+            id?: string
+            images?: { original?: Record<string, string>; fixed_width?: Record<string, string> }
+          }
+          const orig = e.images?.original
+          if (!e.id || !orig?.url) return null
+          const prev = e.images?.fixed_width ?? orig
+          return {
+            id: e.id,
+            url: orig.url,
+            previewUrl: prev.url ?? orig.url,
+            width: Number(orig.width) || 220,
+            height: Number(orig.height) || 220,
+          }
+        })
+        .filter(Boolean)
+      return c.json({ items })
+    } catch {
+      return c.json({ items: [], error: "giphy_failed" })
+    }
+  })
+
   // ---- prefs (store-local, no provider) -----------------------------------
 
   app.get("/prefs", (c) => {
