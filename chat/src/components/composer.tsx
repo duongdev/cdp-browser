@@ -26,6 +26,12 @@ import { cn } from "@/lib/utils"
 import { fetchRoster } from "../lib/chat-client"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { pickFiles } from "../lib/image-attach"
+import {
+  type BlockMatch,
+  type InlineMatch,
+  matchBlockShortcut,
+  matchInlineShortcut,
+} from "../lib/markdown-shortcuts"
 import { filterRoster, mentionQuery } from "../lib/mention"
 import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 import type { RosterMember } from "../lib/teams-client"
@@ -362,6 +368,76 @@ export function Composer({
     syncHasContent()
   }
 
+  // --- Live markdown auto-convert (PSN-94 B) --------------------------------
+  // Run on every input: if the text before a collapsed caret just completed a markdown span/prefix,
+  // replace the source with the formatted node. Pure detection lives in markdown-shortcuts.ts.
+
+  // A text node sits at the start of its line when nothing precedes it, or only a <br> does.
+  const isLineStart = (node: Node): boolean => {
+    const prev = node.previousSibling
+    return !prev || prev.nodeName === "BR"
+  }
+
+  const applyBlockMarkdown = (node: Text, block: BlockMatch) => {
+    const sel = window.getSelection()
+    if (!sel) return
+    const strip = document.createRange()
+    strip.setStart(node, 0)
+    strip.setEnd(node, block.raw.length)
+    strip.deleteContents()
+    const caret = document.createRange()
+    caret.setStart(node, 0)
+    caret.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(caret)
+    editorRef.current?.focus()
+    if (block.kind === "quote") document.execCommand("formatBlock", false, "blockquote")
+    else if (block.kind === "code") document.execCommand("formatBlock", false, "pre")
+    else if (block.kind === "ul") document.execCommand("insertUnorderedList")
+    else if (block.kind === "ol") document.execCommand("insertOrderedList")
+    syncHasContent()
+  }
+
+  const applyInlineMarkdown = (node: Text, caretOffset: number, m: InlineMatch) => {
+    const sel = window.getSelection()
+    if (!sel) return
+    const range = document.createRange()
+    range.setStart(node, m.start)
+    range.setEnd(node, caretOffset)
+    range.deleteContents()
+    const wrap = document.createElement(m.tag)
+    wrap.textContent = m.inner
+    range.insertNode(wrap)
+    // Caret lands after the mark so continued typing stays unformatted.
+    const after = document.createRange()
+    after.setStartAfter(wrap)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+    syncHasContent()
+  }
+
+  const applyMarkdown = () => {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return
+    const range = sel.getRangeAt(0)
+    if (!range.collapsed) return
+    const node = range.startContainer
+    if (node.nodeType !== Node.TEXT_NODE) return
+    // Never reformat inside an existing code span/block.
+    if ((node.parentElement as Element | null)?.closest("code, pre")) return
+    const offset = range.startOffset
+    const text = (node.textContent ?? "").slice(0, offset)
+
+    const block = matchBlockShortcut(text)
+    if (block && isLineStart(node)) {
+      applyBlockMarkdown(node as Text, block)
+      return
+    }
+    const inline = matchInlineShortcut(text)
+    if (inline) applyInlineMarkdown(node as Text, offset, inline)
+  }
+
   const canSend = hasContent || pendingFiles.length > 0
 
   // Is the caret inside a list item of THIS editor? Then Enter must add/exit a bullet (native), not
@@ -493,6 +569,7 @@ export function Composer({
           onBlur={() => onFocusChange(false)}
           onFocus={() => onFocusChange(true)}
           onInput={() => {
+            applyMarkdown()
             setHasContent(!!readEditor().text)
             syncMentionMenu()
           }}
