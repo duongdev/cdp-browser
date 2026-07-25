@@ -20,7 +20,10 @@ import {
   TextUnderlineIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
+import Mention from "@tiptap/extension-mention"
+import { type Editor, EditorContent, useEditor } from "@tiptap/react"
+import StarterKit from "@tiptap/starter-kit"
+import { useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -28,8 +31,8 @@ import { cn } from "@/lib/utils"
 import { fetchRoster } from "../lib/chat-client"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { pickFiles } from "../lib/image-attach"
-import { filterRoster, mentionQuery } from "../lib/mention"
-import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
+import { filterRoster } from "../lib/mention"
+import { type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 import type { RosterMember } from "../lib/teams-client"
 import { type GifItem, type GiphyKind, gifToOutgoing } from "../lib/teams-gif"
 import { useEmojiCatalog } from "../lib/use-emoji-catalog"
@@ -99,20 +102,38 @@ function FmtButton({
   )
 }
 
-// The toggleable inline marks — real on/off state, so they live in a shadcn ToggleGroup that
-// highlights whichever are active at the caret (PSN-94, addressing the "format UX isn't good" note).
+// The toggleable inline marks — a shadcn ToggleGroup that highlights whichever are active at the
+// caret via Tiptap's editor.isActive (PSN-94 — the "format UX isn't good" note).
 const MARKS: { v: string; icon: IconSvgElement; label: string }[] = [
   { v: "bold", icon: TextBoldIcon, label: "Bold (⌘B)" },
   { v: "italic", icon: TextItalicIcon, label: "Italic (⌘I)" },
   { v: "underline", icon: TextUnderlineIcon, label: "Underline (⌘U)" },
   { v: "strike", icon: TextStrikethroughIcon, label: "Strikethrough" },
 ]
-const MARK_CMD: Record<string, string> = {
-  bold: "bold",
-  italic: "italic",
-  underline: "underline",
-  strike: "strikeThrough",
-}
+
+// The @-mention node emits the SAME pill markup the existing send-shaper expects
+// (`outgoingFromEditor` reads `data-mri`/`data-name`), so the Teams per-token wire mapping is
+// unchanged — Tiptap just replaces the contenteditable that produced those pills (PSN-94).
+const RosterMention = Mention.extend({
+  addAttributes() {
+    return {
+      id: { default: null },
+      label: { default: null },
+      self: { default: false },
+    }
+  },
+  renderHTML({ node }) {
+    return [
+      "span",
+      {
+        class: node.attrs.self ? "mention mention-self" : "mention",
+        "data-mri": node.attrs.id ?? "",
+        "data-name": node.attrs.label ?? "",
+      },
+      `@${node.attrs.label ?? ""}`,
+    ]
+  },
+})
 
 /** Per-file chip in the pending-attachments row. Image files show a thumbnail; others show a name
  *  chip. The ✕ button removes this file from the list without moving focus away from the editor. */
@@ -152,10 +173,20 @@ function PendingFileChip({ file, onRemove }: { file: File; onRemove: () => void 
   )
 }
 
-/** The thread composer (t159): a rich contenteditable in a raised card. Sending never disables the
- *  editor — the parent owns the optimistic bubble lifecycle; this clears itself and refocuses so the
- *  next message can start immediately. Enter sends, Shift+Enter breaks a line, paste is
- *  plain-text-forced (an image paste stages an attachment instead). */
+// The live suggestion dropdown state, driven by Tiptap's Mention suggestion plugin.
+interface MentionState {
+  items: RosterMember[]
+  active: number
+  left: number
+  top: number
+}
+
+/** The thread composer (PSN-94): a Tiptap rich editor. Markdown input rules (`**b**`, `` `c` ``,
+ *  `> `, `- `, `1. `, ```` ``` ````) convert live with no caret bleed (ProseMirror mark model), the
+ *  toolbar reflects the caret's active marks, and @-mentions ride the Mention extension. Sending
+ *  never disables the editor — the parent owns the optimistic bubble; this clears + refocuses.
+ *  Enter sends, Shift+Enter is a soft break, ⌘/Ctrl+Enter always sends; inside a list or code block
+ *  Enter keeps its native behaviour. A picked GIF/emoji/file is handled outside the editor. */
 export function Composer({
   ref,
   resetKey,
@@ -167,36 +198,191 @@ export function Composer({
   convId,
   namePref = FULL_NAME,
 }: ComposerProps) {
-  const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const [hasContent, setHasContent] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
-
-  // Width-responsive action bar (PSN-94 A): format actions sit inline when the card is wide, else
-  // collapse behind the Format toggle.
   const [wide, setWide] = useState(true)
   const [formatOpen, setFormatOpen] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
-  // Which Giphy picker is open (GIF vs sticker), or null. Both share one popover (PSN-94 D/E).
   const [gifKind, setGifKind] = useState<GiphyKind | null>(null)
-  // The inline marks active at the caret — drives the ToggleGroup's highlighted state.
-  const [activeMarks, setActiveMarks] = useState<string[]>([])
+  const [mention, setMention] = useState<MentionState | null>(null)
+  // Re-render tick so the toolbar's active-mark highlights refresh on every selection/content change.
+  const [, setTick] = useState(0)
   const catalog = useEmojiCatalog()
 
-  // @-mention autocomplete (PSN-92 D): the roster is lazy-loaded on the first `@`; `menu` holds the
-  // open dropdown's filtered candidates + the highlighted index.
-  const roster = useRef<RosterMember[]>([])
-  const rosterLoaded = useRef(false)
-  const [menu, setMenu] = useState<{ items: RosterMember[]; active: number } | null>(null)
+  // Refs that the Tiptap editorProps handlers (created once) read live.
+  const doSendRef = useRef<() => void>(() => {})
+  const quotesRef = useRef(quotes)
+  quotesRef.current = quotes
+  const onEscapeRef = useRef(onEscape)
+  onEscapeRef.current = onEscape
+  const mentionOpenRef = useRef(false)
+  // The current suggestion command + active index, so onKeyDown can commit without stale state.
+  const suggestRef = useRef<{
+    command?: (a: { id: string; label: string; self: boolean }) => void
+    items: RosterMember[]
+    active: number
+  }>({ items: [], active: 0 })
+
+  // Roster, lazy-loaded once per conversation on the first `@`.
+  const rosterRef = useRef<RosterMember[] | null>(null)
+  const loadRoster = async (): Promise<RosterMember[]> => {
+    if (rosterRef.current) return rosterRef.current
+    const members = convId ? await fetchRoster(convId) : []
+    rosterRef.current = members
+    return members
+  }
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        link: {
+          openOnClick: false,
+          autolink: true,
+          HTMLAttributes: { rel: "noopener noreferrer nofollow", target: "_blank" },
+        },
+      }),
+      RosterMention.configure({
+        suggestion: {
+          char: "@",
+          items: async ({ query }) => filterRoster(await loadRoster(), query),
+          command: ({ editor, range, props }) => {
+            // props carries our chosen member (id/label/self); insert the mention node + a space.
+            editor
+              .chain()
+              .focus()
+              .insertContentAt(range, [
+                { type: "mention", attrs: props },
+                { type: "text", text: " " },
+              ])
+              .run()
+          },
+          render: () => ({
+            onStart: (props) => {
+              mentionOpenRef.current = true
+              suggestRef.current = {
+                command: props.command as (a: { id: string; label: string; self: boolean }) => void,
+                items: props.items,
+                active: 0,
+              }
+              const r = props.clientRect?.()
+              setMention({ items: props.items, active: 0, left: r?.left ?? 0, top: r?.top ?? 0 })
+            },
+            onUpdate: (props) => {
+              suggestRef.current.items = props.items
+              suggestRef.current.command = props.command as (a: {
+                id: string
+                label: string
+                self: boolean
+              }) => void
+              const r = props.clientRect?.()
+              setMention((m) =>
+                m
+                  ? { ...m, items: props.items, active: 0, left: r?.left ?? 0, top: r?.top ?? 0 }
+                  : m,
+              )
+              suggestRef.current.active = 0
+            },
+            onKeyDown: (props) => {
+              const key = props.event.key
+              const { items } = suggestRef.current
+              if (!items.length) return false
+              if (key === "ArrowDown") {
+                const a = (suggestRef.current.active + 1) % items.length
+                suggestRef.current.active = a
+                setMention((m) => m && { ...m, active: a })
+                return true
+              }
+              if (key === "ArrowUp") {
+                const a = (suggestRef.current.active - 1 + items.length) % items.length
+                suggestRef.current.active = a
+                setMention((m) => m && { ...m, active: a })
+                return true
+              }
+              if (key === "Enter" || key === "Tab") {
+                commitMention(suggestRef.current.active)
+                return true
+              }
+              if (key === "Escape") {
+                setMention(null)
+                return true
+              }
+              return false
+            },
+            onExit: () => {
+              mentionOpenRef.current = false
+              setMention(null)
+            },
+          }),
+        },
+      }),
+    ],
+    autofocus: autoFocus,
+    editorProps: {
+      attributes: {
+        class:
+          "composer-editor max-h-40 min-h-[2.5rem] overflow-y-auto px-3.5 py-2.5 text-base outline-none",
+        "aria-label": "Message",
+        "aria-multiline": "true",
+        role: "textbox",
+      },
+      handleKeyDown: (_view, event) => {
+        if (event.key === "Escape" && quotesRef.current && quotesRef.current.length > 0) {
+          event.preventDefault()
+          onEscapeRef.current?.()
+          return true
+        }
+        if (event.key !== "Enter") return false
+        // The mention suggestion owns Enter while open.
+        if (mentionOpenRef.current) return false
+        if (event.shiftKey) return false // soft line break (hardBreak)
+        if (event.metaKey || event.ctrlKey) {
+          doSendRef.current()
+          return true
+        }
+        // Inside a list / code block, Enter keeps its native behaviour (new item / newline).
+        const ed = edRef.current
+        if (ed?.isActive("listItem") || ed?.isActive("codeBlock")) return false
+        doSendRef.current()
+        return true
+      },
+      handlePaste: (_view, event) => {
+        const pasted = pickFiles(event.clipboardData?.items)
+        if (pasted.length > 0) {
+          setPendingFiles((cur) => [...cur, ...pasted])
+          return true
+        }
+        return false
+      },
+    },
+    onUpdate: ({ editor }) => {
+      setHasContent(!editor.isEmpty)
+      setTick((t) => t + 1)
+    },
+    onSelectionUpdate: () => setTick((t) => t + 1),
+    onFocus: () => onFocusChange(true),
+    onBlur: () => onFocusChange(false),
+  })
+
+  // A ref to the editor for the editorProps handlers (created before `editor` is assigned).
+  const edRef = useRef<Editor | null>(null)
+  edRef.current = editor
+
+  const commitMention = (index: number) => {
+    const { command, items } = suggestRef.current
+    const m = items[index]
+    if (command && m) command({ id: m.mri, label: m.name, self: !!m.self })
+    setMention(null)
+  }
 
   useImperativeHandle(
     ref,
     () => ({
-      focus: () => editorRef.current?.focus(),
+      focus: () => editor?.commands.focus(),
       openFilePicker: () => fileRef.current?.click(),
     }),
-    [],
+    [editor],
   )
 
   // Track the card width so the bar knows when to inline the format row.
@@ -211,236 +397,76 @@ export function Composer({
     return () => ro.disconnect()
   }, [])
 
-  // Reflect the marks under the caret in the ToggleGroup. Guarded to a selection inside THIS editor,
-  // so a selection elsewhere on the page never lights the toggles.
-  const refreshActiveMarks = useCallback(() => {
-    const el = editorRef.current
-    const sel = window.getSelection()
-    if (!el || !sel?.anchorNode || !el.contains(sel.anchorNode)) return
-    const marks: string[] = []
-    try {
-      for (const { v } of MARKS) if (document.queryCommandState(MARK_CMD[v])) marks.push(v)
-    } catch {
-      // queryCommandState can throw on a detached selection — leave the marks as-is.
-    }
-    setActiveMarks(marks)
-  }, [])
-
-  // Track the caret's formatting as it moves (selectionchange fires on every caret/selection move).
-  useEffect(() => {
-    document.addEventListener("selectionchange", refreshActiveMarks)
-    return () => document.removeEventListener("selectionchange", refreshActiveMarks)
-  }, [refreshActiveMarks])
-
   // Reset on conversation switch (a half-typed draft / staged file doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the deliberate reset trigger
   useEffect(() => {
-    const el = editorRef.current
-    if (el) el.innerHTML = ""
+    editor?.commands.clearContent()
     setHasContent(false)
     setPendingFiles([])
-    setMenu(null)
     setEmojiOpen(false)
     setGifKind(null)
-    roster.current = []
-    rosterLoaded.current = false
-    if (autoFocus) el?.focus()
-  }, [resetKey])
+    setMention(null)
+    rosterRef.current = null
+    if (autoFocus) editor?.commands.focus()
+  }, [resetKey, editor])
 
-  // The plain text of the current text node up to the caret — enough to spot an `@query` (a query
-  // never spans a whitespace, so it stays inside one text node).
-  const textBeforeCaret = (): string => {
-    const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0) return ""
-    const { startContainer, startOffset } = sel.getRangeAt(0)
-    return (startContainer.textContent ?? "").slice(0, startOffset)
-  }
-
-  // Recompute the mention dropdown from the caret. Lazy-loads the roster on the first `@`.
-  const syncMentionMenu = () => {
-    const q = mentionQuery(textBeforeCaret())
-    if (!q) {
-      setMenu(null)
-      return
-    }
-    if (!rosterLoaded.current) {
-      rosterLoaded.current = true
-      if (convId)
-        fetchRoster(convId).then((members) => {
-          roster.current = members
-          // Re-filter with whatever the caret query is now (the user may have typed on).
-          const cur = mentionQuery(textBeforeCaret())
-          if (cur) setMenu({ items: filterRoster(members, cur.query), active: 0 })
-        })
-    }
-    setMenu({ items: filterRoster(roster.current, q.query), active: 0 })
-  }
-
-  // Replace the typed `@query` with a non-editable mention pill + a trailing space.
-  const insertMention = (m: RosterMember) => {
-    const el = editorRef.current
-    const sel = window.getSelection()
-    if (!el || !sel || sel.rangeCount === 0) return
-    const range = sel.getRangeAt(0)
-    const node = range.startContainer
-    const offset = range.startOffset
-    const q = mentionQuery((node.textContent ?? "").slice(0, offset))
-    if (!q) return
-    const del = document.createRange()
-    del.setStart(node, q.at)
-    del.setEnd(node, offset)
-    del.deleteContents()
-
-    const pill = document.createElement("span")
-    // Self mention → coral (mention-self); anyone else → neutral, matching the message bubble.
-    pill.className = m.self ? "mention mention-self" : "mention"
-    pill.setAttribute("data-mri", m.mri)
-    pill.setAttribute("data-name", m.name)
-    pill.setAttribute("contenteditable", "false")
-    pill.textContent = `@${formatName(m.name, namePref)}`
-    del.insertNode(pill)
-    const space = document.createTextNode(" ")
-    pill.after(space)
-
-    const after = document.createRange()
-    after.setStartAfter(space)
-    after.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(after)
-
-    setMenu(null)
-    setHasContent(!!readEditor().text)
-  }
-
-  const readEditor = (): OutgoingMessage => outgoingFromEditor(editorRef.current?.innerHTML ?? "")
-
-  const syncHasContent = () => setHasContent(!!readEditor().text)
+  const readEditor = (): OutgoingMessage => outgoingFromEditor(editor?.getHTML() ?? "")
 
   const doSend = () => {
     const out = readEditor()
     if (!out.text && pendingFiles.length === 0) return
     onSend(out, pendingFiles)
-    const el = editorRef.current
-    if (el) el.innerHTML = ""
+    editor?.commands.clearContent()
     setHasContent(false)
     setPendingFiles([])
-    // Keep typing: focus never leaves the composer across a send (t159).
-    el?.focus()
+    editor?.commands.focus()
   }
+  doSendRef.current = doSend
 
-  // --- Formatting actions (PSN-94 A) ---------------------------------------
-  // execCommand is deprecated but universal + zero-dep — the lazy rung for a contenteditable. The
-  // render side has its own DOMPurify boundary; cleanEditorHtml keeps only the allowlisted tags.
-
-  const exec = (cmd: string) => {
-    editorRef.current?.focus()
-    document.execCommand(cmd)
-    syncHasContent()
-  }
-
-  // ToggleGroup change → toggle whichever mark flipped, then re-read the active set.
-  const onMarksChange = (next: string[]) => {
-    const toggled = MARKS.map((m) => m.v).find((v) => next.includes(v) !== activeMarks.includes(v))
-    if (toggled) exec(MARK_CMD[toggled])
-    refreshActiveMarks()
-  }
-
-  // formatBlock wraps the caret's block in a tag (blockquote / pre). Toggling back to a plain block
-  // isn't offered — clear-formatting flattens everything.
-  const execBlock = (tag: string) => {
-    editorRef.current?.focus()
-    document.execCommand("formatBlock", false, tag)
-    syncHasContent()
-  }
-
-  // Inline code has no execCommand — wrap the selection in <code> by hand.
-  const wrapInlineCode = () => {
-    const el = editorRef.current
-    el?.focus()
-    const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0) return
-    const range = sel.getRangeAt(0)
-    if (range.collapsed) return
-    const code = document.createElement("code")
-    try {
-      range.surroundContents(code)
-    } catch {
-      // Selection crosses element boundaries — extract + re-insert instead.
-      code.appendChild(range.extractContents())
-      range.insertNode(code)
-    }
-    const after = document.createRange()
-    after.setStartAfter(code)
-    after.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(after)
-    syncHasContent()
-  }
-
-  // Insert-link: prompt for a URL, then link the saved selection (a collapsed caret inserts the URL
-  // as its own link text, matching Teams). The dialog steals focus, so the range is captured first
-  // and restored before createLink runs.
+  // --- Formatting actions via Tiptap commands -------------------------------
+  const focusChain = () => editor?.chain().focus()
   const insertLink = async () => {
-    const sel = window.getSelection()
-    const saved = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null
-    const url = (await prompt({ title: "Insert link", placeholder: "https://…" }))?.trim()
-    if (!url) return
-    editorRef.current?.focus()
-    if (saved) {
-      const s = window.getSelection()
-      s?.removeAllRanges()
-      s?.addRange(saved)
+    const prev = editor?.getAttributes("link").href ?? ""
+    const url = (
+      await prompt({ title: "Insert link", initialValue: prev, placeholder: "https://…" })
+    )?.trim()
+    if (url === undefined || url === null) return
+    if (url === "") {
+      focusChain()?.extendMarkRange("link").unsetLink().run()
+      return
     }
-    if (saved && !saved.collapsed) {
-      document.execCommand("createLink", false, url)
-    } else {
-      const safe = url.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
-      document.execCommand("insertHTML", false, `<a href="${safe}">${safe}</a>`)
-    }
-    syncHasContent()
+    focusChain()?.extendMarkRange("link").setLink({ href: url }).run()
   }
-
-  // Clear-formatting: strip inline marks (bold/italic/underline/strike/link) and flatten the block
-  // (drops code block / quote / list wrapping). removeFormat leaves the text intact.
-  const clearFormat = () => {
-    editorRef.current?.focus()
-    document.execCommand("removeFormat")
-    document.execCommand("unlink")
-    document.execCommand("formatBlock", false, "div")
-    syncHasContent()
-  }
+  const clearFormat = () => focusChain()?.unsetAllMarks().clearNodes().run()
 
   const insertEmoji = (key: string) => {
     setEmojiOpen(false)
     const u = catalog?.emoji.find((e) => e.i === key)?.u
-    editorRef.current?.focus()
-    if (u) document.execCommand("insertText", false, u)
-    syncHasContent()
+    if (u) editor?.chain().focus().insertContent(u).run()
   }
 
-  // A picked GIF/sticker sends immediately (like Teams) — shaped into an OutgoingMessage the parent's
-  // onSend already routes as a RichText/Html message (it can't ride the contenteditable; see teams-gif).
   const sendGif = (item: GifItem) => {
     setGifKind(null)
     onSend(gifToOutgoing(item), [])
-    editorRef.current?.focus()
+    editor?.commands.focus()
   }
 
+  const onMarksChange = (next: string[]) => {
+    const toggled = MARKS.map((m) => m.v).find(
+      (v) => next.includes(v) !== !!editor?.isActive(v === "strike" ? "strike" : v),
+    )
+    if (!toggled || !editor) return
+    const c = editor.chain().focus()
+    if (toggled === "bold") c.toggleBold().run()
+    else if (toggled === "italic") c.toggleItalic().run()
+    else if (toggled === "underline") c.toggleUnderline().run()
+    else if (toggled === "strike") c.toggleStrike().run()
+  }
+
+  const activeMarks = editor ? MARKS.filter((m) => editor.isActive(m.v)).map((m) => m.v) : []
   const canSend = hasContent || pendingFiles.length > 0
 
-  // Is the caret inside a list item of THIS editor? Then Enter must add/exit a bullet (native), not
-  // send — otherwise a list can't grow past one item (PSN-92).
-  const caretInListItem = (): boolean => {
-    const sel = window.getSelection()
-    const node = sel?.anchorNode
-    const el = node ? (node.nodeType === 1 ? (node as Element) : node.parentElement) : null
-    const li = el?.closest("li") ?? null
-    return !!li && !!editorRef.current?.contains(li)
-  }
-
-  // The formatting cluster — rendered inline when wide, or in a collapsible row when narrow. The
-  // toggleable marks sit in a shadcn ToggleGroup (active-state highlighted); one-shot block/list/link
-  // actions stay Tooltip buttons.
+  // The formatting cluster — inline when wide, or in a collapsible row when narrow.
   const formatButtons = (
     <>
       <ToggleGroup
@@ -450,9 +476,6 @@ export function Composer({
         type="multiple"
         value={activeMarks}
       >
-        {/* No Tooltip wrapper on the toggles: TooltipTrigger's asChild merge would overwrite the
-            item's data-state (on/off) with the tooltip's (open/closed), killing the active highlight.
-            The icon + aria-label + the highlighted on-state are self-explanatory. */}
         {MARKS.map((m) => (
           <ToggleGroupItem
             aria-label={m.label}
@@ -466,19 +489,31 @@ export function Composer({
         ))}
       </ToggleGroup>
       <div className="mx-1 h-4 w-px bg-border" />
-      <FmtButton icon={CodeIcon} label="Inline code" onRun={wrapInlineCode} />
-      <FmtButton icon={SourceCodeIcon} label="Code block" onRun={() => execBlock("pre")} />
-      <FmtButton icon={QuoteUpIcon} label="Quote" onRun={() => execBlock("blockquote")} />
+      <FmtButton
+        icon={CodeIcon}
+        label="Inline code"
+        onRun={() => focusChain()?.toggleCode().run()}
+      />
+      <FmtButton
+        icon={SourceCodeIcon}
+        label="Code block"
+        onRun={() => focusChain()?.toggleCodeBlock().run()}
+      />
+      <FmtButton
+        icon={QuoteUpIcon}
+        label="Quote"
+        onRun={() => focusChain()?.toggleBlockquote().run()}
+      />
       <div className="mx-1 h-4 w-px bg-border" />
       <FmtButton
         icon={LeftToRightListBulletIcon}
         label="Bulleted list"
-        onRun={() => exec("insertUnorderedList")}
+        onRun={() => focusChain()?.toggleBulletList().run()}
       />
       <FmtButton
         icon={LeftToRightListNumberIcon}
         label="Numbered list"
-        onRun={() => exec("insertOrderedList")}
+        onRun={() => focusChain()?.toggleOrderedList().run()}
       />
       <div className="mx-1 h-4 w-px bg-border" />
       <FmtButton icon={Link01Icon} label="Insert link" onRun={insertLink} />
@@ -495,19 +530,24 @@ export function Composer({
         )}
         ref={cardRef}
       >
-        {menu && menu.items.length > 0 && (
-          <div className="absolute bottom-full left-2 z-50 mb-1 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
-            {menu.items.map((m, i) => (
+        {mention && mention.items.length > 0 && (
+          <div
+            className="fixed z-50 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md"
+            style={{
+              left: mention.left,
+              top: mention.top,
+              transform: "translateY(calc(-100% - 8px))",
+            }}
+          >
+            {mention.items.map((m, i) => (
               <button
                 className={cn(
                   "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm",
-                  i === menu.active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                  i === mention.active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
                 )}
-                // Keep the editor selection: a mousedown would blur + collapse it before the click.
                 key={m.mri}
-                onClick={() => insertMention(m)}
+                onClick={() => commitMention(i)}
                 onMouseDown={(e) => e.preventDefault()}
-                onMouseEnter={() => setMenu((cur) => cur && { ...cur, active: i })}
                 type="button"
               >
                 <span className="truncate">{formatName(m.name, namePref)}</span>
@@ -531,7 +571,7 @@ export function Composer({
                   className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
                   onClick={() => {
                     q.onCancel()
-                    editorRef.current?.focus()
+                    editor?.commands.focus()
                   }}
                   type="button"
                 >
@@ -548,93 +588,19 @@ export function Composer({
                 file={file}
                 key={`${file.name}-${file.size}-${file.lastModified}`}
                 onRemove={() => {
-                  // Remove by reference: a user can add the same filename twice (different objects);
-                  // remove only the first matching identity so the other stays.
                   setPendingFiles((cur) => {
                     const i = cur.indexOf(file)
                     return i === -1 ? cur : [...cur.slice(0, i), ...cur.slice(i + 1)]
                   })
-                  editorRef.current?.focus()
+                  editor?.commands.focus()
                 }}
               />
             ))}
           </div>
         )}
-        {/* biome-ignore lint/a11y/useSemanticElements: a rich-text editor is a contenteditable div */}
-        <div
-          aria-label="Message"
-          aria-multiline="true"
-          className={cn(
-            "composer-editor max-h-40 min-h-[2.5rem] overflow-y-auto px-3.5 py-2.5 text-base outline-none",
-            "empty:before:pointer-events-none empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)]",
-          )}
-          contentEditable
-          data-placeholder="Type a message…"
-          onBlur={() => onFocusChange(false)}
-          onFocus={() => onFocusChange(true)}
-          onInput={() => {
-            setHasContent(!!readEditor().text)
-            syncMentionMenu()
-          }}
-          onKeyDown={(e) => {
-            // Mention dropdown steals the nav/commit keys while open (PSN-92 D).
-            if (menu && menu.items.length > 0) {
-              if (e.key === "ArrowDown") {
-                e.preventDefault()
-                setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length })
-                return
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault()
-                setMenu(
-                  (m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length },
-                )
-                return
-              }
-              if (e.key === "Enter" || e.key === "Tab") {
-                e.preventDefault()
-                insertMention(menu.items[menu.active])
-                return
-              }
-              if (e.key === "Escape") {
-                e.preventDefault()
-                setMenu(null)
-                return
-              }
-            }
-            if (e.key === "Enter") {
-              const action = enterKeyAction({
-                shift: e.shiftKey,
-                meta: e.metaKey || e.ctrlKey,
-                inListItem: caretInListItem(),
-              })
-              if (action === "send") {
-                e.preventDefault()
-                doSend()
-              }
-              // "default" → the browser adds/exits a list item or inserts a soft break.
-            } else if (e.key === "Escape" && quotes && quotes.length > 0) {
-              e.preventDefault()
-              onEscape?.()
-              editorRef.current?.focus()
-            }
-          }}
-          onPaste={(e) => {
-            const pasted = pickFiles(e.clipboardData?.items)
-            if (pasted.length > 0) {
-              e.preventDefault()
-              setPendingFiles((cur) => [...cur, ...pasted])
-              return
-            }
-            // Plain-text-forced paste: outside HTML never enters the editor (formatting stays ours).
-            e.preventDefault()
-            const text = e.clipboardData?.getData("text/plain") ?? ""
-            if (text) document.execCommand("insertText", false, text)
-            setHasContent(!!readEditor().text)
-          }}
-          ref={editorRef}
-          role="textbox"
-          tabIndex={0}
+        <EditorContent
+          className="[&_.ProseMirror]:min-h-[2.5rem] [&_.ProseMirror_.mention]:font-medium [&_.ProseMirror_.mention]:text-ring [&_.ProseMirror_blockquote]:border-ring/40 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:pl-3 [&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-muted [&_.ProseMirror_code]:px-1 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-5 [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:bg-muted [&_.ProseMirror_pre]:p-2 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-5 [&_.ProseMirror.ProseMirror-focused]:outline-none [&_.ProseMirror[data-placeholder]]:before:text-muted-foreground"
+          editor={editor}
         />
         <TooltipProvider delayDuration={300}>
           {/* Narrow layout: the formatting row lives above the bar and toggles open. */}
@@ -648,7 +614,7 @@ export function Composer({
               onChange={(e) => {
                 const picked = Array.from(e.target.files ?? [])
                 if (picked.length > 0) setPendingFiles((cur) => [...cur, ...picked])
-                e.target.value = "" // allow re-picking the same file
+                e.target.value = ""
               }}
               ref={fileRef}
               type="file"
