@@ -673,3 +673,11 @@
 .is-electron [data-slot="sheet-content"] {
   -webkit-app-region: no-drag;
 }
+/* PSN-94: the settings Sheet is a LEFT drawer (PSN-99), so in the Electron frameless window its
+   header opens directly under the macOS traffic lights (top-left, ~48px strip) — the "Settings"
+   title collided with them. Push the header down so it clears the traffic-light band. Web/PWA has no
+   traffic lights, so this is gated by `.is-electron`. Only the settings Sheet mounts SheetContent
+   in the chat app. */
+.is-electron [data-slot="sheet-content"] [data-slot="sheet-header"] {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 2.5rem);
+}
