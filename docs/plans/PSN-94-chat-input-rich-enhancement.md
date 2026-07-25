@@ -1,7 +1,20 @@
 # PSN-94 — Chat input rich enhancement (plan)
 
-Status: grilled — decisions resolved · plan-only · 2026-07-25
+Status: built — A–E shipped · 2026-07-25
 Issue: https://linear.app/withdustin/issue/PSN-94
+
+## Build results (2026-07-25)
+
+- **A/C** (`feat(chat): composer format toggle, code/quote/link, emoji picker`) — width-responsive Format toggle (inline ≥480px, collapsed behind Aa below), inline-code/code-block/quote/insert-link/clear-format, emoji picker wired into the composer.
+- **B** (`feat(chat): live markdown auto-convert in composer`) — `**`/`*`/`_`/`~~`/inline-code/code-fence/`>`/`-`/`1.` auto-convert live; pure matchers in `chat/src/lib/markdown-shortcuts.ts` (15 tests), lookbehind guards the half-typed-bold case.
+- **D/E** (`feat(chat): gif + sticker picker with native round-trip send`) — Giphy GIF + sticker pickers via a BFF `/api/chat/giphy` proxy (`GIPHY_API_KEY`); a pick is a direct send shaped by `chat/src/lib/teams-gif.ts` into the native AnimatedImage wire form.
+- **GIF wire format PROVEN LIVE** (self-note send + read-back spike, probes deleted after): Teams accepts `<img itemtype="http://schema.skype.com/AnimatedImage" src="{giphy}/giphy.gif">` in a `RichText/Html` message and normalizes the id to `x_{id}` — its own Giphy-send schema. Captured in memory `teams-gif-sticker-wire-format`.
+- Gates: `pnpm typecheck` ✓, `pnpm exec vitest run chat/src` 320/320 ✓, `pnpm chat:build` ✓, Biome ✓. (The 88 repo-wide `better-sqlite3 NODE_MODULE_VERSION` test failures are a pre-existing sandbox env mismatch — CI clean-installs.)
+
+**Follow-ups (need the human / preview, can't verify headless):**
+1. Set `GIPHY_API_KEY` on the server — without it the picker shows its empty state.
+2. Confirm a sent GIF **animates in the native Teams client** (send acceptance + Teams' own normalization proven; final visual is a human check on the preview).
+
 
 Close the gap between the `/chat` composer and the native Teams web composer:
 code/quote/link authoring, a width-responsive Format toggle, live markdown
