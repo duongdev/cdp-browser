@@ -187,8 +187,15 @@ export async function deleteMessage(convId: string, msgId: string): Promise<void
 
 export async function fetchRoster(convId: string): Promise<RosterMember[]> {
   try {
-    const data = await post<{ members?: RosterMember[] }>("roster", { convId })
-    return Array.isArray(data.members) ? data.members : []
+    const data = await post<{
+      members?: { id?: string; mri?: string; name: string; self?: boolean }[]
+    }>("roster", { convId })
+    if (!Array.isArray(data.members)) return []
+    // The BFF contract names the member id `id` (Teams mri → contract id; PSN-93), but the FE type +
+    // the composer read `mri`. Normalize here so a mention pill carries a REAL mri — an empty mri
+    // makes `outgoingFromEditor` emit per-word spans that the render-side merge (t140, groups by
+    // shared mri) can't recombine, so one @mention renders as a pill per word.
+    return data.members.map((m) => ({ mri: m.mri ?? m.id ?? "", name: m.name, self: m.self }))
   } catch {
     return []
   }

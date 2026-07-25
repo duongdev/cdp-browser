@@ -346,6 +346,22 @@ export function Composer({
         // Inside a list / code block, Enter keeps its native behaviour (new item / newline).
         const ed = edRef.current
         if (ed?.isActive("listItem") || ed?.isActive("codeBlock")) return false
+        // A pending code fence (``` optionally + a language) → open a code block on Enter, don't send.
+        // Input rules only fire on typed chars (so ``` needs a trailing space), but users expect
+        // ``` + Enter — this bridges that (was silently sending the literal "```").
+        if (ed) {
+          const { $from, empty } = ed.state.selection
+          const fence = /^```(\w*)$/.exec($from.parent.textContent)
+          if (empty && $from.parent.type.name === "paragraph" && fence) {
+            event.preventDefault()
+            ed.chain()
+              .focus()
+              .deleteRange({ from: $from.start(), to: $from.end() })
+              .setCodeBlock(fence[1] ? { language: fence[1] } : undefined)
+              .run()
+            return true
+          }
+        }
         doSendRef.current()
         return true
       },
