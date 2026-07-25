@@ -1,15 +1,16 @@
 # PSN-94 — Chat input rich enhancement (plan)
 
-Status: built — A–E shipped · 2026-07-25
+Status: built — A/C/D/E shipped, B cut (unreliable) · 2026-07-25
 Issue: https://linear.app/withdustin/issue/PSN-94
 
 ## Build results (2026-07-25)
 
 - **A/C** (`feat(chat): composer format toggle, code/quote/link, emoji picker`) — width-responsive Format toggle (inline ≥480px, collapsed behind Aa below), inline-code/code-block/quote/insert-link/clear-format, emoji picker wired into the composer.
-- **B** (`feat(chat): live markdown auto-convert in composer`) — `**`/`*`/`_`/`~~`/inline-code/code-fence/`>`/`-`/`1.` auto-convert live; pure matchers in `chat/src/lib/markdown-shortcuts.ts` (15 tests), lookbehind guards the half-typed-bold case.
+- **B** — **CUT.** Live markdown auto-convert was built (`feat(chat): live markdown auto-convert…`) then removed (`fix(chat): remove markdown auto-convert…`) after live `/cdp` testing exposed the R3 caret-bleed: a raw contenteditable extends the mark into text typed after an auto-convert (both inline `**b**` and block `> `/```` fail), and a ZWSP-boundary fix didn't hold. The Format-toolbar buttons (WS-A) cover the same formatting reliably (they act on a selection, no mid-type caret problem). A robust markdown mode would need an editor framework (ProseMirror/Slate) — out of scope.
 - **D/E** (`feat(chat): gif + sticker picker with native round-trip send`) — Giphy GIF + sticker pickers via a BFF `/api/chat/giphy` proxy (`GIPHY_API_KEY`); a pick is a direct send shaped by `chat/src/lib/teams-gif.ts` into the native AnimatedImage wire form.
 - **GIF wire format PROVEN LIVE** (self-note send + read-back spike, probes deleted after): Teams accepts `<img itemtype="http://schema.skype.com/AnimatedImage" src="{giphy}/giphy.gif">` in a `RichText/Html` message and normalizes the id to `x_{id}` — its own Giphy-send schema. Captured in memory `teams-gif-sticker-wire-format`.
-- Gates: `pnpm typecheck` ✓, `pnpm exec vitest run chat/src` 320/320 ✓, `pnpm chat:build` ✓, Biome ✓. (The 88 repo-wide `better-sqlite3 NODE_MODULE_VERSION` test failures are a pre-existing sandbox env mismatch — CI clean-installs.)
+- Gates: `pnpm typecheck` ✓, `pnpm exec vitest run chat/src` 305/305 ✓, `pnpm chat:build` ✓, Biome ✓. (The 88 repo-wide `better-sqlite3 NODE_MODULE_VERSION` test failures are a pre-existing sandbox env mismatch — CI clean-installs.)
+- **Live `/cdp` verified** (branch's `/chat` dev server against prod Teams data, self-note thread): toolbar bold → `<b>…</b>`; all 16 buttons present wide; at 390px the format cluster collapses behind the Aa toggle (bar = attach/emoji/GIF/sticker/Aa/send); GIF picker opens with the correct "Set GIPHY_API_KEY" empty state. GIF wire-format acceptance proven separately via the send+read-back spike.
 
 **Follow-ups (need the human / preview, can't verify headless):**
 1. Set `GIPHY_API_KEY` on the server — without it the picker shows its empty state.
