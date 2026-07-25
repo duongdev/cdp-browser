@@ -433,6 +433,14 @@
 .teams-message-body a {
   text-decoration: underline;
   text-underline-offset: 2px;
+  border-radius: 4px;
+  transition: background-color 0.12s ease;
+}
+/* Soft highlight while the cursor is over a link (PSN-99) — same muted tint as a mention pill, so the
+   floating copy button at the link's end reads as part of one highlighted element. Pure CSS :hover
+   (robust — a JS class gets wiped when the row re-renders its innerHTML). No padding = no reflow. */
+.teams-message-body a:hover {
+  background: color-mix(in oklab, currentColor 14%, transparent);
 }
 .teams-message-body ul,
 .teams-message-body ol {

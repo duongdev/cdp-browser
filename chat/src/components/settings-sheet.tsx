@@ -233,9 +233,11 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
   return (
     <div className="space-y-3 border-border/60 border-t pt-3">
       <Label className="text-[13px]">Data</Label>
+      {/* Dropdown + Run pinned to the same explicit height (h-8) + shared rounded-lg so their borders
+          line up pixel-for-pixel regardless of theme/density (PSN-99 polish). */}
       <div className="flex items-center gap-2">
         <Select onOpenChange={onSelectOpen} onValueChange={setDays} value={days}>
-          <SelectTrigger className="flex-1">
+          <SelectTrigger className="h-8 flex-1">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -246,7 +248,13 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
             ))}
           </SelectContent>
         </Select>
-        <Button disabled={running} onClick={handleRun} size="default" variant="secondary">
+        <Button
+          className="h-8"
+          disabled={running}
+          onClick={handleRun}
+          size="default"
+          variant="secondary"
+        >
           {running ? "Running\u2026" : "Run"}
         </Button>
       </div>

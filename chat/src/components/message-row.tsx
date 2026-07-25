@@ -18,7 +18,15 @@ import {
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import {
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,12 +38,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
+import { elideLinkText } from "../lib/elide-links"
 import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { stampReplyIds } from "../lib/reply-quote"
@@ -184,11 +193,41 @@ function ChatMessageRow({
     cancelLinkHide()
     linkHideTimer.current = setTimeout(() => setHoveredLink(null), 180)
   }, [cancelLinkHide])
+  // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then long bare-URL links
+  // middle-elided (PSN-99). Memoized so the DOMParser pass runs once per body, not per poll re-render.
+  const bodyHtml = useMemo(
+    () => elideLinkText(sanitize(stampReplyIds(formatBodyNames(message.body, namePref)))),
+    [message.body, namePref],
+  )
   useEffect(() => cancelLinkHide, [cancelLinkHide])
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
   const canReact = !deleted && !unconfirmed && !!onReact
+  // Reaction toolbar as a PORTALED hover Popover (PSN-99): an absolute bar inside the bubble extended
+  // the thread's scroll width (a stray horizontal scrollbar) and clipped/overflowed at the edges. A
+  // Popover portals out of the scroll container, so it can't do either, and Radix keeps it on-screen.
+  // Open on hover with a grace delay so the cursor can cross the anchor→content gap; stay open while
+  // the "+" catalog is open.
+  const [reactHover, setReactHover] = useState(false)
+  const reactHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const openReactBar = useCallback(() => {
+    if (reactHideTimer.current) {
+      clearTimeout(reactHideTimer.current)
+      reactHideTimer.current = null
+    }
+    setReactHover(true)
+  }, [])
+  const closeReactBarSoon = useCallback(() => {
+    if (reactHideTimer.current) clearTimeout(reactHideTimer.current)
+    reactHideTimer.current = setTimeout(() => setReactHover(false), 140)
+  }, [])
+  useEffect(
+    () => () => {
+      if (reactHideTimer.current) clearTimeout(reactHideTimer.current)
+    },
+    [],
+  )
   // Reply-with-quote (PSN-92 B): any confirmed, non-deleted message, own or others'.
   const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
@@ -406,89 +445,105 @@ function ChatMessageRow({
         >
           {/* XSS BOUNDARY: message.body is site-authored HTML. It MUST pass through sanitize()
               (DOMPurify, strict allowlist) before it hits the DOM — never render body raw. */}
-          <div className="group/bubble relative min-w-0 max-w-[85%] md:max-w-[65ch]">
-            {/* Floating quick-react bar anchored above the bubble's top edge (PSN-99 B1) — keeps the
-                side cluster narrow so the row never overflows the viewport. Fine pointer reveals it
-                on hover; coarse pointer reaches reactions via the "…"/tap-reveal path below. */}
-            {canReact && !coarse && (
-              <QuickReact
-                onPick={quickReact}
-                onPickerOpenChange={setPickerOpen}
-                onPickerPick={pickerReact}
-                pickerOpen={pickerOpen}
-                side={self ? "start" : "end"}
-              />
-            )}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
-            {/* biome-ignore lint/a11y/useKeyWithMouseEvents: link hover-copy is a fine-pointer visual affordance; keyboard users access links natively via Tab */}
-            <div
-              className={cn(
-                // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
-                // density can shrink it and grouped runs get asymmetric corners without class soup.
-                "teams-message-body w-full min-w-0 px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
-                // Self bubble (B6): solid coral fill in light; in dark, a near-transparent fill with a
-                // coral border + foreground text (low glare). The dark treatment lives in the CSS
-                // .teams-self-bubble rule so it can override the primary utilities under .dark.
-                self
-                  ? "teams-self-bubble bg-primary text-primary-foreground"
-                  : "bg-muted text-foreground",
-                // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
-                // bubble is no longer tinted.
-                deleted && "italic opacity-70",
-                pending && "opacity-60",
-                failed && "opacity-70 ring-1 ring-destructive/40",
-              )}
-              // formatBodyNames applies the Names setting to mention pills + quote authors, and
-              // stampReplyIds tags reply blockquotes for click-to-jump — BOTH before the sanitizer (they
-              // read itemprop/itemid the sanitizer strips) — PSN-92 E + B5.
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
-              dangerouslySetInnerHTML={{
-                __html: sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
-              }}
-              data-pos={groupPos}
-              data-side={self ? "self" : "other"}
-              onClick={onBodyClick}
-              onMouseOut={coarse ? undefined : scheduleLinkHide}
-              onMouseOver={
-                coarse
-                  ? undefined
-                  : (e) => {
-                      const a = (e.target as HTMLElement).closest?.(
-                        "a[href]",
-                      ) as HTMLAnchorElement | null
-                      if (a?.href) {
-                        cancelLinkHide()
-                        setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
-                      } else {
-                        scheduleLinkHide()
-                      }
-                    }
-              }
-            />
-            {/* Link copy button (G, PSN-99 fix): FIXED at the hovered link's own end (from its
-                viewport rect) — not the bubble corner — so it sits right next to the link and the
-                cursor can travel to it. Clamped to the viewport's right edge. */}
-            {!coarse && hoveredLink && (
-              <button
-                className="link-copy-btn fixed z-30 flex size-6 items-center justify-center rounded-md border border-border bg-popover text-muted-foreground shadow-sm transition-colors hover:bg-accent"
-                onClick={(e) => {
-                  e.preventDefault()
-                  copyLink(hoveredLink.href)
-                }}
-                onMouseEnter={cancelLinkHide}
-                onMouseLeave={scheduleLinkHide}
-                style={{
-                  top: Math.max(4, hoveredLink.rect.top - 2),
-                  left: Math.min(hoveredLink.rect.right + 4, window.innerWidth - 28),
-                }}
-                title="Copy link"
-                type="button"
+          <Popover open={canReact && !coarse && (reactHover || pickerOpen)}>
+            <PopoverAnchor asChild>
+              <div
+                className="relative min-w-0 max-w-[85%] md:max-w-[65ch]"
+                onMouseEnter={canReact && !coarse ? openReactBar : undefined}
+                onMouseLeave={canReact && !coarse ? closeReactBarSoon : undefined}
               >
-                <HugeiconsIcon className="size-3" icon={linkCopied ? Tick01Icon : Copy01Icon} />
-              </button>
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
+                {/* biome-ignore lint/a11y/useKeyWithMouseEvents: link hover-copy is a fine-pointer visual affordance; keyboard users access links natively via Tab */}
+                <div
+                  className={cn(
+                    // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
+                    // density can shrink it and grouped runs get asymmetric corners without class soup.
+                    "teams-message-body w-full min-w-0 px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
+                    // Self bubble (B6): solid coral fill in light; in dark, a near-transparent fill with a
+                    // coral border + foreground text (low glare). The dark treatment lives in the CSS
+                    // .teams-self-bubble rule so it can override the primary utilities under .dark.
+                    self
+                      ? "teams-self-bubble bg-primary text-primary-foreground"
+                      : "bg-muted text-foreground",
+                    // A mention of the viewer highlights only the `.mention-self` pill (PSN-92) — the whole
+                    // bubble is no longer tinted.
+                    deleted && "italic opacity-70",
+                    pending && "opacity-60",
+                    failed && "opacity-70 ring-1 ring-destructive/40",
+                  )}
+                  // bodyHtml is memoized: names + reply-ids stamped before sanitize (the XSS boundary),
+                  // then long bare-URL links middle-elided (PSN-99).
+                  // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitize() is the XSS boundary (t133)
+                  dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                  data-pos={groupPos}
+                  data-side={self ? "self" : "other"}
+                  onClick={onBodyClick}
+                  onMouseOut={coarse ? undefined : scheduleLinkHide}
+                  onMouseOver={
+                    coarse
+                      ? undefined
+                      : (e) => {
+                          const a = (e.target as HTMLElement).closest?.(
+                            "a[href]",
+                          ) as HTMLAnchorElement | null
+                          if (a?.href) {
+                            cancelLinkHide()
+                            setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
+                          } else {
+                            scheduleLinkHide()
+                          }
+                        }
+                  }
+                />
+                {/* Link copy button (PSN-99): FIXED at the hovered link's own end, overlapping the last
+                    few px so it sits INSIDE the link's soft highlight (no reserved layout space), and
+                    vertically centered on the link's line. Clamped to the viewport's right edge. The
+                    hover-bridge (enter cancels the hide timer) keeps it reachable. */}
+                {!coarse && hoveredLink && (
+                  <button
+                    className="link-copy-btn fixed z-30 flex size-5 items-center justify-center rounded-md border border-border bg-background/95 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      copyLink(hoveredLink.href)
+                    }}
+                    onMouseEnter={cancelLinkHide}
+                    onMouseLeave={scheduleLinkHide}
+                    style={{
+                      top: Math.max(
+                        2,
+                        hoveredLink.rect.top + Math.min(hoveredLink.rect.height, 22) / 2 - 10,
+                      ),
+                      left: Math.min(hoveredLink.rect.right - 6, window.innerWidth - 24),
+                    }}
+                    title="Copy link"
+                    type="button"
+                  >
+                    <HugeiconsIcon className="size-3" icon={linkCopied ? Tick01Icon : Copy01Icon} />
+                  </button>
+                )}
+              </div>
+            </PopoverAnchor>
+            {canReact && !coarse && (
+              <PopoverContent
+                align={self ? "start" : "end"}
+                className="flex w-auto flex-row items-center gap-0.5 rounded-full border border-border p-1"
+                onMouseEnter={openReactBar}
+                onMouseLeave={closeReactBarSoon}
+                onOpenAutoFocus={(e) => e.preventDefault()}
+                side="top"
+                sideOffset={6}
+              >
+                <QuickReact
+                  onPick={quickReact}
+                  onPickerOpenChange={setPickerOpen}
+                  onPickerPick={pickerReact}
+                  pickerOpen={pickerOpen}
+                  side={self ? "start" : "end"}
+                />
+              </PopoverContent>
             )}
-          </div>
+          </Popover>
           {/* Narrow side cluster (B1): visible HH:mm:ss + Reply + own-message "…" menu. The wide
               quick-react pill moved to the floating top-edge bar above, so this row stays slim and
               the message never exceeds the viewport width. */}
@@ -667,10 +722,10 @@ function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void
   )
 }
 
-/** The quick-react bar floating above the bubble's top edge (PSN-99 B1). The 6 Teams defaults + a "+"
- *  reveal on bubble hover (fine pointer only — coarse reaches reactions via the "…" menu). One click
- *  reacts. The "+" opens the Teams catalog picker. `r` keyboard command opens the picker (pickerOpen).
- *  Anchored top-right for self, top-left for others so it hugs the bubble corner. */
+/** The quick-react content (PSN-99): 6 Teams defaults + a "+" catalog trigger. Rendered INSIDE the
+ *  portaled hover Popover (the parent PopoverContent positions + portals it, so this just lays out the
+ *  buttons — no absolute positioning of its own). The "+" opens the full Teams catalog in its own
+ *  nested shadcn Popover (collision-aware). `r` keyboard command opens the picker (pickerOpen). */
 function QuickReact({
   pickerOpen,
   onPickerOpenChange,
@@ -685,14 +740,7 @@ function QuickReact({
   side: "start" | "end"
 }) {
   return (
-    <div
-      className={cn(
-        "absolute -top-4 z-20 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1 py-0.5 opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover/bubble:opacity-100",
-        // Stay visible while the catalog popover is open (it portals out of the hover group).
-        pickerOpen && "opacity-100",
-        side === "end" ? "-right-1" : "-left-1",
-      )}
-    >
+    <>
       {QUICK_REACTIONS.map((r) => (
         <button
           aria-label={r.key}
@@ -704,9 +752,7 @@ function QuickReact({
           {r.emoji}
         </button>
       ))}
-      {/* "+" opens the Teams catalog picker in a shadcn Popover — portaled + collision-aware, so it
-          flips/clamps at the viewport edge and dismisses on click-away/Escape (no hand-rolled backdrop
-          or absolute panel that could clip off-screen). PSN-99 refine. */}
+      {/* "+" opens the Teams catalog picker in a nested shadcn Popover — portaled + collision-aware. */}
       <Popover onOpenChange={onPickerOpenChange} open={pickerOpen}>
         <PopoverTrigger
           aria-label="More reactions"
@@ -724,7 +770,7 @@ function QuickReact({
           />
         </PopoverContent>
       </Popover>
-    </div>
+    </>
   )
 }
 
