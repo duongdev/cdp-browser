@@ -2,10 +2,19 @@ import {
   ArrowUp01Icon,
   Attachment01Icon,
   Cancel01Icon,
+  CodeIcon,
   File01Icon,
+  GifIcon,
   LeftToRightListBulletIcon,
   LeftToRightListNumberIcon,
+  Link01Icon,
+  QuoteUpIcon,
+  SmileIcon,
+  SourceCodeIcon,
+  StickerIcon,
   TextBoldIcon,
+  TextClearIcon,
+  TextFontIcon,
   TextItalicIcon,
   TextStrikethroughIcon,
   TextUnderlineIcon,
@@ -20,6 +29,9 @@ import { pickFiles } from "../lib/image-attach"
 import { filterRoster, mentionQuery } from "../lib/mention"
 import { enterKeyAction, type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 import type { RosterMember } from "../lib/teams-client"
+import { useEmojiCatalog } from "../lib/use-emoji-catalog"
+import { EmojiPicker } from "./emoji-picker"
+import { prompt } from "./prompt-dialog"
 
 /** Imperative API thread-view drives: focus after a send / on thread open (t159). */
 export interface ComposerHandle {
@@ -49,16 +61,35 @@ interface ComposerProps {
   namePref?: NamePref
 }
 
-// Formatting toolbar actions → document.execCommand. Deprecated but universal, zero-dep — the lazy
-// rung for bold/italic/lists in a contenteditable; revisit only if a browser actually drops it.
-const FORMAT_ACTIONS: readonly { cmd: string; icon: IconSvgElement; label: string }[] = [
-  { cmd: "bold", icon: TextBoldIcon, label: "Bold (⌘B)" },
-  { cmd: "italic", icon: TextItalicIcon, label: "Italic (⌘I)" },
-  { cmd: "underline", icon: TextUnderlineIcon, label: "Underline (⌘U)" },
-  { cmd: "strikeThrough", icon: TextStrikethroughIcon, label: "Strikethrough" },
-  { cmd: "insertUnorderedList", icon: LeftToRightListBulletIcon, label: "Bulleted list" },
-  { cmd: "insertOrderedList", icon: LeftToRightListNumberIcon, label: "Numbered list" },
-]
+/** Below which composer-card width the formatting actions collapse behind the Format (Aa) toggle
+ *  instead of sitting inline (PSN-94 A — width-responsive action bar). */
+const FORMAT_INLINE_MIN_WIDTH = 480
+
+// A tooltip-only info line so the info doesn't spill: title lives on each button.
+function FmtButton({
+  icon,
+  label,
+  onRun,
+}: {
+  icon: IconSvgElement
+  label: string
+  onRun: () => void
+}) {
+  return (
+    <Button
+      aria-label={label}
+      className="text-muted-foreground"
+      onClick={onRun}
+      // Keep the editor selection: a mousedown on a button would blur + collapse it.
+      onMouseDown={(e) => e.preventDefault()}
+      size="icon-sm"
+      title={label}
+      variant="ghost"
+    >
+      <HugeiconsIcon className="size-4" icon={icon} />
+    </Button>
+  )
+}
 
 /** Per-file chip in the pending-attachments row. Image files show a thumbnail; others show a name
  *  chip. The ✕ button removes this file from the list without moving focus away from the editor. */
@@ -115,8 +146,16 @@ export function Composer({
 }: ComposerProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const cardRef = useRef<HTMLDivElement>(null)
   const [hasContent, setHasContent] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
+
+  // Width-responsive action bar (PSN-94 A): format actions sit inline when the card is wide, else
+  // collapse behind the Format toggle.
+  const [wide, setWide] = useState(true)
+  const [formatOpen, setFormatOpen] = useState(false)
+  const [emojiOpen, setEmojiOpen] = useState(false)
+  const catalog = useEmojiCatalog()
 
   // @-mention autocomplete (PSN-92 D): the roster is lazy-loaded on the first `@`; `menu` holds the
   // open dropdown's filtered candidates + the highlighted index.
@@ -133,6 +172,18 @@ export function Composer({
     [],
   )
 
+  // Track the card width so the bar knows when to inline the format row.
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0
+      if (w) setWide(w >= FORMAT_INLINE_MIN_WIDTH)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   // Reset on conversation switch (a half-typed draft / staged file doesn't leak across panes).
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the deliberate reset trigger
   useEffect(() => {
@@ -141,6 +192,7 @@ export function Composer({
     setHasContent(false)
     setPendingFiles([])
     setMenu(null)
+    setEmojiOpen(false)
     roster.current = []
     rosterLoaded.current = false
     if (autoFocus) el?.focus()
@@ -198,7 +250,7 @@ export function Composer({
     pill.setAttribute("contenteditable", "false")
     pill.textContent = `@${formatName(m.name, namePref)}`
     del.insertNode(pill)
-    const space = document.createTextNode(" ")
+    const space = document.createTextNode(" ")
     pill.after(space)
 
     const after = document.createRange()
@@ -213,6 +265,8 @@ export function Composer({
 
   const readEditor = (): OutgoingMessage => outgoingFromEditor(editorRef.current?.innerHTML ?? "")
 
+  const syncHasContent = () => setHasContent(!!readEditor().text)
+
   const doSend = () => {
     const out = readEditor()
     if (!out.text && pendingFiles.length === 0) return
@@ -225,10 +279,87 @@ export function Composer({
     el?.focus()
   }
 
+  // --- Formatting actions (PSN-94 A) ---------------------------------------
+  // execCommand is deprecated but universal + zero-dep — the lazy rung for a contenteditable. The
+  // render side has its own DOMPurify boundary; cleanEditorHtml keeps only the allowlisted tags.
+
   const exec = (cmd: string) => {
     editorRef.current?.focus()
     document.execCommand(cmd)
-    setHasContent(!!outgoingFromEditor(editorRef.current?.innerHTML ?? "").text)
+    syncHasContent()
+  }
+
+  // formatBlock wraps the caret's block in a tag (blockquote / pre). Toggling back to a plain block
+  // isn't offered — clear-formatting flattens everything.
+  const execBlock = (tag: string) => {
+    editorRef.current?.focus()
+    document.execCommand("formatBlock", false, tag)
+    syncHasContent()
+  }
+
+  // Inline code has no execCommand — wrap the selection in <code> by hand.
+  const wrapInlineCode = () => {
+    const el = editorRef.current
+    el?.focus()
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return
+    const range = sel.getRangeAt(0)
+    if (range.collapsed) return
+    const code = document.createElement("code")
+    try {
+      range.surroundContents(code)
+    } catch {
+      // Selection crosses element boundaries — extract + re-insert instead.
+      code.appendChild(range.extractContents())
+      range.insertNode(code)
+    }
+    const after = document.createRange()
+    after.setStartAfter(code)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+    syncHasContent()
+  }
+
+  // Insert-link: prompt for a URL, then link the saved selection (a collapsed caret inserts the URL
+  // as its own link text, matching Teams). The dialog steals focus, so the range is captured first
+  // and restored before createLink runs.
+  const insertLink = async () => {
+    const sel = window.getSelection()
+    const saved = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null
+    const url = (await prompt({ title: "Insert link", placeholder: "https://…" }))?.trim()
+    if (!url) return
+    editorRef.current?.focus()
+    if (saved) {
+      const s = window.getSelection()
+      s?.removeAllRanges()
+      s?.addRange(saved)
+    }
+    if (saved && !saved.collapsed) {
+      document.execCommand("createLink", false, url)
+    } else {
+      const safe = url.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
+      document.execCommand("insertHTML", false, `<a href="${safe}">${safe}</a>`)
+    }
+    syncHasContent()
+  }
+
+  // Clear-formatting: strip inline marks (bold/italic/underline/strike/link) and flatten the block
+  // (drops code block / quote / list wrapping). removeFormat leaves the text intact.
+  const clearFormat = () => {
+    editorRef.current?.focus()
+    document.execCommand("removeFormat")
+    document.execCommand("unlink")
+    document.execCommand("formatBlock", false, "div")
+    syncHasContent()
+  }
+
+  const insertEmoji = (key: string) => {
+    setEmojiOpen(false)
+    const u = catalog?.emoji.find((e) => e.i === key)?.u
+    editorRef.current?.focus()
+    if (u) document.execCommand("insertText", false, u)
+    syncHasContent()
   }
 
   const canSend = hasContent || pendingFiles.length > 0
@@ -243,6 +374,38 @@ export function Composer({
     return !!li && !!editorRef.current?.contains(li)
   }
 
+  // The formatting cluster — rendered inline when wide, or in a collapsible row when narrow.
+  const formatButtons = (
+    <>
+      <FmtButton icon={TextBoldIcon} label="Bold (⌘B)" onRun={() => exec("bold")} />
+      <FmtButton icon={TextItalicIcon} label="Italic (⌘I)" onRun={() => exec("italic")} />
+      <FmtButton icon={TextUnderlineIcon} label="Underline (⌘U)" onRun={() => exec("underline")} />
+      <FmtButton
+        icon={TextStrikethroughIcon}
+        label="Strikethrough"
+        onRun={() => exec("strikeThrough")}
+      />
+      <div className="mx-1 h-4 w-px bg-border" />
+      <FmtButton icon={CodeIcon} label="Inline code" onRun={wrapInlineCode} />
+      <FmtButton icon={SourceCodeIcon} label="Code block" onRun={() => execBlock("pre")} />
+      <FmtButton icon={QuoteUpIcon} label="Quote" onRun={() => execBlock("blockquote")} />
+      <div className="mx-1 h-4 w-px bg-border" />
+      <FmtButton
+        icon={LeftToRightListBulletIcon}
+        label="Bulleted list"
+        onRun={() => exec("insertUnorderedList")}
+      />
+      <FmtButton
+        icon={LeftToRightListNumberIcon}
+        label="Numbered list"
+        onRun={() => exec("insertOrderedList")}
+      />
+      <div className="mx-1 h-4 w-px bg-border" />
+      <FmtButton icon={Link01Icon} label="Insert link" onRun={insertLink} />
+      <FmtButton icon={TextClearIcon} label="Clear formatting" onRun={clearFormat} />
+    </>
+  )
+
   return (
     <div className="shrink-0 px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       <div
@@ -250,6 +413,7 @@ export function Composer({
           "relative rounded-2xl border border-input bg-card shadow-sm transition-shadow",
           "focus-within:border-ring/40 focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/25",
         )}
+        ref={cardRef}
       >
         {menu && menu.items.length > 0 && (
           <div className="absolute bottom-full left-2 z-50 mb-1 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
@@ -392,6 +556,10 @@ export function Composer({
           role="textbox"
           tabIndex={0}
         />
+        {/* Narrow layout: the formatting row lives above the bar and toggles open. */}
+        {!wide && formatOpen && (
+          <div className="flex flex-wrap items-center gap-0.5 px-2 pb-1">{formatButtons}</div>
+        )}
         <div className="flex items-center gap-0.5 px-2 pb-2">
           <input
             className="hidden"
@@ -409,26 +577,75 @@ export function Composer({
             className="text-muted-foreground"
             onClick={() => fileRef.current?.click()}
             size="icon-sm"
+            title="Attach file"
             variant="ghost"
           >
             <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
           </Button>
-          <div className="mx-1 h-4 w-px bg-border" />
-          {FORMAT_ACTIONS.map((a) => (
+          <div className="relative">
             <Button
-              aria-label={a.label}
-              className="text-muted-foreground"
-              key={a.cmd}
-              onClick={() => exec(a.cmd)}
-              // Keep the editor selection: a mousedown on a button would blur + collapse it.
+              aria-label="Emoji"
+              className={cn("text-muted-foreground", emojiOpen && "bg-accent text-foreground")}
+              onClick={() => setEmojiOpen((v) => !v)}
               onMouseDown={(e) => e.preventDefault()}
               size="icon-sm"
-              title={a.label}
+              title="Emoji"
               variant="ghost"
             >
-              <HugeiconsIcon className="size-4" icon={a.icon} />
+              <HugeiconsIcon className="size-4" icon={SmileIcon} />
             </Button>
-          ))}
+            {emojiOpen && (
+              <>
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setEmojiOpen(false)}
+                  onKeyDown={(e) => e.key === "Escape" && setEmojiOpen(false)}
+                />
+                <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
+                  <EmojiPicker onClose={() => setEmojiOpen(false)} onSelect={insertEmoji} />
+                </div>
+              </>
+            )}
+          </div>
+          {/* GIF + sticker land in workstreams D + E — placeholders reserve the slot. */}
+          <Button
+            aria-label="GIF (coming soon)"
+            className="text-muted-foreground"
+            disabled
+            size="icon-sm"
+            title="GIF (coming soon)"
+            variant="ghost"
+          >
+            <HugeiconsIcon className="size-4" icon={GifIcon} />
+          </Button>
+          <Button
+            aria-label="Sticker (coming soon)"
+            className="text-muted-foreground"
+            disabled
+            size="icon-sm"
+            title="Sticker (coming soon)"
+            variant="ghost"
+          >
+            <HugeiconsIcon className="size-4" icon={StickerIcon} />
+          </Button>
+          {wide ? (
+            <>
+              <div className="mx-1 h-4 w-px bg-border" />
+              {formatButtons}
+            </>
+          ) : (
+            <Button
+              aria-label="Formatting"
+              className={cn("text-muted-foreground", formatOpen && "bg-accent text-foreground")}
+              onClick={() => setFormatOpen((v) => !v)}
+              size="icon-sm"
+              title="Formatting"
+              variant="ghost"
+            >
+              <HugeiconsIcon className="size-4" icon={TextFontIcon} />
+            </Button>
+          )}
           <div className="flex-1" />
           <Button
             aria-label="Send"
