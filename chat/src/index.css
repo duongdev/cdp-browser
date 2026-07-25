@@ -508,6 +508,8 @@
 }
 .teams-message-body pre code {
   white-space: pre;
+  padding: 0;
+  background: none;
 }
 /* A wide rich-HTML table scrolls within the bubble instead of widening it past its max-width and
    pushing a page-level horizontal scrollbar (PSN-99 hardening; pre/img are already constrained). */
@@ -515,10 +517,6 @@
   display: block;
   max-width: 100%;
   overflow-x: auto;
-}
-.teams-message-body pre code {
-  padding: 0;
-  background: none;
 }
 .teams-message-body .mention {
   padding: 0 0.25em;

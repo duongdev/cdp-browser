@@ -67,11 +67,14 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <div className="flex items-center gap-4">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: avatar is a supplementary affordance, keyboard nav opens the dialog itself */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: same as above */}
-              <span
-                className={photoLoaded ? "cursor-zoom-in" : undefined}
-                onClick={photoLoaded ? () => setLightboxOpen(true) : undefined}
+              {/* One button (no remount → no image flicker), disabled until a real photo loads, so the
+                  zoom affordance only appears when there's something to zoom (initials → inert). */}
+              <button
+                aria-label="View full-size avatar"
+                className="rounded-full disabled:cursor-default enabled:cursor-zoom-in"
+                disabled={!photoLoaded}
+                onClick={() => setLightboxOpen(true)}
+                type="button"
               >
                 <UserAvatar
                   className="size-16 text-xl"
@@ -80,7 +83,7 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
                   size="240x240"
                   userId={target?.userId}
                 />
-              </span>
+              </button>
               <div className="min-w-0">
                 <DialogTitle className="truncate">{name}</DialogTitle>
                 {profile?.jobTitle && (
