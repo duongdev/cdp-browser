@@ -37,6 +37,7 @@ import {
   filterConversations,
   folderLabel,
   groupByFolder,
+  isUnread,
   type ListFilter,
   type ReadOverride,
 } from "../lib/conversation-view"
@@ -126,6 +127,46 @@ interface ConversationListProps {
   /** Background poll health (PSN-91): false when a refresh fails, true when it succeeds. Drives the
    *  app's "Reconnecting…" banner. */
   onConnectionChange?: (ok: boolean) => void
+  /** Toggle read ↔ unread from the row context menu (C4). Routes to the same patchConvRead path as
+   *  the `u` key; the conversation's current unread state gates the label. */
+  onToggleRead?: (convId: string) => void
+  /** Controlled list filter (PSN-99): when provided the filter lives in the parent so the pills can
+   *  render in the top bar (web/PWA). Omitted → internal state (Electron keeps the in-list bar). */
+  filter?: ListFilter
+  onFilterChange?: (f: ListFilter) => void
+  /** Hide the in-list filter bar when the pills are hoisted into the top header (web/PWA). */
+  showFilterBar?: boolean
+}
+
+/** The All / Unread / Mentions segmented pills. Shared by the in-list bar and the top-bar (web). */
+export function ListFilterPills({
+  filter,
+  onFilterChange,
+  className,
+}: {
+  filter: ListFilter
+  onFilterChange: (f: ListFilter) => void
+  className?: string
+}) {
+  return (
+    <div className={cn("flex gap-1", className)}>
+      {FILTERS.map((f) => (
+        <button
+          className={cn(
+            "rounded-full px-2.5 py-1 font-medium text-xs transition-colors",
+            filter === f.key
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          key={f.key}
+          onClick={() => onFilterChange(f.key)}
+          type="button"
+        >
+          {f.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 /** The conversation list — driven by the BFF WS snapshot + `/api/chat/*` deltas, covers all four
@@ -145,6 +186,10 @@ export function ConversationList({
   onReorderFolders,
   namePref,
   onConnectionChange,
+  onToggleRead,
+  filter: filterProp,
+  onFilterChange,
+  showFilterBar = true,
 }: ConversationListProps) {
   const [state, setState] = useState<State>({ status: "loading" })
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -152,7 +197,10 @@ export function ConversationList({
   const [loadingMore, setLoadingMore] = useState(false)
   const loadingMoreRef = useRef(false)
   // Segmented list filter (t168): All / Unread / Mentions. View-state only, resets on reload.
-  const [filter, setFilter] = useState<ListFilter>("all")
+  // Controlled by the parent when `filterProp` is passed (web hoists the pills to the top bar, PSN-99).
+  const [internalFilter, setInternalFilter] = useState<ListFilter>("all")
+  const filter = filterProp ?? internalFilter
+  const setFilter = onFilterChange ?? setInternalFilter
   // Live "ago" clock (t168): rows render times against this, so one tick refreshes them all.
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -422,7 +470,9 @@ export function ConversationList({
         convId={c.id}
         key={c.id}
         onPatch={onPatchPrefs}
+        onToggleRead={onToggleRead ?? (() => {})}
         prefs={prefs?.[c.id] ?? { labels: [], folder: null, muted: false }}
+        unread={isUnread(c)}
       >
         {row}
       </ConversationRowMenu>
@@ -438,26 +488,15 @@ export function ConversationList({
 
   // Segmented filter bar (t168): always visible once rows exist, so a filtered-empty view can
   // switch back. j/k agrees automatically — the reported list IS the filtered list.
-  const filterBar = (
+  // Sticky (C2): sticks to the top of the scroll container; solid bg so rows slide under it cleanly.
+  const filterBar = showFilterBar ? (
     // pl-3 matches the row's px-3, so the first button's left edge lines up with the row avatars.
-    <div className="flex gap-1 pr-1 pb-1.5 pl-3">
-      {FILTERS.map((f) => (
-        <button
-          className={cn(
-            "rounded-full px-2.5 py-1 font-medium text-xs transition-colors",
-            filter === f.key
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-          key={f.key}
-          onClick={() => setFilter(f.key)}
-          type="button"
-        >
-          {f.label}
-        </button>
-      ))}
-    </div>
-  )
+    <ListFilterPills
+      className="sticky top-0 z-10 bg-background pr-1 pb-1.5 pl-3 pt-0.5"
+      filter={filter}
+      onFilterChange={setFilter}
+    />
+  ) : null
 
   if ((display?.length ?? 0) === 0) {
     return (
@@ -481,6 +520,7 @@ export function ConversationList({
           onPatchPrefs={onPatchPrefs}
           onToggle={onToggleFolder}
           section={section}
+          stickyTop={showFilterBar ? "top-8" : "top-0"}
         >
           {section.conversations.map(renderRow)}
         </FolderGroup>
@@ -560,8 +600,9 @@ function FolderGroup({
   section,
   collapsed,
   onToggle,
-  onPatchPrefs,
+  onPatchPrefs: _onPatchPrefs,
   dragging,
+  stickyTop,
   children,
 }: {
   section: FolderSection
@@ -569,6 +610,9 @@ function FolderGroup({
   onToggle?: (folder: string) => void
   onPatchPrefs?: (convId: string, patch: ConvPrefsPatch) => void
   dragging?: string | null
+  /** Where the sticky header parks: below the in-list filter bar (Electron) or at the very top
+   *  when the filters are hoisted to the app bar (web/PWA) — PSN-99 sticky-folder fix. */
+  stickyTop: string
   children: React.ReactNode
 }) {
   const folderId = section.folder ?? "__null__"
@@ -619,10 +663,14 @@ function FolderGroup({
           : setDropRef
       }
     >
+      {/* Sticky header. Parks below the in-list filter bar (Electron, top-8 ≈ 32px) or at the very
+          top when filters are hoisted to the app bar (web, top-0) — PSN-99. Solid bg so rows scroll
+          under it without bleed-through. */}
       <button
         aria-expanded={!collapsed}
         className={cn(
-          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
+          "sticky z-[9] flex w-full items-center gap-1.5 rounded-md bg-background px-2 py-1.5 text-left text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground",
+          stickyTop,
           sortable.isDragging && "opacity-40",
         )}
         onClick={() => onToggle?.(section.folder as string)}

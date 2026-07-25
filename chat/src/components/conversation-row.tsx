@@ -34,11 +34,10 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
     { conversation, onOpen, active, focused, namePref, now, className, onClick, ...rest },
     forwardedRef,
   ) {
-    const label = formatConversationLabel(
-      conversationLabel(conversation),
-      conversation,
-      namePref ?? FULL_NAME,
-    )
+    // Raw title (pref-independent) — the avatar initials clean this themselves (strip org/tags),
+    // so a "first name"/regex display pref never starves them of the real name (PSN-99).
+    const avatarName = conversationLabel(conversation)
+    const label = formatConversationLabel(avatarName, conversation, namePref ?? FULL_NAME)
     // Local rename (t168): the custom title leads; the original stays visible, small + muted.
     const customTitle = conversation.customTitle
     const title = customTitle || label
@@ -83,9 +82,9 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
               fix): a bare inline span collapsed and let the facepile circles spill across rows. */}
           <span className="relative block size-10 shrink-0">
             {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
-              <FacepileAvatar label={label} memberIds={conversation.memberIds ?? []} />
+              <FacepileAvatar label={avatarName} memberIds={conversation.memberIds ?? []} />
             ) : (
-              <UserAvatar label={label} userId={conversation.avatarUserId} />
+              <UserAvatar label={avatarName} userId={conversation.avatarUserId} />
             )}
             {mentions > 0 ? (
               <span
@@ -112,7 +111,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
               <span className="flex min-w-0 items-baseline gap-1.5">
                 <span
                   className={cn(
-                    "truncate text-foreground",
+                    "conv-row-title truncate text-foreground",
                     unread ? "font-semibold" : "font-medium",
                   )}
                 >
@@ -139,7 +138,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             </span>
             <span
               className={cn(
-                "mt-0.5 block truncate text-sm",
+                "conv-row-preview mt-0.5 block truncate text-sm",
                 unread ? "text-foreground/80" : "text-muted-foreground",
               )}
             >

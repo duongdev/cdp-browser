@@ -41,3 +41,17 @@ export function panBy(state: ZoomState, dx: number, dy: number, viewport: ViewSi
   if (!isZoomed(state)) return state
   return clampToViewport({ ...state, x: state.x + dx, y: state.y + dy }, viewport)
 }
+
+/** Decides whether a wheel event should zoom (trackpad pinch or Ctrl+scroll) or pan.
+ *  On macOS a trackpad pinch arrives as a `wheel` event with `ctrlKey: true`. */
+export function wheelIntent(ctrlKey: boolean): "zoom" | "pan" {
+  return ctrlKey ? "zoom" : "pan"
+}
+
+/** The scale a single click on the image should zoom to. If already zoomed, zoom in
+ *  another step (capped at MAX_SCALE). Double-click always resets (IDENTITY). */
+const CLICK_ZOOM_STEP = 2
+export function clickZoomScale(state: ZoomState): number {
+  if (!isZoomed(state)) return CLICK_ZOOM_STEP
+  return clamp(state.scale * CLICK_ZOOM_STEP, 1, MAX_SCALE)
+}

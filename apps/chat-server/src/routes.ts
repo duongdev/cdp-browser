@@ -168,7 +168,7 @@ export function createRoutes(deps: RoutesDeps) {
     const { provider } = pick(deps, c.req.query("service"))
     const userId = c.req.query("userId")
     if (!userId) throw new ProviderError("missing_user", 400)
-    const r: AvatarResult = await provider.avatar(userId)
+    const r: AvatarResult = await provider.avatar(userId, c.req.query("size"))
     if ("miss" in r) return c.json({ miss: true }, 404)
     return bytes(c, r)
   })

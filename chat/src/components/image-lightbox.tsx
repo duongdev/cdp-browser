@@ -11,11 +11,13 @@ import {
 import { chatShell } from "../lib/chat-shell"
 import {
   applyPinch,
+  clickZoomScale,
   IDENTITY,
   isZoomed,
   type Point,
   panBy,
   type ViewSize,
+  wheelIntent,
   type ZoomState,
   zoomAround,
 } from "../lib/lightbox-zoom"
@@ -34,7 +36,7 @@ interface ImageLightboxProps {
 }
 
 const WHEEL_STEP = 0.0025 // scale delta per wheel px
-const DOUBLE_TAP = 2.5 // scale a double-click/tap jumps to
+const PAN_SCALE = 1 // px per wheel px (plain scroll pans 1:1)
 
 /** Full-screen dimmed overlay showing one image (zoom/pan, t164) or a video (native controls, t165),
  *  with a smooth open/close animation and a download affordance. Rendered inline (position:fixed
@@ -56,7 +58,7 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
   const pointers = useRef(new Map<number, Point>())
   // The two pointer positions at the previous pinch sample (container-relative), for applyPinch.
   const pinchPrev = useRef<[Point, Point] | null>(null)
-  // Whether the current single-pointer gesture has moved (a drag) — suppresses the close-on-release.
+  // Whether the current single-pointer gesture has moved (a drag) — suppresses click actions.
   const dragged = useRef(false)
   const isVideo = media.kind === "video"
 
@@ -78,27 +80,38 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
     return { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) }
   }, [])
 
-  // Wheel zoom rides a NON-PASSIVE native listener (t170): React root-attaches `wheel` passively,
-  // so a React onWheel's preventDefault silently fails and the page behind the overlay scrolls
-  // while zooming. Image stages only — a video stage has no wheel behavior.
+  // Wheel: plain scroll = pan; Ctrl+scroll or trackpad pinch (ctrlKey) = zoom.
+  // Rides a NON-PASSIVE native listener: React root-attaches `wheel` passively, so a React
+  // onWheel's preventDefault silently fails and the page behind the overlay scrolls.
   const isVideoRef = useRef(isVideo)
   isVideoRef.current = isVideo
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
   useEffect(() => {
     const el = stageRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       if (isVideoRef.current) return
       e.preventDefault()
-      setZoom((z) =>
-        zoomAround(z, localPoint(e), z.scale * (1 - e.deltaY * WHEEL_STEP), viewport()),
-      )
+      if (wheelIntent(e.ctrlKey) === "zoom") {
+        setZoom((z) =>
+          zoomAround(z, localPoint(e), z.scale * (1 - e.deltaY * WHEEL_STEP), viewport()),
+        )
+      } else {
+        // Plain scroll (no ctrl) = pan. Pan even at fit so the user can "feel" the edge.
+        setZoom((z) =>
+          panBy(isZoomed(z) ? z : z, -e.deltaX * PAN_SCALE, -e.deltaY * PAN_SCALE, viewport()),
+        )
+      }
     }
     el.addEventListener("wheel", onWheel, { passive: false })
     return () => el.removeEventListener("wheel", onWheel)
   }, [localPoint, viewport])
 
+  // Double-click = reset to fit.
   const onDoubleClick = (e: React.MouseEvent) => {
-    setZoom((z) => zoomAround(z, localPoint(e), isZoomed(z) ? 1 : DOUBLE_TAP, viewport()))
+    e.stopPropagation()
+    setZoom(IDENTITY)
   }
 
   const onPointerDown = (e: ReactPointerEvent) => {
@@ -110,12 +123,14 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
 
   const onPointerMove = (e: ReactPointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return
+    // biome-ignore lint/style/noNonNullAssertion: guarded by has() above
     const prev = pointers.current.get(e.pointerId)!
     const cur = localPoint(e)
     pointers.current.set(e.pointerId, cur)
 
     if (pointers.current.size >= 2) {
       const pair = [...pointers.current.values()].slice(0, 2) as [Point, Point]
+      // biome-ignore lint/style/noNonNullAssertion: only enters this branch when pinchPrev is set
       if (pinchPrev.current) setZoom((z) => applyPinch(z, pinchPrev.current!, pair, viewport()))
       pinchPrev.current = pair
       dragged.current = true
@@ -125,7 +140,9 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
     const dx = cur.x - prev.x
     const dy = cur.y - prev.y
     if (Math.abs(dx) + Math.abs(dy) > 1) dragged.current = true
-    setZoom((z) => panBy(z, dx, dy, viewport()))
+    if (isZoomed(zoomRef.current)) {
+      setZoom((z) => panBy(z, dx, dy, viewport()))
+    }
   }
 
   const endPointer = (e: ReactPointerEvent) => {
@@ -133,9 +150,16 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
     if (pointers.current.size < 2) pinchPrev.current = null
   }
 
-  // A click that didn't pan and isn't zoomed dismisses (whole stage is the target).
+  // Single click ON THE IMAGE (not a drag): zoom in at the pointer position.
+  const onImageClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (dragged.current) return
+    setZoom((z) => zoomAround(z, localPoint(e), clickZoomScale(z), viewport()))
+  }
+
+  // Click on the BACKDROP (the stage area outside the image) closes.
   const onStageClick = () => {
-    if (!dragged.current && !isZoomed(zoom)) onClose()
+    if (!dragged.current) onClose()
   }
 
   const cardAnim = reduce
@@ -152,7 +176,6 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
     ? { onClick: onStageClick }
     : {
         onClick: onStageClick,
-        onDoubleClick,
         onPointerCancel: endPointer,
         onPointerDown,
         onPointerMove,
@@ -162,7 +185,7 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
   return (
     <motion.div
       animate={{ opacity: 1 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"
       exit={{ opacity: 0 }}
       initial={{ opacity: 0 }}
       transition={{ duration: reduce ? 0.1 : 0.16 }}
@@ -197,8 +220,6 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
           <HugeiconsIcon className="size-5" icon={Cancel01Icon} />
         </button>
       </div>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: standard lightbox stage (pan/zoom/close). */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: Esc closes (the keydown listener above). */}
       <div
         className="flex size-full touch-none select-none items-center justify-center overflow-hidden"
         ref={stageRef}
@@ -221,10 +242,14 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
               src={media.src}
             />
           ) : (
+            // biome-ignore lint/a11y/noStaticElementInteractions: image click zooms (lightbox gesture).
+            // biome-ignore lint/a11y/useKeyWithClickEvents: Esc/keyboard handled by stage keydown listener.
             <img
               alt=""
               className="max-h-full max-w-full rounded-md object-contain"
               draggable={false}
+              onClick={onImageClick}
+              onDoubleClick={onDoubleClick}
               src={media.src}
               style={{
                 transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,

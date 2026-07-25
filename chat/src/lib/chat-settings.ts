@@ -35,6 +35,9 @@ export interface ChatSettings {
   notifySound: ChatNotifySound
   /** Electron-shell notification toggle. Web push is managed separately by NotifyToggle. */
   notificationsEnabled: boolean
+  /** Per-device font scale multiplier (0.85–1.4, default 1.0). Applied as --chat-font-scale on
+   *  document.documentElement; text-bearing selectors multiply their base size by this var. */
+  fontScale: number
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -46,6 +49,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   nameRegex: "",
   notifySound: "polite",
   notificationsEnabled: true,
+  fontScale: 1.0,
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
@@ -58,6 +62,15 @@ export const CHAT_NAME_DISPLAY_BASE = "chatNameDisplay"
 export const CHAT_NAME_REGEX_BASE = "chatNameRegex"
 export const CHAT_NOTIFY_SOUND_BASE = "chatNotifySound"
 export const CHAT_NOTIFICATIONS_BASE = "chatNotificationsEnabled"
+export const CHAT_FONT_SCALE_BASE = "chatFontScale"
+
+const FONT_SCALE_MIN = 0.85
+const FONT_SCALE_MAX = 1.4
+
+export function parseFontScale(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHAT_SETTINGS.fontScale
+  return Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, raw))
+}
 
 const THEMES: ChatTheme[] = ["system", "light", "dark"]
 const DENSITIES: ChatDensity[] = ["comfortable", "compact"]
@@ -138,6 +151,7 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
     notificationsEnabled: parseNotificationsEnabled(
       ui[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)],
     ),
+    fontScale: parseFontScale(ui[deviceKey(CHAT_FONT_SCALE_BASE, deviceId)]),
   }
 }
 
@@ -160,6 +174,8 @@ export function writeChatSettings(
     out[deviceKey(CHAT_NOTIFY_SOUND_BASE, deviceId)] = partial.notifySound
   if (partial.notificationsEnabled !== undefined)
     out[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)] = partial.notificationsEnabled
+  if (partial.fontScale !== undefined)
+    out[deviceKey(CHAT_FONT_SCALE_BASE, deviceId)] = partial.fontScale
   return out
 }
 

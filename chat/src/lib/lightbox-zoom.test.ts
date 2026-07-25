@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { IDENTITY, isZoomed, panBy, zoomAround } from "./lightbox-zoom"
+import {
+  clickZoomScale,
+  IDENTITY,
+  isZoomed,
+  MAX_SCALE,
+  panBy,
+  wheelIntent,
+  zoomAround,
+} from "./lightbox-zoom"
 
 const VP = { w: 200, h: 100 }
 
@@ -36,5 +44,33 @@ describe("panBy", () => {
     expect(panned.x).toBeLessThanOrEqual(0)
     expect(panned.y).toBeLessThanOrEqual(0)
     expect(isZoomed(panned)).toBe(true)
+  })
+})
+
+describe("wheelIntent", () => {
+  it("returns zoom when ctrlKey is true (trackpad pinch or Ctrl+scroll)", () => {
+    expect(wheelIntent(true)).toBe("zoom")
+  })
+
+  it("returns pan when ctrlKey is false (plain scroll)", () => {
+    expect(wheelIntent(false)).toBe("pan")
+  })
+})
+
+describe("clickZoomScale", () => {
+  it("returns CLICK_ZOOM_STEP (2) when at fit", () => {
+    expect(clickZoomScale(IDENTITY)).toBe(2)
+  })
+
+  it("returns a further zoom step when already zoomed", () => {
+    const z = zoomAround(IDENTITY, { x: 0, y: 0 }, 2, VP)
+    const next = clickZoomScale(z)
+    expect(next).toBeGreaterThan(z.scale)
+    expect(next).toBeLessThanOrEqual(MAX_SCALE)
+  })
+
+  it("caps at MAX_SCALE when already near the ceiling", () => {
+    const z = zoomAround(IDENTITY, { x: 0, y: 0 }, MAX_SCALE, VP)
+    expect(clickZoomScale(z)).toBe(MAX_SCALE)
   })
 })

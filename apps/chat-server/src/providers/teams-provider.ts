@@ -179,9 +179,10 @@ export class TeamsProvider implements ChatProvider {
     return out.profile
   }
 
-  async avatar(userId: string): Promise<AvatarResult> {
+  async avatar(userId: string, size?: string): Promise<AvatarResult> {
     const out = await this.call<{ miss?: boolean; ct?: string; base64?: string }>("avatar", {
       userId,
+      size,
     })
     if (out.miss) return { miss: true }
     return { contentType: out.ct || "image/jpeg", body: decodeBase64(out.base64 || "") }

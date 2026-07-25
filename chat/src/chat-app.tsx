@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { CommandPalette } from "./components/command-palette"
-import { ConversationList } from "./components/conversation-list"
+import { ConnectionStatus } from "./components/connection-status"
+import { ConversationList, ListFilterPills } from "./components/conversation-list"
 import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
 import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
@@ -29,6 +30,7 @@ import {
   isUnread,
   knownFolders,
   knownLabels,
+  type ListFilter,
   navigableConversations,
   previewLine,
   type ReadOverride,
@@ -89,16 +91,23 @@ function AppHeader({
   onOpenSettings,
   canBack,
   canForward,
+  filter,
+  onFilterChange,
 }: {
   onOpenSettings: () => void
   canBack: boolean
   canForward: boolean
+  filter: ListFilter
+  onFilterChange: (f: ListFilter) => void
 }) {
   // Electron-only browser-style nav. Reload force-fetches a fresh build (main); back/forward walk
   // the SPA history directly (window.history — Electron's navigationHistory ignores pushState).
   const shell = chatShell()
   return (
-    <header className="titlebar flex h-12 shrink-0 items-center justify-end gap-0.5 border-border border-b px-4">
+    <header className="titlebar flex h-12 shrink-0 items-center justify-between gap-0.5 border-border border-b px-4">
+      {/* Web/PWA hoists the list filters into the top bar's empty space (PSN-99); Electron keeps them
+          in the list because its titlebar is the OS drag region with traffic lights + nav buttons. */}
+      {shell ? <div /> : <ListFilterPills filter={filter} onFilterChange={onFilterChange} />}
       <TooltipProvider delayDuration={300}>
         <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
         {shell && (
@@ -945,6 +954,10 @@ export function ChatApp() {
 
   // "Reconnecting…" banner: the background list poll flips this on failure and back on success.
   const [online, setOnline] = useState(true)
+  // List filter lifted here (PSN-99) so web/PWA can render the pills in the top bar; on Electron the
+  // in-list bar keeps its own copy via this same controlled value. `isWeb` = no Electron shell.
+  const [listFilter, setListFilter] = useState<ListFilter>("all")
+  const isWeb = !chatShell()
 
   // Name display preference (t161), derived once per settings change and threaded to every
   // person-name render (rows, thread header, sender names, reactor tooltips).
@@ -1011,13 +1024,7 @@ export function ChatApp() {
         open={settingsOpen}
         settings={settings}
       />
-      {!online && (
-        <div className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center pt-[max(0.75rem,env(safe-area-inset-top))]">
-          <div className="rounded-full bg-foreground/85 px-3 py-1 text-background text-xs shadow-md backdrop-blur">
-            Reconnecting…
-          </div>
-        </div>
-      )}
+      {/* ConnectionStatus strip is rendered inside each layout's sidebar column (C3). */}
     </>
   )
 
@@ -1028,25 +1035,32 @@ export function ChatApp() {
           <AppHeader
             canBack={canNav.back}
             canForward={canNav.forward}
+            filter={listFilter}
+            onFilterChange={setListFilter}
             onOpenSettings={() => setSettingsOpen(true)}
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
               collapsedFolders={collapsed}
+              filter={listFilter}
               focusedId={view === "list" ? focusedConvId : null}
               folderOrder={folderOrder}
               namePref={namePref}
               onConnectionChange={setOnline}
               onConversations={onConversations}
+              onFilterChange={setListFilter}
               onOpenConversation={openConversation}
               onPatchPrefs={patchPrefs}
               onReorderFolders={setFolderOrder}
               onToggleFolder={toggleFolderCollapsed}
+              onToggleRead={toggleReadUnread}
               prefs={prefs}
               readOverrides={readOverrides}
               selectedId={keepAlive.active || null}
+              showFilterBar={!isWeb}
             />
           </div>
+          <ConnectionStatus online={online} />
         </aside>
         <section className="min-w-0 flex-1">
           {threadPanes}
@@ -1067,6 +1081,8 @@ export function ChatApp() {
         <AppHeader
           canBack={canNav.back}
           canForward={canNav.forward}
+          filter={listFilter}
+          onFilterChange={setListFilter}
           onOpenSettings={() => setSettingsOpen(true)}
         />
         <main className="min-h-0 flex-1 overflow-y-auto">
@@ -1081,11 +1097,13 @@ export function ChatApp() {
             onPatchPrefs={patchPrefs}
             onReorderFolders={setFolderOrder}
             onToggleFolder={toggleFolderCollapsed}
+            onToggleRead={toggleReadUnread}
             prefs={prefs}
             readOverrides={readOverrides}
             selectedId={keepAlive.active || null}
           />
         </main>
+        <ConnectionStatus online={online} />
       </div>
       <div className={cn("min-h-0 flex-1", phoneView === "list" && "hidden")}>{threadPanes}</div>
       {palette}

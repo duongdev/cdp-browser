@@ -44,12 +44,12 @@ export function EmojiPicker({ onSelect, onClose }: Props) {
         ref={inputRef}
         value={query}
       />
-      <div className="overflow-y-auto max-h-64 pr-1">
+      <div className="max-h-64 overflow-y-auto overflow-x-hidden pr-1">
         {query ? (
           <div className="grid grid-cols-8 gap-0.5">
             {filtered.map((e) => (
               <button
-                className="text-xl leading-none p-1 rounded hover:bg-accent transition-colors"
+                className="flex min-w-0 items-center justify-center overflow-hidden rounded p-1 text-xl leading-none transition-colors hover:bg-accent"
                 key={e.i}
                 onClick={() => onSelect(e.i)}
                 title={e.d}
@@ -73,7 +73,7 @@ export function EmojiPicker({ onSelect, onClose }: Props) {
               <div className="grid grid-cols-8 gap-0.5">
                 {entries.map((e) => (
                   <button
-                    className="text-xl leading-none p-1 rounded hover:bg-accent transition-colors"
+                    className="flex min-w-0 items-center justify-center overflow-hidden rounded p-1 text-xl leading-none transition-colors hover:bg-accent"
                     key={e.i}
                     onClick={() => onSelect(e.i)}
                     title={e.d}
