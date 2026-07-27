@@ -10,6 +10,7 @@
 // write path (`upsertMessages` in store.ts) — never SQL triggers (ADR-0021 consequence).
 
 import type BetterSqlite3 from "better-sqlite3"
+import { type CaptionStatus, listMessageImages } from "./media-store.ts"
 
 type Db = BetterSqlite3.Database
 
@@ -56,10 +57,19 @@ export function stripHtml(html: string): string {
       return textIsUrl ? ` ${href} ` : ` ${text} ${href} `
     },
   )
-  // Media → alt text (or nothing). <img alt="x"> keeps "x"; alt-less media vanish.
-  s = s.replace(/<(img|video|audio)\b[^>]*>/gi, (tag) => {
+  // Media → alt text, plus a numbered marker for a real inline image (PSN-104). Without it an
+  // image is invisible to the assistant, which then answers "there's nothing there" about a message
+  // that IS a screenshot. The number is what `view_image`'s `index` refers to. Emoji and stickers
+  // load from a public CDN (unproxied src), so they never earn a marker.
+  let imageN = 0
+  s = s.replace(/<(img|video|audio)\b[^>]*>/gi, (tag: string, kind: string) => {
     const alt = /\balt\s*=\s*"([^"]*)"/i.exec(tag) || /\balt\s*=\s*'([^']*)'/i.exec(tag)
-    return alt ? ` ${alt[1]} ` : " "
+    const label = alt ? ` ${alt[1]} ` : " "
+    if (kind.toLowerCase() !== "img" || !/\bsrc\s*=\s*["'][^"']*\/api\/chat\/media\?/i.test(tag)) {
+      return label
+    }
+    imageN++
+    return `${label}[image#${imageN}] `
   })
   // Block-ish closers become spaces so words don't glue across elements.
   s = s.replace(/<[^>]*>/g, " ")
@@ -81,8 +91,9 @@ function safeCodePoint(n: number): string {
 /** body → the folded plain-text shadow the index stores. Empty when nothing indexable remains.
  *  Quoted reply text stays IN the index on purpose — searching a phrase should find the message
  *  that quoted it too. */
-export function indexText(body: string): string {
-  return fold(stripHtml(body))
+export function indexText(body: string, captions: string[] = []): string {
+  const extra = captions.filter(Boolean).join(" ")
+  return fold(extra ? `${stripHtml(body)} ${extra}` : stripHtml(body))
 }
 
 // ---- reply chains ----------------------------------------------------------
@@ -136,10 +147,16 @@ export function migrateSearch(db: Db): void {
 /** Keep one message's index row in lockstep with its `messages` row. Deleted/tombstoned or
  *  empty-after-strip messages are absent from the index. Called inside the `upsertMessages`
  *  transaction — the single write funnel. */
-export function syncMessageFts(db: Db, rowid: number, body: string, deleted: boolean): void {
+export function syncMessageFts(
+  db: Db,
+  rowid: number,
+  body: string,
+  deleted: boolean,
+  captions: string[] = [],
+): void {
   db.prepare("DELETE FROM messages_fts WHERE rowid = ?").run(rowid)
   if (deleted) return
-  const text = indexText(body)
+  const text = indexText(body, captions)
   if (!text) return
   db.prepare("INSERT INTO messages_fts (rowid, text) VALUES (?, ?)").run(rowid, text)
 }
@@ -188,7 +205,35 @@ export interface SearchHit {
   snippet: string
   /** Messages this one replies to (Teams inlines them as a quote block). Empty for a plain message. */
   quotes?: ReplyQuote[]
+  /** Inline images and their transcriptions (PSN-104), matching the `[image#N]` markers in the
+   *  text. Absent when the message has none. */
+  images?: MessageImageInfo[]
 }
+
+/** What a retrieval tool tells the model about one inline image. */
+export interface MessageImageInfo {
+  index: number
+  status: CaptionStatus
+  /** The transcription, when one exists. A vision model can still `view_image` the raw pixels. */
+  caption: string | null
+}
+
+/** Images + transcriptions for a message whose text carries `[image#N]` markers. Cheap enough to
+ *  call per returned row (tool results are capped at tens of rows). */
+export function imagesForMessage(
+  db: Db,
+  service: string,
+  convId: string,
+  msgId: string,
+): MessageImageInfo[] {
+  return listMessageImages(db, service, convId, msgId).map((r) => ({
+    index: r.index,
+    status: r.status,
+    caption: r.caption,
+  }))
+}
+
+const hasImageMarker = (text: string) => text.includes("[image#")
 
 const SNIPPET_CAP = 240
 
@@ -271,6 +316,7 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
       ts: r.ts,
       snippet: own.slice(0, SNIPPET_CAP),
       ...(quotes.length ? { quotes } : {}),
+      ...(hasImageMarker(own) ? { images: imagesForMessage(db, r.service, r.conv_id, r.id) } : {}),
     }
   })
 }
@@ -278,6 +324,8 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
 export interface WindowMessage {
   /** Messages this one replies to — the parent's id lets the model walk the chain. */
   quotes?: ReplyQuote[]
+  /** Inline images + transcriptions, matching the `[image#N]` markers in `text` (PSN-104). */
+  images?: MessageImageInfo[]
   msgId: string
   senderId: string | null
   senderName: string | null
@@ -341,6 +389,7 @@ export function getContextWindow(
       ts: r.ts,
       text: own,
       deleted: !!r.deleted,
+      ...(hasImageMarker(own) ? { images: imagesForMessage(db, service, opts.convId, r.id) } : {}),
       ...(quotes.length ? { quotes } : {}),
     }
   })

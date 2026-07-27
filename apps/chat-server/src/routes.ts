@@ -9,6 +9,8 @@
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
 import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
+import { amsObjectId, amsUrlFromSrc } from "./media-images.ts"
+import { findByObjectId } from "./media-store.ts"
 import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
 import * as store from "./store.ts"
@@ -32,6 +34,9 @@ export interface RoutesDeps {
   /** The non-secret VAPID public key the FE uses as `applicationServerKey` (WS-G). Absent → the
    *  key route returns null and push is effectively disabled. */
   vapidPublicKey?: string
+  /** service id → image transcription worker (PSN-104). Absent → `/media/caption` reports whatever
+   *  is stored and never transcribes on demand. */
+  captioners?: Map<ChatService, { captionObject(objectId: string): Promise<string | null> }>
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -211,6 +216,33 @@ export function createRoutes(deps: RoutesDeps) {
     const murl = c.req.query("url")
     if (!murl) throw new ProviderError("missing_url", 400)
     return bytes(c, await provider.media(murl))
+  })
+
+  // An inline image's transcription (PSN-104), keyed by the media url the client already renders.
+  // A stored one returns instantly; an un-transcribed image (everything from before this shipped)
+  // is transcribed on demand — the lazy backfill, so old screenshots cost nothing until looked at.
+  app.get("/media/caption", async (c) => {
+    const { service } = pick(deps, c.req.query("service"))
+    const convId = c.req.query("convId")
+    const msgId = c.req.query("msgId")
+    const url = c.req.query("url")
+    if (!convId || !msgId || !url) throw new ProviderError("missing_url", 400)
+    const ams = amsUrlFromSrc(url)
+    const objectId = ams ? amsObjectId(ams) : null
+    if (!objectId) return c.json({ status: "unsupported", caption: null })
+    // A message stored before this shipped has no media rows; register them from its body now —
+    // the lazy backfill (grilled), so old screenshots cost nothing until someone looks at one.
+    store.recordImages(deps.db, service, convId, msgId)
+    const row = findByObjectId(deps.db, service, objectId)[0]
+    if (row?.caption) return c.json({ status: "done", caption: row.caption })
+    const worker = deps.captioners?.get(service)
+    if (!worker) return c.json({ status: row?.status ?? "pending", caption: null })
+    const caption = await worker.captionObject(objectId)
+    if (caption) return c.json({ status: "done", caption })
+    // No caption and no failure row means transcription is simply unavailable (no vision model
+    // configured) — reporting "failed" there would blame the image for a missing setting.
+    const after = findByObjectId(deps.db, service, objectId)[0]
+    return c.json({ status: after?.status === "failed" ? "failed" : "pending", caption: null })
   })
 
   // ---- Giphy proxy (PSN-94 D/E, no provider) ------------------------------

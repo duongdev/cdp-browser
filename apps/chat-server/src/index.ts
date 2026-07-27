@@ -15,7 +15,10 @@ import { Hono } from "hono"
 import webpush from "web-push"
 import { createAssistantRoutes } from "./assistant/routes.ts"
 import { createBackfillEngine } from "./backfill.ts"
+import { type Captioner, createCaptioner, downscaleImage } from "./caption.ts"
 import type { ChatService } from "./contract.ts"
+import { resolveCaptionModel } from "./llm.ts"
+import { findByObjectId } from "./media-store.ts"
 import { MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
@@ -56,10 +59,57 @@ for (const [service, provider] of providers) {
   backfills.set(service, createBackfillEngine({ db, provider, service, broadcast }))
 }
 
+// Image transcription (PSN-104): one worker per provider, draining the `message_media` rows
+// `upsertMessages` leaves behind. The assistant's `view_image` and the lightbox's caption endpoint
+// share the worker, so an image is fetched + transcribed once no matter who asks first.
+const captioners = new Map<ChatService, Captioner>()
+for (const [service, provider] of providers) {
+  captioners.set(
+    service,
+    createCaptioner({
+      db,
+      service,
+      provider,
+      getModel: () => resolveCaptionModel(),
+    }),
+  )
+}
+
+// The assistant is single-service today (the FE pins one), so it reads images through whichever
+// provider is registered — "teams" in prod, the mock under either id in the fixture harness.
+const [assistantService, assistantProvider] = providers.entries().next().value ?? []
+const assistantCaptioner = assistantService ? captioners.get(assistantService) : undefined
+
 const app = new Hono()
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
-app.route("/api/chat/assistant", createAssistantRoutes({ db }))
-app.route("/api/chat", createRoutes({ db, providers, backfills, vapidPublicKey: VAPID_PUBLIC_KEY }))
+app.route(
+  "/api/chat/assistant",
+  createAssistantRoutes({
+    db,
+    vision:
+      assistantService && assistantProvider && assistantCaptioner
+        ? {
+            async fetchImage(objectId) {
+              const row = findByObjectId(db, assistantService, objectId)[0]
+              if (!row) return null
+              try {
+                const media = await assistantProvider.media(row.url)
+                if ("miss" in media) return null
+                return await downscaleImage(media.body, media.contentType)
+              } catch (e) {
+                console.warn(`[assistant] image fetch failed: ${(e as Error)?.message ?? e}`)
+                return null
+              }
+            },
+            captionImage: (objectId) => assistantCaptioner.captionObject(objectId),
+          }
+        : undefined,
+  }),
+)
+app.route(
+  "/api/chat",
+  createRoutes({ db, providers, backfills, captioners, vapidPublicKey: VAPID_PUBLIC_KEY }),
+)
 
 const port = Number(process.env.CHAT_SERVER_PORT) || 7810
 
@@ -85,5 +135,7 @@ for (const [service, provider] of providers) {
   })
   sweep.start()
 }
+
+for (const captioner of captioners.values()) captioner.start()
 
 export { app }

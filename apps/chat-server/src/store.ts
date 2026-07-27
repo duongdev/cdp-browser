@@ -14,6 +14,8 @@ type Db = BetterSqlite3.Database
 
 import { migrateAssistant } from "./assistant/session-store.ts"
 import type { ChatConversation, ChatPrefs } from "./contract.ts"
+import { extractImages } from "./media-images.ts"
+import { captionsForMessage, migrateMedia, recordMessageImages } from "./media-store.ts"
 import { backfillSearchIndex, migrateSearch, syncMessageFts } from "./search.ts"
 
 const SCHEMA = [
@@ -109,6 +111,7 @@ export function migrate(db: Db): Db {
     }
   }
   migrateSearch(db)
+  migrateMedia(db)
   backfillSearchIndex(db)
   migrateAssistant(db)
   return db
@@ -358,9 +361,17 @@ export function upsertMessages(
         edited: m.edited ? 1 : 0,
         mentions_me: m.mentionsMe ? 1 : 0,
       })
+      // Inline images are registered here (PSN-104) so the caption worker — which drains
+      // `message_media` rows, needing no hook back into this write path — has something to pick up,
+      // and so an already-transcribed image is searchable the moment its message lands.
+      const images = m.deleted ? [] : extractImages(m.body || "")
+      if (images.length) recordMessageImages(db, service, convId, String(m.id), images, now)
       // Keep the FTS shadow in lockstep — the single write funnel (ADR-0021).
       const row = rowidStmt.get(service, convId, String(m.id)) as { rowid: number } | undefined
-      if (row) syncMessageFts(db, row.rowid, m.body || "", !!m.deleted)
+      if (row) {
+        const captions = images.length ? captionsForMessage(db, service, convId, String(m.id)) : []
+        syncMessageFts(db, row.rowid, m.body || "", !!m.deleted, captions)
+      }
       if (ts > 0) {
         if (ts < oldest) oldest = ts
         if (ts > newest) newest = ts
@@ -371,6 +382,35 @@ export function upsertMessages(
     }
   })
   run(list)
+}
+
+/** Register one stored message's inline images (PSN-104) — the lazy path for a message that landed
+ *  before image extraction existed. Idempotent; a message with no images is a no-op. */
+export function recordImages(db: Db, service: string, convId: string, msgId: string): void {
+  const row = db
+    .prepare("SELECT body, deleted FROM messages WHERE service = ? AND conv_id = ? AND id = ?")
+    .get(service, convId, msgId) as { body: string; deleted: number } | undefined
+  if (!row || row.deleted) return
+  const images = extractImages(row.body || "")
+  if (images.length) recordMessageImages(db, service, convId, msgId, images)
+}
+
+/** Re-index one message from what is stored now (PSN-104) — used when an image transcription lands
+ *  after the message did, so the screenshot's text becomes searchable without a re-sweep. */
+export function reindexMessage(db: Db, service: string, convId: string, msgId: string): void {
+  const row = db
+    .prepare(
+      "SELECT rowid, body, deleted FROM messages WHERE service = ? AND conv_id = ? AND id = ?",
+    )
+    .get(service, convId, msgId) as { rowid: number; body: string; deleted: number } | undefined
+  if (!row) return
+  syncMessageFts(
+    db,
+    row.rowid,
+    row.body || "",
+    !!row.deleted,
+    captionsForMessage(db, service, convId, msgId),
+  )
 }
 
 /** A stored message as `listMessages` returns it. `raw` is parsed back from JSON (null when absent). */

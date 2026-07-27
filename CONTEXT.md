@@ -144,6 +144,14 @@ _Avoid_: filter, category, tag (a label IS the tag).
 The explicit, visible context of an **Assistant Session** — chips for whole conversations, single messages, or a whole **Scope** (folder/label), added from the "+" menu / a message's ⋯ menu and removable. Refs are PURE pointers: nothing is injected into the transcript, so a ref stays live and detaching truly removes it. A scope chip holds the NAME, so conversations filed into that folder later are covered without re-attaching. An empty tray means "search everything", never a silent scope.
 _Avoid_: context window (that's the token budget), attachments, pinned context.
 
+**Image Transcription**:
+The text an inline image's pixels were reduced to (`message_media.caption`, PSN-104) — a verbatim reading of everything visible, made once per AMS object by the caption model. It is indexed alongside the message, so a phrase that exists ONLY inside a screenshot still finds it, and it is what a text-only model sees of that image. Shown under the picture in the lightbox.
+_Avoid_: caption in the "photo caption" sense, alt text, OCR (it is a transcription plus a describing line, not either alone).
+
+**Vision Model**:
+An assistant model the router reports as taking image input (or one force-listed in `LLM_VISION_MODELS`). Only such a model gets the `view_image` tool; every other model answers from **Image Transcription**s. Fetched pixels never ride in a tool result — they are appended as a user message on the next step, because the OpenAI-compatible mapping stringifies a multi-modal tool output.
+_Avoid_: multimodal model (ambiguous — audio/video are not supported), image model (that generates images).
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.

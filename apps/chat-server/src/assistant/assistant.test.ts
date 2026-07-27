@@ -85,7 +85,9 @@ describe("session store", () => {
   test("context refs survive round-trip; poisoned JSON degrades to []", () => {
     const s = createSession(db)
     updateSession(db, s.id, {
-      contextRefs: [{ service: "teams", convId: "c1", title: "T", deepLink: "/chat/c/c1" }],
+      contextRefs: [
+        { service: "teams", kind: "chat", convId: "c1", title: "T", deepLink: "/chat/c/c1" },
+      ],
     })
     expect(getSession(db, s.id)?.contextRefs).toHaveLength(1)
     db.prepare("UPDATE ai_sessions SET context_refs = 'garbage' WHERE id = ?").run(s.id)

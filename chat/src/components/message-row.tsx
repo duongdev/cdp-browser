@@ -132,6 +132,9 @@ interface MessageRowProps {
   onDraftReply?: (msg: TeamsMessage) => void
   /** "Summarize conversation" (t176): seeds a summarize run for the whole conversation. */
   onSummarizeConv?: () => void
+  /** The conversation this row belongs to — lets the lightbox look up an image's transcription
+   *  (PSN-104). Absent → the lightbox just shows the picture. */
+  convId?: string
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -164,6 +167,7 @@ function ChatMessageRow({
   onAskAi,
   onDraftReply,
   onSummarizeConv,
+  convId,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -318,7 +322,7 @@ function ChatMessageRow({
       const itemtype = el.getAttribute("itemtype") || ""
       if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
       const src = (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src
-      if (src) setLightboxMedia({ src, kind: "image" })
+      if (src) setLightboxMedia({ src, kind: "image", convId, msgId: message.id })
     } else if (el.tagName === "VIDEO") {
       const src = (el as HTMLVideoElement).currentSrc || (el as HTMLVideoElement).src
       if (src) setLightboxMedia({ src, kind: "video" })

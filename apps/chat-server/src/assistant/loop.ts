@@ -7,6 +7,7 @@
 import { type LanguageModel, stepCountIs, streamText, type ToolSet, tool } from "ai"
 import type BetterSqlite3 from "better-sqlite3"
 import { z } from "zod"
+import { listMessageImages } from "../media-store.ts"
 import {
   getContextWindow,
   listConversationsByQuery,
@@ -28,8 +29,10 @@ export function createAssistantTools(
   db: Db,
   service: string,
   onSurfaced: (convId: string, msgId: string) => void,
+  vision?: VisionAccess,
 ): ToolSet {
   return {
+    ...(vision ? { view_image: viewImageTool(db, service, onSurfaced, vision) } : {}),
     search_messages: tool({
       description:
         "Full-text search over all synced chat messages. Vietnamese-safe: ASCII queries match diacritic text. Use short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, a folder/label scope (pass the convIds from resolve_scope), or time range (ms epoch). For 'who mentioned me' / 'what was I tagged in', set mentionsMe:true — do NOT search the user's own name, which matches people merely talking about them and misses mentions under a different display name.",
@@ -55,6 +58,7 @@ export function createAssistantTools(
           // What this message replies to, when it quotes one (Teams inlines the parent). The
           // parent's msgId is real — read it with get_context({aroundMsgId}) before relying on it.
           ...(h.quotes?.length ? { repliesTo: h.quotes } : {}),
+          ...(h.images?.length ? { images: h.images } : {}),
         }))
       },
     }),
@@ -77,6 +81,7 @@ export function createAssistantTools(
           ts: m.ts,
           text: m.deleted ? "[deleted]" : m.text,
           ...(m.quotes?.length ? { repliesTo: m.quotes } : {}),
+          ...(m.images?.length ? { images: m.images } : {}),
         }))
       },
     }),
@@ -125,16 +130,127 @@ export function createAssistantTools(
   }
 }
 
+// ---- images (PSN-104) ------------------------------------------------------
+// A message's inline images reach the model two ways. Cheap and always available: the transcription
+// made at ingest, which rides along in every tool row as `images[].caption`. Expensive and opt-in:
+// the raw pixels, via `view_image` — registered ONLY for a model that accepts image input.
+//
+// The pixels cannot ride back as the tool's own result: @ai-sdk/openai-compatible JSON.stringifies
+// a multi-modal tool output into the `role:"tool"` message, so the image would arrive as base64
+// text. They are buffered instead and injected as a `role:"user"` message on the next step, which
+// the provider does map to a real image part.
+
+export interface FetchedImage {
+  data: Uint8Array
+  mediaType: string
+}
+
+/** How the loop gets pixels — injected by the routes (provider fetch + downscale + caption), plus
+ *  the per-turn buffer the fetched bytes land in. */
+export interface VisionAccess {
+  fetchImage(objectId: string): Promise<FetchedImage | null>
+  /** Transcribe on demand, for an image whose caption never got made (lazy backfill). */
+  captionImage?(objectId: string): Promise<string | null>
+  buffer: ImageBuffer
+}
+
+export interface PendingImage extends FetchedImage {
+  convId: string
+  msgId: string
+  index: number
+}
+
+/** Collects images the model asked for during a turn. Everything seen so far is re-injected on
+ *  every subsequent step: `prepareStep` overrides one step only, so an image dropped after its step
+ *  would vanish from context the moment the model made one more tool call. */
+export function createImageBuffer() {
+  const seen: PendingImage[] = []
+  return {
+    add(img: PendingImage) {
+      if (
+        !seen.some((s) => s.convId === img.convId && s.msgId === img.msgId && s.index === img.index)
+      )
+        seen.push(img)
+    },
+    get size() {
+      return seen.length
+    },
+    /** The extra message to append to a step's prompt, or null when nothing has been fetched. */
+    // biome-ignore lint/suspicious/noExplicitAny: a ModelMessage, typed structurally by the SDK
+    message(): any | null {
+      if (!seen.length) return null
+      return {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Images you asked to see, in order: ${seen
+              .map((s) => `[msg:${s.convId}:${s.msgId}] image#${s.index}`)
+              .join(", ")}`,
+          },
+          ...seen.map((s) => ({ type: "file", data: s.data, mediaType: s.mediaType })),
+        ],
+      }
+    },
+  }
+}
+
+export type ImageBuffer = ReturnType<typeof createImageBuffer>
+
+function viewImageTool(
+  db: Db,
+  service: string,
+  onSurfaced: (convId: string, msgId: string) => void,
+  vision: VisionAccess,
+) {
+  return tool({
+    description:
+      "Look at an inline image in a message — use it when the message text shows an [image#N] marker and the transcription is missing, incomplete, or the question is about what the image LOOKS like (layout, colours, a chart, who is in a photo). The image is attached to the conversation on the next step, so continue reasoning after calling this.",
+    inputSchema: z.object({
+      convId: z.string().min(1),
+      msgId: z.string().min(1),
+      /** 1-based, matching the `[image#N]` marker; omit for the message's only/first image. */
+      index: z.number().int().min(1).optional(),
+    }),
+    execute: async ({ convId, msgId, index }) => {
+      const rows = listMessageImages(db, service, convId, msgId)
+      if (!rows.length) return { error: "no images in that message" }
+      const row = index ? rows.find((r) => r.index === index) : rows[0]
+      if (!row) return { error: `that message has ${rows.length} image(s)` }
+      onSurfaced(convId, msgId)
+      const img = await vision.fetchImage(row.objectId)
+      if (!img) {
+        // The pixels are gone/unreachable; the transcription is the honest fallback.
+        const caption = row.caption ?? (await vision.captionImage?.(row.objectId)) ?? null
+        return caption
+          ? {
+              attached: false,
+              caption,
+              note: "image could not be loaded; this is its transcription",
+            }
+          : { error: "image could not be loaded" }
+      }
+      vision.buffer.add({ convId, msgId, index: row.index, ...img })
+      return { attached: true, note: "the image is attached below — describe what you see" }
+    },
+  })
+}
+
 export function buildSystemPrompt(opts: {
   summary?: string | null
   contextRefs?: ContextRef[]
   now?: number
+  /** The picked model can see images — `view_image` exists (PSN-104). */
+  vision?: boolean
 }): string {
   const lines = [
     "You are the assistant inside CDP Chats, answering questions over the user's own synced chat history (Microsoft Teams).",
     "Use the tools to find real messages before answering. Never invent message content.",
     "A message that replies to another carries `repliesTo` (the quoted sender + excerpt + the parent's msgId). Those words are the PARENT's, not the replier's — never attribute them to the replier, and follow the chain with get_context(aroundMsgId) when the answer depends on what was replied to.",
     "The user organises conversations into their own folders and labels. When a question names one ('in my FWD folder', 'the urgent ones'), call resolve_scope and pass the convIds it returns — do not guess which conversations belong.",
+    opts.vision
+      ? "IMAGES: a message containing an [image#N] marker has an inline image. Tool rows carry `images[]` with each one's transcription — prefer that. Call view_image only when the transcription is missing or the question is about how the image LOOKS; the picture is then attached on the next step."
+      : "IMAGES: a message containing an [image#N] marker has an inline image. Tool rows carry `images[]` with its transcription — that text is all you can see of it, so answer from it and say so when it is missing.",
     "CITATIONS: when your answer draws on a specific message, append an inline marker [msg:{convId}:{msgId}] right after the claim, using the exact convId and msgId from tool results. Markers referencing ids you did not see in tool results are stripped.",
     "Answer in the user's language (mirror Vietnamese with Vietnamese). Be concise.",
     `Current time: ${new Date(opts.now ?? Date.now()).toISOString()}`,
@@ -171,6 +287,8 @@ export interface AgentTurnOpts {
   onFinish?: Parameters<typeof streamText>[0]["onFinish"]
   /** Hard ceiling for the whole turn — a stalled provider aborts instead of hanging (steering). */
   abortSignal?: AbortSignal
+  /** Images `view_image` has fetched this turn; appended to every later step's prompt (PSN-104). */
+  images?: ImageBuffer
 }
 
 /** One streamed assistant turn. Thin assembly so tests drive it with a mock LanguageModel. */
@@ -183,5 +301,13 @@ export function runAgentTurn(opts: AgentTurnOpts) {
     stopWhen: stepCountIs(STEP_CAP),
     abortSignal: opts.abortSignal,
     onFinish: opts.onFinish,
+    // Pixels can only reach the model on a user message (the openai-compatible mapping drops them
+    // from a tool result), so every step after a view_image call re-appends what has been fetched.
+    prepareStep: opts.images
+      ? ({ messages }) => {
+          const extra = opts.images?.message()
+          return extra ? { messages: [...messages, extra] } : {}
+        }
+      : undefined,
   })
 }

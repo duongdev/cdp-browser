@@ -39,6 +39,10 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts && pnpm store prune
 # Copy the module the builder already compiled (same node:24-alpine base → abi-compatible), instead of
 # shipping a toolchain into the runtime image.
 COPY --from=builder /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+# `sharp` (downscales a screenshot before it goes to the vision model, PSN-104) needs no build step —
+# its binaries are prebuilt @img/sharp-linuxmusl-* packages that the --prod install above pulls in.
+# If it is ever absent, captioning still works: caption.ts falls back to the full-size bytes and logs
+# "[caption] sharp unavailable".
 
 # Copy the TS source so `node --experimental-transform-types` can run it at runtime (no compile step).
 COPY --from=builder /app/apps/chat-server ./apps/chat-server

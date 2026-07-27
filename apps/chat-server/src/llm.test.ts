@@ -5,6 +5,7 @@ import { z } from "zod"
 import {
   enrichModelLimits,
   type LlmUnconfiguredError,
+  modelHasVision,
   parseModelList,
   readLlmConfig,
   resolveModel,
@@ -164,5 +165,37 @@ describe("enrichModelLimits (steering: exact context window)", () => {
     expect(await enrichModelLimits(models, null)).toEqual(models)
     const notOk = (async () => new Response("nope", { status: 500 })) as typeof fetch
     expect(await enrichModelLimits(models, cfg, notOk)).toEqual(models)
+  })
+})
+
+describe("vision probe (PSN-104)", () => {
+  const cfg = { baseURL: "http://router/v1", apiKey: "k", model: "seer" }
+  const rows = {
+    data: [
+      { id: "seer", architecture: { input_modalities: ["text", "image"] } },
+      { id: "blind", architecture: { input_modalities: ["text"] } },
+      { id: "flagged", capabilities: { vision: true } },
+      { id: "silent" },
+    ],
+  }
+  const okFetch = (async () => new Response(JSON.stringify(rows), { status: 200 })) as typeof fetch
+  const curated = ["seer", "blind", "flagged", "silent"].map((id) => ({
+    id,
+    label: id,
+    default: false,
+  }))
+
+  test("reads image support from either shape; a silent row stays unknown", async () => {
+    const out = await enrichModelLimits(curated, cfg, okFetch)
+    expect(out.map((m) => m.vision)).toEqual([true, false, true, undefined])
+  })
+
+  test("modelHasVision: probed flag, and the env override wins for an under-reporting router", async () => {
+    const out = await enrichModelLimits(curated, cfg, okFetch)
+    expect(modelHasVision("seer", out)).toBe(true)
+    // Unknown/false → no view_image tool; captions are the fallback, never a mid-turn 400.
+    expect(modelHasVision("blind", out)).toBe(false)
+    expect(modelHasVision("silent", out)).toBe(false)
+    expect(modelHasVision("silent", out, { LLM_VISION_MODELS: "silent, other" })).toBe(true)
   })
 })

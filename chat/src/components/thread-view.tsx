@@ -1236,6 +1236,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                 const row = (
                   <MessageRow
                     command={item.message.id === focusedId ? (rowCommand ?? undefined) : undefined}
+                    convId={convId}
                     focused={item.message.id === focusedId}
                     groupPos={item.groupPos}
                     highlighted={item.message.id === highlightId}

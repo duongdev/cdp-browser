@@ -161,6 +161,27 @@ export function mediaUrl(url: string): string {
   return `/api/chat/media?service=${SERVICE}&url=${encodeURIComponent(url)}`
 }
 
+export interface MediaCaption {
+  status: "pending" | "done" | "failed" | "unsupported"
+  caption: string | null
+}
+
+/** An inline image's transcription (PSN-104). Made once at ingest for new images; an older one is
+ *  transcribed on this call, so the request can take a few seconds — the caller shows a pending
+ *  state rather than blocking the lightbox. */
+export async function fetchMediaCaption(
+  convId: string,
+  msgId: string,
+  src: string,
+  signal?: AbortSignal,
+): Promise<MediaCaption> {
+  const q = new URLSearchParams({ service: SERVICE, convId, msgId, url: src })
+  const res = await fetch(`/api/chat/media/caption?${q}`, { signal })
+  const data = (await res.json().catch(() => ({}))) as MediaCaption & { error?: string }
+  if (!res.ok || data.error) throw new ChatApiError(data.error || `http_${res.status}`, res.status)
+  return data
+}
+
 // ---- writes (ported for WS-F; no consumers this workstream) ----------------
 
 export interface SendReplyResult {

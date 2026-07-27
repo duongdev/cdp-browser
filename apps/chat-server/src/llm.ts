@@ -43,6 +43,49 @@ export interface ModelOption {
    *  `enrichModelLimits`). Absent → the client falls back to a conservative default. */
   contextWindow?: number
   maxOutput?: number
+  /** The model accepts image input (PSN-104). Probed from the router, force-listable via
+   *  `LLM_VISION_MODELS`. Undefined means "the router said nothing" — treated as no vision. */
+  vision?: boolean
+}
+
+/** Models force-listed as vision-capable, for a router that under-reports (`LLM_VISION_MODELS`). */
+export function visionOverrides(
+  env: Record<string, string | undefined> = process.env,
+): Set<string> {
+  return new Set(
+    (env.LLM_VISION_MODELS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  )
+}
+
+/** Does the picked model take images? Env override wins; otherwise the probed flag. */
+export function modelHasVision(
+  modelId: string,
+  models: ModelOption[],
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (visionOverrides(env).has(modelId)) return true
+  return !!models.find((m) => m.id === modelId)?.vision
+}
+
+/** Read image-input support off a router model row. Routers disagree on the field, so read every
+ *  shape we've seen and treat a missing one as "no vision" (a wrong true means a hard 400 mid-turn;
+ *  a wrong false only falls back to captions). */
+function readVision(
+  m: Record<string, unknown>,
+  caps: Record<string, unknown>,
+): boolean | undefined {
+  const arch = (m.architecture ?? {}) as Record<string, unknown>
+  const lists = [arch.input_modalities, caps.input_modalities, m.input_modalities, m.modalities]
+  for (const l of lists) {
+    if (Array.isArray(l)) return l.some((x) => String(x).toLowerCase() === "image")
+  }
+  for (const flag of [caps.vision, caps.image_input, m.vision]) {
+    if (typeof flag === "boolean") return flag
+  }
+  return undefined
 }
 
 /** Ask the provider for the CURATED models' real limits. This is not model discovery (ADR-0021
@@ -66,7 +109,7 @@ export async function enrichModelLimits(
       return models
     }
     const body = (await res.json()) as { data?: unknown }
-    const byId = new Map<string, { contextWindow?: number; maxOutput?: number }>()
+    const byId = new Map<string, { contextWindow?: number; maxOutput?: number; vision?: boolean }>()
     for (const row of Array.isArray(body.data) ? body.data : []) {
       const m = row as Record<string, unknown>
       if (typeof m?.id !== "string") continue
@@ -90,11 +133,19 @@ export async function enrichModelLimits(
         m.max_output_tokens,
         top.max_completion_tokens,
       )
-      if (contextWindow || maxOutput) byId.set(m.id, { contextWindow, maxOutput })
+      const vision = readVision(m, caps)
+      if (contextWindow || maxOutput || vision !== undefined)
+        byId.set(m.id, { contextWindow, maxOutput, vision })
     }
+    const forced = visionOverrides()
     return models.map((m) => {
       const hit = byId.get(m.id)
-      return hit?.contextWindow || hit?.maxOutput ? { ...m, ...hit } : m
+      const vision = forced.has(m.id) ? true : hit?.vision
+      const patch: Partial<ModelOption> = {}
+      if (hit?.contextWindow) patch.contextWindow = hit.contextWindow
+      if (hit?.maxOutput) patch.maxOutput = hit.maxOutput
+      if (vision !== undefined) patch.vision = vision
+      return Object.keys(patch).length ? { ...m, ...patch } : m
     })
   } catch (e) {
     console.warn(`[llm] model-limit lookup errored: ${(e as Error)?.message ?? e}`)
@@ -131,6 +182,16 @@ export function parseModelList(
   const mark = defIdx === -1 ? 0 : defIdx
   if (out[mark]) out[mark] = { ...out[mark], default: true }
   return out
+}
+
+/** The model that transcribes inline images (PSN-104). Its own env slot so a cheap vision model can
+ *  do the bulk work while the chat model stays whatever the user picked; unset → the default. */
+export function resolveCaptionModel(
+  env: Record<string, string | undefined> = process.env,
+): LanguageModel | null {
+  const config = readLlmConfig(env)
+  if (!config) return null
+  return resolveModel(config, (env.LLM_CAPTION_MODEL || "").trim() || undefined)
 }
 
 /** Config → LanguageModel. `modelId` overrides the config's model (per-session pick, t177). */

@@ -10,6 +10,7 @@ import {
   enrichModelLimits,
   LlmUnconfiguredError,
   type ModelOption,
+  modelHasVision,
   parseModelList,
   readLlmConfig,
   resolveModel,
@@ -21,7 +22,13 @@ import {
   validateCitations,
 } from "./citations.ts"
 import { planCompaction, transcriptForSummary } from "./compact.ts"
-import { buildSystemPrompt, createAssistantTools, runAgentTurn } from "./loop.ts"
+import {
+  buildSystemPrompt,
+  createAssistantTools,
+  createImageBuffer,
+  runAgentTurn,
+  type VisionAccess,
+} from "./loop.ts"
 import {
   addRef,
   appendMessage,
@@ -48,6 +55,9 @@ export interface AssistantDeps {
   db: Db
   /** Injectable for tests (mock LanguageModel). Default resolves from env per request. */
   getModel?: (modelId?: string | null) => import("ai").LanguageModel
+  /** Image access for `view_image` (PSN-104). Absent → the assistant answers from transcriptions
+   *  only, which is also what a text-only model gets. */
+  vision?: Omit<VisionAccess, "buffer">
 }
 
 function errorCodeOf(err: unknown): string {
@@ -99,14 +109,13 @@ export function createAssistantRoutes(deps: AssistantDeps) {
   // is cached: caching a degraded result would pin the fallback budget until restart after one
   // transient network blip.
   let modelsCache: ModelOption[] | null = null
-  app.get("/models", async (c) => {
-    if (!modelsCache) {
-      const enriched = await enrichModelLimits(parseModelList(), readLlmConfig())
-      if (enriched.some((m) => m.contextWindow)) modelsCache = enriched
-      return c.json({ models: enriched })
-    }
-    return c.json({ models: modelsCache })
-  })
+  async function models(): Promise<ModelOption[]> {
+    if (modelsCache) return modelsCache
+    const enriched = await enrichModelLimits(parseModelList(), readLlmConfig())
+    if (enriched.some((m) => m.contextWindow)) modelsCache = enriched
+    return enriched
+  }
+  app.get("/models", async (c) => c.json({ models: await models() }))
 
   // ---- session CRUD --------------------------------------------------------
 
@@ -233,8 +242,16 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     // Compaction separates sent from stored: only messages past the watermark go to the model.
     const live = stored.slice(session.summaryUptoIdx)
     const surfaced = surfacedIdsFromMessages(stored)
-    const tools = createAssistantTools(db, service, (convId, msgId) =>
-      surfaced.add(citationKey({ convId, msgId })),
+    // `view_image` only exists for a model that takes image input — a text-only model calling it
+    // would 400 mid-turn (or silently drop the image and confidently describe nothing).
+    const imageBuffer = createImageBuffer()
+    const canSee =
+      !!deps.vision && modelHasVision(sessionModel || readLlmConfig()?.model || "", await models())
+    const tools = createAssistantTools(
+      db,
+      service,
+      (convId, msgId) => surfaced.add(citationKey({ convId, msgId })),
+      canSee && deps.vision ? { ...deps.vision, buffer: imageBuffer } : undefined,
     )
     const modelMessages = await convertToModelMessages(
       live.map((m) => ({ role: m.role, parts: sanitizePartsForModel(m.parts) })) as Omit<
@@ -249,9 +266,14 @@ export function createAssistantRoutes(deps: AssistantDeps) {
       // surfaces as a typed error the client can retry (steering: "freezes forever").
       abortSignal: AbortSignal.timeout(TURN_TIMEOUT_MS),
       model,
-      system: buildSystemPrompt({ summary: session.summary, contextRefs: session.contextRefs }),
+      system: buildSystemPrompt({
+        summary: session.summary,
+        contextRefs: session.contextRefs,
+        vision: canSee,
+      }),
       messages: modelMessages,
       tools,
+      images: canSee ? imageBuffer : undefined,
       onFinish: ({ totalUsage }) => {
         const n = totalUsage?.totalTokens
         if (Number.isFinite(n)) updateSession(db, sessionId, { addTokens: n as number })
