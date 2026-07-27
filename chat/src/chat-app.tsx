@@ -1393,12 +1393,14 @@ export function ChatApp() {
           </div>
           <ConnectionStatus online={online} />
         </aside>
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
-        <div
-          className="-ml-0.5 w-1 shrink-0 cursor-col-resize hover:bg-accent"
-          onPointerDown={onListResizeDown}
-        />
-        <section className="min-w-0 flex-1">
+        {/* The drag handle overlays the column seam instead of occupying a flex column — as a
+            child it punched a gap through the header's bottom border (steering). */}
+        <section className="relative min-w-0 flex-1">
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
+          <div
+            className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+            onPointerDown={onListResizeDown}
+          />
           {threadPanes}
           {keepAlive.mounted.length === 0 && (
             <div className="flex h-full items-center justify-center px-6 text-center text-muted-foreground text-sm">
@@ -1407,16 +1409,14 @@ export function ChatApp() {
           )}
         </section>
         {aiPanel && (
-          <>
+          <aside className="relative shrink-0 border-border border-l" style={{ width: aiWidth }}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
             <div
-              className="w-1 shrink-0 cursor-col-resize border-border border-l hover:bg-accent"
+              className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
               onPointerDown={onAiResizeDown}
             />
-            <aside className="shrink-0" style={{ width: aiWidth }}>
-              {aiPanel}
-            </aside>
-          </>
+            {aiPanel}
+          </aside>
         )}
         {palette}
       </div>

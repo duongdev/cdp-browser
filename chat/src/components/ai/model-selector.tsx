@@ -22,7 +22,9 @@ export function ModelSelector({
   onPick: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
-  if (models !== null && models.length <= 1) return null
+  // Hidden only when nothing is configured. A SINGLE curated model still renders (steering): the
+  // selector is how you see which model answers, and a hidden control reads as a missing feature.
+  if (models !== null && models.length === 0) return null
   const def = models?.find((m) => m.default) ?? models?.[0]
   const activeId =
     sessionModel && models?.some((m) => m.id === sessionModel) ? sessionModel : def?.id

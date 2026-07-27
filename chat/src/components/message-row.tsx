@@ -901,13 +901,13 @@ function MessageActions({
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
             className={cn(
-              "absolute bottom-full z-50 mb-1 flex min-w-32 flex-col rounded-lg border border-border bg-popover py-1 shadow-md",
+              "absolute bottom-full z-50 mb-1 flex w-max min-w-40 flex-col whitespace-nowrap rounded-lg border border-border bg-popover py-1 shadow-md",
               side === "end" ? "right-0" : "left-0",
             )}
           >
             {onReact && (
               <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
                 onClick={() => {
                   setOpen(false)
                   onReact()
@@ -920,46 +920,46 @@ function MessageActions({
             )}
             {onAskAi && (
               <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
                 onClick={() => {
                   setOpen(false)
                   onAskAi()
                 }}
                 type="button"
               >
-                <HugeiconsIcon className="size-4" icon={AiChipIcon} />
+                <HugeiconsIcon className="size-4 shrink-0" icon={AiChipIcon} />
                 Ask AI about this
               </button>
             )}
             {onDraftReply && (
               <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
                 onClick={() => {
                   setOpen(false)
                   onDraftReply()
                 }}
                 type="button"
               >
-                <HugeiconsIcon className="size-4" icon={AiEditingIcon} />
+                <HugeiconsIcon className="size-4 shrink-0" icon={AiEditingIcon} />
                 Draft reply with AI
               </button>
             )}
             {onSummarizeConv && (
               <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
                 onClick={() => {
                   setOpen(false)
                   onSummarizeConv()
                 }}
                 type="button"
               >
-                <HugeiconsIcon className="size-4" icon={AiChipIcon} />
+                <HugeiconsIcon className="size-4 shrink-0" icon={AiChipIcon} />
                 Summarize conversation
               </button>
             )}
             {canEdit && (
               <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
                 onClick={() => {
                   setOpen(false)
                   onEdit()
@@ -972,7 +972,7 @@ function MessageActions({
             )}
             {canDelete && (
               <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-destructive text-sm hover:bg-accent"
+                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-destructive text-sm hover:bg-accent"
                 onClick={() => {
                   setOpen(false)
                   onDelete()

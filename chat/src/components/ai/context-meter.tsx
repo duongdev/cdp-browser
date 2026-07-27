@@ -22,9 +22,10 @@ export function ContextMeter({ pct, budgetTokens }: { pct: number; budgetTokens:
           type="button"
         >
           <svg
-            aria-hidden
+            aria-hidden="true"
             className="-rotate-90"
             height={SIZE}
+            role="presentation"
             viewBox={`0 0 ${SIZE} ${SIZE}`}
             width={SIZE}
           >

@@ -22,6 +22,11 @@ export interface ToolPart {
 const toolLabel = (type: string) =>
   type === "dynamic-tool" ? "tool" : type.replace(/^tool-/, "").replace(/_/g, " ")
 
+/** A stable per-call key: the tool + its input identify the call across re-renders. */
+function callKey(p: ToolPart): string {
+  return `${p.type}:${JSON.stringify(p.input ?? null)}`
+}
+
 /** One line of result summary — row count for a list, else a short JSON head. */
 function summarize(output: unknown): string {
   if (output == null) return "…"
@@ -36,7 +41,7 @@ export function ToolCalls({ parts, streaming }: { parts: ToolPart[]; streaming: 
     ? "Searching your messages…"
     : `Searched ${parts.length} time${parts.length === 1 ? "" : "s"}`
   return (
-    <Accordion className="w-full" collapsible type="single">
+    <Accordion className="w-full min-w-0" collapsible type="single">
       <AccordionItem className="border-none" value="tools">
         <AccordionTrigger className="gap-1.5 py-1 text-muted-foreground text-xs hover:no-underline">
           <span className="flex items-center gap-1.5">
@@ -45,19 +50,21 @@ export function ToolCalls({ parts, streaming }: { parts: ToolPart[]; streaming: 
           </span>
         </AccordionTrigger>
         <AccordionContent className="pb-1">
-          <ul className="flex flex-col gap-1.5 text-xs">
-            {parts.map((p, i) => (
+          <ul className="flex min-w-0 flex-col gap-1.5 text-xs">
+            {parts.map((p) => (
               <li
-                className="rounded-md border border-border bg-muted/40 px-2 py-1.5"
-                key={`${p.type}-${i}`}
+                className="min-w-0 rounded-md border border-border bg-muted/40 px-2 py-1.5"
+                key={callKey(p)}
               >
                 <div className="font-medium text-foreground">{toolLabel(p.type)}</div>
                 {p.input !== undefined && (
-                  <div className="mt-0.5 break-words font-mono text-[11px] text-muted-foreground">
+                  <div className="mt-0.5 overflow-hidden break-all font-mono text-muted-foreground text-xs">
                     {JSON.stringify(p.input)}
                   </div>
                 )}
-                <div className="mt-0.5 text-muted-foreground">{summarize(p.output)}</div>
+                <div className="mt-0.5 break-words text-muted-foreground">
+                  {summarize(p.output)}
+                </div>
               </li>
             ))}
           </ul>

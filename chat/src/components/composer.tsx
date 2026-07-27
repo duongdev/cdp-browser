@@ -325,8 +325,7 @@ export function Composer({
     autofocus: autoFocus,
     editorProps: {
       attributes: {
-        class:
-          "composer-editor max-h-40 min-h-[2.5rem] overflow-y-auto px-3.5 py-2.5 text-base outline-none",
+        class: "composer-editor max-h-40 min-h-[2.5rem] overflow-y-auto px-3.5 py-2.5 outline-none",
         "aria-label": "Message",
         "aria-multiline": "true",
         role: "textbox",

@@ -366,16 +366,18 @@
 .teams-message-body {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));
 }
+/* The composers (thread Tiptap + AI textarea) read at the SAME size as a message body, and share
+   the same resting height, so the two input cards look like one component (PSN-104 steering). */
+.composer-editor,
+.ai-composer-input {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+}
 .conv-row-title {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));
 }
 .conv-row-preview {
   font-size: calc(0.75rem * var(--chat-font-scale, 1));
 }
-.composer-editor {
-  font-size: calc(1rem * var(--chat-font-scale, 1));
-}
-
 /* Tiptap placeholder (PSN-94): the empty editor's first paragraph shows "Type a message…" via the
    @tiptap/extension-placeholder attr, mirroring the old contenteditable's empty:before hint. */
 .composer-editor p.is-empty:first-child::before {

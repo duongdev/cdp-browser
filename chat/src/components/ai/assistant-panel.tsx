@@ -545,8 +545,22 @@ function SessionChatReady({
   const [input, setInput] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Autofocus on open / new session (steering) — wide pointers only; a phone would pop the keyboard.
+  useEffect(() => {
+    if (window.matchMedia("(pointer: fine)").matches) inputRef.current?.focus()
+  }, [])
   const busy = status === "submitted" || status === "streaming"
   const contextPct = useMemo(() => estimateContextPct(messages), [messages])
+  // Scroll-to-bottom affordance (steering): shown whenever the log is scrolled off the bottom.
+  const [offBottom, setOffBottom] = useState(false)
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (el) setOffBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 80)
+  }, [])
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+  }, [])
 
   // Stick to bottom while streaming / on new messages.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on any message change
@@ -575,49 +589,69 @@ function SessionChatReady({
 
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3" ref={scrollRef}>
-        {empty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4 px-3 text-center">
-            <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChipIcon} />
-            <p className="text-muted-foreground text-sm">
-              Ask about your messages — search, summarize, catch up. Answers cite the real messages
-              they come from.
-            </p>
-            <div className="flex flex-col gap-2">
-              {SUGGESTED_PROMPTS.map((p) => (
-                <button
-                  className="rounded-full border border-border px-3 py-1.5 text-muted-foreground text-sm hover:bg-accent"
-                  key={p.label}
-                  onClick={() => {
-                    setInput(p.text)
-                    inputRef.current?.focus()
-                  }}
-                  type="button"
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {messages.map((m) => (
-              <AssistantMessage
-                key={m.id}
-                labelForConv={labelForConv}
-                message={m}
-                onInsertToComposer={onInsertToComposer}
-                onOpenCitation={onOpenCitation}
-                streaming={busy && m === messages[messages.length - 1]}
-              />
-            ))}
-            {status === "submitted" && (
-              <div className="text-xs">
-                <ShimmerText>Thinking…</ShimmerText>
+      <div className="relative min-h-0 flex-1">
+        <div
+          className="h-full overflow-y-auto overflow-x-hidden px-3 py-3"
+          onScroll={onScroll}
+          ref={scrollRef}
+        >
+          {empty ? (
+            <div className="flex h-full flex-col items-center justify-center gap-4 px-3 text-center">
+              <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChipIcon} />
+              <p className="text-muted-foreground text-sm">
+                Ask about your messages — search, summarize, catch up. Answers cite the real
+                messages they come from.
+              </p>
+              <div className="flex flex-col gap-2">
+                {SUGGESTED_PROMPTS.map((p) => (
+                  <button
+                    className="rounded-full border border-border px-3 py-1.5 text-muted-foreground text-sm hover:bg-accent"
+                    key={p.label}
+                    onClick={() => {
+                      setInput(p.text)
+                      inputRef.current?.focus()
+                    }}
+                    type="button"
+                  >
+                    {p.label}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-col gap-3">
+              {messages.map((m) => (
+                <AssistantMessage
+                  key={m.id}
+                  labelForConv={labelForConv}
+                  message={m}
+                  onInsertToComposer={onInsertToComposer}
+                  onOpenCitation={onOpenCitation}
+                  streaming={busy && m === messages[messages.length - 1]}
+                />
+              ))}
+              {status === "submitted" && (
+                <div className="text-xs">
+                  <ShimmerText>Thinking…</ShimmerText>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <Button
+          aria-label="Scroll to bottom"
+          className={cn(
+            "absolute right-3 bottom-3 z-10 rounded-full shadow-md transition-all duration-200",
+            offBottom
+              ? "translate-y-0 opacity-70 hover:opacity-100"
+              : "pointer-events-none translate-y-2 opacity-0",
+          )}
+          onClick={scrollToBottom}
+          size="icon-sm"
+          variant="secondary"
+        >
+          <HugeiconsIcon className="size-4" icon={ArrowDown01Icon} />
+        </Button>
       </div>
 
       {error && (
@@ -655,7 +689,7 @@ function SessionChatReady({
       <div className="shrink-0 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="rounded-xl border border-border bg-background focus-within:border-ring">
           <textarea
-            className="max-h-48 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm outline-none placeholder:text-muted-foreground"
+            className="ai-composer-input max-h-48 min-h-[2.5rem] w-full resize-none bg-transparent px-3.5 py-2.5 outline-none placeholder:text-muted-foreground"
             onChange={(e) => {
               setInput(e.target.value)
               const el = e.target
@@ -735,16 +769,16 @@ function AssistantMessage({
 
   if (isUser) {
     return (
-      <div className="ml-8 self-end rounded-2xl rounded-br-md bg-primary px-3 py-2 text-primary-foreground text-sm">
+      <div className="ml-8 max-w-full self-end overflow-hidden rounded-2xl rounded-br-md bg-primary px-3 py-2 text-primary-foreground text-sm">
         <span className="whitespace-pre-wrap break-words">{text}</span>
       </div>
     )
   }
   return (
-    <div className="mr-4 flex flex-col gap-1.5 self-start">
+    <div className="flex min-w-0 max-w-full flex-col gap-1.5 self-start pr-4">
       <ToolCalls parts={toolCalls as ToolPart[]} streaming={streaming && !displayText} />
       {(displayText || streaming) && (
-        <div className="teams-message-body max-w-full text-sm [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p+p]:mt-2 [&_ul]:list-disc [&_ul]:pl-5">
+        <div className="teams-message-body min-w-0 max-w-full overflow-x-auto text-sm [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p+p]:mt-2 [&_ul]:list-disc [&_ul]:pl-5">
           <Streamdown parseIncompleteMarkdown>{displayText}</Streamdown>
         </div>
       )}
