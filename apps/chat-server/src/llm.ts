@@ -64,16 +64,29 @@ export async function enrichModelLimits(
     const body = (await res.json()) as { data?: unknown }
     const byId = new Map<string, { contextWindow?: number; maxOutput?: number }>()
     for (const row of Array.isArray(body.data) ? body.data : []) {
-      const m = row as {
-        id?: string
-        capabilities?: { contextWindow?: number; maxOutput?: number }
-      }
-      if (typeof m?.id === "string" && m.capabilities) {
-        byId.set(m.id, {
-          contextWindow: numberOrUndefined(m.capabilities.contextWindow),
-          maxOutput: numberOrUndefined(m.capabilities.maxOutput),
-        })
-      }
+      const m = row as Record<string, unknown>
+      if (typeof m?.id !== "string") continue
+      const caps = (m.capabilities ?? {}) as Record<string, unknown>
+      const top = (m.top_provider ?? {}) as Record<string, unknown>
+      // The window is reported under a different key per router flavour — a model whose row uses
+      // a shape we don't read falls back to the compaction budget and reads as "40K again".
+      const contextWindow = firstNumber(
+        caps.contextWindow,
+        caps.context_window,
+        caps.context_length,
+        m.context_window,
+        m.context_length,
+        m.max_context_length,
+        top.context_length,
+      )
+      const maxOutput = firstNumber(
+        caps.maxOutput,
+        caps.max_output,
+        caps.max_output_tokens,
+        m.max_output_tokens,
+        top.max_completion_tokens,
+      )
+      if (contextWindow || maxOutput) byId.set(m.id, { contextWindow, maxOutput })
     }
     return models.map((m) => {
       const hit = byId.get(m.id)
@@ -84,8 +97,12 @@ export async function enrichModelLimits(
   }
 }
 
-function numberOrUndefined(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined
+function firstNumber(...vals: unknown[]): number | undefined {
+  for (const v of vals) {
+    const n = typeof v === "string" ? Number(v) : v
+    if (typeof n === "number" && Number.isFinite(n) && n > 0) return n
+  }
+  return undefined
 }
 
 /** Curated model list (t177) from `LLM_MODELS` — comma-separated `id[:label]` pairs (a model id

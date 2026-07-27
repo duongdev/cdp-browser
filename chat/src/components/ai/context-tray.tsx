@@ -32,7 +32,9 @@ export function ContextTray({
     <div className="flex flex-wrap gap-1 px-3 pb-1">
       {refs.map((r) => (
         <span
-          className="flex max-w-full items-center gap-1 rounded-full border border-border bg-accent/50 py-0.5 pr-0.5 pl-2 text-muted-foreground text-xs"
+          // Inline chips so a label uses whatever width is free on the row and only truncates
+          // against the tray edge — a fixed max-width left dead space beside short chips.
+          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-accent/50 py-0.5 pr-0.5 pl-2 text-muted-foreground text-xs"
           key={`${r.convId}:${r.msgId ?? ""}`}
         >
           <HugeiconsIcon
@@ -42,7 +44,7 @@ export function ContextTray({
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                className="max-w-52 truncate hover:text-foreground"
+                className="min-w-0 truncate hover:text-foreground"
                 onClick={() => onOpen(r)}
                 type="button"
               >

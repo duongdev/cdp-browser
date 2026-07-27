@@ -11,14 +11,15 @@ import {
   AiChipIcon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
+  ArrowTurnDownIcon,
   ArrowUp02Icon,
-  Attachment01Icon,
   Cancel01Icon,
   Delete02Icon,
   MessageMultiple01Icon,
   PencilEdit02Icon,
   PlusSignIcon,
   StopIcon,
+  Tick01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { DefaultChatTransport, type UIMessage } from "ai"
@@ -774,18 +775,16 @@ function SessionChatReady({
               onAttachCurrent={onAttachCurrent}
             />
             <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
-            <ContextMeter budgetTokens={contextBudget} pct={contextPct} />
+            <ContextMeter
+              budgetTokens={contextBudget}
+              exact={!!activeModel?.contextWindow}
+              pct={contextPct}
+            />
             <div className="flex-1" />
             {busy ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    aria-label="Stop"
-                    className="rounded-full"
-                    onClick={() => stop()}
-                    size="icon-sm"
-                    variant="outline"
-                  >
+                  <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
                     <HugeiconsIcon className="size-4" icon={StopIcon} />
                   </Button>
                 </TooltipTrigger>
@@ -796,7 +795,6 @@ function SessionChatReady({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label="Send"
-                    className="rounded-full"
                     disabled={!input.trim()}
                     onClick={submit}
                     size="icon-sm"
@@ -834,7 +832,7 @@ function AttachMenu({
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
             <Button aria-label="Attach context" size="icon-sm" variant="ghost">
-              <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
+              <HugeiconsIcon className="size-4" icon={PlusSignIcon} />
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
@@ -854,14 +852,8 @@ function AttachMenu({
           <span className="min-w-0 flex-1 truncate">
             {currentConv ? `Attach "${currentConv.title}"` : "Attach current chat"}
           </span>
+          {alreadyAttached && <HugeiconsIcon className="size-3.5 shrink-0" icon={Tick01Icon} />}
         </button>
-        <p className="px-2 py-1.5 text-muted-foreground text-xs">
-          {alreadyAttached
-            ? "Already attached."
-            : currentConv
-              ? "Attach a single message from its ⋯ menu, or another chat from the sidebar's right-click menu."
-              : "Open a conversation to attach it."}
-        </p>
       </PopoverContent>
     </Popover>
   )
@@ -898,6 +890,8 @@ function AssistantMessage({
     .map((p) => p.text)
     .join("")
   const { text: displayText, citations } = useMemo(() => extractCitations(text), [text])
+  // Sources stay collapsed — a long chip list buried the answer (steering).
+  const [sourcesOpen, setSourcesOpen] = useState(false)
 
   // The user bubble is the SAME one the thread renders for your own messages —
   // `teams-message-body` carries the radius/padding and `teams-self-bubble` the low-glare dark-mode
@@ -914,7 +908,7 @@ function AssistantMessage({
     )
   }
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-1.5 self-start pr-4">
+    <div className="group flex min-w-0 max-w-full flex-col gap-1.5 self-start pr-4">
       <ToolCalls parts={toolCalls as ToolPart[]} streaming={streaming && !displayText} />
       {streaming && !displayText && (
         <div className="text-xs">
@@ -931,30 +925,46 @@ function AssistantMessage({
           No answer came back for that — try rephrasing, or ask for a narrower time range.
         </div>
       )}
-      {!streaming && displayText && onInsertToComposer && (
-        <div>
+      {citations.length > 0 && (
+        <div className="flex min-w-0 flex-col gap-1">
           <button
-            className="rounded-full border border-border px-2.5 py-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
-            onClick={() => onInsertToComposer(displayText)}
+            aria-expanded={sourcesOpen}
+            className="inline-flex w-fit items-center gap-1 rounded-md text-muted-foreground text-xs hover:text-foreground"
+            onClick={() => setSourcesOpen((v) => !v)}
             type="button"
           >
-            Insert into composer
+            <HugeiconsIcon
+              className={cn("size-3 transition-transform", sourcesOpen && "rotate-180")}
+              icon={ArrowDown01Icon}
+            />
+            {citations.length} {citations.length === 1 ? "source" : "sources"}
           </button>
+          {sourcesOpen && (
+            <div className="flex min-w-0 flex-wrap gap-1">
+              {citations.map((c) => (
+                <button
+                  className="inline-flex min-w-0 max-w-full items-center truncate rounded-full border border-border bg-accent/50 px-2.5 py-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
+                  key={`${c.convId}:${c.msgId}`}
+                  onClick={() => onOpenCitation(c.convId, c.msgId)}
+                  title={`Open in ${labelForConv(c.convId)}`}
+                  type="button"
+                >
+                  ↗ {labelForConv(c.convId)}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
-      {citations.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {citations.map((c) => (
-            <button
-              className="max-w-56 truncate rounded-full border border-border bg-accent/50 px-2.5 py-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
-              key={`${c.convId}:${c.msgId}`}
-              onClick={() => onOpenCitation(c.convId, c.msgId)}
-              title={`Open in ${labelForConv(c.convId)}`}
-              type="button"
-            >
-              ↗ {labelForConv(c.convId)}
-            </button>
-          ))}
+      {/* Message actions live in a hover-revealed row under the answer (ChatGPT-style) instead of
+          a permanently visible button that competed with the answer text. */}
+      {!streaming && displayText && onInsertToComposer && (
+        <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <IconButton
+            icon={ArrowTurnDownIcon}
+            label="Insert into composer"
+            onClick={() => onInsertToComposer(displayText)}
+          />
         </div>
       )}
     </div>

@@ -6,7 +6,9 @@
 import { ArrowDown01Icon, Tick01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useState } from "react"
+import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { AssistantModel } from "../../lib/assistant-client"
 
@@ -33,17 +35,23 @@ export function ModelSelector({
   const stale = !!sessionModel && models !== null && !models.some((m) => m.id === sessionModel)
   return (
     <Popover onOpenChange={setOpen} open={open}>
-      <PopoverTrigger asChild>
-        <button
-          aria-label="Model"
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-foreground text-xs hover:bg-accent hover:text-foreground disabled:opacity-50"
-          disabled={models === null}
-          type="button"
-        >
-          <span className="max-w-40 truncate">{activeLabel}</span>
-          <HugeiconsIcon className="size-3" icon={ArrowDown01Icon} />
-        </button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              aria-label="Model"
+              className="gap-1 text-muted-foreground text-xs"
+              disabled={models === null}
+              size="sm"
+              variant="ghost"
+            >
+              <span className="max-w-40 truncate">{activeLabel}</span>
+              <HugeiconsIcon className="size-3" icon={ArrowDown01Icon} />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Model for the next turn</TooltipContent>
+      </Tooltip>
       <PopoverContent align="start" className="w-56 p-1" side="top">
         {stale && (
           <p className="px-2 py-1 text-muted-foreground text-xs">

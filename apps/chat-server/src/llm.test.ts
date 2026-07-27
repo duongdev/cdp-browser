@@ -136,6 +136,25 @@ describe("enrichModelLimits (steering: exact context window)", () => {
     expect(out[1].contextWindow).toBeUndefined()
   })
 
+  test("reads the alternate router key shapes (context_length / top_provider)", async () => {
+    const alt = {
+      data: [
+        { id: "glm/glm-4.7", context_length: 131072, max_output_tokens: 8192 },
+        { id: "b", top_provider: { context_length: "65536" } },
+      ],
+    }
+    const out = await enrichModelLimits(
+      [
+        { id: "glm/glm-4.7", label: "GLM 4.7", default: true },
+        { id: "b", label: "B", default: false },
+      ],
+      cfg,
+      (async () => new Response(JSON.stringify(alt), { status: 200 })) as typeof fetch,
+    )
+    expect(out[0]).toMatchObject({ contextWindow: 131072, maxOutput: 8192 })
+    expect(out[1].contextWindow).toBe(65536)
+  })
+
   test("degrades silently on a failed lookup / no config", async () => {
     const models = [{ id: "m", label: "m", default: true }]
     const bad = (async () => {

@@ -95,12 +95,15 @@ export function createAssistantRoutes(deps: AssistantDeps) {
   // The curated LLM_MODELS list (id[:label] pairs), never the raw router dump.
 
   // Limits come from the provider once per process — a model's context window doesn't change
-  // under us, and the meter shouldn't pay a round-trip per panel mount.
+  // under us, and the meter shouldn't pay a round-trip per panel mount. Only a SUCCESSFUL lookup
+  // is cached: caching a degraded result would pin the fallback budget until restart after one
+  // transient network blip.
   let modelsCache: ModelOption[] | null = null
   app.get("/models", async (c) => {
     if (!modelsCache) {
-      const curated = parseModelList()
-      modelsCache = await enrichModelLimits(curated, readLlmConfig())
+      const enriched = await enrichModelLimits(parseModelList(), readLlmConfig())
+      if (enriched.some((m) => m.contextWindow)) modelsCache = enriched
+      return c.json({ models: enriched })
     }
     return c.json({ models: modelsCache })
   })
