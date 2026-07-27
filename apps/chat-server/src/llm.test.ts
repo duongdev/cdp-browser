@@ -1,6 +1,6 @@
 import { generateText, tool } from "ai"
 import { MockLanguageModelV3 } from "ai/test"
-import { describe, expect, test } from "vitest"
+import { afterEach, describe, expect, test } from "vitest"
 import { z } from "zod"
 import {
   enrichModelLimits,
@@ -9,6 +9,7 @@ import {
   parseModelList,
   readLlmConfig,
   resolveModel,
+  tolerantFetch,
 } from "./llm.ts"
 
 describe("readLlmConfig", () => {
@@ -197,5 +198,37 @@ describe("vision probe (PSN-104)", () => {
     expect(modelHasVision("blind", out)).toBe(false)
     expect(modelHasVision("silent", out)).toBe(false)
     expect(modelHasVision("silent", out, { LLM_VISION_MODELS: "silent, other" })).toBe(true)
+  })
+})
+
+describe("tolerantFetch (9router body quirk)", () => {
+  const orig = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = orig
+  })
+
+  test("strips the stray SSE terminator off a non-streaming JSON body", async () => {
+    // Live shape: JSON, labelled text/event-stream, with `data: [DONE]` glued to the end.
+    globalThis.fetch = (async () =>
+      new Response('{"choices":[{"message":{"content":"hi"}}]}data: [DONE]\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      })) as typeof fetch
+    const res = await tolerantFetch("http://router/v1/chat/completions", {
+      body: JSON.stringify({ stream: false, model: "m" }),
+    })
+    expect(await res.json()).toEqual({ choices: [{ message: { content: "hi" } }] })
+  })
+
+  test("a streaming request is passed through untouched — the body must not be consumed", async () => {
+    const streamBody = 'data: {"x":1}\n\ndata: [DONE]\n\n'
+    globalThis.fetch = (async () =>
+      new Response(streamBody, {
+        headers: { "content-type": "text/event-stream" },
+      })) as typeof fetch
+    const res = await tolerantFetch("http://router/v1/chat/completions", {
+      body: JSON.stringify({ stream: true, model: "m" }),
+    })
+    expect(res.bodyUsed).toBe(false)
+    expect(await res.text()).toBe(streamBody)
   })
 })

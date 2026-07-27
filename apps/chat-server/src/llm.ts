@@ -201,6 +201,25 @@ export function resolveModel(config: LlmConfig | null, modelId?: string): Langua
     name: "llm",
     baseURL: config.baseURL,
     apiKey: config.apiKey ?? "unused",
+    fetch: tolerantFetch,
   })
   return provider.chatModel(modelId || config.model)
+}
+
+/** 9router answers a NON-streaming completion with a plain JSON body but labels it
+ *  `text/event-stream` AND appends a stray `data: [DONE]` terminator after it. `JSON.parse` then
+ *  fails and every `generateText` call dies with "Invalid JSON response" — image transcription,
+ *  title generation and compaction all hit it; the streamed chat turn didn't, which is why it hid.
+ *
+ *  The request, not the response, decides what to do: only a `stream:false` call is read and
+ *  cleaned, so a real SSE body is never consumed here. */
+export const tolerantFetch: typeof fetch = async (input, init) => {
+  const res = await fetch(input as RequestInfo, init as RequestInit)
+  const body = typeof init?.body === "string" ? init.body : ""
+  const streamed = /"stream"\s*:\s*true/.test(body)
+  if (streamed || !res.ok) return res
+  const cleaned = (await res.text()).replace(/\s*data:\s*\[DONE\]\s*$/, "")
+  const headers = new Headers(res.headers)
+  headers.set("content-type", "application/json")
+  return new Response(cleaned, { status: res.status, statusText: res.statusText, headers })
 }

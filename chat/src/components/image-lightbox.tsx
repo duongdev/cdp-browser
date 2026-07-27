@@ -305,6 +305,10 @@ function CaptionPanel({ convId, msgId, src }: { convId: string; msgId: string; s
       onClick={(e) => e.stopPropagation()}
     >
       <div className="mx-auto max-w-3xl text-white/85 text-xs">
+        {/* Labelled, or a wall of transcribed text under the picture reads like a rendering bug. */}
+        <div className="mb-1 font-medium text-[10px] text-white/45 uppercase tracking-wide">
+          Transcription
+        </div>
         {state.status === "pending" && (
           <span className="animate-pulse text-white/60">Reading the image…</span>
         )}
