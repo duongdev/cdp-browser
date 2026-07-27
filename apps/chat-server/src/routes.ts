@@ -6,6 +6,9 @@
 // The sweep (WS-D) drives background refresh + WS deltas — this workstream just makes the contract
 // serve correctly, provider-first.
 
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
 import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
@@ -16,6 +19,17 @@ import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provide
 import { ProviderError } from "./providers/provider.ts"
 import * as store from "./store.ts"
 import { toConversationInput, toMessageInput } from "./upsert-map.ts"
+
+// Read version from the monorepo root package.json so the BFF reports the same
+// version as the web build — not a stale "0.0.0" from its own private package.json.
+// ponytail: read-once at startup, no watch; restart picks up a version bump.
+const _rootPkg = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json"),
+    "utf8",
+  ),
+) as { version: string }
+const ROOT_VERSION = _rootPkg.version
 
 type Db = BetterSqlite3.Database
 
@@ -415,8 +429,9 @@ export function createRoutes(deps: RoutesDeps) {
 
   app.get("/version", (c) =>
     c.json({
-      version: process.env.npm_package_version || "0.0.0",
-      sha: process.env.GIT_SHA || "dev",
+      version: ROOT_VERSION,
+      // GIT_SHA is baked by the Docker builder; "unknown" in local dev is honest.
+      sha: process.env.GIT_SHA || null,
       builtAt: process.env.BUILT_AT || new Date().toISOString(),
     }),
   )

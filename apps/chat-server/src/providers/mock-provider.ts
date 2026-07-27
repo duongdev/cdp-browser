@@ -82,6 +82,9 @@ function seed(): Fixture[] {
         id: "48:notes",
         kind: "self",
         title: "You (You)",
+        // Real Teams represents the self chat with the viewer's own photo — mirrored here so the
+        // "self" avatar branch is exercised alongside the 1:1 and group ones.
+        avatarUserId: "self-oid",
         lastMessageId: "1000",
         lastMessageTs: ago(2880),
         lastMessagePreview: "note to self",
@@ -531,6 +534,22 @@ export class MockProvider implements ChatProvider {
   // A DECODABLE 96×96 PNG, not a 4-byte header. The avatar button stays disabled until the image
   // actually loads, so a truncated stub left the profile→lightbox layering untestable locally.
   async profile(userId: string): Promise<ChatProfile> {
+    // `third-oid` is the pathological card — every field maxed out, so the profile dialog's
+    // wrap/clamp treatment can be exercised against a real render on the mock stack.
+    if (userId.includes("third-oid")) {
+      return {
+        displayName:
+          "Bartholomew Maximilian Featherstonehaugh-Wintersmith the Third of Northumberland",
+        mail: "bartholomew.maximilian.featherstonehaugh-wintersmith@a-very-long-subdomain.example.com",
+        jobTitle:
+          "Senior Principal Staff Engineering Manager, Platform Reliability & Developer Experience (Interim), EMEA",
+        department:
+          "Global Platform Engineering — Reliability, Observability and Developer Experience Division",
+        officeLocation:
+          "Building 12, Floor 7, West Wing, 1234 Extraordinarily Long Street Name, Someplace, Country",
+        phones: ["+00 (0)000 0000 0000 ext. 12345", "+00 (0)000 0000 0001"],
+      }
+    }
     return {
       displayName: userId === "self-oid" ? "You" : "Other Person",
       mail: `${userId}@example.com`,

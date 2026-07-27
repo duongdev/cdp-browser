@@ -193,6 +193,47 @@ const DAYS_OPTIONS = [
 
 const POLL_MS = 3_000
 
+function BackfillHistoryList({ history, now }: { history: BackfillRun[]; now: number }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="pt-1">
+      <button
+        className="text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen((v) => !v)}
+        type="button"
+      >
+        {open ? "Hide" : `Show ${history.slice(0, 5).length} entries`}
+      </button>
+      {open && (
+        <div className="mt-1.5 max-h-28 space-y-0.5 overflow-y-auto">
+          {history.slice(0, 5).map((run) => (
+            <div className="flex items-center gap-2 py-0.5" key={run.id}>
+              <HugeiconsIcon
+                className={cn(
+                  "size-3 shrink-0",
+                  run.status === "ok"
+                    ? "text-green-500"
+                    : run.status === "aborted"
+                      ? "text-amber-500"
+                      : "text-destructive",
+                )}
+                icon={run.status === "ok" ? CheckmarkCircle01Icon : Alert02Icon}
+                strokeWidth={2}
+              />
+              <span className="truncate text-[10px] text-muted-foreground">
+                {formatBackfillRun(run, now)}
+              </span>
+              <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                {formatRelativeTime(run.startedAt, now)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Data card: fetch-last-X-days backfill UI. */
 function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void }) {
   const [days, setDays] = useState<string>("30")
@@ -322,32 +363,7 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
         </div>
       )}
 
-      {history.length > 0 && (
-        <div className="space-y-0.5 pt-1">
-          {history.slice(0, 5).map((run) => (
-            <div className="flex items-center gap-2 py-0.5" key={run.id}>
-              <HugeiconsIcon
-                className={cn(
-                  "size-3 shrink-0",
-                  run.status === "ok"
-                    ? "text-green-500"
-                    : run.status === "aborted"
-                      ? "text-amber-500"
-                      : "text-destructive",
-                )}
-                icon={run.status === "ok" ? CheckmarkCircle01Icon : Alert02Icon}
-                strokeWidth={2}
-              />
-              <span className="truncate text-[10px] text-muted-foreground">
-                {formatBackfillRun(run, now)}
-              </span>
-              <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
-                {formatRelativeTime(run.startedAt, now)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      {history.length > 0 && <BackfillHistoryList history={history} now={now} />}
     </div>
   )
 }
@@ -549,6 +565,7 @@ function SyncCard() {
   const [log, setLog] = useState<SyncLogData | null>(null)
   const [phase, setPhase] = useState<"loading" | "ok" | "error">("loading")
   const [now, setNow] = useState(() => Date.now())
+  const [logOpen, setLogOpen] = useState(false)
 
   // Initial HTTP fetch.
   useEffect(() => {
@@ -650,15 +667,26 @@ function SyncCard() {
             )}
           </div>
 
-          {/* Event log */}
+          {/* Event log — collapsed by default */}
           {log.events.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">No events yet.</p>
           ) : (
-            <div className="max-h-36 space-y-0.5 overflow-y-auto">
-              {[...log.events].reverse().map((e, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: stable list, index is fine
-                <SyncEventRow event={e} key={i} now={now} />
-              ))}
+            <div>
+              <button
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+                onClick={() => setLogOpen((v) => !v)}
+                type="button"
+              >
+                {logOpen ? "Hide" : `Show ${log.events.length} entries`}
+              </button>
+              {logOpen && (
+                <div className="mt-1.5 max-h-36 space-y-0.5 overflow-y-auto">
+                  {[...log.events].reverse().map((e, i) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: stable list, index is fine
+                    <SyncEventRow event={e} key={i} now={now} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

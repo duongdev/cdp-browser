@@ -136,6 +136,30 @@ describe("conversations", () => {
     expect(listConversations(db, "teams")[0].title).toBe("Alice")
   })
 
+  test("avatarUserId + memberIds round-trip and survive a title-less update", () => {
+    upsertConversations(db, "teams", [
+      { id: "dm", lastMessageVersion: 1, avatarUserId: "other-oid" },
+      { id: "g", lastMessageVersion: 1, memberIds: ["a-oid", "b-oid"] },
+    ])
+    const byId = () => new Map(listConversations(db, "teams").map((c) => [c.id, c]))
+    expect(byId().get("dm")?.avatarUserId).toBe("other-oid")
+    expect(byId().get("g")?.memberIds).toEqual(["a-oid", "b-oid"])
+    // A later delta that resolved neither must not clear them (absent = unresolved).
+    upsertConversations(db, "teams", [
+      { id: "dm", lastMessageVersion: 2 },
+      { id: "g", lastMessageVersion: 2, memberIds: [] },
+    ])
+    expect(byId().get("dm")?.avatarUserId).toBe("other-oid")
+    expect(byId().get("g")?.memberIds).toEqual(["a-oid", "b-oid"])
+  })
+
+  test("an unresolved avatar is omitted, not null", () => {
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 1 }])
+    const row = listConversations(db, "teams")[0]
+    expect(row.avatarUserId).toBeUndefined()
+    expect(row.memberIds).toBeUndefined()
+  })
+
   test("a new non-empty title lands even when lastMessageVersion did not rise", () => {
     upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 5, lastMessagePreview: "hi" }])
     // Same version — version-gated DO UPDATE won't fire, but title must still land.

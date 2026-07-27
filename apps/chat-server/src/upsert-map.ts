@@ -30,6 +30,8 @@ export function toConversationInput(
     kind: c.kind,
     topic: c.topic,
     title: c.title,
+    avatarUserId: c.avatarUserId,
+    memberIds: c.memberIds,
     lastMessageId: c.lastMessageId,
     lastMessageVersion: c.lastMessageVersion,
     lastMessageTs: c.lastMessageTs,

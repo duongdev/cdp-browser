@@ -15,6 +15,10 @@ function sameConv(a: TeamsConversation, b: TeamsConversation): boolean {
     a.id === b.id &&
     a.kind === b.kind &&
     a.title === b.title &&
+    // A late-resolving avatar/roster must re-render the row, or it keeps the initials tile until
+    // some unrelated field happens to change.
+    a.avatarUserId === b.avatarUserId &&
+    (a.memberIds ?? []).join() === (b.memberIds ?? []).join() &&
     a.topic === b.topic &&
     a.lastMessageId === b.lastMessageId &&
     a.lastMessageVersion === b.lastMessageVersion &&

@@ -49,6 +49,17 @@ describe("mergeConversations", () => {
     expect(mergeConversations(existing, freshPage)).toBe(existing)
   })
 
+  it("re-renders when only the avatar identity resolved", () => {
+    const existing = [conv({ id: "A", lastMessageTs: 100 })]
+    expect(mergeConversations(existing, [conv({ id: "A", lastMessageTs: 100 })])).toBe(existing)
+    expect(
+      mergeConversations(existing, [conv({ id: "A", lastMessageTs: 100, avatarUserId: "oid" })]),
+    ).not.toBe(existing)
+    expect(
+      mergeConversations(existing, [conv({ id: "A", lastMessageTs: 100, memberIds: ["a", "b"] })]),
+    ).not.toBe(existing)
+  })
+
   it("sorts a null lastMessageTs last", () => {
     const existing = [conv({ id: "B", lastMessageTs: 200 })]
     const merged = mergeConversations(existing, [
