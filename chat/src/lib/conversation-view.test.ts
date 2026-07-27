@@ -5,6 +5,7 @@ import {
   applyReadOverride,
   CHATS_FOLDER,
   conversationLabel,
+  conversationLabelStatus,
   filterConversations,
   folderLabel,
   groupByFolder,
@@ -60,6 +61,64 @@ describe("conversationLabel", () => {
     expect(conversationLabel(conv({ topic: null, kind: "oneOnOne" }))).toBe("Direct message")
     expect(conversationLabel(conv({ topic: null, kind: "group" }))).toBe("Group chat")
     expect(conversationLabel(conv({ topic: null, kind: "self" }))).toBe("Notes")
+  })
+})
+
+describe("conversationLabelStatus (PSN-103)", () => {
+  it("pending=false when the conversation has a resolved title", () => {
+    const s = conversationLabelStatus(conv({ title: "Alice" }))
+    expect(s).toEqual({ label: "Alice", pending: false })
+  })
+
+  it("pending=false when the conversation has a topic (terminal — server returned it)", () => {
+    const s = conversationLabelStatus(conv({ topic: "Standup" }))
+    expect(s).toEqual({ label: "Standup", pending: false })
+  })
+
+  it("pending=false for a self conv with no title (Notes is the real label)", () => {
+    const s = conversationLabelStatus(conv({ kind: "self", topic: null }))
+    expect(s).toEqual({ label: "Notes", pending: false })
+  })
+
+  it("pending=false for a title-less oneOnOne from the server (terminal resolution failure)", () => {
+    // A real server row has no stub flag — the kind label is the correct terminal label.
+    const s = conversationLabelStatus(conv({ title: undefined, topic: null, kind: "oneOnOne" }))
+    expect(s).toEqual({ label: "Direct message", pending: false })
+  })
+
+  it("pending=false for a title-less group from the server (terminal)", () => {
+    const s = conversationLabelStatus(conv({ title: undefined, topic: null, kind: "group" }))
+    expect(s).toEqual({ label: "Group chat", pending: false })
+  })
+
+  it("pending=true for a stub oneOnOne (push deep-link placeholder)", () => {
+    const s = conversationLabelStatus(
+      conv({ stub: true, title: undefined, topic: null, kind: "oneOnOne" }),
+    )
+    expect(s).toEqual({ label: "Direct message", pending: true })
+  })
+
+  it("pending=true for a stub group (push deep-link, unknown kind)", () => {
+    const s = conversationLabelStatus(
+      conv({ stub: true, title: undefined, topic: null, kind: "group" }),
+    )
+    expect(s).toEqual({ label: "Group chat", pending: true })
+  })
+
+  it("pending=false once the stub gets a provisional title (sender-name hydration)", () => {
+    // After onNameResolved patches the title, stub flag is cleared — no longer pending.
+    const s = conversationLabelStatus(conv({ stub: undefined, title: "Alice", kind: "oneOnOne" }))
+    expect(s).toEqual({ label: "Alice", pending: false })
+  })
+
+  it("group-DM (kind=group) stub is pending but NOT given a sender-name label (guard)", () => {
+    // conversationLabelStatus never infers names — that's the ThreadView responsibility restricted
+    // to oneOnOne. A group stub stays pending until the list arrives or stub is explicitly resolved.
+    const s = conversationLabelStatus(
+      conv({ stub: true, kind: "group", title: undefined, topic: null }),
+    )
+    expect(s.pending).toBe(true)
+    expect(s.label).toBe("Group chat") // kind label, not a fabricated sender name
   })
 })
 

@@ -381,7 +381,14 @@ export function ChatApp() {
 
   const openConversationById = useCallback(
     (id: string, push = true) => {
-      setConvById((m) => (m[id] ? m : { ...m, [id]: stubConversation(id) }))
+      setConvById((m) => {
+        if (m[id]) return m
+        // D.5 (PSN-103): resolve from the already-loaded list first — a push deep-link that arrives
+        // after the list has been fetched should use the real row (title resolved). Only fall back to
+        // the stub when genuinely absent from the list.
+        const real = conversationsRef.current.find((c) => c.id === id)
+        return { ...m, [id]: real ?? stubConversation(id) }
+      })
       setKeepAlive((s) => openThread(s, id))
       setPhoneView("thread")
       patchConvRead(id, "read", true, true)
@@ -389,6 +396,20 @@ export function ChatApp() {
     },
     [patchConvRead, pushPath],
   )
+
+  // PSN-103 D.6: when ThreadView derives the other party's name from the first history message for a
+  // stub 1:1, patch convById with a provisional title and clear the stub flag so the skeleton resolves.
+  const onNameResolved = useCallback((id: string, name: string) => {
+    setConvById((m) => {
+      const prev = m[id]
+      // Only patch a stub with no title — a real row may have arrived by now (the late-arriving list
+      // metadata swap already runs in onConversations). In that case the real title wins, not the
+      // sender-name fallback.
+      if (!prev?.stub || prev.title?.trim()) return m
+      const { stub: _drop, ...rest } = prev
+      return { ...m, [id]: { ...rest, title: name } }
+    })
+  }, [])
   openConvRef.current = openConversationById
 
   // Electron shell notification click → open the conversation (main posts the convId back).
@@ -558,8 +579,8 @@ export function ChatApp() {
   // TODAY are listed — no dead entries (settings/mark-read land in later workstreams).
   const actions: ChatAction[] = useMemo(() => {
     const jumps: ChatAction[] = conversations.slice(0, 50).map((c) => {
-      const original =
-        c.title?.trim() || c.topic?.trim() || (c.kind === "self" ? "Notes" : "Direct message")
+      // PSN-103: single source of truth — conversationLabel covers title → topic → kind fallback.
+      const original = conversationLabel(c)
       return {
         id: `jump:${c.id}`,
         // Local rename (t168): show "Custom (Original)" so the palette filter matches BOTH names.
@@ -1073,6 +1094,7 @@ export function ChatApp() {
         namePref={namePref}
         onBack={isWide ? undefined : backToList}
         onFocusChange={isActive ? setThreadFocus : undefined}
+        onNameResolved={onNameResolved}
         onOpenProfile={setProfileTarget}
         ref={isActive ? activeThreadRef : undefined}
         visible={isActive && (isWide || phoneView === "thread")}

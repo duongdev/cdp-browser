@@ -20,6 +20,7 @@ const SCHEMA = [
     id                   TEXT NOT NULL,
     kind                 TEXT,
     topic                TEXT,
+    title                TEXT,
     last_message_id      TEXT,
     last_message_version INTEGER,
     last_message_ts      INTEGER,
@@ -91,6 +92,7 @@ const SCHEMA = [
 /** Columns added to a table that already shipped. `ADD COLUMN` has no `IF NOT EXISTS`, so each is
  *  tried and a duplicate-column error swallowed — that is the "already migrated" case. */
 const ADDED_COLUMNS: [table: string, column: string, decl: string][] = [
+  ["conversations", "title", "TEXT"],
   ["read_state", "unread_bookmark_ts", "INTEGER"],
 ]
 
@@ -123,6 +125,9 @@ export interface ConversationInput {
   id: string
   kind?: string
   topic?: string | null
+  /** Resolved display title (member names for a topic-less DM/group). Best-effort — absent means
+   *  unresolved, never "renamed to nothing". Empty/absent never clears a previously stored title. */
+  title?: string | null
   lastMessageId?: string | null
   lastMessageVersion?: number
   lastMessageTs?: number | null
@@ -136,6 +141,10 @@ export interface ConversationInput {
 // Insert new, update only when `lastMessageVersion` rises (WHERE gate), skip reserved. Sync cursors
 // seed to the last-message ts ONCE on insert and are never clobbered by an update. Returns the rows
 // it processed (non-reserved).
+//
+// Title is handled separately from the version-gated DO UPDATE: a resolved name may arrive on any
+// fetch regardless of message-version changes, and an absent/empty title never clears a stored one
+// (absent = unresolved, not renamed-to-nothing).
 export function upsertConversations(
   db: Db,
   service: string,
@@ -144,10 +153,10 @@ export function upsertConversations(
 ): ConversationInput[] {
   const stmt = db.prepare(`
     INSERT INTO conversations
-      (service, id, kind, topic, last_message_id, last_message_version, last_message_ts,
+      (service, id, kind, topic, title, last_message_id, last_message_version, last_message_ts,
        last_message_preview, last_message_from_me, newest_synced_ts, oldest_synced_ts, muted, updated_at)
     VALUES
-      (@service, @id, @kind, @topic, @last_message_id, @last_message_version, @last_message_ts,
+      (@service, @id, @kind, @topic, @title, @last_message_id, @last_message_version, @last_message_ts,
        @last_message_preview, @last_message_from_me, @last_message_ts, @last_message_ts, 0, @updated_at)
     ON CONFLICT(service, id) DO UPDATE SET
       kind = excluded.kind,
@@ -160,16 +169,24 @@ export function upsertConversations(
       updated_at = excluded.updated_at
     WHERE excluded.last_message_version > conversations.last_message_version
   `)
+  // Ungated title update: lands whenever a non-empty title arrives, independent of version.
+  // Never clears a stored title — an empty/absent incoming title means "still unresolved".
+  const titleStmt = db.prepare(`
+    UPDATE conversations SET title = @title
+    WHERE service = @service AND id = @id
+  `)
   const processed: ConversationInput[] = []
   const run = db.transaction((convs: ConversationInput[]) => {
     for (const conv of convs) {
       if (!conv?.id || isReservedConversation(conv.id)) continue
       const preview = conv.lastMessagePreview ?? ""
+      const title = typeof conv.title === "string" ? conv.title.trim() : null
       stmt.run({
         service,
         id: conv.id,
         kind: conv.kind ?? null,
         topic: conv.topic ?? null,
+        title: title || null,
         last_message_id: conv.lastMessageId ?? null,
         last_message_version: Number(conv.lastMessageVersion) || 0,
         last_message_ts: conv.lastMessageTs ?? null,
@@ -178,6 +195,8 @@ export function upsertConversations(
         last_message_from_me: conv.lastMessageFromMe ? 1 : 0,
         updated_at: now,
       })
+      // Apply a resolved title regardless of whether the version-gated update ran.
+      if (title) titleStmt.run({ service, id: conv.id, title })
       if (conv.readHorizonTs != null) setReadHorizon(db, service, conv.id, conv.readHorizonTs)
       if (conv.unreadBookmarkTs != null)
         setUnreadBookmark(db, service, conv.id, conv.unreadBookmarkTs)
@@ -192,7 +211,7 @@ export function upsertConversations(
 export function listConversations(db: Db, service: string): ChatConversation[] {
   const rows = db
     .prepare(`
-      SELECT c.id, c.kind, c.topic, c.last_message_id, c.last_message_version, c.last_message_ts,
+      SELECT c.id, c.kind, c.topic, c.title, c.last_message_id, c.last_message_version, c.last_message_ts,
              c.last_message_preview, c.last_message_from_me, c.muted,
              r.read_horizon_ts, r.local_read_ts, r.unread_bookmark_ts
       FROM conversations c
@@ -214,6 +233,8 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
       id: r.id,
       kind: (r.kind as ChatConversation["kind"]) || "group",
       topic: r.topic,
+      // Omit rather than emit null — `title` is optional in ChatConversation; undefined = unresolved.
+      ...(r.title ? { title: r.title } : {}),
       lastMessageId: r.last_message_id,
       lastMessageVersion: r.last_message_version,
       lastMessageTs: r.last_message_ts,
@@ -231,6 +252,7 @@ interface ReadRow {
   id: string
   kind: string | null
   topic: string | null
+  title: string | null
   last_message_id: string | null
   last_message_version: number
   last_message_ts: number | null
