@@ -13,7 +13,10 @@ export function catchUpPrompt(): string {
 
 export function draftReplyPrompt(voice: string): string {
   const guidance = voice.trim() ? `\nTone guidance: ${voice.trim()}` : ""
-  return `Draft a reply to the message I attached. Match the thread's dominant language (mirror Vietnamese with Vietnamese) and its register. Give ONLY the reply text, no preamble.${guidance}`
+  // "Normal, complete sentences" is load-bearing: the assistant answers ME in a terse, clipped
+  // style (see RESPONSE_STYLE in the BFF's loop.ts), and that must never leak into a message a
+  // colleague receives.
+  return `Draft a reply to the message I attached. Match the thread's dominant language (mirror Vietnamese with Vietnamese) and its register, in normal complete sentences — this is going to another person, so do NOT use the clipped style you answer me in. Give ONLY the reply text, no preamble.${guidance}`
 }
 
 export function actionItemsPrompt(): string {

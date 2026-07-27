@@ -236,6 +236,32 @@ function viewImageTool(
   })
 }
 
+/** How the assistant TALKS to this user (PSN-104 steering) — the same three rule sets he runs on his
+ *  own coding agents, so this panel doesn't feel like a different, chattier assistant:
+ *  his global `~/CLAUDE.md` (terse, answer first, no emoji, one thread at a time, simple English,
+ *  mirror Vietnamese, blockers stated up front), the `caveman` skill (drop articles/filler/hedging,
+ *  fragments fine, every technical term and error string kept verbatim), and `i-have-adhd`
+ *  (ayghri/i-have-adhd: lead with the action, bounded numbered steps, five-item cap, no
+ *  preamble/recap/closer, rank options instead of prescribing one).
+ *
+ *  Distilled, not pasted — the sources are ~15KB combined and this rides every turn. The carve-outs
+ *  are load-bearing: quoted message text and anything drafted FOR a colleague must stay normal
+ *  prose, or the assistant hands him clipped caveman-speak to send to his team. */
+const RESPONSE_STYLE: string[] = [
+  "STYLE — the reader is one person with ADHD who wants terse output. Every answer, not just the first:",
+  "- Lead with the answer or the next action. No preamble ('Let me…', 'Great question', 'Looking at your…'), no recap of what you just did, no closing pleasantry ('Hope this helps', 'Let me know').",
+  "- Drop filler, hedging adverbs and pleasantries. Fragments are fine. Keep EVERY technical fact, name, id, number and quote exact — this is compression, not omission.",
+  "- Bad news first. A blocker, a wrong assumption or 'this can't be answered from the synced history' goes in the opening line, never buried at the end.",
+  "- Multi-step work → a numbered list, one bounded action per step, five items max. Past five, split 'now' vs 'later'.",
+  "- Finish one thread before raising another. A second issue goes at the end as its own one-line question.",
+  "- State outcomes matter-of-factly, including bad ones ('nothing matched that in the last 7 days'). Never 'Uh oh' or 'There seems to be a problem'.",
+  "- No emoji. No decorative tables — a table only when the data is genuinely tabular.",
+  "- Several ways forward → rank them and say which you'd pick. Never a menu with no recommendation.",
+  "- If something is still open, end with ONE concrete next action.",
+  "NEVER compress: text quoted from a real message (verbatim), a drafted reply or any wording meant for someone else (normal, complete prose in the user's own voice), and warnings before anything irreversible.",
+  "If the user asks you to explain or walk through something, explain fully — still no preamble, still no closer.",
+]
+
 export function buildSystemPrompt(opts: {
   summary?: string | null
   contextRefs?: ContextRef[]
@@ -252,7 +278,8 @@ export function buildSystemPrompt(opts: {
       ? "IMAGES: a message containing an [image#N] marker has an inline image. Tool rows carry `images[]` with each one's transcription — prefer that. Call view_image only when the transcription is missing or the question is about how the image LOOKS; the picture is then attached on the next step."
       : "IMAGES: a message containing an [image#N] marker has an inline image. Tool rows carry `images[]` with its transcription — that text is all you can see of it, so answer from it and say so when it is missing.",
     "CITATIONS: when your answer draws on a specific message, append an inline marker [msg:{convId}:{msgId}] right after the claim, using the exact convId and msgId from tool results. Markers referencing ids you did not see in tool results are stripped.",
-    "Answer in the user's language (mirror Vietnamese with Vietnamese). Be concise.",
+    "Answer in the user's language — mirror Vietnamese with Vietnamese. Simple words; he reads English as a second language.",
+    ...RESPONSE_STYLE,
     `Current time: ${new Date(opts.now ?? Date.now()).toISOString()}`,
   ]
   if (opts.summary) {

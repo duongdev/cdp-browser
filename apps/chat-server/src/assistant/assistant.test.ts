@@ -347,6 +347,37 @@ describe("buildSystemPrompt scope", () => {
   })
 })
 
+describe("buildSystemPrompt response style (PSN-104 steering: caveman + i-have-adhd)", () => {
+  const p = buildSystemPrompt({})
+
+  test("carries the terse, action-first rules on every turn", () => {
+    expect(p).toMatch(/Lead with the answer or the next action/)
+    expect(p).toMatch(/No preamble/)
+    expect(p).toMatch(/numbered list/)
+    expect(p).toMatch(/five items max/i)
+    expect(p).toMatch(/ONE concrete next action/)
+  })
+
+  test("compression never eats facts, quotes, or a reply meant for someone else", () => {
+    // The carve-outs are what stop terse-mode leaking into a colleague's inbox.
+    expect(p).toMatch(/this is compression, not omission/)
+    expect(p).toMatch(/NEVER compress/)
+    expect(p).toMatch(/quoted from a real message/)
+    expect(p).toMatch(/meant for someone else/)
+    expect(p).toMatch(/irreversible/)
+  })
+
+  test("carries the CLAUDE.md rules the coding agents follow", () => {
+    expect(p).toMatch(/Bad news first/)
+    expect(p).toMatch(/No emoji/)
+    expect(p).toMatch(/rank them and say which you'd pick/)
+  })
+
+  test("language mirroring survives the style block", () => {
+    expect(p).toMatch(/mirror Vietnamese with Vietnamese/)
+  })
+})
+
 describe("multi-turn persistence (steering: wrong order / lost replies)", () => {
   test("each turn appends its own assistant row — replies never overwrite each other", async () => {
     const db = freshDb()

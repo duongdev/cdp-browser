@@ -17,6 +17,8 @@ describe("prompt seeds", () => {
     expect(draftReplyPrompt("ngắn gọn, thân thiện")).toContain("ngắn gọn, thân thiện")
     expect(draftReplyPrompt("")).not.toContain("Tone guidance")
     expect(draftReplyPrompt("  ")).not.toContain("Tone guidance")
+    // A draft goes to a colleague — it must opt OUT of the terse style the assistant answers in.
+    expect(draftReplyPrompt("")).toContain("normal complete sentences")
   })
   test("action items ask for honest none-found", () => {
     expect(actionItemsPrompt().toLowerCase()).toContain("none")
