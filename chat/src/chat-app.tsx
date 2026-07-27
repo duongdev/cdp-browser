@@ -28,10 +28,12 @@ import {
 } from "./lib/assistant-actions"
 import {
   type AssistantContextRef,
+  type AssistantScopes,
   attachContext,
   createSession,
   detachContext,
   getAssistantVoice,
+  refKey,
 } from "./lib/assistant-client"
 import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
@@ -718,26 +720,59 @@ export function ChatApp() {
     [runAiAction],
   )
 
+  // The user's own folders + labels, derived from the prefs already in memory (no extra fetch).
+  // Offered by the assistant's "+" menu as attachable SCOPES (PSN-104) — the ref stores the NAME,
+  // so what the folder contains is resolved per question and never goes stale.
+  const aiScopes = useMemo<AssistantScopes>(() => {
+    const folders = new Map<string, number>()
+    const labels = new Map<string, number>()
+    for (const p of Object.values(prefs)) {
+      const f = (p.folder || "").trim()
+      if (f) folders.set(f, (folders.get(f) ?? 0) + 1)
+      for (const l of p.labels ?? []) labels.set(l, (labels.get(l) ?? 0) + 1)
+    }
+    const toList = (m: Map<string, number>) =>
+      [...m.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    return { folders: toList(folders), labels: toList(labels) }
+  }, [prefs])
+
+  const attachScope = useCallback(
+    async (kind: "folder" | "label", name: string) => {
+      try {
+        let sessionId = settings.aiSessionId
+        if (!sessionId) sessionId = (await createSession()).id
+        const session = await attachContext(sessionId, { kind, name })
+        setAiRefs(session.contextRefs)
+        updateSettings({ aiPanelOpen: true, aiSessionId: sessionId })
+      } catch {
+        toast.error("Could not attach that")
+      }
+    },
+    [settings.aiSessionId, updateSettings],
+  )
+
   const detachRef = useCallback(
     async (ref: AssistantContextRef) => {
       const sessionId = settings.aiSessionId
       if (!sessionId) return
+      const key = refKey(ref)
       // Optimistic: the chip disappears on click, and a failed write restores it.
-      setAiRefs((refs) =>
-        (refs ?? []).filter(
-          (r) => !(r.convId === ref.convId && (r.msgId ?? null) === (ref.msgId ?? null)),
-        ),
-      )
+      setAiRefs((refs) => (refs ?? []).filter((r) => refKey(r) !== key))
       try {
-        const session = await detachContext(sessionId, { convId: ref.convId, msgId: ref.msgId })
+        const session = await detachContext(sessionId, {
+          convId: ref.convId,
+          msgId: ref.msgId,
+          kind: ref.kind,
+          name: ref.name,
+        })
         setAiRefs(session.contextRefs)
       } catch {
         toast.error("Could not detach that")
         setAiRefs((refs) => {
           const cur = refs ?? []
-          return cur.some((r) => r.convId === ref.convId && r.msgId === ref.msgId)
-            ? cur
-            : [...cur, ref]
+          return cur.some((r) => refKey(r) === key) ? cur : [...cur, ref]
         })
       }
     },
@@ -746,6 +781,8 @@ export function ChatApp() {
 
   const openRef = useCallback(
     (ref: AssistantContextRef) => {
+      // A folder/label chip is a name, not a place — nothing to jump to.
+      if (!ref.convId) return
       if (ref.msgId) openCitation(ref.convId, ref.msgId)
       else openConversationById(ref.convId)
     },
@@ -806,6 +843,7 @@ export function ChatApp() {
       labelForConv={labelForConv}
       narrow={!isWide}
       onAttachCurrent={attachCurrentConv}
+      onAttachScope={attachScope}
       onClose={() => updateSettings({ aiPanelOpen: false })}
       onDetach={detachRef}
       onInsertToComposer={insertDraftToComposer}
@@ -813,6 +851,7 @@ export function ChatApp() {
       onOpenRef={openRef}
       onSessionChange={setAiSession}
       pendingPrompt={aiPrompt}
+      scopes={aiScopes}
       sessionId={settings.aiSessionId}
     />
   ) : null

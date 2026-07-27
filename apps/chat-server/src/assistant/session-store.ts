@@ -39,16 +39,23 @@ export function migrateAssistant(db: Db): void {
   for (const stmt of SCHEMA) db.exec(stmt)
 }
 
-/** A chat or message the user attached to the session. Pure reference — nothing is copied into
- *  the transcript, so removing one genuinely removes that context (the model re-reads live via
- *  get_context/search when it needs the content). */
+/** Something the user attached to the session. Pure reference — nothing is copied into the
+ *  transcript, so removing one genuinely removes that context (the model re-reads live via
+ *  get_context/search when it needs the content).
+ *
+ *  Four kinds, two shapes: a conversation-shaped ref (`chat`/`message`) points at ids, a
+ *  SCOPE-shaped one (`folder`/`label`) points at a NAME (PSN-104). A scope stays live by design —
+ *  the folder's membership is resolved at question time, so a conversation filed into it after the
+ *  attach is in scope without re-attaching. */
 export interface ContextRef {
   service: string
-  /** "chat" = the whole conversation; "message" = one message (+ its surrounding window). */
-  kind: "chat" | "message"
-  convId: string
+  kind: "chat" | "message" | "folder" | "label"
+  /** chat/message only. */
+  convId?: string
   msgId?: string
-  /** Conversation title — the chat chip's label, and a message chip's tooltip. */
+  /** folder/label only: the scope's name, as the user typed/assigned it. */
+  name?: string
+  /** The chip's label: a conversation title, or the folder/label name. */
   title: string
   /** Message chips only: the sender + a short excerpt, so two messages from one chat differ. */
   sender?: string
@@ -56,9 +63,27 @@ export interface ContextRef {
   deepLink: string
 }
 
-/** Two refs are the same attachment when they point at the same (convId, msgId). */
+export function isScopeRef(ref: {
+  kind?: string
+}): ref is ContextRef & { kind: "folder" | "label"; name: string } {
+  return ref.kind === "folder" || ref.kind === "label"
+}
+
+/** Identity of an attachment: a scope by (kind, name), anything else by (convId, msgId). */
+export function refKey(ref: {
+  kind?: string
+  name?: string
+  convId?: string
+  msgId?: string
+}): string {
+  return isScopeRef(ref)
+    ? `scope\n${ref.kind}\n${ref.name}`
+    : `msg\n${ref.convId ?? ""}\n${ref.msgId ?? ""}`
+}
+
+/** Two refs are the same attachment when they carry the same key. */
 export function sameRef(a: ContextRef, b: ContextRef): boolean {
-  return a.convId === b.convId && (a.msgId ?? null) === (b.msgId ?? null)
+  return refKey(a) === refKey(b)
 }
 
 /** Add a ref, ignoring a duplicate. Returns the same array reference when nothing changed. */
@@ -66,14 +91,13 @@ export function addRef(refs: ContextRef[], ref: ContextRef): ContextRef[] {
   return refs.some((r) => sameRef(r, ref)) ? refs : [...refs, ref]
 }
 
-/** Drop the ref pointing at (convId, msgId). Same array reference when nothing matched. */
+/** Drop the ref matching the target's key. Same array reference when nothing matched. */
 export function removeRef(
   refs: ContextRef[],
-  target: { convId: string; msgId?: string },
+  target: { kind?: string; name?: string; convId?: string; msgId?: string },
 ): ContextRef[] {
-  const next = refs.filter(
-    (r) => !(r.convId === target.convId && (r.msgId ?? null) === (target.msgId ?? null)),
-  )
+  const key = refKey(target)
+  const next = refs.filter((r) => refKey(r) !== key)
   return next.length === refs.length ? refs : next
 }
 
@@ -114,10 +138,15 @@ function shapeSession(r: SessionRow): AiSession {
   try {
     const v = JSON.parse(r.context_refs || "[]")
     if (Array.isArray(v)) {
-      // Rows written before refs were typed have no `kind` — infer it from msgId.
+      // A scope ref (folder/label) is keyed by name; everything else needs a convId. Rows written
+      // before refs were typed have no `kind` — infer it from msgId.
       refs = v
-        .filter((x) => x?.convId)
-        .map((x) => ({ ...x, kind: x.kind === "message" || x.msgId ? "message" : "chat" }))
+        .filter((x) => (isScopeRef(x ?? {}) ? !!x.name : !!x?.convId))
+        .map((x) =>
+          isScopeRef(x)
+            ? { ...x, title: x.title || x.name }
+            : { ...x, kind: x.kind === "message" || x.msgId ? "message" : "chat" },
+        )
     }
   } catch {
     // poisoned refs degrade to none

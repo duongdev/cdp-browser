@@ -4,16 +4,48 @@
 
 export interface AssistantContextRef {
   service: string
-  /** "chat" = whole conversation, "message" = one message (+ its window). */
-  kind: "chat" | "message"
-  convId: string
+  /** "chat" = whole conversation, "message" = one message (+ its window), "folder"/"label" = one of
+   *  the user's own groupings, resolved to conversations at question time (PSN-104) so a chat filed
+   *  into it later is in scope without re-attaching. */
+  kind: "chat" | "message" | "folder" | "label"
+  /** chat/message only. */
+  convId?: string
   msgId?: string
-  /** Conversation title. */
+  /** folder/label only: the scope's name. */
+  name?: string
+  /** Conversation title, or the folder/label name. */
   title: string
   /** Message refs only — who said it + a short excerpt, so chips from one chat differ. */
   sender?: string
   preview?: string
   deepLink: string
+}
+
+/** The user's own groupings, offered as attachable scopes. Mirrors the server's `Scopes`, but the
+ *  FE derives it from the prefs it already holds — no extra fetch. */
+export interface AssistantScopes {
+  folders: { name: string; count: number }[]
+  labels: { name: string; count: number }[]
+}
+
+/** Identity of an attachment, mirroring the server: a scope by (kind, name), else (convId, msgId).
+ *  Used for optimistic add/remove in the tray. */
+export function refKey(ref: {
+  kind?: string
+  name?: string
+  convId?: string
+  msgId?: string
+}): string {
+  return ref.kind === "folder" || ref.kind === "label"
+    ? `scope\n${ref.kind}\n${ref.name}`
+    : `msg\n${ref.convId ?? ""}\n${ref.msgId ?? ""}`
+}
+
+/** A scope ref carries a name instead of ids — the one branch every consumer needs. */
+export function isScopeRef(
+  ref: AssistantContextRef,
+): ref is AssistantContextRef & { kind: "folder" | "label"; name: string } {
+  return ref.kind === "folder" || ref.kind === "label"
 }
 
 export interface AssistantSession {
@@ -71,18 +103,19 @@ export async function loadSessionMessages(id: string) {
   return req<{ session: AssistantSession; messages: unknown[] }>(`/sessions/${id}/messages`)
 }
 
-export async function attachContext(
-  id: string,
-  ref: {
-    service?: string
-    convId: string
-    msgId?: string
-    title: string
-    sender?: string
-    preview?: string
-    deepLink?: string
-  },
-) {
+export type AttachTarget =
+  | {
+      service?: string
+      convId: string
+      msgId?: string
+      title: string
+      sender?: string
+      preview?: string
+      deepLink?: string
+    }
+  | { service?: string; kind: "folder" | "label"; name: string }
+
+export async function attachContext(id: string, ref: AttachTarget) {
   return (
     await req<{ session: AssistantSession }>(`/sessions/${id}/context`, {
       method: "POST",
@@ -91,13 +124,17 @@ export async function attachContext(
   ).session
 }
 
-/** Detach a ref by (convId, msgId). The target rides the query string — a DELETE body isn't
- *  reliably forwarded through proxies. */
+/** Detach a ref by (convId, msgId) or, for a scope, by (kind, name). The target rides the query
+ *  string — a DELETE body isn't reliably forwarded through proxies. */
 export async function detachContext(
   id: string,
-  target: { convId: string; msgId?: string },
+  target: { convId?: string; msgId?: string; kind?: string; name?: string },
 ): Promise<AssistantSession> {
-  const q = new URLSearchParams({ convId: target.convId })
+  const q = new URLSearchParams()
+  if (target.name && (target.kind === "folder" || target.kind === "label")) {
+    q.set("kind", target.kind)
+    q.set("name", target.name)
+  } else if (target.convId) q.set("convId", target.convId)
   if (target.msgId) q.set("msgId", target.msgId)
   return (
     await req<{ session: AssistantSession }>(`/sessions/${id}/context?${q}`, { method: "DELETE" })

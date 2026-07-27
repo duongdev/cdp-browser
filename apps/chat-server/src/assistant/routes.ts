@@ -145,18 +145,31 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     const b = await body(c)
     const session = getSession(db, c.req.param("id"))
     if (!session) return c.json({ error: "not_found" }, 404)
-    if (!b.convId || !b.title) return c.json({ error: "missing_ref" }, 400)
+    const scopeKind = b.kind === "folder" || b.kind === "label" ? b.kind : null
+    const name = b.name ? String(b.name).trim() : ""
+    if (!scopeKind && (!b.convId || !b.title)) return c.json({ error: "missing_ref" }, 400)
+    if (scopeKind && !name) return c.json({ error: "missing_ref" }, 400)
     const msgId = b.msgId ? String(b.msgId) : undefined
-    const ref: ContextRef = {
-      service: b.service || DEFAULT_SERVICE,
-      kind: msgId ? "message" : "chat",
-      convId: String(b.convId),
-      msgId,
-      title: String(b.title),
-      sender: b.sender ? String(b.sender).slice(0, 80) : undefined,
-      preview: b.preview ? String(b.preview).slice(0, 140) : undefined,
-      deepLink: String(b.deepLink || `/chat/c/${b.convId}${msgId ? `?msg=${msgId}` : ""}`),
-    }
+    // A scope ref (folder/label) carries a NAME, not ids — membership is resolved per question, so
+    // it never goes stale.
+    const ref: ContextRef = scopeKind
+      ? {
+          service: b.service || DEFAULT_SERVICE,
+          kind: scopeKind,
+          name,
+          title: name,
+          deepLink: "",
+        }
+      : {
+          service: b.service || DEFAULT_SERVICE,
+          kind: msgId ? "message" : "chat",
+          convId: String(b.convId),
+          msgId,
+          title: String(b.title),
+          sender: b.sender ? String(b.sender).slice(0, 80) : undefined,
+          preview: b.preview ? String(b.preview).slice(0, 140) : undefined,
+          deepLink: String(b.deepLink || `/chat/c/${b.convId}${msgId ? `?msg=${msgId}` : ""}`),
+        }
     const updated = updateSession(db, session.id, {
       contextRefs: addRef(session.contextRefs, ref),
     })
@@ -169,9 +182,12 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     // Accept the target on the query string (a DELETE body isn't reliably forwarded by proxies).
     const convId = c.req.query("convId")
     const msgId = c.req.query("msgId") || undefined
-    if (!convId) return c.json({ error: "missing_ref" }, 400)
+    const kind = c.req.query("kind")
+    const name = c.req.query("name")
+    const isScope = (kind === "folder" || kind === "label") && !!name
+    if (!isScope && !convId) return c.json({ error: "missing_ref" }, 400)
     const updated = updateSession(db, session.id, {
-      contextRefs: removeRef(session.contextRefs, { convId, msgId }),
+      contextRefs: removeRef(session.contextRefs, isScope ? { kind, name } : { convId, msgId }),
     })
     return c.json({ session: updated })
   })

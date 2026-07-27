@@ -15,11 +15,13 @@ import {
   Cancel01Icon,
   Copy01Icon,
   Delete02Icon,
+  Folder01Icon,
   MessageMultiple01Icon,
   PencilEdit02Icon,
   PenToolAddIcon,
   PlusSignIcon,
   StopIcon,
+  Tag01Icon,
   Tick01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
@@ -52,6 +54,7 @@ import {
   ASSISTANT_BASE,
   type AssistantContextRef,
   type AssistantModel,
+  type AssistantScopes,
   type AssistantSession,
   assistantErrorCode,
   assistantErrorCopy,
@@ -96,6 +99,10 @@ export interface AssistantPanelProps {
   currentConv?: { convId: string; title: string } | null
   /** Attach the current conversation to the active session. */
   onAttachCurrent?: () => void
+  /** The user's own folders + labels, offered by the "+" menu as attachable scopes (PSN-104). */
+  scopes?: AssistantScopes
+  /** Attach a whole folder/label as a live scope. */
+  onAttachScope?: (kind: "folder" | "label", name: string) => void
   /** Detach a ref from the active session. */
   onDetach?: (ref: AssistantContextRef) => void
   /** Jump to a ref in the main pane. */
@@ -404,6 +411,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
               labelForConv={props.labelForConv}
               models={models}
               onAttachCurrent={props.onAttachCurrent}
+              onAttachScope={props.onAttachScope}
               onDetach={props.onDetach}
               onInsertToComposer={props.onInsertToComposer}
               onOpenCitation={props.onOpenCitation}
@@ -411,6 +419,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
               onPickModel={(modelId) => pickModel(id, modelId)}
               pendingPrompt={id === sessionId ? props.pendingPrompt : undefined}
               refreshNonce={props.refreshNonce}
+              scopes={props.scopes}
               sessionId={id}
               sessionModel={(sessions?.find((s) => s.id === id) ?? null)?.model ?? null}
             />
@@ -467,6 +476,8 @@ function SessionChat({
   onPickModel,
   currentConv,
   onAttachCurrent,
+  scopes,
+  onAttachScope,
   onDetach,
   onOpenRef,
   refreshNonce,
@@ -482,6 +493,8 @@ function SessionChat({
   onPickModel: (modelId: string) => void
   currentConv?: { convId: string; title: string } | null
   onAttachCurrent?: () => void
+  scopes?: AssistantScopes
+  onAttachScope?: (kind: "folder" | "label", name: string) => void
   onDetach?: (ref: AssistantContextRef) => void
   onOpenRef?: (ref: AssistantContextRef) => void
   refreshNonce?: number
@@ -519,6 +532,7 @@ function SessionChat({
       labelForConv={labelForConv}
       models={models}
       onAttachCurrent={onAttachCurrent}
+      onAttachScope={onAttachScope}
       onDetach={onDetach}
       onInsertToComposer={onInsertToComposer}
       onOpenCitation={onOpenCitation}
@@ -526,6 +540,7 @@ function SessionChat({
       onPickModel={onPickModel}
       pendingPrompt={pendingPrompt}
       refreshNonce={refreshNonce}
+      scopes={scopes}
       sessionId={sessionId}
       sessionModel={sessionModel}
     />
@@ -569,6 +584,8 @@ function SessionChatReady({
   onPickModel,
   currentConv,
   onAttachCurrent,
+  scopes,
+  onAttachScope,
   onDetach,
   onOpenRef,
   refreshNonce,
@@ -585,6 +602,8 @@ function SessionChatReady({
   onPickModel: (modelId: string) => void
   currentConv?: { convId: string; title: string } | null
   onAttachCurrent?: () => void
+  scopes?: AssistantScopes
+  onAttachScope?: (kind: "folder" | "label", name: string) => void
   onDetach?: (ref: AssistantContextRef) => void
   onOpenRef?: (ref: AssistantContextRef) => void
   refreshNonce?: number
@@ -612,6 +631,16 @@ function SessionChatReady({
     return (sessionModel ? models?.find((m) => m.id === sessionModel) : undefined) ?? def
   }, [models, sessionModel])
   const contextBudget = contextBudgetFor(activeModel)
+  // Which scopes are already in the tray — the "+" menu ticks and disables those rows.
+  const attachedScopes = useMemo(
+    () =>
+      new Set(
+        contextRefs
+          .filter((r) => r.kind === "folder" || r.kind === "label")
+          .map((r) => `${r.kind}:${r.name}`),
+      ),
+    [contextRefs],
+  )
   const contextPct = useMemo(
     () => Math.min(100, Math.round((estimateTokens(messages) / contextBudget) * 100)),
     [messages, contextBudget],
@@ -783,8 +812,11 @@ function SessionChatReady({
                 !!currentConv &&
                 contextRefs.some((r) => r.convId === currentConv.convId && !r.msgId)
               }
+              attachedScopes={attachedScopes}
               currentConv={currentConv}
               onAttachCurrent={onAttachCurrent}
+              onAttachScope={onAttachScope}
+              scopes={scopes}
             />
             <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
             <ContextMeter
@@ -831,13 +863,21 @@ function AttachMenu({
   currentConv,
   alreadyAttached,
   onAttachCurrent,
+  scopes,
+  attachedScopes,
+  onAttachScope,
 }: {
   currentConv?: { convId: string; title: string } | null
   alreadyAttached: boolean
   onAttachCurrent?: () => void
+  scopes?: AssistantScopes
+  attachedScopes?: Set<string>
+  onAttachScope?: (kind: "folder" | "label", name: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const disabled = !currentConv || alreadyAttached
+  const folders = scopes?.folders ?? []
+  const labels = scopes?.labels ?? []
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <Tooltip>
@@ -866,6 +906,38 @@ function AttachMenu({
           </span>
           {alreadyAttached && <HugeiconsIcon className="size-3.5 shrink-0" icon={Tick01Icon} />}
         </button>
+        {/* Folders + labels attach as SCOPES (PSN-104): the chip holds the name, and membership is
+            resolved per question, so a chat filed into the folder later is already in scope. */}
+        {(folders.length > 0 || labels.length > 0) && (
+          <div className="mt-1 max-h-64 overflow-y-auto border-border border-t pt-1">
+            {[
+              ...folders.map((s) => ({ ...s, kind: "folder" as const })),
+              ...labels.map((s) => ({ ...s, kind: "label" as const })),
+            ].map((s) => {
+              const on = attachedScopes?.has(`${s.kind}:${s.name}`)
+              return (
+                <button
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50 disabled:hover:bg-transparent"
+                  disabled={on}
+                  key={`${s.kind}:${s.name}`}
+                  onClick={() => {
+                    setOpen(false)
+                    onAttachScope?.(s.kind, s.name)
+                  }}
+                  type="button"
+                >
+                  <HugeiconsIcon
+                    className="size-4 shrink-0"
+                    icon={s.kind === "folder" ? Folder01Icon : Tag01Icon}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                  <span className="shrink-0 text-muted-foreground text-xs">{s.count}</span>
+                  {on && <HugeiconsIcon className="size-3.5 shrink-0" icon={Tick01Icon} />}
+                </button>
+              )
+            })}
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

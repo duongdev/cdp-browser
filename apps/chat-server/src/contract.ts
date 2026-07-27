@@ -258,11 +258,18 @@ export type ChatWsServerMessage =
  * returns a UI message stream). Errors are `{ error: code }` — `llm-unconfigured` (503),
  * `llm-rate-limited`, `llm-timeout`, `llm-error`, `not_found`.
  */
+/** An attachment on a session. `chat`/`message` point at ids; `folder`/`label` (PSN-104) point at
+ *  a NAME and resolve to conversations at question time, so they stay live as membership changes. */
 export interface AssistantContextRef {
   service: ChatService
-  convId: string
+  kind: "chat" | "message" | "folder" | "label"
+  convId?: string
   msgId?: string
+  /** folder/label only. */
+  name?: string
   title: string
+  sender?: string
+  preview?: string
   deepLink: string
 }
 

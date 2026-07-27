@@ -137,11 +137,11 @@ A `[msg:{convId}:{msgId}]` marker the model emits inline and the server keeps ON
 _Avoid_: source, reference, link (a **Citation** is not a URL).
 
 **Scope** (assistant):
-A folder or label the user assigned by hand (`conversation_prefs`) used as a retrieval filter: the assistant resolves the name it was given ("my FWD folder", "the urgent ones") to that group's conversation ids and passes them as `convIds`. Fold-matched, folder before label, and an unknown name comes back with the real folder/label list rather than a guess. Distinct from an **Attach Tray** ref, which the user picks explicitly.
+A folder or label the user assigned by hand (`conversation_prefs`) used as a retrieval filter: the assistant resolves the name it was given ("my FWD folder", "the urgent ones") to that group's conversation ids and passes them as `convIds`. Fold-matched, folder before label, and an unknown name comes back with the real folder/label list rather than a guess. Attachable as an **Attach Tray** chip in its own right (kind `folder`/`label`), and resolvable ad-hoc when a question just names one.
 _Avoid_: filter, category, tag (a label IS the tag).
 
 **Attach Tray**:
-The explicit, visible context of an **Assistant Session** — chips for whole conversations or single messages, added from the "+" menu / a message's ⋯ menu and removable. Refs are PURE pointers: nothing is injected into the transcript, so a ref stays live and detaching truly removes it. An empty tray means "search everything", never a silent scope.
+The explicit, visible context of an **Assistant Session** — chips for whole conversations, single messages, or a whole **Scope** (folder/label), added from the "+" menu / a message's ⋯ menu and removable. Refs are PURE pointers: nothing is injected into the transcript, so a ref stays live and detaching truly removes it. A scope chip holds the NAME, so conversations filed into that folder later are covered without re-attaching. An empty tray means "search everything", never a silent scope.
 _Avoid_: context window (that's the token budget), attachments, pinned context.
 
 ## Relationships

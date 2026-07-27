@@ -15,7 +15,7 @@ import {
   resolveScope,
   searchMessages,
 } from "../search.ts"
-import type { ContextRef } from "./session-store.ts"
+import { type ContextRef, isScopeRef } from "./session-store.ts"
 import { getUnreadOverview } from "./unread-overview.ts"
 
 type Db = BetterSqlite3.Database
@@ -144,11 +144,13 @@ export function buildSystemPrompt(opts: {
     // MUST read them with a tool before leaning on them.
     lines.push(
       "",
-      "The user attached these for this question. Read them first with get_context (they are references, not quoted here), prefer them over anything else, and only search wider when the question clearly calls for it:",
+      "The user attached these for this question. Read them first (they are references, not quoted here) — conversations and messages with get_context, folders and labels by resolving them to convIds first. Prefer them over anything else, and only search wider when the question clearly calls for it:",
       ...refs.map((r) =>
-        r.msgId
-          ? `- message from ${r.sender || "someone"} in "${r.title}" (convId ${r.convId}, msgId ${r.msgId})`
-          : `- the whole conversation "${r.title}" (convId ${r.convId})`,
+        isScopeRef(r)
+          ? `- everything in the ${r.kind} "${r.name}" (call resolve_scope with that name, then pass its convIds to search_messages / list_conversations)`
+          : r.msgId
+            ? `- message from ${r.sender || "someone"} in "${r.title}" (convId ${r.convId}, msgId ${r.msgId})`
+            : `- the whole conversation "${r.title}" (convId ${r.convId})`,
       ),
     )
   }

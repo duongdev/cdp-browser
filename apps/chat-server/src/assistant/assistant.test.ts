@@ -448,11 +448,48 @@ describe("context refs (grill: the attach tray)", () => {
         },
       ],
     })
-    expect(p).toMatch(/Read them first with get_context/)
+    expect(p).toMatch(/Read them first/)
     expect(p).toMatch(/only search wider when the question clearly calls for it/)
     expect(p).toContain('the whole conversation "Deploy crew" (convId c1)')
     expect(p).toContain('message from Bob in "Deploy crew" (convId c1, msgId m1)')
     expect(p).not.toMatch(/currently viewing/i)
+  })
+
+  test("a folder/label attaches as a live SCOPE — name, no ids (PSN-104)", async () => {
+    const s = createSession(db)
+    await attach(s.id, { kind: "folder", name: "Công việc" })
+    await attach(s.id, { kind: "folder", name: "Công việc" }) // duplicate ignored
+    await attach(s.id, { kind: "label", name: "urgent" })
+    const refs = getSession(db, s.id)?.contextRefs ?? []
+    expect(refs.map((r) => r.kind)).toEqual(["folder", "label"])
+    expect(refs[0]).toMatchObject({ name: "Công việc", title: "Công việc" })
+    expect(refs[0].convId).toBeUndefined()
+    // A nameless scope is rejected, not stored as an empty chip.
+    expect((await attach(s.id, { kind: "folder", name: "  " })).status).toBe(400)
+  })
+
+  test("a scope detaches by (kind, name) and leaves conversation refs alone", async () => {
+    const s = createSession(db)
+    await attach(s.id, { convId: "c1", title: "Deploy crew" })
+    await attach(s.id, { kind: "folder", name: "Work" })
+    const res = await app.request(`/sessions/${s.id}/context?kind=folder&name=Work`, {
+      method: "DELETE",
+    })
+    expect(res.status).toBe(200)
+    const refs = getSession(db, s.id)?.contextRefs ?? []
+    expect(refs.map((r) => r.kind)).toEqual(["chat"])
+  })
+
+  test("the prompt sends the model to resolve_scope for an attached folder", () => {
+    const p = buildSystemPrompt({
+      contextRefs: [
+        { service: "teams", kind: "folder", name: "FWD", title: "FWD", deepLink: "" },
+        { service: "teams", kind: "label", name: "urgent", title: "urgent", deepLink: "" },
+      ],
+    })
+    expect(p).toContain('everything in the folder "FWD"')
+    expect(p).toContain('everything in the label "urgent"')
+    expect(p).toMatch(/resolve_scope/)
   })
 })
 

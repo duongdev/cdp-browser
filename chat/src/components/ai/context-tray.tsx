@@ -6,16 +6,34 @@
 // "Sender: excerpt…" so two messages from the same conversation are distinguishable. Clicking a
 // chip jumps to it in the main pane; ✕ detaches it.
 
-import { Cancel01Icon, Message01Icon, MessageMultiple01Icon } from "@hugeicons/core-free-icons"
-import { HugeiconsIcon } from "@hugeicons/react"
+import {
+  Cancel01Icon,
+  Folder01Icon,
+  Message01Icon,
+  MessageMultiple01Icon,
+  Tag01Icon,
+} from "@hugeicons/core-free-icons"
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import type { AssistantContextRef } from "../../lib/assistant-client"
+import { type AssistantContextRef, isScopeRef } from "../../lib/assistant-client"
 
-/** The chip's visible label: a message shows who said what, a chat shows its title. */
+/** The chip's visible label: a message shows who said what, everything else shows its title. */
 export function chipLabel(ref: AssistantContextRef): string {
   if (ref.kind !== "message") return ref.title
   const who = ref.sender || "Message"
   return ref.preview ? `${who}: ${ref.preview}` : who
+}
+
+function chipIcon(ref: AssistantContextRef): IconSvgElement {
+  if (ref.kind === "folder") return Folder01Icon
+  if (ref.kind === "label") return Tag01Icon
+  return ref.kind === "message" ? Message01Icon : MessageMultiple01Icon
+}
+
+function chipTooltip(ref: AssistantContextRef): string {
+  if (ref.kind === "folder") return `Everything in the folder "${ref.title}"`
+  if (ref.kind === "label") return `Everything labelled "${ref.title}"`
+  return ref.kind === "message" ? `Message in ${ref.title}` : `Whole conversation: ${ref.title}`
 }
 
 export function ContextTray({
@@ -35,25 +53,25 @@ export function ContextTray({
           // Inline chips so a label uses whatever width is free on the row and only truncates
           // against the tray edge — a fixed max-width left dead space beside short chips.
           className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-accent/50 py-0.5 pr-0.5 pl-2 text-muted-foreground text-xs"
-          key={`${r.convId}:${r.msgId ?? ""}`}
+          key={isScopeRef(r) ? `${r.kind}:${r.name}` : `${r.convId}:${r.msgId ?? ""}`}
         >
-          <HugeiconsIcon
-            className="size-3.5 shrink-0"
-            icon={r.kind === "message" ? Message01Icon : MessageMultiple01Icon}
-          />
+          <HugeiconsIcon className="size-3.5 shrink-0" icon={chipIcon(r)} />
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
-                className="min-w-0 truncate hover:text-foreground"
-                onClick={() => onOpen(r)}
-                type="button"
-              >
-                {chipLabel(r)}
-              </button>
+              {/* A scope has nowhere to jump to — it's a name, not a conversation. */}
+              {isScopeRef(r) ? (
+                <span className="min-w-0 truncate">{chipLabel(r)}</span>
+              ) : (
+                <button
+                  className="min-w-0 truncate hover:text-foreground"
+                  onClick={() => onOpen(r)}
+                  type="button"
+                >
+                  {chipLabel(r)}
+                </button>
+              )}
             </TooltipTrigger>
-            <TooltipContent>
-              {r.kind === "message" ? `Message in ${r.title}` : `Whole conversation: ${r.title}`}
-            </TooltipContent>
+            <TooltipContent>{chipTooltip(r)}</TooltipContent>
           </Tooltip>
           <button
             aria-label={`Remove ${chipLabel(r)}`}
