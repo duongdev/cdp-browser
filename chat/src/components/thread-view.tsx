@@ -26,6 +26,9 @@ import {
   deleteMessage,
   editMessage,
   fetchHistory,
+  fetchHistoryAfter,
+  fetchHistoryAround,
+  fetchHistoryBefore,
   markRead,
   react,
   sendReply,
@@ -37,6 +40,7 @@ import { useChatWsFrames } from "../lib/chat-ws-context"
 import { conversationLabel, conversationLabelStatus } from "../lib/conversation-view"
 import { FULL_NAME, formatConversationLabel, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
+import { enterJump, extendNewer, JUMP_IDLE, type JumpState, shouldRejoin } from "../lib/jump-mode"
 import {
   applyPendingReactions,
   applyReaction,
@@ -67,9 +71,6 @@ const PENDING_REACTION_TTL_MS = 20000
 // past which the rest of the burst lands instantly (a 20-message backlog mustn't take seconds).
 const STAGGER_STEP_S = 0.1
 const STAGGER_CAP = 5
-// Click-to-jump backward-walk cap (PSN-92 B5, decision 7): never page more than this to find a quoted
-// original — past it, "Message too far back".
-const MAX_JUMP_PAGES = 5
 
 /** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
  *  and when it was fired (for the failed-write timeout). Keyed msgId → key. */
@@ -172,6 +173,9 @@ interface ThreadViewProps {
   onNameResolved?: (convId: string, name: string) => void
   /** "Ask AI about this" (t174, PSN-104) — passed through to each row's actions menu. */
   onAskAi?: (msg: TeamsMessage) => void
+  /** Jump-to-message (t175): land on this message (DB-served window + highlight). `nonce` bumps so
+   *  a repeat jump to the same id re-fires. */
+  jumpTarget?: { id: string; nonce: number } | null
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
@@ -187,6 +191,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     onOpenProfile,
     onNameResolved,
     onAskAi,
+    jumpTarget,
   },
   ref,
 ) {
@@ -220,6 +225,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // Click-to-jump (PSN-92 B5): the row currently flashing after a jump, and a transient status toast.
   const [highlightId, setHighlightId] = useState<string | null>(null)
   const [jumpToast, setJumpToast] = useState<string | null>(null)
+  // Jump mode (t175): the pane shows a DB-served window instead of the live newest page. A ref
+  // mirror gates applyIncoming (deltas must not merge into a window) without rebinding callbacks.
+  const [jump, setJump] = useState<JumpState>(JUMP_IDLE)
+  const jumpRef = useRef(jump)
+  jumpRef.current = jump
+  const loadingNewerRef = useRef(false)
+  // A jump requested before the initial load settles (cold ?msg deep link) parks here and is
+  // consumed once history is ready.
+  const pendingJumpRef = useRef<string | null>(null)
+  const jumpToMessageRef = useRef<(id: string) => void>(() => {})
   // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
   const composerFocusedRef = useRef(false)
 
@@ -228,6 +243,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       setState({ status: "loading" })
       setHasMore(true)
       olderCursor.current = null
+      setJump(JUMP_IDLE) // a fresh load is always live mode (t175)
       pendingReactions.current = new Map() // stale optimistic reactions don't leak across a switch
       fetchHistory(convId)
         .then((page) => {
@@ -235,6 +251,13 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           setState({ status: "ready", messages: page.messages })
           olderCursor.current = page.cursor
           setHasMore(page.cursor != null)
+          // A cold ?msg deep link parked before history existed — jump now (t175).
+          const pending = pendingJumpRef.current
+          if (pending) {
+            pendingJumpRef.current = null
+            if (page.messages.some((m) => m.id === pending)) scrollToMsgSoon(pending)
+            else enterJumpModeRef.current(pending)
+          }
           // PSN-103: for a stub 1:1 with no title, derive the other party's name from the first
           // non-self message in history. Restricted to oneOnOne — a group would name the wrong party.
           // Fires once: app.tsx clears the stub flag on the first resolution.
@@ -266,9 +289,32 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
 
   const loadOlder = useCallback(() => {
     if (loadingOlderRef.current || !hasMore) return
+    if (state.status !== "ready" || state.messages.length === 0) return
+    // Jump mode (t175): older pages come from the DB (beforeTs), not the provider cursor.
+    if (jumpRef.current.active) {
+      const oldest = state.messages[0]
+      loadingOlderRef.current = true
+      setLoadingOlder(true)
+      fetchHistoryBefore(convId, oldest.ts)
+        .then((page) => {
+          setHasMore(!!page.hasOlder)
+          const known = new Set(state.messages.map((m) => m.id))
+          const fresh = page.messages.filter((m) => !known.has(m.id))
+          if (fresh.length > 0) {
+            setState((s) =>
+              s.status === "ready" ? { status: "ready", messages: [...fresh, ...s.messages] } : s,
+            )
+          }
+        })
+        .catch(() => setHasMore(false))
+        .finally(() => {
+          loadingOlderRef.current = false
+          setLoadingOlder(false)
+        })
+      return
+    }
     const cursor = olderCursor.current
     if (!cursor) return
-    if (state.status !== "ready" || state.messages.length === 0) return
     loadingOlderRef.current = true
     setLoadingOlder(true)
     fetchHistory(convId, cursor)
@@ -322,57 +368,36 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [scrollToMsg],
   )
 
-  // Page backward through the t134 cursor chain until the quoted message loads, capped at ~5 pages
-  // (decision 7). Cursor exhausted → the original lives in another chat (a forwarded/pasted quote);
-  // cap hit → too far back. The blockquote carries no conversation ref, so the walk stays here.
-  const walkToMessage = useCallback(
+  // Jump mode (t175): the cited/quoted message is served from chat.db as a window AROUND the
+  // target — no provider cursor walk. The window REPLACES the live page (never merged into it);
+  // the top sentinel pages older from the DB, a bottom sentinel pages newer until the window
+  // rejoins the live newest page. Target not in the DB → honest fallback, the pane stays put.
+  const enterJumpMode = useCallback(
     async (id: string) => {
       if (loadingOlderRef.current) return // a page load is already in flight
       setJumpToast("Finding the message…")
-      loadingOlderRef.current = true // block the top-sentinel loadOlder from double-fetching
+      loadingOlderRef.current = true // block the top-sentinel loadOlder while the window swaps in
       try {
-        for (let i = 0; i < MAX_JUMP_PAGES; i++) {
-          const cursor = olderCursor.current
-          if (!cursor) {
-            setJumpToast("Original message isn't in this chat")
-            return
-          }
-          const older = await fetchHistory(convId, cursor)
-          olderCursor.current = older.cursor
-          setHasMore(older.cursor != null)
-          setState((s) => {
-            if (s.status !== "ready") return s
-            const known = new Set(s.messages.map((m) => m.id))
-            const fresh = older.messages.filter((m) => !known.has(m.id))
-            return fresh.length
-              ? {
-                  status: "ready",
-                  messages: applyPendingReactions(
-                    [...fresh, ...s.messages],
-                    pendingReactions.current,
-                  ),
-                }
-              : s
-          })
-          if (older.messages.some((m) => m.id === id)) {
-            setJumpToast(null)
-            scrollToMsgSoon(id) // retry across frames — the prepend isn't laid out immediately
-            return
-          }
-          if (!older.cursor) {
-            setJumpToast("Original message isn't in this chat")
-            return
-          }
+        const win = await fetchHistoryAround(convId, id)
+        if (win.missing || win.messages.length === 0) {
+          setJumpToast("Message not available")
+          return
         }
-        setJumpToast("Message too far back")
+        setJumpToast(null)
+        setJump(enterJump(id, !!win.hasNewer))
+        setHasMore(!!win.hasOlder)
+        setState({ status: "ready", messages: win.messages })
+        scrollToMsgSoon(id) // retry across frames — the swap isn't laid out immediately
       } catch {
-        setJumpToast("Couldn't load the original message")
+        setJumpToast("Couldn't load the message")
       } finally {
         loadingOlderRef.current = false
       }
     },
     [convId, scrollToMsgSoon],
   )
+  const enterJumpModeRef = useRef(enterJumpMode)
+  enterJumpModeRef.current = enterJumpMode
 
   const jumpToMessage = useCallback(
     (id: string) => {
@@ -382,10 +407,50 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         scrollToMsgSoon(id)
         return
       }
-      walkToMessage(id)
+      enterJumpMode(id)
     },
-    [state, scrollToMsgSoon, walkToMessage],
+    [state, scrollToMsgSoon, enterJumpMode],
   )
+  jumpToMessageRef.current = jumpToMessage
+
+  // Exit jump mode instantly: back to the live newest page (the "Jump to latest" affordance).
+  const exitJumpToLatest = useCallback(() => {
+    setJump(JUMP_IDLE)
+    load()
+  }, [load])
+
+  // Load-newer (bottom sentinel, jump mode only): DB pages walk forward; reaching the newest
+  // synced message rejoins live mode — deltas resume, one poll reconciles anything missed.
+  const loadNewer = useCallback(() => {
+    const cur = jumpRef.current
+    if (!cur.active || loadingNewerRef.current) return
+    if (state.status !== "ready" || state.messages.length === 0) return
+    const newest = state.messages[state.messages.length - 1]
+    loadingNewerRef.current = true
+    fetchHistoryAfter(convId, newest.ts)
+      .then((page) => {
+        const known = new Set(state.messages.map((m) => m.id))
+        const fresh = page.messages.filter((m) => !known.has(m.id))
+        if (fresh.length > 0) {
+          setState((s) =>
+            s.status === "ready" ? { status: "ready", messages: [...s.messages, ...fresh] } : s,
+          )
+        }
+        const next = extendNewer(cur, !!page.hasNewer)
+        if (shouldRejoin(next)) {
+          setJump(JUMP_IDLE)
+          pollRef.current() // reconcile the true newest page; live deltas resume
+        } else {
+          setJump(next)
+        }
+      })
+      .catch(() => {
+        // stay in jump mode; the sentinel retries on the next intersection
+      })
+      .finally(() => {
+        loadingNewerRef.current = false
+      })
+  }, [convId, state])
 
   // Auto-dismiss the jump toast (except the in-progress "Finding…" state, which its resolution clears).
   useEffect(() => {
@@ -401,6 +466,35 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   const topSentinelRef = useRef<HTMLDivElement>(null)
   const loadOlderRef = useRef(loadOlder)
   loadOlderRef.current = loadOlder
+
+  // Jump-mode bottom sentinel (t175): mirrors the top sentinel, walking newer DB pages.
+  const bottomSentinelRef = useRef<HTMLDivElement>(null)
+  const loadNewerRef = useRef(loadNewer)
+  loadNewerRef.current = loadNewer
+  useEffect(() => {
+    if (!jump.active) return
+    const el = bottomSentinelRef.current
+    const root = scrollRef.current
+    if (!el || !root) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadNewerRef.current()
+      },
+      { root, rootMargin: "300px 0px" },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [jump.active])
+
+  // External jump target (t175): a citation chip / ?msg deep link. If history isn't ready yet
+  // (cold boot), park the id — load() consumes it.
+  useEffect(() => {
+    if (!jumpTarget) return
+    if (state.status === "ready") jumpToMessageRef.current(jumpTarget.id)
+    else pendingJumpRef.current = jumpTarget.id
+    // Only the nonce should re-fire — state changes must not replay an old jump.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: fire per jump request only
+  }, [jumpTarget?.nonce])
   const canLoadOlder = state.status === "ready" && hasMore && state.messages.length > 0
   useEffect(() => {
     if (!canLoadOlder) return
@@ -495,6 +589,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // loading/error pane is left to the initial load. Sticks to the bottom only if the user was there.
   const applyIncoming = useCallback((incoming: TeamsMessage[]) => {
     if (incoming.length === 0) return
+    // Jump mode (t175): a live delta must NOT merge into a windowed view — dedup/ordering
+    // assumptions break. The rejoin poll reconciles once the window catches up.
+    if (jumpRef.current.active) return
     const el = scrollRef.current
     // flex-col-reverse: the bottom (newest) is scrollTop ≈ 0. Only re-pin if already there.
     const nearBottom = el ? Math.abs(el.scrollTop) < THREAD_BOTTOM_SLACK : false
@@ -1118,6 +1215,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                   period's separator sits above its first message after the reverse. Older messages
                   prepend to the array (→ end of this reversed map = the visual top). Vertical rhythm
                   is per-item margin (leader gap vs tight follower gap), not a uniform container gap. */}
+            {/* Jump mode (t175): bottom sentinel — first child = visual bottom — walks newer DB
+                  pages until the window rejoins the live newest page. */}
+            {jump.active && <div className="h-px shrink-0" ref={bottomSentinelRef} />}
             {threadItems
               .slice()
               .reverse()
@@ -1220,6 +1320,16 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           >
             <HugeiconsIcon className="size-4" icon={ArrowDown01Icon} />
           </Button>
+          {/* Jump mode (t175): a "Jump to latest" pill exits the windowed view instantly. */}
+          {jump.active && (
+            <button
+              className="absolute top-3 left-1/2 z-20 -translate-x-1/2 rounded-full border border-border bg-popover px-3 py-1 font-medium text-muted-foreground text-xs shadow-md hover:text-foreground"
+              onClick={exitJumpToLatest}
+              type="button"
+            >
+              Viewing an older message — Jump to latest
+            </button>
+          )}
           {/* Jump-to-original status (PSN-92 B5): a transient centered pill (finding / too-far-back /
               not-in-this-chat). */}
           {jumpToast && (

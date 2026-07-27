@@ -43,8 +43,12 @@ if (VAPID_PRIVATE_KEY) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, 
 else console.warn("[chat-server] VAPID_PRIVATE_KEY unset — Teams web push disabled")
 
 const providers = new Map<ChatService, ChatProvider>()
-if (process.env.CHAT_PROVIDER === "mock") providers.set("mock", new MockProvider("mock"))
-else providers.set("teams", new TeamsProvider())
+if (process.env.CHAT_PROVIDER === "mock") {
+  // Default "mock" service id for hermetic e2e; CHAT_MOCK_SERVICE=teams lets the real FE (which
+  // pins service "teams") run against fixtures for local visual dev.
+  const mockService = (process.env.CHAT_MOCK_SERVICE || "mock") as ChatService
+  providers.set(mockService, new MockProvider(mockService))
+} else providers.set("teams", new TeamsProvider())
 
 // A backfill engine per provider; the routes read/start through this map.
 const backfills = new Map<ChatService, BackfillAccessor>()

@@ -83,6 +83,27 @@ export async function fetchHistory(
   return { messages: data.messages ?? [], cursor: data.cursor ?? null }
 }
 
+/** A DB-served jump window (t175) — see HistoryWindow in the BFF contract. `missing` = the target
+ *  message isn't synced; the caller falls back honestly. */
+export interface HistoryWindow {
+  messages: TeamsMessage[]
+  missing?: boolean
+  hasOlder?: boolean
+  hasNewer?: boolean
+}
+
+export async function fetchHistoryAround(convId: string, msgId: string): Promise<HistoryWindow> {
+  return post<HistoryWindow>("history", { convId, aroundMsgId: msgId })
+}
+
+export async function fetchHistoryAfter(convId: string, afterTs: number): Promise<HistoryWindow> {
+  return post<HistoryWindow>("history", { convId, afterTs })
+}
+
+export async function fetchHistoryBefore(convId: string, beforeTs: number): Promise<HistoryWindow> {
+  return post<HistoryWindow>("history", { convId, beforeTs })
+}
+
 /** Local conversation prefs: labels / folder / mute. Local to the BFF store, shared across devices. */
 export interface ConvPrefsDto {
   labels: string[]

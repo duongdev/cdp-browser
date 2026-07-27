@@ -74,6 +74,32 @@ export function createRoutes(deps: RoutesDeps) {
     const b = await readBody(c)
     const { service, provider } = pick(deps, b.service)
     if (!b.convId) throw new ProviderError("missing_conv", 400)
+    // DB-served jump windows (t175): around a target / after a ts / before a ts — no provider
+    // cursor walk, the store already holds the cited message. `missing: true` is the honest
+    // target-not-synced fallback.
+    if (b.aroundMsgId) {
+      const win = store.listMessagesAround(deps.db, service, b.convId, String(b.aroundMsgId))
+      if (!win) return c.json({ messages: [], missing: true, hasOlder: false, hasNewer: false })
+      return c.json({
+        messages: win.messages.map((m) => toChatMessage(service, m)),
+        hasOlder: win.hasOlder,
+        hasNewer: win.hasNewer,
+      })
+    }
+    if (Number.isFinite(b.afterTs)) {
+      const page2 = store.listMessagesAfter(deps.db, service, b.convId, Number(b.afterTs))
+      return c.json({
+        messages: page2.messages.map((m) => toChatMessage(service, m)),
+        hasNewer: page2.hasNewer,
+      })
+    }
+    if (Number.isFinite(b.beforeTs)) {
+      const page2 = store.listMessagesBefore(deps.db, service, b.convId, Number(b.beforeTs))
+      return c.json({
+        messages: page2.messages.map((m) => toChatMessage(service, m)),
+        hasOlder: page2.hasOlder,
+      })
+    }
     const page = await provider.fetchHistory(b.convId, b.cursor ?? null, !!b.poll)
     store.upsertMessages(deps.db, service, b.convId, page.messages.map(toMessageInput))
     persistSenders(deps.db, service, page.messages)
@@ -353,6 +379,25 @@ function bytes(c: any, r: MediaBytes) {
   return c.body(buf, {
     headers: { "Content-Type": r.contentType, "X-Content-Type-Options": "nosniff" },
   })
+}
+
+// A stored row → the ChatMessage the FE renders. The `raw` column keeps the original provider
+// ChatMessage verbatim (decision 10) — use it whole (reactions/attachments intact); a raw-less row
+// (direct DB writes in tests) reconstructs the renderable minimum from columns.
+function toChatMessage(service: string, m: store.StoredMessage): ChatMessage {
+  const raw = m.raw as ChatMessage | null
+  if (raw && typeof raw === "object" && raw.id === m.id) return raw
+  return {
+    service: service as ChatMessage["service"],
+    id: m.id,
+    ts: m.ts ?? 0,
+    senderId: m.senderId ?? undefined,
+    senderName: m.senderName ?? undefined,
+    body: m.body,
+    edited: m.edited,
+    deleted: m.deleted,
+    mentionsMe: m.mentionsMe,
+  }
 }
 
 // Cache sender display names off a history page so later name lookups hit the store.

@@ -8,6 +8,9 @@ import {
   getUsers,
   listConversations,
   listMessages,
+  listMessagesAfter,
+  listMessagesAround,
+  listMessagesBefore,
   listPushSubs,
   markConversationRead,
   markConversationUnread,
@@ -336,5 +339,59 @@ describe("push subs", () => {
     deletePushSub(db, "teams", "e1")
     expect(listPushSubs(db, "teams").map((s) => s.endpoint)).toEqual(["e2"])
     expect(listPushSubs(db, "slack")).toHaveLength(0)
+  })
+})
+
+describe("jump windows (t175)", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+    upsertMessages(
+      db,
+      "teams",
+      "c1",
+      Array.from({ length: 20 }, (_, i) => ({
+        id: `m${i + 1}`,
+        ts: (i + 1) * 100,
+        body: `msg ${i + 1}`,
+        raw: { service: "teams", id: `m${i + 1}`, ts: (i + 1) * 100, body: `msg ${i + 1}` },
+      })),
+    )
+  })
+
+  test("around: window brackets the target with correct flags", () => {
+    const win = listMessagesAround(db, "teams", "c1", "m10", 6)
+    expect(win).not.toBeNull()
+    const ids = (win?.messages ?? []).map((m) => m.id)
+    expect(ids).toContain("m10")
+    expect(ids[0] < ids[ids.length - 1] || ids.length > 1).toBe(true)
+    expect(win?.hasOlder).toBe(true)
+    expect(win?.hasNewer).toBe(true)
+  })
+
+  test("around: missing target → null; edges clear flags", () => {
+    expect(listMessagesAround(db, "teams", "c1", "nope")).toBeNull()
+    const newest = listMessagesAround(db, "teams", "c1", "m20", 6)
+    expect(newest?.hasNewer).toBe(false)
+    const oldest = listMessagesAround(db, "teams", "c1", "m1", 6)
+    expect(oldest?.hasOlder).toBe(false)
+  })
+
+  test("after: ascending pages walk to newest, hasNewer flips at the end", () => {
+    const p1 = listMessagesAfter(db, "teams", "c1", 500, 5)
+    expect(p1.messages.map((m) => m.id)).toEqual(["m6", "m7", "m8", "m9", "m10"])
+    expect(p1.hasNewer).toBe(true)
+    const p2 = listMessagesAfter(db, "teams", "c1", 1500, 10)
+    expect(p2.messages.map((m) => m.id)).toEqual(["m16", "m17", "m18", "m19", "m20"])
+    expect(p2.hasNewer).toBe(false)
+  })
+
+  test("before: older page oldest→newest with hasOlder flag", () => {
+    const p = listMessagesBefore(db, "teams", "c1", 500, 3)
+    expect(p.messages.map((m) => m.id)).toEqual(["m2", "m3", "m4"])
+    expect(p.hasOlder).toBe(true)
+    const end = listMessagesBefore(db, "teams", "c1", 200, 5)
+    expect(end.messages.map((m) => m.id)).toEqual(["m1"])
+    expect(end.hasOlder).toBe(false)
   })
 })

@@ -169,6 +169,16 @@ export interface HistoryPage {
   cursor: string | null
 }
 
+/** A DB-served jump window (t175): `POST /history` with `aroundMsgId` / `afterTs` / `beforeTs`
+ *  serves from the store (no provider cursor). `missing` = the target isn't synced — honest
+ *  fallback, the client opens at newest with a notice. */
+export interface HistoryWindow {
+  messages: ChatMessage[]
+  missing?: boolean
+  hasOlder?: boolean
+  hasNewer?: boolean
+}
+
 /** The reply response: `ts` is the sent message's id/arrival time (epoch ms as string). */
 export interface SendResult {
   ok: true

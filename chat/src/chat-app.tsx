@@ -585,6 +585,13 @@ export function ChatApp() {
   // right of the thread; narrow → full-screen stacked view. `aiRefreshNonce` remounts the active
   // session's chat after "Ask AI about this" appends a context excerpt server-side.
   const [aiRefreshNonce, setAiRefreshNonce] = useState(0)
+  // Jump-to-message target (t175): set by a citation chip or the ?msg deep link; the matching
+  // thread pane consumes it (DB window fetch + scroll + highlight).
+  const [jumpTarget, setJumpTarget] = useState<{
+    convId: string
+    id: string
+    nonce: number
+  } | null>(null)
   const [aiWidth, setAiWidth] = useState(settings.aiPanelWidth)
   useEffect(() => setAiWidth(settings.aiPanelWidth), [settings.aiPanelWidth])
   const aiOpen = settings.aiPanelOpen
@@ -603,16 +610,25 @@ export function ChatApp() {
     return c ? conversationLabel(c) : "conversation"
   }, [])
 
-  // A citation chip opens the cited conversation in the main pane; the ?msg anchor is stamped for
-  // the t175 jump (best-effort until then). On phone the AI view yields to the thread.
+  // A citation chip opens the cited conversation in the main pane and jumps the thread to the
+  // cited message (t175: DB-served window + highlight). On phone the AI view yields to the thread.
   const openCitation = useCallback(
     (convId: string, msgId: string) => {
       openConversationById(convId)
       window.history.replaceState(window.history.state, "", `${pathFor(convId)}?msg=${msgId}`)
+      setJumpTarget({ convId, id: msgId, nonce: Date.now() })
       if (!isWide) updateSettings({ aiPanelOpen: false })
     },
     [openConversationById, isWide, updateSettings],
   )
+
+  // Cold ?msg deep link (t175): the boot effect below already opens the conversation from the
+  // path; this consumes the search half once so the pane jumps to the cited message.
+  useEffect(() => {
+    const route = parsePath(window.location.pathname)
+    const msg = new URLSearchParams(window.location.search).get("msg")
+    if (route && msg) setJumpTarget({ convId: route.convId, id: msg, nonce: Date.now() })
+  }, [])
 
   // "Ask AI about this": ensure a session (grilled default: create when none), attach the message
   // as a context ref, open the panel, and reload the session pane so the excerpt shows.
@@ -1201,6 +1217,7 @@ export function ChatApp() {
     return (
       <ThreadView
         conversation={conv}
+        jumpTarget={jumpTarget && jumpTarget.convId === id ? jumpTarget : undefined}
         key={id}
         namePref={namePref}
         onAskAi={askAiAboutMessage}

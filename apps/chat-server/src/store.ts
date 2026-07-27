@@ -424,6 +424,102 @@ export function listMessages(
   }))
 }
 
+// ---- DB-served jump windows (t175) ----------------------------------------
+// A citation deep-link lands on a message far older than the live newest page. The DB already
+// holds it, so the window is served locally — provider cursors untouched.
+
+/** A window centered on a target message. Null when the target isn't stored (never synced /
+ *  deleted-before-sync) — the caller falls back honestly. Messages oldest→newest. */
+export function listMessagesAround(
+  db: Db,
+  service: string,
+  convId: string,
+  targetId: string,
+  limit = 30,
+): { messages: StoredMessage[]; hasOlder: boolean; hasNewer: boolean } | null {
+  const target = db
+    .prepare("SELECT ts FROM messages WHERE service = ? AND conv_id = ? AND id = ?")
+    .get(service, convId, targetId) as { ts: number | null } | undefined
+  if (!target) return null
+  const half = Math.max(1, Math.floor(limit / 2))
+  const olderRows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId
+        AND (ts < @ts OR (ts = @ts AND id <= @id))
+      ORDER BY ts DESC, id DESC LIMIT @n
+    `)
+    .all({ service, convId, ts: target.ts, id: targetId, n: half + 2 }) as MsgRow[]
+  const newerRows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId
+        AND (ts > @ts OR (ts = @ts AND id > @id))
+      ORDER BY ts ASC, id ASC LIMIT @n
+    `)
+    .all({ service, convId, ts: target.ts, id: targetId, n: half + 1 }) as MsgRow[]
+  const hasOlder = olderRows.length > half + 1
+  const hasNewer = newerRows.length > half
+  const older = olderRows.slice(0, half + 1).reverse()
+  const newer = newerRows.slice(0, half)
+  return { messages: [...older, ...newer].map(shapeMessage), hasOlder, hasNewer }
+}
+
+/** The next DB page strictly after `afterTs`, oldest→newest — the jump-mode load-newer path that
+ *  walks forward until it rejoins the live newest page. */
+export function listMessagesAfter(
+  db: Db,
+  service: string,
+  convId: string,
+  afterTs: number,
+  limit = 30,
+): { messages: StoredMessage[]; hasNewer: boolean } {
+  const rows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId AND ts > @afterTs
+      ORDER BY ts ASC, id ASC LIMIT @n
+    `)
+    .all({ service, convId, afterTs, n: limit + 1 }) as MsgRow[]
+  return { messages: rows.slice(0, limit).map(shapeMessage), hasNewer: rows.length > limit }
+}
+
+/** The DB page strictly before `beforeTs`, oldest→newest — jump-mode's load-older path. */
+export function listMessagesBefore(
+  db: Db,
+  service: string,
+  convId: string,
+  beforeTs: number,
+  limit = 30,
+): { messages: StoredMessage[]; hasOlder: boolean } {
+  const rows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId AND ts < @beforeTs
+      ORDER BY ts DESC, id DESC LIMIT @n
+    `)
+    .all({ service, convId, beforeTs, n: limit + 1 }) as MsgRow[]
+  return {
+    messages: rows.slice(0, limit).reverse().map(shapeMessage),
+    hasOlder: rows.length > limit,
+  }
+}
+
+function shapeMessage(r: MsgRow): StoredMessage {
+  return {
+    id: r.id,
+    ts: r.ts,
+    version: r.version,
+    senderId: r.sender_id,
+    senderName: r.sender_name,
+    body: r.body,
+    raw: parseRaw(r.raw),
+    edited: !!r.edited,
+    deleted: !!r.deleted,
+    mentionsMe: !!r.mentions_me,
+  }
+}
+
 /** One stored message by id, or null. Used by the push sweep to read the last message's sender name
  *  and `mentionsMe` (the conversation row alone doesn't carry them). */
 export function getMessage(
