@@ -12,7 +12,11 @@ import type BetterSqlite3 from "better-sqlite3"
 
 type Db = BetterSqlite3.Database
 
+import { migrateAssistant } from "./assistant/session-store.ts"
 import type { ChatConversation, ChatPrefs } from "./contract.ts"
+import { extractImages } from "./media-images.ts"
+import { captionsForMessage, migrateMedia, recordMessageImages } from "./media-store.ts"
+import { backfillSearchIndex, migrateSearch, syncMessageFts } from "./search.ts"
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS conversations (
@@ -106,6 +110,10 @@ export function migrate(db: Db): Db {
       // already present
     }
   }
+  migrateSearch(db)
+  migrateMedia(db)
+  backfillSearchIndex(db)
+  migrateAssistant(db)
   return db
 }
 
@@ -331,6 +339,9 @@ export function upsertMessages(
       updated_at = @now
     WHERE service = @service AND id = @convId
   `)
+  const rowidStmt = db.prepare(
+    "SELECT rowid FROM messages WHERE service = ? AND conv_id = ? AND id = ?",
+  )
   const run = db.transaction((rows: MessageInput[]) => {
     let oldest = Number.POSITIVE_INFINITY
     let newest = Number.NEGATIVE_INFINITY
@@ -350,6 +361,17 @@ export function upsertMessages(
         edited: m.edited ? 1 : 0,
         mentions_me: m.mentionsMe ? 1 : 0,
       })
+      // Inline images are registered here (PSN-104) so the caption worker — which drains
+      // `message_media` rows, needing no hook back into this write path — has something to pick up,
+      // and so an already-transcribed image is searchable the moment its message lands.
+      const images = m.deleted ? [] : extractImages(m.body || "")
+      if (images.length) recordMessageImages(db, service, convId, String(m.id), images, now)
+      // Keep the FTS shadow in lockstep — the single write funnel (ADR-0021).
+      const row = rowidStmt.get(service, convId, String(m.id)) as { rowid: number } | undefined
+      if (row) {
+        const captions = images.length ? captionsForMessage(db, service, convId, String(m.id)) : []
+        syncMessageFts(db, row.rowid, m.body || "", !!m.deleted, captions)
+      }
       if (ts > 0) {
         if (ts < oldest) oldest = ts
         if (ts > newest) newest = ts
@@ -360,6 +382,35 @@ export function upsertMessages(
     }
   })
   run(list)
+}
+
+/** Register one stored message's inline images (PSN-104) — the lazy path for a message that landed
+ *  before image extraction existed. Idempotent; a message with no images is a no-op. */
+export function recordImages(db: Db, service: string, convId: string, msgId: string): void {
+  const row = db
+    .prepare("SELECT body, deleted FROM messages WHERE service = ? AND conv_id = ? AND id = ?")
+    .get(service, convId, msgId) as { body: string; deleted: number } | undefined
+  if (!row || row.deleted) return
+  const images = extractImages(row.body || "")
+  if (images.length) recordMessageImages(db, service, convId, msgId, images)
+}
+
+/** Re-index one message from what is stored now (PSN-104) — used when an image transcription lands
+ *  after the message did, so the screenshot's text becomes searchable without a re-sweep. */
+export function reindexMessage(db: Db, service: string, convId: string, msgId: string): void {
+  const row = db
+    .prepare(
+      "SELECT rowid, body, deleted FROM messages WHERE service = ? AND conv_id = ? AND id = ?",
+    )
+    .get(service, convId, msgId) as { rowid: number; body: string; deleted: number } | undefined
+  if (!row) return
+  syncMessageFts(
+    db,
+    row.rowid,
+    row.body || "",
+    !!row.deleted,
+    captionsForMessage(db, service, convId, msgId),
+  )
 }
 
 /** A stored message as `listMessages` returns it. `raw` is parsed back from JSON (null when absent). */
@@ -411,6 +462,102 @@ export function listMessages(
     deleted: !!r.deleted,
     mentionsMe: !!r.mentions_me,
   }))
+}
+
+// ---- DB-served jump windows (t175) ----------------------------------------
+// A citation deep-link lands on a message far older than the live newest page. The DB already
+// holds it, so the window is served locally — provider cursors untouched.
+
+/** A window centered on a target message. Null when the target isn't stored (never synced /
+ *  deleted-before-sync) — the caller falls back honestly. Messages oldest→newest. */
+export function listMessagesAround(
+  db: Db,
+  service: string,
+  convId: string,
+  targetId: string,
+  limit = 30,
+): { messages: StoredMessage[]; hasOlder: boolean; hasNewer: boolean } | null {
+  const target = db
+    .prepare("SELECT ts FROM messages WHERE service = ? AND conv_id = ? AND id = ?")
+    .get(service, convId, targetId) as { ts: number | null } | undefined
+  if (!target) return null
+  const half = Math.max(1, Math.floor(limit / 2))
+  const olderRows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId
+        AND (ts < @ts OR (ts = @ts AND id <= @id))
+      ORDER BY ts DESC, id DESC LIMIT @n
+    `)
+    .all({ service, convId, ts: target.ts, id: targetId, n: half + 2 }) as MsgRow[]
+  const newerRows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId
+        AND (ts > @ts OR (ts = @ts AND id > @id))
+      ORDER BY ts ASC, id ASC LIMIT @n
+    `)
+    .all({ service, convId, ts: target.ts, id: targetId, n: half + 1 }) as MsgRow[]
+  const hasOlder = olderRows.length > half + 1
+  const hasNewer = newerRows.length > half
+  const older = olderRows.slice(0, half + 1).reverse()
+  const newer = newerRows.slice(0, half)
+  return { messages: [...older, ...newer].map(shapeMessage), hasOlder, hasNewer }
+}
+
+/** The next DB page strictly after `afterTs`, oldest→newest — the jump-mode load-newer path that
+ *  walks forward until it rejoins the live newest page. */
+export function listMessagesAfter(
+  db: Db,
+  service: string,
+  convId: string,
+  afterTs: number,
+  limit = 30,
+): { messages: StoredMessage[]; hasNewer: boolean } {
+  const rows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId AND ts > @afterTs
+      ORDER BY ts ASC, id ASC LIMIT @n
+    `)
+    .all({ service, convId, afterTs, n: limit + 1 }) as MsgRow[]
+  return { messages: rows.slice(0, limit).map(shapeMessage), hasNewer: rows.length > limit }
+}
+
+/** The DB page strictly before `beforeTs`, oldest→newest — jump-mode's load-older path. */
+export function listMessagesBefore(
+  db: Db,
+  service: string,
+  convId: string,
+  beforeTs: number,
+  limit = 30,
+): { messages: StoredMessage[]; hasOlder: boolean } {
+  const rows = db
+    .prepare(`
+      SELECT id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me
+      FROM messages WHERE service = @service AND conv_id = @convId AND ts < @beforeTs
+      ORDER BY ts DESC, id DESC LIMIT @n
+    `)
+    .all({ service, convId, beforeTs, n: limit + 1 }) as MsgRow[]
+  return {
+    messages: rows.slice(0, limit).reverse().map(shapeMessage),
+    hasOlder: rows.length > limit,
+  }
+}
+
+function shapeMessage(r: MsgRow): StoredMessage {
+  return {
+    id: r.id,
+    ts: r.ts,
+    version: r.version,
+    senderId: r.sender_id,
+    senderName: r.sender_name,
+    body: r.body,
+    raw: parseRaw(r.raw),
+    edited: !!r.edited,
+    deleted: !!r.deleted,
+    mentionsMe: !!r.mentions_me,
+  }
 }
 
 /** One stored message by id, or null. Used by the push sweep to read the last message's sender name

@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { fetchMediaCaption } from "../lib/chat-client"
 import { chatShell } from "../lib/chat-shell"
 import {
   applyPinch,
@@ -27,6 +28,9 @@ import {
 export interface LightboxMedia {
   src: string
   kind: "image" | "video"
+  /** Where the image lives — lets the lightbox show its transcription (PSN-104). Omit to hide it. */
+  convId?: string
+  msgId?: string
 }
 
 interface ImageLightboxProps {
@@ -260,6 +264,74 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
           )}
         </motion.div>
       </div>
+      {!isVideo && media.convId && media.msgId && (
+        <CaptionPanel convId={media.convId} msgId={media.msgId} src={media.src} />
+      )}
     </motion.div>
+  )
+}
+
+/** The image's transcription, under the picture. It is the same text the assistant reads, so seeing
+ *  it here is also how you tell whether the assistant can answer about this screenshot. Long
+ *  transcriptions (a dense dashboard) collapse behind show-more and scroll rather than covering the
+ *  image. */
+function CaptionPanel({ convId, msgId, src }: { convId: string; msgId: string; src: string }) {
+  const [state, setState] = useState<{ status: string; caption: string | null }>({
+    status: "pending",
+    caption: null,
+  })
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    const ac = new AbortController()
+    setState({ status: "pending", caption: null })
+    setOpen(false)
+    fetchMediaCaption(convId, msgId, src, ac.signal)
+      .then(setState)
+      .catch(() => {
+        if (!ac.signal.aborted) setState({ status: "failed", caption: null })
+      })
+    return () => ac.abort()
+  }, [convId, msgId, src])
+
+  if (state.status === "unsupported") return null
+  const long = (state.caption?.length ?? 0) > 220
+
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: swallows clicks so reading text can't close the lightbox.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: Esc still closes via the stage listener.
+    <div
+      className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom))]"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="mx-auto max-w-3xl text-white/85 text-xs">
+        {/* Labelled, or a wall of transcribed text under the picture reads like a rendering bug. */}
+        <div className="mb-1 font-medium text-[10px] text-white/45 uppercase tracking-wide">
+          Transcription
+        </div>
+        {state.status === "pending" && (
+          <span className="animate-pulse text-white/60">Reading the image…</span>
+        )}
+        {state.status === "failed" && <span className="text-white/50">No transcription.</span>}
+        {state.caption && (
+          <>
+            <p
+              className={`whitespace-pre-wrap ${open ? "max-h-[40vh] overflow-y-auto" : "line-clamp-3"}`}
+            >
+              {state.caption}
+            </p>
+            {long && (
+              <button
+                className="mt-1 text-white/60 underline-offset-2 hover:underline"
+                onClick={() => setOpen((v) => !v)}
+                type="button"
+              >
+                {open ? "Show less" : "Show more"}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   )
 }

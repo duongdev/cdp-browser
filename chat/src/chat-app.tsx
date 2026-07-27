@@ -1,4 +1,5 @@
 import {
+  AiChipIcon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
   ReloadIcon,
@@ -10,6 +11,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { AssistantPanel } from "./components/ai/assistant-panel"
 import { CommandPalette } from "./components/command-palette"
 import { ConnectionStatus } from "./components/connection-status"
 import { ConversationList, ListFilterPills } from "./components/conversation-list"
@@ -18,9 +20,25 @@ import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
+import {
+  actionItemsPrompt,
+  catchUpPrompt,
+  draftReplyPrompt,
+  summarizePrompt,
+} from "./lib/assistant-actions"
+import {
+  type AssistantContextRef,
+  type AssistantScopes,
+  attachContext,
+  createSession,
+  detachContext,
+  getAssistantVoice,
+  refKey,
+} from "./lib/assistant-client"
 import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
+import { DEFAULT_CHAT_SETTINGS } from "./lib/chat-settings"
 import { chatShell } from "./lib/chat-shell"
 import { useChatWs } from "./lib/chat-ws-context"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
@@ -38,9 +56,10 @@ import {
   toggleLabel,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
+import { htmlToPlain } from "./lib/html-to-plain"
 import { newlyArrived, shouldNotifyConv } from "./lib/notify-new"
 import { type NotifySound, playNotifySound } from "./lib/notify-sound"
-import type { TeamsConversation } from "./lib/teams-client"
+import type { TeamsConversation, TeamsMessage } from "./lib/teams-client"
 import { EMPTY_KEEPALIVE, type KeepAliveState, openThread } from "./lib/thread-keepalive"
 import { useChatSettings } from "./lib/use-chat-settings"
 import { useConvPrefs } from "./lib/use-conv-prefs"
@@ -90,12 +109,14 @@ function HeaderButton({
 
 function AppHeader({
   onOpenSettings,
+  onToggleAi,
   canBack,
   canForward,
   filter,
   onFilterChange,
 }: {
   onOpenSettings: () => void
+  onToggleAi: () => void
   canBack: boolean
   canForward: boolean
   filter: ListFilter
@@ -114,6 +135,7 @@ function AppHeader({
           the bar (PSN-99 regression — the Electron nav cluster drifted left toward the traffic lights). */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5">
+          <HeaderButton icon={AiChipIcon} label="AI assistant (⌘⌥B)" onClick={onToggleAi} />
           <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
           {shell && (
             <>
@@ -574,6 +596,290 @@ export function ChatApp() {
     [view, focusedConvId, keepAlive.active, threadFocus],
   )
 
+  // ── AI assistant panel (t174, PSN-104, ADR-0021) ────────────────────────────
+  // Open flag / width / active session persist per device in chat settings. Wide → third column
+  // right of the thread; narrow → full-screen stacked view.
+  // The attach tray's live contents for the active session (grilled: one visible context concept).
+  // `null` = no local override yet, so the panel renders the session's stored refs; an array is set
+  // only after an attach/detach so the chip appears/disappears instantly.
+  const [aiRefs, setAiRefs] = useState<AssistantContextRef[] | null>(null)
+  // Jump-to-message target (t175): set by a citation chip or the ?msg deep link; the matching
+  // thread pane consumes it (DB window fetch + scroll + highlight).
+  const [jumpTarget, setJumpTarget] = useState<{
+    convId: string
+    id: string
+    nonce: number
+  } | null>(null)
+  const [aiWidth, setAiWidth] = useState(settings.aiPanelWidth)
+  useEffect(() => setAiWidth(settings.aiPanelWidth), [settings.aiPanelWidth])
+  const aiOpen = settings.aiPanelOpen
+  // Conversation-list column width (steering): drag-resizable like the cdp-browser sidebar,
+  // persisted per device on release.
+  const [listWidth, setListWidth] = useState(settings.listWidth)
+  useEffect(() => setListWidth(settings.listWidth), [settings.listWidth])
+  const onListResizeDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault()
+      const clamp = (x: number) => Math.min(480, Math.max(240, x))
+      const onMove = (ev: PointerEvent) => setListWidth(clamp(ev.clientX))
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove)
+        window.removeEventListener("pointerup", onUp)
+        updateSettings({ listWidth: clamp(ev.clientX) })
+      }
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp)
+    },
+    [updateSettings],
+  )
+  // Double-click the seam to go back to the shipped width (steering) — the usual escape hatch when
+  // a drag left the column at an awkward size.
+  const resetListWidth = useCallback(() => {
+    setListWidth(DEFAULT_CHAT_SETTINGS.listWidth)
+    updateSettings({ listWidth: DEFAULT_CHAT_SETTINGS.listWidth })
+  }, [updateSettings])
+
+  const toggleAi = useCallback(() => {
+    updateSettings({ aiPanelOpen: !settings.aiPanelOpen })
+  }, [settings.aiPanelOpen, updateSettings])
+
+  const setAiSession = useCallback(
+    (id: string | null) => {
+      // The tray belongs to the session — clear it on a switch so the new session's stored refs
+      // (loaded by the panel) show instead of the previous one's.
+      setAiRefs(null)
+      updateSettings({ aiSessionId: id })
+    },
+    [updateSettings],
+  )
+
+  const labelForConv = useCallback((convId: string) => {
+    const c = conversationsRef.current.find((x) => x.id === convId)
+    return c ? conversationLabel(c) : "conversation"
+  }, [])
+
+  // A citation chip opens the cited conversation in the main pane and jumps the thread to the
+  // cited message (t175: DB-served window + highlight). On phone the AI view yields to the thread.
+  const openCitation = useCallback(
+    (convId: string, msgId: string) => {
+      openConversationById(convId)
+      window.history.replaceState(window.history.state, "", `${pathFor(convId)}?msg=${msgId}`)
+      setJumpTarget({ convId, id: msgId, nonce: Date.now() })
+      if (!isWide) updateSettings({ aiPanelOpen: false })
+    },
+    [openConversationById, isWide, updateSettings],
+  )
+
+  // Cold ?msg deep link (t175): the boot effect below already opens the conversation from the
+  // path; this consumes the search half once so the pane jumps to the cited message.
+  useEffect(() => {
+    const route = parsePath(window.location.pathname)
+    const msg = new URLSearchParams(window.location.search).get("msg")
+    if (route && msg) setJumpTarget({ convId: route.convId, id: msg, nonce: Date.now() })
+  }, [])
+
+  // Quick actions (t176) ride one runner: ensure a session (grilled default: create when none),
+  // optionally attach a context ref, open the panel, and optionally auto-send a canned prompt.
+  const [aiPrompt, setAiPrompt] = useState<{ text: string; nonce: number } | null>(null)
+  const runAiAction = useCallback(
+    async (
+      promptText: string | null,
+      ref?: { convId: string; msgId?: string; sender?: string; preview?: string },
+    ) => {
+      try {
+        let sessionId = settings.aiSessionId
+        if (!sessionId) sessionId = (await createSession()).id
+        if (ref) {
+          const session = await attachContext(sessionId, {
+            convId: ref.convId,
+            msgId: ref.msgId,
+            title: labelForConv(ref.convId),
+            sender: ref.sender,
+            preview: ref.preview,
+          })
+          setAiRefs(session.contextRefs)
+        }
+        updateSettings({ aiPanelOpen: true, aiSessionId: sessionId })
+        if (promptText) setAiPrompt({ text: promptText, nonce: Date.now() })
+      } catch {
+        toast.error("Could not reach the assistant")
+      }
+    },
+    [settings.aiSessionId, labelForConv, updateSettings],
+  )
+
+  // Attach the conversation the user is viewing — the "+" menu's only item (grilled).
+  const attachCurrentConv = useCallback(() => {
+    const convId = activeConvRef.current
+    if (convId) runAiAction(null, { convId })
+  }, [runAiAction])
+
+  // Attach any conversation without opening it — the sidebar row's context menu (grilled).
+  const attachConvById = useCallback(
+    (convId: string) => runAiAction(null, { convId }),
+    [runAiAction],
+  )
+
+  // The user's own folders + labels, derived from the prefs already in memory (no extra fetch).
+  // Offered by the assistant's "+" menu as attachable SCOPES (PSN-104) — the ref stores the NAME,
+  // so what the folder contains is resolved per question and never goes stale.
+  const aiScopes = useMemo<AssistantScopes>(() => {
+    const folders = new Map<string, number>()
+    const labels = new Map<string, number>()
+    for (const p of Object.values(prefs)) {
+      const f = (p.folder || "").trim()
+      if (f) folders.set(f, (folders.get(f) ?? 0) + 1)
+      for (const l of p.labels ?? []) labels.set(l, (labels.get(l) ?? 0) + 1)
+    }
+    const toList = (m: Map<string, number>) =>
+      [...m.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    return { folders: toList(folders), labels: toList(labels) }
+  }, [prefs])
+
+  const attachScope = useCallback(
+    async (kind: "folder" | "label", name: string) => {
+      try {
+        let sessionId = settings.aiSessionId
+        if (!sessionId) sessionId = (await createSession()).id
+        const session = await attachContext(sessionId, { kind, name })
+        setAiRefs(session.contextRefs)
+        updateSettings({ aiPanelOpen: true, aiSessionId: sessionId })
+      } catch {
+        toast.error("Could not attach that")
+      }
+    },
+    [settings.aiSessionId, updateSettings],
+  )
+
+  const detachRef = useCallback(
+    async (ref: AssistantContextRef) => {
+      const sessionId = settings.aiSessionId
+      if (!sessionId) return
+      const key = refKey(ref)
+      // Optimistic: the chip disappears on click, and a failed write restores it.
+      setAiRefs((refs) => (refs ?? []).filter((r) => refKey(r) !== key))
+      try {
+        const session = await detachContext(sessionId, {
+          convId: ref.convId,
+          msgId: ref.msgId,
+          kind: ref.kind,
+          name: ref.name,
+        })
+        setAiRefs(session.contextRefs)
+      } catch {
+        toast.error("Could not detach that")
+        setAiRefs((refs) => {
+          const cur = refs ?? []
+          return cur.some((r) => refKey(r) === key) ? cur : [...cur, ref]
+        })
+      }
+    },
+    [settings.aiSessionId],
+  )
+
+  const openRef = useCallback(
+    (ref: AssistantContextRef) => {
+      // A folder/label chip is a name, not a place — nothing to jump to.
+      if (!ref.convId) return
+      if (ref.msgId) openCitation(ref.convId, ref.msgId)
+      else openConversationById(ref.convId)
+    },
+    [openCitation, openConversationById],
+  )
+
+  // "Attach to AI" on a message: attaches, opens the panel, focuses the composer — never sends a
+  // canned question (grilled). You write the actual question yourself.
+  const attachMessage = useCallback(
+    (msg: TeamsMessage) => {
+      const convId = activeConvRef.current
+      if (!convId) return
+      runAiAction(null, {
+        convId,
+        msgId: msg.id,
+        sender: msg.senderName ?? undefined,
+        preview: htmlToPlain(msg.body).slice(0, 80),
+      })
+    },
+    [runAiAction],
+  )
+
+  // Draft reply (t176): drafts into the panel; "Insert into composer" is the only path into the
+  // editor — nothing is ever auto-sent.
+  const draftReplyAction = useCallback(
+    async (msg: TeamsMessage) => {
+      const convId = activeConvRef.current
+      if (!convId) return
+      const voice = await getAssistantVoice()
+      runAiAction(draftReplyPrompt(voice), {
+        convId,
+        msgId: msg.id,
+        sender: msg.senderName ?? undefined,
+        preview: htmlToPlain(msg.body).slice(0, 80),
+      })
+    },
+    [runAiAction],
+  )
+
+  const summarizeConvAction = useCallback(
+    (convId: string) => runAiAction(summarizePrompt(labelForConv(convId)), { convId }),
+    [runAiAction, labelForConv],
+  )
+
+  const insertDraftToComposer = useCallback((text: string) => {
+    activeThreadRef.current?.insertDraft(text)
+  }, [])
+
+  // Offered by the panel's "+" menu as "Attach current chat" — never auto-attached (grilled).
+  const currentConv = keepAlive.active
+    ? { convId: keepAlive.active, title: labelForConv(keepAlive.active) }
+    : null
+
+  const aiPanel = aiOpen ? (
+    <AssistantPanel
+      contextRefs={aiRefs}
+      currentConv={currentConv}
+      labelForConv={labelForConv}
+      narrow={!isWide}
+      onAttachCurrent={attachCurrentConv}
+      onAttachScope={attachScope}
+      onClose={() => updateSettings({ aiPanelOpen: false })}
+      onDetach={detachRef}
+      onInsertToComposer={insertDraftToComposer}
+      onOpenCitation={openCitation}
+      onOpenRef={openRef}
+      onSessionChange={setAiSession}
+      pendingPrompt={aiPrompt}
+      scopes={aiScopes}
+      sessionId={settings.aiSessionId}
+    />
+  ) : null
+
+  // Drag-resize for the wide third column (width persisted on release).
+  const onAiResizeDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault()
+      const onMove = (ev: PointerEvent) => {
+        const w = Math.min(640, Math.max(280, window.innerWidth - ev.clientX))
+        setAiWidth(w)
+      }
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove)
+        window.removeEventListener("pointerup", onUp)
+        const w = Math.min(640, Math.max(280, window.innerWidth - ev.clientX))
+        updateSettings({ aiPanelWidth: w })
+      }
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp)
+    },
+    [updateSettings],
+  )
+  const resetAiWidth = useCallback(() => {
+    setAiWidth(DEFAULT_CHAT_SETTINGS.aiPanelWidth)
+    updateSettings({ aiPanelWidth: DEFAULT_CHAT_SETTINGS.aiPanelWidth })
+  }, [updateSettings])
+
   // The command registry (t152): pure data, effects injected here. Jump-to-conversation rows are
   // generated per conversation; the rest are static app/message actions. Only actions that work
   // TODAY are listed — no dead entries (settings/mark-read land in later workstreams).
@@ -640,6 +946,44 @@ export function ChatApp() {
         group: "App",
         keys: "⌘,",
         run: () => setSettingsOpen(true),
+      },
+      {
+        id: "toggle-ai",
+        label: "Toggle AI assistant",
+        group: "App",
+        keys: "⌘⌥B",
+        run: toggleAi,
+      },
+      {
+        id: "new-ai-session",
+        label: "New AI session",
+        group: "App",
+        run: async () => {
+          const s = await createSession().catch(() => null)
+          if (s) updateSettings({ aiSessionId: s.id, aiPanelOpen: true })
+        },
+      },
+      {
+        id: "ai-catch-up",
+        label: "AI: What did I miss?",
+        group: "App",
+        run: () => runAiAction(catchUpPrompt()),
+      },
+      {
+        id: "ai-action-items",
+        label: "AI: Action items for me",
+        group: "App",
+        run: () => runAiAction(actionItemsPrompt()),
+      },
+      {
+        id: "ai-summarize-conv",
+        label: "AI: Summarize conversation",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: () => {
+          const id = ctx.focusedConversationId
+          if (id) summarizeConvAction(id)
+        },
       },
       {
         id: "shortcuts",
@@ -915,6 +1259,9 @@ export function ChatApp() {
     updateSettings,
     collapsed,
     toggleFolderCollapsed,
+    toggleAi,
+    runAiAction,
+    summarizeConvAction,
   ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
@@ -924,6 +1271,9 @@ export function ChatApp() {
       const intent = routeKey(
         {
           key: e.key,
+          // Physical key — load-bearing for chords whose character the modifier rewrites
+          // (⌘⇧[ → "{", ⌘⌥B → "∫" on macOS). Without it those shortcuts silently never match.
+          code: e.code,
           metaKey: e.metaKey,
           ctrlKey: e.ctrlKey,
           altKey: e.altKey,
@@ -1000,6 +1350,10 @@ export function ChatApp() {
           e.preventDefault()
           setSettingsOpen((v) => !v)
           break
+        case "toggle-ai":
+          e.preventDefault()
+          toggleAi()
+          break
         case "conv-next":
           e.preventDefault()
           switchConversation(1)
@@ -1030,6 +1384,7 @@ export function ChatApp() {
     toggleReadUnread,
     switchConversation,
     openConvByIndex,
+    toggleAi,
   ])
 
   // In the Electron shell (window.chatShell present), flag the root so the CSS can turn the top
@@ -1090,12 +1445,16 @@ export function ChatApp() {
     return (
       <ThreadView
         conversation={conv}
+        jumpTarget={jumpTarget && jumpTarget.convId === id ? jumpTarget : undefined}
         key={id}
         namePref={namePref}
+        onAskAi={attachMessage}
         onBack={isWide ? undefined : backToList}
+        onDraftReply={draftReplyAction}
         onFocusChange={isActive ? setThreadFocus : undefined}
         onNameResolved={onNameResolved}
         onOpenProfile={setProfileTarget}
+        onSummarizeConv={summarizeConvAction}
         ref={isActive ? activeThreadRef : undefined}
         visible={isActive && (isWide || phoneView === "thread")}
       />
@@ -1130,13 +1489,17 @@ export function ChatApp() {
   if (isWide) {
     return (
       <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
-        <aside className="flex w-80 shrink-0 flex-col border-border border-r">
+        <aside
+          className="flex shrink-0 flex-col border-border border-r"
+          style={{ width: listWidth }}
+        >
           <AppHeader
             canBack={canNav.back}
             canForward={canNav.forward}
             filter={listFilter}
             onFilterChange={setListFilter}
             onOpenSettings={() => setSettingsOpen(true)}
+            onToggleAi={toggleAi}
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConversationList
@@ -1145,6 +1508,7 @@ export function ChatApp() {
               focusedId={view === "list" ? focusedConvId : null}
               folderOrder={folderOrder}
               namePref={namePref}
+              onAttachToAi={attachConvById}
               onConnectionChange={setOnline}
               onConversations={onConversations}
               onFilterChange={setListFilter}
@@ -1161,7 +1525,16 @@ export function ChatApp() {
           </div>
           <ConnectionStatus online={online} />
         </aside>
-        <section className="min-w-0 flex-1">
+        {/* The drag handle overlays the column seam instead of occupying a flex column — as a
+            child it punched a gap through the header's bottom border (steering). */}
+        <section className="relative min-w-0 flex-1">
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
+          <div
+            className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+            onDoubleClick={resetListWidth}
+            onPointerDown={onListResizeDown}
+            title="Drag to resize · double-click to reset"
+          />
           {threadPanes}
           {keepAlive.mounted.length === 0 && (
             <div className="flex h-full items-center justify-center px-6 text-center text-muted-foreground text-sm">
@@ -1169,6 +1542,18 @@ export function ChatApp() {
             </div>
           )}
         </section>
+        {aiPanel && (
+          <aside className="relative shrink-0 border-border border-l" style={{ width: aiWidth }}>
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
+            <div
+              className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+              onDoubleClick={resetAiWidth}
+              onPointerDown={onAiResizeDown}
+              title="Drag to resize · double-click to reset"
+            />
+            {aiPanel}
+          </aside>
+        )}
         {palette}
       </div>
     )
@@ -1183,6 +1568,7 @@ export function ChatApp() {
           filter={listFilter}
           onFilterChange={setListFilter}
           onOpenSettings={() => setSettingsOpen(true)}
+          onToggleAi={toggleAi}
         />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <ConversationList
@@ -1190,6 +1576,7 @@ export function ChatApp() {
             focusedId={focusedConvId}
             folderOrder={folderOrder}
             namePref={namePref}
+            onAttachToAi={attachConvById}
             onConnectionChange={setOnline}
             onConversations={onConversations}
             onOpenConversation={openConversation}
@@ -1205,6 +1592,12 @@ export function ChatApp() {
         <ConnectionStatus online={online} />
       </div>
       <div className={cn("min-h-0 flex-1", phoneView === "list" && "hidden")}>{threadPanes}</div>
+      {/* Phone: the assistant is a full-screen stacked destination above list/thread (t174). */}
+      {aiPanel && (
+        <div className="fixed inset-0 z-40 flex h-[var(--app-h,100dvh)] flex-col bg-background">
+          {aiPanel}
+        </div>
+      )}
       {palette}
     </div>
   )

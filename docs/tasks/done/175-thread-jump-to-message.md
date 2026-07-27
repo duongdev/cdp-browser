@@ -1,6 +1,6 @@
 # 175 — thread jump-to-message: ?msg anchor served from chat.db
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
 - **Depends on:** t174
@@ -59,3 +59,14 @@ Careful with `mergeMessages`: jump windows must not be merged into the live newe
 - [ ] `pnpm check:changed` clean, `pnpm typecheck` clean, `pnpm test` green, `pnpm chat:build` succeeds
 - [ ] CLAUDE.md updated (chat app section)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
+
+## Notes (build)
+
+- Verified in the mock harness (CHAT_MOCK_SERVICE=teams, new index.ts knob) via chrome-devtools MCP:
+  cold `?msg` deep link lands the window around a 90-day-old seeded message, highlight fires,
+  "Jump to latest" pill exits back to the live newest page. Bottom sentinel pages newer DB windows.
+- PSN-92's provider-cursor walk (walkToMessage, MAX_JUMP_PAGES) is replaced by the DB window —
+  quote-click jumps now ride the same path; a never-synced original degrades to "Message not
+  available".
+- Gotcha found during verification: a stale chat SW from a previous dev session on the same origin
+  served yesterday's module graph — unregister SW + clear caches when the dev UI looks stale.

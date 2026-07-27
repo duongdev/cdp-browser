@@ -1,5 +1,7 @@
 import {
   Add01Icon,
+  AiChipIcon,
+  AiEditingIcon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
   Copy01Icon,
@@ -44,9 +46,9 @@ import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
-import { elideLinkText } from "../lib/elide-links"
 import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
+import { elideLinkText } from "../lib/link-label"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -54,21 +56,8 @@ import { getCatalogGlyph } from "../lib/use-emoji-catalog"
 import { DisplayName } from "./display-name"
 import { EmojiPicker } from "./emoji-picker"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
+import { useCopy, useLinkHoverCopy } from "./link-hover-copy"
 import { UserAvatar } from "./user-avatar"
-
-/** Copy `text` to clipboard; briefly flip to a "copied" tick for ~1.2 s. Fine-pointer only. */
-function useCopy(): [copied: boolean, copy: (text: string) => void] {
-  const [copied, setCopied] = useState(false)
-  const t = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const copy = useCallback((text: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      if (t.current) clearTimeout(t.current)
-      t.current = setTimeout(() => setCopied(false), 1200)
-    })
-  }, [])
-  return [copied, copy]
-}
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
 // DEFAULT_REACTIONS — a frozen, closed set, kept local so the browser build needn't import the CJS
@@ -136,6 +125,16 @@ interface MessageRowProps {
   onOpenProfile?: (target: { userId: string; name: string }) => void
   /** Position in the same-sender run (t169) — tightens the corners facing group neighbours. */
   groupPos?: "solo" | "first" | "middle" | "last"
+  /** "Attach to AI" (t174 + grill): attach this message to the assistant's context tray. Attaches
+   *  only — it never asks a canned question; you write the prompt yourself. */
+  onAskAi?: (msg: TeamsMessage) => void
+  /** "Draft reply with AI" (t176): assistant drafts a reply into the panel; insert is manual. */
+  onDraftReply?: (msg: TeamsMessage) => void
+  /** "Summarize conversation" (t176): seeds a summarize run for the whole conversation. */
+  onSummarizeConv?: () => void
+  /** The conversation this row belongs to — lets the lightbox look up an image's transcription
+   *  (PSN-104). Absent → the lightbox just shows the picture. */
+  convId?: string
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -165,6 +164,10 @@ function ChatMessageRow({
   namePref = FULL_NAME,
   onOpenProfile,
   groupPos = "solo",
+  onAskAi,
+  onDraftReply,
+  onSummarizeConv,
+  convId,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -175,31 +178,14 @@ function ChatMessageRow({
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
-  // Link hover-copy overlay (G): tracks the hovered <a> inside the sanitized body.
-  // Null when no link is hovered. Fine pointer only — coarse skips the delegation entirely.
-  const [hoveredLink, setHoveredLink] = useState<{ href: string; rect: DOMRect } | null>(null)
-  const [linkCopied, copyLink] = useCopy()
-  // Hover-bridge (PSN-99): the copy button floats away from the link, so leaving the link doesn't
-  // hide it instantly — a short grace timer lets the cursor cross the gap onto the button, which
-  // cancels the timer on enter. Without this the button vanished before it could be clicked.
-  const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cancelLinkHide = useCallback(() => {
-    if (linkHideTimer.current) {
-      clearTimeout(linkHideTimer.current)
-      linkHideTimer.current = null
-    }
-  }, [])
-  const scheduleLinkHide = useCallback(() => {
-    cancelLinkHide()
-    linkHideTimer.current = setTimeout(() => setHoveredLink(null), 180)
-  }, [cancelLinkHide])
+  // Link hover-copy overlay (PSN-99), shared with the assistant's answers (PSN-104).
+  const linkCopy = useLinkHoverCopy(!coarse)
   // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then long bare-URL links
   // middle-elided (PSN-99). Memoized so the DOMParser pass runs once per body, not per poll re-render.
   const bodyHtml = useMemo(
     () => elideLinkText(sanitize(stampReplyIds(formatBodyNames(message.body, namePref)))),
     [message.body, namePref],
   )
-  useEffect(() => cancelLinkHide, [cancelLinkHide])
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
@@ -232,6 +218,8 @@ function ChatMessageRow({
   const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
   const canManage = self && !deleted && !unconfirmed && (!!onEdit || !!onDelete)
+  // Any confirmed, non-deleted message can be attached as assistant context (t174).
+  const canAskAi = !deleted && !unconfirmed && !!onAskAi
 
   // Inline edit + delete-confirm state (t144).
   const [editing, setEditing] = useState(false)
@@ -334,7 +322,7 @@ function ChatMessageRow({
       const itemtype = el.getAttribute("itemtype") || ""
       if (/Emoji|Sticker/i.test(itemtype) || el.classList.contains("emoji")) return
       const src = (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src
-      if (src) setLightboxMedia({ src, kind: "image" })
+      if (src) setLightboxMedia({ src, kind: "image", convId, msgId: message.id })
     } else if (el.tagName === "VIDEO") {
       const src = (el as HTMLVideoElement).currentSrc || (el as HTMLVideoElement).src
       if (src) setLightboxMedia({ src, kind: "video" })
@@ -454,7 +442,6 @@ function ChatMessageRow({
               >
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
-                {/* biome-ignore lint/a11y/useKeyWithMouseEvents: link hover-copy is a fine-pointer visual affordance; keyboard users access links natively via Tab */}
                 <div
                   className={cn(
                     // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
@@ -479,49 +466,9 @@ function ChatMessageRow({
                   data-pos={groupPos}
                   data-side={self ? "self" : "other"}
                   onClick={onBodyClick}
-                  onMouseOut={coarse ? undefined : scheduleLinkHide}
-                  onMouseOver={
-                    coarse
-                      ? undefined
-                      : (e) => {
-                          const a = (e.target as HTMLElement).closest?.(
-                            "a[href]",
-                          ) as HTMLAnchorElement | null
-                          if (a?.href) {
-                            cancelLinkHide()
-                            setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
-                          } else {
-                            scheduleLinkHide()
-                          }
-                        }
-                  }
+                  {...linkCopy.bodyProps}
                 />
-                {/* Link copy button (PSN-99): FIXED at the hovered link's own end, overlapping the last
-                    few px so it sits INSIDE the link's soft highlight (no reserved layout space), and
-                    vertically centered on the link's line. Clamped to the viewport's right edge. The
-                    hover-bridge (enter cancels the hide timer) keeps it reachable. */}
-                {!coarse && hoveredLink && (
-                  <button
-                    className="link-copy-btn fixed z-30 flex size-5 items-center justify-center rounded-md border border-border bg-background/95 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      copyLink(hoveredLink.href)
-                    }}
-                    onMouseEnter={cancelLinkHide}
-                    onMouseLeave={scheduleLinkHide}
-                    style={{
-                      top: Math.max(
-                        2,
-                        hoveredLink.rect.top + Math.min(hoveredLink.rect.height, 22) / 2 - 10,
-                      ),
-                      left: Math.min(hoveredLink.rect.right - 6, window.innerWidth - 24),
-                    }}
-                    title="Copy link"
-                    type="button"
-                  >
-                    <HugeiconsIcon className="size-3" icon={linkCopied ? Tick01Icon : Copy01Icon} />
-                  </button>
-                )}
+                {linkCopy.overlay}
               </div>
             </PopoverAnchor>
             {canReact && !coarse && (
@@ -556,14 +503,17 @@ function ChatMessageRow({
               {formatHms(message.ts)}
             </time>
             {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
-            {(canManage || (canReact && coarse)) && (
+            {(canManage || (canReact && coarse) || canAskAi) && (
               <MessageActions
                 canDelete={canManage && !!onDelete}
                 canEdit={canManage && !!onEdit}
                 coarse={coarse}
+                onAskAi={canAskAi ? () => onAskAi?.(message) : undefined}
                 onDelete={() => setConfirmOpen(true)}
+                onDraftReply={canAskAi && onDraftReply ? () => onDraftReply(message) : undefined}
                 onEdit={startEdit}
                 onReact={canReact && coarse ? () => setPickerOpen(true) : undefined}
+                onSummarizeConv={canAskAi ? onSummarizeConv : undefined}
                 side={self ? "end" : "start"}
               />
             )}
@@ -842,6 +792,9 @@ function MessageActions({
   onEdit,
   onDelete,
   onReact,
+  onAskAi,
+  onDraftReply,
+  onSummarizeConv,
   side,
 }: {
   coarse: boolean
@@ -851,77 +804,90 @@ function MessageActions({
   onDelete: () => void
   /** Open the reaction picker (B1) — passed only on coarse pointers, where there's no hover bar. */
   onReact?: () => void
+  /** Attach this message as assistant context (t174). */
+  onAskAi?: () => void
+  /** Assistant drafts a reply to this message (t176). */
+  onDraftReply?: () => void
+  /** Summarize the whole conversation (t176). */
+  onSummarizeConv?: () => void
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
+  const run = (fn: () => void) => {
+    setOpen(false)
+    fn()
+  }
+  // A portalled Popover, not an absolutely-positioned div: the old menu was clipped by the
+  // thread's own overflow/stacking context, so on a wide message it slid under the panels
+  // (steering). Radix portals to the body and flips/shifts to stay on screen.
   return (
-    <div className="relative shrink-0">
-      <button
-        aria-expanded={open}
-        aria-label="Message actions"
-        className={cn(
-          "flex size-7 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
-          coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
-        )}
-        onClick={() => setOpen((v) => !v)}
-        type="button"
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger asChild>
+        <button
+          aria-label="Message actions"
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+            coarse || open ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+          )}
+          type="button"
+        >
+          <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align={side === "end" ? "end" : "start"}
+        className="flex w-max min-w-44 flex-col p-1"
+        side="top"
       >
-        <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
-      </button>
-      {open && (
-        <>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: the menu buttons are focusable */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            className={cn(
-              "absolute bottom-full z-50 mb-1 flex min-w-32 flex-col rounded-lg border border-border bg-popover py-1 shadow-md",
-              side === "end" ? "right-0" : "left-0",
-            )}
-          >
-            {onReact && (
-              <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onReact()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4" icon={Add01Icon} />
-                React
-              </button>
-            )}
-            {canEdit && (
-              <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onEdit()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4" icon={PencilEdit02Icon} />
-                Edit
-              </button>
-            )}
-            {canDelete && (
-              <button
-                className="flex items-center gap-2 px-3 py-1.5 text-left text-destructive text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onDelete()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4" icon={Delete02Icon} />
-                Delete
-              </button>
-            )}
-          </div>
-        </>
+        {onReact && <MenuItem icon={Add01Icon} label="React" onRun={() => run(onReact)} />}
+        {onAskAi && <MenuItem icon={AiChipIcon} label="Attach to AI" onRun={() => run(onAskAi)} />}
+        {onDraftReply && (
+          <MenuItem
+            icon={AiEditingIcon}
+            label="Draft reply with AI"
+            onRun={() => run(onDraftReply)}
+          />
+        )}
+        {onSummarizeConv && (
+          <MenuItem
+            icon={AiChipIcon}
+            label="Summarize conversation"
+            onRun={() => run(onSummarizeConv)}
+          />
+        )}
+        {canEdit && <MenuItem icon={PencilEdit02Icon} label="Edit" onRun={() => run(onEdit)} />}
+        {canDelete && (
+          <MenuItem destructive icon={Delete02Icon} label="Delete" onRun={() => run(onDelete)} />
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** One row in the message-actions menu — never wraps, icon never shrinks. */
+function MenuItem({
+  icon,
+  label,
+  onRun,
+  destructive,
+}: {
+  icon: IconSvgElement
+  label: string
+  onRun: () => void
+  destructive?: boolean
+}) {
+  return (
+    <button
+      className={cn(
+        "flex items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent",
+        destructive && "text-destructive",
       )}
-    </div>
+      onClick={onRun}
+      type="button"
+    >
+      <HugeiconsIcon className="size-4 shrink-0" icon={icon} />
+      {label}
+    </button>
   )
 }
 

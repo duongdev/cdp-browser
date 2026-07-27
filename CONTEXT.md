@@ -128,6 +128,30 @@ _Avoid_: poll, refresh loop, sync (ambiguous).
 A manual, resumable BFF job that cursor-chains a conversation's older history pages until it reaches `now − X days` (X selectable in Settings → Data: 30/60/90/120, default 30), streaming `backfill-progress` over WS. Serial per conversation + rate-limit-aware; changing X affects the next Run. Fills the durable store beyond what the live **Sweep** carries.
 _Avoid_: import, history fetch, sync.
 
+**Assistant Session**:
+One persistent conversation with the AI assistant (`ai_sessions` / `ai_messages` in the BFF, ADR-0021), holding its own transcript, model pick, compaction summary, and **Attach Tray**. Sessions survive restarts and are switched from the panel's list/dropdown; opened ones stay mounted (MRU-capped) so a switch keeps stream/scroll/draft state.
+_Avoid_: chat (that's a Teams conversation), thread, AI conversation.
+
+**Citation**:
+A `[msg:{convId}:{msgId}]` marker the model emits inline and the server keeps ONLY when that id was actually surfaced by a tool call in this session — validated, never trusted (ADR-0021). The FE strips the markers from the rendered answer and lists what survived under it, each entry labelled with the sender + excerpt harvested from the same turn's tool rows, opening `/chat/c/{convId}?msg={msgId}` on click.
+_Avoid_: source, reference, link (a **Citation** is not a URL).
+
+**Scope** (assistant):
+A folder or label the user assigned by hand (`conversation_prefs`) used as a retrieval filter: the assistant resolves the name it was given ("my FWD folder", "the urgent ones") to that group's conversation ids and passes them as `convIds`. Fold-matched, folder before label, and an unknown name comes back with the real folder/label list rather than a guess. Attachable as an **Attach Tray** chip in its own right (kind `folder`/`label`), and resolvable ad-hoc when a question just names one.
+_Avoid_: filter, category, tag (a label IS the tag).
+
+**Attach Tray**:
+The explicit, visible context of an **Assistant Session** — chips for whole conversations, single messages, or a whole **Scope** (folder/label), added from the "+" menu / a message's ⋯ menu and removable. Refs are PURE pointers: nothing is injected into the transcript, so a ref stays live and detaching truly removes it. A scope chip holds the NAME, so conversations filed into that folder later are covered without re-attaching. An empty tray means "search everything", never a silent scope.
+_Avoid_: context window (that's the token budget), attachments, pinned context.
+
+**Image Transcription**:
+The text an inline image's pixels were reduced to (`message_media.caption`, PSN-104) — a verbatim reading of everything visible, made once per AMS object by the caption model. It is indexed alongside the message, so a phrase that exists ONLY inside a screenshot still finds it, and it is what a text-only model sees of that image. Shown under the picture in the lightbox.
+_Avoid_: caption in the "photo caption" sense, alt text, OCR (it is a transcription plus a describing line, not either alone).
+
+**Vision Model**:
+An assistant model the router reports as taking image input (or one force-listed in `LLM_VISION_MODELS`). Only such a model gets the `view_image` tool; every other model answers from **Image Transcription**s. Fetched pixels never ride in a tool result — they are appended as a user message on the next step, because the OpenAI-compatible mapping stringifies a multi-modal tool output.
+_Avoid_: multimodal model (ambiguous — audio/video are not supported), image model (that generates images).
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
@@ -139,6 +163,7 @@ _Avoid_: import, history fetch, sync.
 - For Slack, the **Slack Content Sweep** is the authoritative **Notification Capture** writer; the in-page hijack provides only an instant foreground toast. The sweep reads creds from a live **Tab**, persists workspaces in the **Workspace Registry**, uses the **Parked Tab** keeper (pin-deferred since t098 — a pinned workspace is owned by its Pin), and respects the **Channel Exclude** list.
 - A **Local Tab** renders a real local web page (in-DOM `<webview>`) alongside CDP Tabs — it does not use **Screencast Frames** or **Input Forwarding**; it gets direct device access instead.
 - The **Sync Backend** is the shared store for **Pin**s and **Visit**s; the New Tab omnibox ranks **Visit**s (`rankHistory`/`suggest`) alongside currently-open Tabs to offer a "switch to tab" result ahead of opening a duplicate.
+- An **Assistant Session** answers over the **Chat BFF**'s store: its retrieval tools surface message ids, only those ids may become a **Citation**, and its **Attach Tray** names what the user pointed at — never a hidden filter.
 
 ## Example dialogue
 

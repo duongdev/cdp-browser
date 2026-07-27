@@ -1,6 +1,6 @@
 # 174 — assistant panel UI: third column, useChat, citations, session picker
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
 - **Depends on:** t173
@@ -62,3 +62,17 @@ Keyboard: register panel toggle + "new session" in `chat-keys.ts` `routeKey`; �
 - [ ] `pnpm check:changed` clean, `pnpm typecheck` clean, `pnpm test` green, `pnpm chat:build` succeeds
 - [ ] CLAUDE.md updated (chat app section)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
+
+## Notes (build)
+
+- AI Elements were NOT pulled via the shadcn registry — the panel is ~3 small owned components
+  (session picker, message list, prompt input) on the existing shadcn primitives, with `streamdown`
+  for streaming markdown (React-element render, no innerHTML — same XSS posture as
+  sanitize-message.ts). Registry copies would have brought Next-flavored files for no extra value.
+- Verified hermetically end-to-end: seeded chat.db + a fake OpenAI-compatible endpoint → tool call
+  (search_messages surfaced the real Vietnamese message from an ASCII query) → streamed cited
+  answer; the hallucinated marker was stripped, the real one rendered as a chip. Wide + phone
+  screenshots taken; error state (llm-unconfigured) + empty state (suggested prompts) verified.
+- Live 9router run + real-data citation click remain HITL (router was down during the build).
+- Panel prefs (`chatAiOpen/chatAiWidth/chatAiSession` device slots) need the deployed server for
+  persistence; the dev harness 404s /api/ui-state so they fall back to defaults there.

@@ -33,6 +33,26 @@ describe("readChatSettings", () => {
       notifySound: "polite",
       notificationsEnabled: true,
       fontScale: 1.0,
+      aiPanelOpen: false,
+      aiPanelWidth: 380,
+      aiSessionId: null,
+      listWidth: 320,
+    })
+  })
+
+  it("reads the assistant panel slots (t174)", () => {
+    const ui = {
+      chatAiOpen_device_abc: true,
+      chatAiWidth_device_abc: 9999,
+      chatAiSession_device_abc: "sess-1",
+    }
+    const s = readChatSettings(ui, DEV)
+    expect(s.aiPanelOpen).toBe(true)
+    expect(s.aiPanelWidth).toBe(640) // clamped
+    expect(s.aiSessionId).toBe("sess-1")
+    expect(writeChatSettings({ aiPanelOpen: true, aiSessionId: "x" }, DEV)).toEqual({
+      chatAiOpen_device_abc: true,
+      chatAiSession_device_abc: "x",
     })
   })
 

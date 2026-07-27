@@ -83,6 +83,27 @@ export async function fetchHistory(
   return { messages: data.messages ?? [], cursor: data.cursor ?? null }
 }
 
+/** A DB-served jump window (t175) — see HistoryWindow in the BFF contract. `missing` = the target
+ *  message isn't synced; the caller falls back honestly. */
+export interface HistoryWindow {
+  messages: TeamsMessage[]
+  missing?: boolean
+  hasOlder?: boolean
+  hasNewer?: boolean
+}
+
+export async function fetchHistoryAround(convId: string, msgId: string): Promise<HistoryWindow> {
+  return post<HistoryWindow>("history", { convId, aroundMsgId: msgId })
+}
+
+export async function fetchHistoryAfter(convId: string, afterTs: number): Promise<HistoryWindow> {
+  return post<HistoryWindow>("history", { convId, afterTs })
+}
+
+export async function fetchHistoryBefore(convId: string, beforeTs: number): Promise<HistoryWindow> {
+  return post<HistoryWindow>("history", { convId, beforeTs })
+}
+
 /** Local conversation prefs: labels / folder / mute. Local to the BFF store, shared across devices. */
 export interface ConvPrefsDto {
   labels: string[]
@@ -138,6 +159,27 @@ export function avatarUrl(userId: string, size?: string): string {
 /** The URL for a provider-hosted media object (proxied + SSRF-gated by the BFF provider). */
 export function mediaUrl(url: string): string {
   return `/api/chat/media?service=${SERVICE}&url=${encodeURIComponent(url)}`
+}
+
+export interface MediaCaption {
+  status: "pending" | "done" | "failed" | "unsupported"
+  caption: string | null
+}
+
+/** An inline image's transcription (PSN-104). Made once at ingest for new images; an older one is
+ *  transcribed on this call, so the request can take a few seconds — the caller shows a pending
+ *  state rather than blocking the lightbox. */
+export async function fetchMediaCaption(
+  convId: string,
+  msgId: string,
+  src: string,
+  signal?: AbortSignal,
+): Promise<MediaCaption> {
+  const q = new URLSearchParams({ service: SERVICE, convId, msgId, url: src })
+  const res = await fetch(`/api/chat/media/caption?${q}`, { signal })
+  const data = (await res.json().catch(() => ({}))) as MediaCaption & { error?: string }
+  if (!res.ok || data.error) throw new ChatApiError(data.error || `http_${res.status}`, res.status)
+  return data
 }
 
 // ---- writes (ported for WS-F; no consumers this workstream) ----------------

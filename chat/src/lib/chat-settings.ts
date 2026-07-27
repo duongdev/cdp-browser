@@ -38,6 +38,13 @@ export interface ChatSettings {
   /** Per-device font scale multiplier (0.85–1.4, default 1.0). Applied as --chat-font-scale on
    *  document.documentElement; text-bearing selectors multiply their base size by this var. */
   fontScale: number
+  /** Assistant panel (PSN-104 t174): open flag, column width (wide layout), active session id. */
+  aiPanelOpen: boolean
+  aiPanelWidth: number
+  aiSessionId: string | null
+  /** Conversation-list column width on the wide layout (steering; mirrors the cdp-browser
+   *  sidebar's drag-resize). */
+  listWidth: number
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -50,6 +57,10 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   notifySound: "polite",
   notificationsEnabled: true,
   fontScale: 1.0,
+  aiPanelOpen: false,
+  aiPanelWidth: 380,
+  aiSessionId: null,
+  listWidth: 320,
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
@@ -63,6 +74,26 @@ export const CHAT_NAME_REGEX_BASE = "chatNameRegex"
 export const CHAT_NOTIFY_SOUND_BASE = "chatNotifySound"
 export const CHAT_NOTIFICATIONS_BASE = "chatNotificationsEnabled"
 export const CHAT_FONT_SCALE_BASE = "chatFontScale"
+export const CHAT_AI_OPEN_BASE = "chatAiOpen"
+export const CHAT_AI_WIDTH_BASE = "chatAiWidth"
+export const CHAT_AI_SESSION_BASE = "chatAiSession"
+
+const AI_WIDTH_MIN = 280
+const AI_WIDTH_MAX = 640
+
+export function parseAiWidth(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHAT_SETTINGS.aiPanelWidth
+  return Math.min(AI_WIDTH_MAX, Math.max(AI_WIDTH_MIN, Math.round(raw)))
+}
+
+export const CHAT_LIST_WIDTH_BASE = "chatListWidth"
+export const LIST_WIDTH_MIN = 240
+export const LIST_WIDTH_MAX = 480
+
+export function parseListWidth(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHAT_SETTINGS.listWidth
+  return Math.min(LIST_WIDTH_MAX, Math.max(LIST_WIDTH_MIN, Math.round(raw)))
+}
 
 const FONT_SCALE_MIN = 0.85
 const FONT_SCALE_MAX = 1.4
@@ -152,6 +183,13 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
       ui[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)],
     ),
     fontScale: parseFontScale(ui[deviceKey(CHAT_FONT_SCALE_BASE, deviceId)]),
+    aiPanelOpen: ui[deviceKey(CHAT_AI_OPEN_BASE, deviceId)] === true,
+    aiPanelWidth: parseAiWidth(ui[deviceKey(CHAT_AI_WIDTH_BASE, deviceId)]),
+    aiSessionId:
+      typeof ui[deviceKey(CHAT_AI_SESSION_BASE, deviceId)] === "string"
+        ? (ui[deviceKey(CHAT_AI_SESSION_BASE, deviceId)] as string)
+        : null,
+    listWidth: parseListWidth(ui[deviceKey(CHAT_LIST_WIDTH_BASE, deviceId)]),
   }
 }
 
@@ -176,6 +214,14 @@ export function writeChatSettings(
     out[deviceKey(CHAT_NOTIFICATIONS_BASE, deviceId)] = partial.notificationsEnabled
   if (partial.fontScale !== undefined)
     out[deviceKey(CHAT_FONT_SCALE_BASE, deviceId)] = partial.fontScale
+  if (partial.aiPanelOpen !== undefined)
+    out[deviceKey(CHAT_AI_OPEN_BASE, deviceId)] = partial.aiPanelOpen
+  if (partial.aiPanelWidth !== undefined)
+    out[deviceKey(CHAT_AI_WIDTH_BASE, deviceId)] = partial.aiPanelWidth
+  if (partial.aiSessionId !== undefined)
+    out[deviceKey(CHAT_AI_SESSION_BASE, deviceId)] = partial.aiSessionId
+  if (partial.listWidth !== undefined)
+    out[deviceKey(CHAT_LIST_WIDTH_BASE, deviceId)] = partial.listWidth
   return out
 }
 

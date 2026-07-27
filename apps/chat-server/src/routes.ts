@@ -9,6 +9,8 @@
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
 import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
+import { amsObjectId, amsUrlFromSrc } from "./media-images.ts"
+import { findByObjectId } from "./media-store.ts"
 import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
 import * as store from "./store.ts"
@@ -32,6 +34,9 @@ export interface RoutesDeps {
   /** The non-secret VAPID public key the FE uses as `applicationServerKey` (WS-G). Absent → the
    *  key route returns null and push is effectively disabled. */
   vapidPublicKey?: string
+  /** service id → image transcription worker (PSN-104). Absent → `/media/caption` reports whatever
+   *  is stored and never transcribes on demand. */
+  captioners?: Map<ChatService, { captionObject(objectId: string): Promise<string | null> }>
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -74,6 +79,32 @@ export function createRoutes(deps: RoutesDeps) {
     const b = await readBody(c)
     const { service, provider } = pick(deps, b.service)
     if (!b.convId) throw new ProviderError("missing_conv", 400)
+    // DB-served jump windows (t175): around a target / after a ts / before a ts — no provider
+    // cursor walk, the store already holds the cited message. `missing: true` is the honest
+    // target-not-synced fallback.
+    if (b.aroundMsgId) {
+      const win = store.listMessagesAround(deps.db, service, b.convId, String(b.aroundMsgId))
+      if (!win) return c.json({ messages: [], missing: true, hasOlder: false, hasNewer: false })
+      return c.json({
+        messages: win.messages.map((m) => toChatMessage(service, m)),
+        hasOlder: win.hasOlder,
+        hasNewer: win.hasNewer,
+      })
+    }
+    if (Number.isFinite(b.afterTs)) {
+      const page2 = store.listMessagesAfter(deps.db, service, b.convId, Number(b.afterTs))
+      return c.json({
+        messages: page2.messages.map((m) => toChatMessage(service, m)),
+        hasNewer: page2.hasNewer,
+      })
+    }
+    if (Number.isFinite(b.beforeTs)) {
+      const page2 = store.listMessagesBefore(deps.db, service, b.convId, Number(b.beforeTs))
+      return c.json({
+        messages: page2.messages.map((m) => toChatMessage(service, m)),
+        hasOlder: page2.hasOlder,
+      })
+    }
     const page = await provider.fetchHistory(b.convId, b.cursor ?? null, !!b.poll)
     store.upsertMessages(deps.db, service, b.convId, page.messages.map(toMessageInput))
     persistSenders(deps.db, service, page.messages)
@@ -185,6 +216,33 @@ export function createRoutes(deps: RoutesDeps) {
     const murl = c.req.query("url")
     if (!murl) throw new ProviderError("missing_url", 400)
     return bytes(c, await provider.media(murl))
+  })
+
+  // An inline image's transcription (PSN-104), keyed by the media url the client already renders.
+  // A stored one returns instantly; an un-transcribed image (everything from before this shipped)
+  // is transcribed on demand — the lazy backfill, so old screenshots cost nothing until looked at.
+  app.get("/media/caption", async (c) => {
+    const { service } = pick(deps, c.req.query("service"))
+    const convId = c.req.query("convId")
+    const msgId = c.req.query("msgId")
+    const url = c.req.query("url")
+    if (!convId || !msgId || !url) throw new ProviderError("missing_url", 400)
+    const ams = amsUrlFromSrc(url)
+    const objectId = ams ? amsObjectId(ams) : null
+    if (!objectId) return c.json({ status: "unsupported", caption: null })
+    // A message stored before this shipped has no media rows; register them from its body now —
+    // the lazy backfill (grilled), so old screenshots cost nothing until someone looks at one.
+    store.recordImages(deps.db, service, convId, msgId)
+    const row = findByObjectId(deps.db, service, objectId)[0]
+    if (row?.caption) return c.json({ status: "done", caption: row.caption })
+    const worker = deps.captioners?.get(service)
+    if (!worker) return c.json({ status: row?.status ?? "pending", caption: null })
+    const caption = await worker.captionObject(objectId)
+    if (caption) return c.json({ status: "done", caption })
+    // No caption and no failure row means transcription is simply unavailable (no vision model
+    // configured) — reporting "failed" there would blame the image for a missing setting.
+    const after = findByObjectId(deps.db, service, objectId)[0]
+    return c.json({ status: after?.status === "failed" ? "failed" : "pending", caption: null })
   })
 
   // ---- Giphy proxy (PSN-94 D/E, no provider) ------------------------------
@@ -353,6 +411,25 @@ function bytes(c: any, r: MediaBytes) {
   return c.body(buf, {
     headers: { "Content-Type": r.contentType, "X-Content-Type-Options": "nosniff" },
   })
+}
+
+// A stored row → the ChatMessage the FE renders. The `raw` column keeps the original provider
+// ChatMessage verbatim (decision 10) — use it whole (reactions/attachments intact); a raw-less row
+// (direct DB writes in tests) reconstructs the renderable minimum from columns.
+function toChatMessage(service: string, m: store.StoredMessage): ChatMessage {
+  const raw = m.raw as ChatMessage | null
+  if (raw && typeof raw === "object" && raw.id === m.id) return raw
+  return {
+    service: service as ChatMessage["service"],
+    id: m.id,
+    ts: m.ts ?? 0,
+    senderId: m.senderId ?? undefined,
+    senderName: m.senderName ?? undefined,
+    body: m.body,
+    edited: m.edited,
+    deleted: m.deleted,
+    mentionsMe: m.mentionsMe,
+  }
 }
 
 // Cache sender display names off a history page so later name lookups hit the store.

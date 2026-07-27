@@ -1,6 +1,6 @@
 # 172 — assistant LLM provider seam: ai@7 + resolveModel config registry
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 0.5d
 - **Depends on:** none
@@ -59,3 +59,10 @@ Node engine: ai@7 is ESM-only and wants modern Node — `apps/chat-server` alrea
 - [ ] `pnpm check:changed` clean, `pnpm typecheck` clean, `pnpm test` green
 - [ ] CLAUDE.md updated (apps/chat-server deps note)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
+
+## Notes (build)
+
+- Live 9router smoke PASSED (2026-07-27, glm/glm-4.7 via https://9router.dustin.one/v1): streamed
+  text + one tool call round-trip, exit 0. Quirks recorded in t173 notes (step-cap flail on
+  out-of-window relative-time queries; stray `</think>` remnants — stripped since).
+- t173 defends regardless: zod arg validation on every tool, step cap, typed stream errors.

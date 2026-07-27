@@ -169,6 +169,16 @@ export interface HistoryPage {
   cursor: string | null
 }
 
+/** A DB-served jump window (t175): `POST /history` with `aroundMsgId` / `afterTs` / `beforeTs`
+ *  serves from the store (no provider cursor). `missing` = the target isn't synced — honest
+ *  fallback, the client opens at newest with a notice. */
+export interface HistoryWindow {
+  messages: ChatMessage[]
+  missing?: boolean
+  hasOlder?: boolean
+  hasNewer?: boolean
+}
+
 /** The reply response: `ts` is the sent message's id/arrival time (epoch ms as string). */
 export interface SendResult {
   ok: true
@@ -240,3 +250,44 @@ export type ChatWsServerMessage =
     }
   | { type: "backfill-progress"; service: ChatService; status: BackfillStatus }
   | { type: "health"; service: ChatService; ok: boolean; code?: string }
+
+/**
+ * Assistant contract (t173, ADR-0021). Sessions live under `/api/chat/assistant`:
+ * GET/POST `/sessions`, PATCH/DELETE `/sessions/:id`, GET `/sessions/:id/messages`,
+ * POST `/sessions/:id/context` (attach a ref), POST `/:sessionId` (the useChat stream route,
+ * returns a UI message stream). Errors are `{ error: code }` — `llm-unconfigured` (503),
+ * `llm-rate-limited`, `llm-timeout`, `llm-error`, `not_found`.
+ */
+/** An attachment on a session. `chat`/`message` point at ids; `folder`/`label` (PSN-104) point at
+ *  a NAME and resolve to conversations at question time, so they stay live as membership changes. */
+export interface AssistantContextRef {
+  service: ChatService
+  kind: "chat" | "message" | "folder" | "label"
+  convId?: string
+  msgId?: string
+  /** folder/label only. */
+  name?: string
+  title: string
+  sender?: string
+  preview?: string
+  deepLink: string
+}
+
+export interface AssistantSession {
+  id: string
+  title: string | null
+  /** Per-session model override (t177); null = env default. */
+  model: string | null
+  createdAt: number
+  updatedAt: number
+  summary: string | null
+  summaryUptoIdx: number
+  totalTokens: number
+  contextRefs: AssistantContextRef[]
+}
+
+/** A validated citation stored on an assistant message's metadata (decision 3). */
+export interface AssistantCitation {
+  convId: string
+  msgId: string
+}

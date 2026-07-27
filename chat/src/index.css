@@ -15,6 +15,11 @@
    (t152 fix). Source the shared renderer tree explicitly. */
 @source "../../src";
 
+/* Streamdown ships prebuilt JS carrying Tailwind utility classes (its code block, table controls
+   and the external-link safety modal). Tailwind only emits classes it can SEE, so without this
+   the modal rendered as unstyled full-page text (PSN-104 steering). */
+@source "../../node_modules/streamdown/dist/*.js";
+
 /* Chat-only typefaces (selectable in Settings → Font). Files live in chat/public/fonts/ so only the
    /chat build ships them; the / browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base
    prepended by Vite.
@@ -366,16 +371,85 @@
 .teams-message-body {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));
 }
+/* The composers (thread Tiptap + AI textarea) read at the SAME size as a message body, and share
+   the same resting height, so the two input cards look like one component (PSN-104 steering). */
+.composer-editor,
+.ai-composer-input {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+}
+/* Assistant markdown (PSN-104): the SAME reading size as a message body, but none of the bubble
+   geometry — `.teams-message-body` carries a radius + padding, which clipped the assistant's
+   first line at the top-left corner. Typography only. */
+.ai-message-body {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+  white-space: normal;
+  line-height: 1.5;
+}
+.ai-message-body p + p,
+.ai-message-body ul,
+.ai-message-body ol,
+.ai-message-body pre,
+.ai-message-body blockquote {
+  margin-top: 0.5rem;
+}
+.ai-message-body ul,
+.ai-message-body ol {
+  padding-left: 1.25rem;
+}
+.ai-message-body ul {
+  list-style: disc;
+}
+.ai-message-body ol {
+  list-style: decimal;
+}
+.ai-message-body a {
+  text-decoration: underline;
+}
+/* Answer headings are section markers inside a narrow column, not page titles — Streamdown's own
+   heading scale rendered them display-sized (steering). Keep them barely above body weight/size. */
+.ai-message-body h1,
+.ai-message-body h2,
+.ai-message-body h3,
+.ai-message-body h4,
+.ai-message-body h5,
+.ai-message-body h6 {
+  margin-top: 0.75rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.ai-message-body h1 {
+  font-size: 1.1em;
+}
+.ai-message-body h2 {
+  font-size: 1.05em;
+}
+.ai-message-body h3,
+.ai-message-body h4,
+.ai-message-body h5,
+.ai-message-body h6 {
+  font-size: 1em;
+}
+.ai-message-body code {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.05rem 0.25rem;
+}
+.ai-message-body pre {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  background: var(--muted);
+  padding: 0.5rem 0.75rem;
+}
+.ai-message-body pre code {
+  background: none;
+  padding: 0;
+}
 .conv-row-title {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));
 }
 .conv-row-preview {
   font-size: calc(0.75rem * var(--chat-font-scale, 1));
 }
-.composer-editor {
-  font-size: calc(1rem * var(--chat-font-scale, 1));
-}
-
 /* Tiptap placeholder (PSN-94): the empty editor's first paragraph shows "Type a message…" via the
    @tiptap/extension-placeholder attr, mirroring the old contenteditable's empty:before hint. */
 .composer-editor p.is-empty:first-child::before {
@@ -552,6 +626,16 @@
 }
 .msg-jump-flash {
   animation: msg-jump-flash 1.6s ease-out;
+}
+/* Shimmering text for in-flight assistant states (PSN-104 steering): the gradient sweeps across
+   the clipped glyphs. Paired with the utility class in components/ai/shimmer-text.tsx. */
+@keyframes chat-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 /* Inline media by kind (t139). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
    thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a

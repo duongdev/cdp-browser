@@ -201,3 +201,31 @@ describe("routeKey — Esc is never claimed", () => {
     expect(routeKey(key("Escape"), thread, false)).toBeNull()
   })
 })
+
+describe("toggle-ai (⌘⌥B)", () => {
+  it("routes cmd+opt+B by code, even from the composer", () => {
+    expect(
+      routeKey(
+        { key: "∫", metaKey: true, ctrlKey: false, altKey: true, shiftKey: false, code: "KeyB" },
+        list,
+        false,
+      ),
+    ).toEqual({ type: "toggle-ai" })
+  })
+  it("bare b / cmd+B without opt do nothing", () => {
+    expect(
+      routeKey(
+        { key: "b", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        list,
+        false,
+      ),
+    ).toBeNull()
+    expect(
+      routeKey(
+        { key: "b", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false },
+        list,
+        false,
+      ),
+    ).toBeNull()
+  })
+})

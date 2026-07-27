@@ -14,11 +14,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.14",
     "@hono/node-server": "^1.13.7",
+    "ai": "^7.0.37",
     "better-sqlite3": "^12.11.1",
     "hono": "^4.6.14",
+    "sharp": "^0.35.3",
     "web-push": "^3.6.7",
-    "ws": "*"
+    "ws": "*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
