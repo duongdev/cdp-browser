@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatRelativeTime, syncEventLabel } from "./sync-log"
+import { formatBackfillRun, formatRelativeTime, syncEventLabel } from "./sync-log"
 
 const SEC = 1_000
 const MIN = 60 * SEC
@@ -31,6 +31,60 @@ describe("formatRelativeTime", () => {
   it("returns days for >= 24h", () => {
     expect(formatRelativeTime(0, DAY)).toBe("1d ago")
     expect(formatRelativeTime(0, 3 * DAY)).toBe("3d ago")
+  })
+})
+
+describe("formatBackfillRun", () => {
+  it("formats a successful run", () => {
+    expect(
+      formatBackfillRun(
+        {
+          id: "1",
+          startedAt: 0,
+          finishedAt: 0,
+          days: 30,
+          conversations: 24,
+          messages: 1203,
+          status: "ok",
+        },
+        0,
+      ),
+    ).toBe("30d · 24 convs · 1,203 msgs")
+  })
+
+  it("formats an error run", () => {
+    expect(
+      formatBackfillRun(
+        {
+          id: "1",
+          startedAt: 0,
+          finishedAt: 0,
+          days: 30,
+          conversations: 5,
+          messages: 100,
+          status: "error",
+          error: "rate_limit",
+        },
+        0,
+      ),
+    ).toBe("30d · failed: rate_limit")
+  })
+
+  it("formats aborted", () => {
+    expect(
+      formatBackfillRun(
+        {
+          id: "1",
+          startedAt: 0,
+          finishedAt: 0,
+          days: 7,
+          conversations: 0,
+          messages: 0,
+          status: "aborted",
+        },
+        0,
+      ),
+    ).toBe("7d · aborted")
   })
 })
 

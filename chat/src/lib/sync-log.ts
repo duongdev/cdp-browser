@@ -25,10 +25,33 @@ function shortConvId(convId: string): string {
 }
 
 export interface SyncLogData {
-  lastHealthOk: number | null
+  lastSyncAt: number | null
   lastError: number | null
   lastErrorCode?: string
   events: SyncEvent[]
+}
+
+export interface BackfillRun {
+  id: string
+  startedAt: number
+  finishedAt: number
+  days: number
+  conversations: number
+  messages: number
+  status: "ok" | "error" | "aborted"
+  error?: string
+}
+
+/** One-line human summary of a backfill run. */
+export function formatBackfillRun(run: BackfillRun, _now: number): string {
+  const prefix = `${run.days}d`
+  if (run.status === "ok") {
+    return `${prefix} · ${run.conversations.toLocaleString()} convs · ${run.messages.toLocaleString()} msgs`
+  }
+  if (run.status === "error") {
+    return `${prefix} · failed: ${run.error ?? "unknown"}`
+  }
+  return `${prefix} · aborted`
 }
 
 /** Human-readable relative time for a timestamp, relative to `now`. */

@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils"
 import type { BackfillStatus } from "../../../apps/chat-server/src/contract"
 import { progressLabel, progressPercent } from "../lib/backfill-progress"
 import {
+  type BackfillRun,
   fetchConversations,
   getBackfillStatus,
   getBffVersion,
@@ -54,6 +55,7 @@ import { useChatWsFrames } from "../lib/chat-ws-context"
 import { formatName } from "../lib/display-name"
 import { playNotifySound } from "../lib/notify-sound"
 import {
+  formatBackfillRun,
   formatRelativeTime,
   type SyncEvent,
   type SyncLogData,
@@ -195,12 +197,23 @@ const POLL_MS = 3_000
 function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void }) {
   const [days, setDays] = useState<string>("30")
   const [status, setStatus] = useState<BackfillStatus | null>(null)
+  const [history, setHistory] = useState<BackfillRun[]>([])
+  const [now, setNow] = useState(() => Date.now())
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+
+  // Live relative-time ticker.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), SYNC_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
 
   // Init: GET status so a mid-run progress survives a page reload.
   useEffect(() => {
     getBackfillStatus().then((s) => {
-      if (s) setStatus(s)
+      if (s) {
+        setStatus(s)
+        if (s.history) setHistory(s.history)
+      }
     })
   }, [])
 
@@ -306,6 +319,33 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
               </span>
             )}
           </p>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="space-y-0.5 pt-1">
+          {history.slice(0, 5).map((run) => (
+            <div className="flex items-center gap-2 py-0.5" key={run.id}>
+              <HugeiconsIcon
+                className={cn(
+                  "size-3 shrink-0",
+                  run.status === "ok"
+                    ? "text-green-500"
+                    : run.status === "aborted"
+                      ? "text-amber-500"
+                      : "text-destructive",
+                )}
+                icon={run.status === "ok" ? CheckmarkCircle01Icon : Alert02Icon}
+                strokeWidth={2}
+              />
+              <span className="truncate text-[10px] text-muted-foreground">
+                {formatBackfillRun(run, now)}
+              </span>
+              <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                {formatRelativeTime(run.startedAt, now)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -516,7 +556,7 @@ function SyncCard() {
     getSyncLog()
       .then((d) => {
         if (!alive) return
-        setLog(d)
+        setLog(d ?? null)
         setPhase("ok")
       })
       .catch(() => {
@@ -538,7 +578,7 @@ function SyncCard() {
     useCallback((frame) => {
       if (frame.type === "sync-log")
         setLog({
-          lastHealthOk: frame.lastHealthOk,
+          lastSyncAt: frame.lastSyncAt,
           lastError: frame.lastError,
           lastErrorCode: frame.lastErrorCode,
           events: frame.events,
@@ -550,7 +590,7 @@ function SyncCard() {
     setPhase("loading")
     getSyncLog()
       .then((d) => {
-        setLog(d)
+        setLog(d ?? null)
         setPhase("ok")
       })
       .catch(() => setPhase("error"))
@@ -593,8 +633,8 @@ function SyncCard() {
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1.5 text-[11px]">
               <span className="text-muted-foreground">Last sync:</span>
-              {log.lastHealthOk ? (
-                <span className="font-medium">{formatRelativeTime(log.lastHealthOk, now)}</span>
+              {log.lastSyncAt ? (
+                <span className="font-medium">{formatRelativeTime(log.lastSyncAt, now)}</span>
               ) : (
                 <span className="text-muted-foreground">never</span>
               )}

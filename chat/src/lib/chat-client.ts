@@ -409,7 +409,7 @@ export async function markUnread(convId: string, ts: number): Promise<void> {
 
 // ---- build identity + sync diagnostics ------------------------------------
 
-import type { SyncLogData } from "./sync-log"
+import type { BackfillRun, SyncLogData } from "./sync-log"
 
 export interface VersionInfo {
   version: string
@@ -439,20 +439,18 @@ export async function getBffVersion(): Promise<VersionInfo | null> {
   }
 }
 
-/** The BFF's sync log (last 20 events + error info). Null on failure. */
-export async function getSyncLog(): Promise<SyncLogData | null> {
-  try {
-    const res = await fetch("/api/chat/sync-log")
-    if (!res.ok) return null
-    return (await res.json()) as SyncLogData
-  } catch {
-    return null
-  }
+/** The BFF's sync log (last 20 events + error info). Throws on failure. */
+export async function getSyncLog(): Promise<SyncLogData> {
+  const res = await fetch("/api/chat/sync-log")
+  if (!res.ok) throw new ChatApiError(`http_${res.status}`, res.status)
+  return (await res.json()) as SyncLogData
 }
 
 // ---- backfill (PSN-93 WS-H) ------------------------------------------------
 
 import type { BackfillStatus } from "../../../apps/chat-server/src/contract"
+
+export type { BackfillRun }
 
 /** Start a backfill run for the last `days` days. No-op while one is already running (the server
  *  ignores a second start). Throws ChatApiError on a hard failure (e.g. no keeper tab). */
@@ -461,11 +459,13 @@ export async function startBackfill(days: number): Promise<void> {
 }
 
 /** Poll the current backfill status. Returns null on network failure (caller keeps prior state). */
-export async function getBackfillStatus(): Promise<BackfillStatus | null> {
+export async function getBackfillStatus(): Promise<
+  (BackfillStatus & { history?: BackfillRun[] }) | null
+> {
   try {
     const res = await fetch(`/api/chat/backfill?service=${SERVICE}`)
     if (!res.ok) return null
-    return (await res.json()) as BackfillStatus
+    return (await res.json()) as BackfillStatus & { history?: BackfillRun[] }
   } catch {
     return null
   }

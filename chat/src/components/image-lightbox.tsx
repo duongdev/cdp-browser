@@ -192,6 +192,10 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"
       exit={{ opacity: 0 }}
       initial={{ opacity: 0 }}
+      // The stage owns the backdrop click, but this element's `p-4` ring sits outside it — a click
+      // there is still "outside the image" and must dismiss. Image/control clicks stop propagation,
+      // so they never reach here.
+      onClick={onStageClick}
       transition={{ duration: reduce ? 0.1 : 0.16 }}
     >
       <div

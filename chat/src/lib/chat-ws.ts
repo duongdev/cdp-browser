@@ -26,7 +26,7 @@ export type ChatWsFrame =
   /** Sync diagnostics pushed by the BFF sweep engine (Workstream D). */
   | {
       type: "sync-log"
-      lastHealthOk: number | null
+      lastSyncAt: number | null
       lastError: number | null
       lastErrorCode?: string
       events: import("./sync-log").SyncEvent[]
