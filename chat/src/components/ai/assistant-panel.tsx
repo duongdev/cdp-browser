@@ -42,7 +42,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { actionItemsPrompt, catchUpPrompt } from "../../lib/assistant-actions"
-import { extractCitations } from "../../lib/assistant-citations"
+import {
+  citationChipLabel,
+  citationKey,
+  collectCitationMeta,
+  extractCitations,
+} from "../../lib/assistant-citations"
 import {
   ASSISTANT_BASE,
   type AssistantContextRef,
@@ -897,6 +902,8 @@ function AssistantMessage({
     .map((p) => p.text)
     .join("")
   const { text: displayText, citations } = useMemo(() => extractCitations(text), [text])
+  // Sender + excerpt for each cited id, harvested from this turn's own tool rows (no extra fetch).
+  const citeMeta = useMemo(() => collectCitationMeta(message.parts), [message.parts])
   // Bare URLs in the answer get the SAME label the chat bubbles give them (PR chip / middle-elide),
   // rewritten in the markdown source so Streamdown still owns the anchor and its safety modal.
   const markdown = useMemo(() => labelMarkdownLinks(displayText), [displayText])
@@ -970,18 +977,27 @@ function AssistantMessage({
             {sourcesLabel}
           </button>
           {sourcesOpen && (
-            <div className="flex min-w-0 flex-wrap gap-1">
-              {citations.map((c) => (
-                <button
-                  className="inline-flex min-w-0 max-w-full items-center truncate rounded-full border border-border bg-accent/50 px-2.5 py-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
-                  key={`${c.convId}:${c.msgId}`}
-                  onClick={() => onOpenCitation(c.convId, c.msgId)}
-                  title={`Open in ${labelForConv(c.convId)}`}
-                  type="button"
-                >
-                  ↗ {labelForConv(c.convId)}
-                </button>
-              ))}
+            <div className="flex min-w-0 flex-col gap-1">
+              {citations.map((c) => {
+                const meta = citeMeta.get(citationKey(c))
+                return (
+                  <button
+                    className="flex min-w-0 max-w-full flex-col gap-0.5 rounded-lg border border-border bg-accent/40 px-2.5 py-1.5 text-left text-xs hover:bg-accent"
+                    key={`${c.convId}:${c.msgId}`}
+                    onClick={() => onOpenCitation(c.convId, c.msgId)}
+                    title={`Open in ${labelForConv(c.convId)}`}
+                    type="button"
+                  >
+                    <span className="min-w-0 truncate text-foreground">
+                      {citationChipLabel(meta, labelForConv(c.convId))}
+                    </span>
+                    <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                      ↗ {labelForConv(c.convId)}
+                      {meta?.ts ? ` · ${new Date(meta.ts).toLocaleString()}` : ""}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           )}
         </div>

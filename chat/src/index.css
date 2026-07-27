@@ -405,6 +405,30 @@
 .ai-message-body a {
   text-decoration: underline;
 }
+/* Answer headings are section markers inside a narrow column, not page titles — Streamdown's own
+   heading scale rendered them display-sized (steering). Keep them barely above body weight/size. */
+.ai-message-body h1,
+.ai-message-body h2,
+.ai-message-body h3,
+.ai-message-body h4,
+.ai-message-body h5,
+.ai-message-body h6 {
+  margin-top: 0.75rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.ai-message-body h1 {
+  font-size: 1.1em;
+}
+.ai-message-body h2 {
+  font-size: 1.05em;
+}
+.ai-message-body h3,
+.ai-message-body h4,
+.ai-message-body h5,
+.ai-message-body h6 {
+  font-size: 1em;
+}
 .ai-message-body code {
   border-radius: 0.25rem;
   background: var(--muted);

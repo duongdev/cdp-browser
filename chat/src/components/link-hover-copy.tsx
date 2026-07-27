@@ -52,7 +52,10 @@ export function useLinkHoverCopy(enabled: boolean) {
       const a = (e.target as HTMLElement).closest?.("a[href]") as HTMLAnchorElement | null
       if (a?.href) {
         cancelHide()
-        setHovered({ href: a.href, rect: a.getBoundingClientRect() })
+        // A wrapped link's bounding box spans the whole column, which parked the button on the far
+        // right of the paragraph (steering). The LAST client rect is the last line's actual end.
+        const rects = a.getClientRects()
+        setHovered({ href: a.href, rect: rects[rects.length - 1] ?? a.getBoundingClientRect() })
       } else {
         scheduleHide()
       }
@@ -62,9 +65,8 @@ export function useLinkHoverCopy(enabled: boolean) {
 
   const bodyProps = enabled ? { onMouseOver, onMouseOut: scheduleHide } : {}
 
-  // FIXED at the hovered link's own end, overlapping the last few px so it sits INSIDE the link's
-  // soft highlight (no reserved layout space), vertically centered on the link's line, clamped to
-  // the viewport's right edge.
+  // FIXED just AFTER the last line's end (never overlapping the text — it used to clip the link,
+  // steering), vertically centered on that line, clamped to the viewport's right edge.
   const overlay =
     enabled && hovered ? (
       <button
@@ -76,8 +78,8 @@ export function useLinkHoverCopy(enabled: boolean) {
         onMouseEnter={cancelHide}
         onMouseLeave={scheduleHide}
         style={{
-          top: Math.max(2, hovered.rect.top + Math.min(hovered.rect.height, 22) / 2 - 10),
-          left: Math.min(hovered.rect.right - 6, window.innerWidth - 24),
+          top: Math.max(2, hovered.rect.top + hovered.rect.height / 2 - 10),
+          left: Math.min(hovered.rect.right + 4, window.innerWidth - 24),
         }}
         title="Copy link"
         type="button"
