@@ -1,4 +1,4 @@
-# ADR-0021: Bidirectional Teams read-state sync
+# ADR-0022: Bidirectional Teams read-state sync
 
 - **Status:** Accepted
 - **Date:** 2026-07-27
