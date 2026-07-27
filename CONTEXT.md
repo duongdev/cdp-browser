@@ -128,6 +128,18 @@ _Avoid_: poll, refresh loop, sync (ambiguous).
 A manual, resumable BFF job that cursor-chains a conversation's older history pages until it reaches `now − X days` (X selectable in Settings → Data: 30/60/90/120, default 30), streaming `backfill-progress` over WS. Serial per conversation + rate-limit-aware; changing X affects the next Run. Fills the durable store beyond what the live **Sweep** carries.
 _Avoid_: import, history fetch, sync.
 
+**Assistant Session**:
+One persistent conversation with the AI assistant (`ai_sessions` / `ai_messages` in the BFF, ADR-0021), holding its own transcript, model pick, compaction summary, and **Attach Tray**. Sessions survive restarts and are switched from the panel's list/dropdown; opened ones stay mounted (MRU-capped) so a switch keeps stream/scroll/draft state.
+_Avoid_: chat (that's a Teams conversation), thread, AI conversation.
+
+**Citation**:
+A `[msg:{convId}:{msgId}]` marker the model emits inline and the server keeps ONLY when that id was actually surfaced by a tool call in this session — validated, never trusted (ADR-0021). The FE strips the markers from the rendered answer and lists what survived under it, each entry labelled with the sender + excerpt harvested from the same turn's tool rows, opening `/chat/c/{convId}?msg={msgId}` on click.
+_Avoid_: source, reference, link (a **Citation** is not a URL).
+
+**Attach Tray**:
+The explicit, visible context of an **Assistant Session** — chips for whole conversations or single messages, added from the "+" menu / a message's ⋯ menu and removable. Refs are PURE pointers: nothing is injected into the transcript, so a ref stays live and detaching truly removes it. An empty tray means "search everything", never a silent scope.
+_Avoid_: context window (that's the token budget), attachments, pinned context.
+
 ## Relationships
 
 - A **Remote Browser** hosts many **Tabs**; exactly one is the **Active Tab**.
@@ -139,6 +151,7 @@ _Avoid_: import, history fetch, sync.
 - For Slack, the **Slack Content Sweep** is the authoritative **Notification Capture** writer; the in-page hijack provides only an instant foreground toast. The sweep reads creds from a live **Tab**, persists workspaces in the **Workspace Registry**, uses the **Parked Tab** keeper (pin-deferred since t098 — a pinned workspace is owned by its Pin), and respects the **Channel Exclude** list.
 - A **Local Tab** renders a real local web page (in-DOM `<webview>`) alongside CDP Tabs — it does not use **Screencast Frames** or **Input Forwarding**; it gets direct device access instead.
 - The **Sync Backend** is the shared store for **Pin**s and **Visit**s; the New Tab omnibox ranks **Visit**s (`rankHistory`/`suggest`) alongside currently-open Tabs to offer a "switch to tab" result ahead of opening a duplicate.
+- An **Assistant Session** answers over the **Chat BFF**'s store: its retrieval tools surface message ids, only those ids may become a **Citation**, and its **Attach Tray** names what the user pointed at — never a hidden filter.
 
 ## Example dialogue
 
