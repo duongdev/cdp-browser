@@ -595,6 +595,25 @@ export function ChatApp() {
   const [aiWidth, setAiWidth] = useState(settings.aiPanelWidth)
   useEffect(() => setAiWidth(settings.aiPanelWidth), [settings.aiPanelWidth])
   const aiOpen = settings.aiPanelOpen
+  // Conversation-list column width (steering): drag-resizable like the cdp-browser sidebar,
+  // persisted per device on release.
+  const [listWidth, setListWidth] = useState(settings.listWidth)
+  useEffect(() => setListWidth(settings.listWidth), [settings.listWidth])
+  const onListResizeDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault()
+      const clamp = (x: number) => Math.min(480, Math.max(240, x))
+      const onMove = (ev: PointerEvent) => setListWidth(clamp(ev.clientX))
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove)
+        window.removeEventListener("pointerup", onUp)
+        updateSettings({ listWidth: clamp(ev.clientX) })
+      }
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp)
+    },
+    [updateSettings],
+  )
 
   const toggleAi = useCallback(() => {
     updateSettings({ aiPanelOpen: !settings.aiPanelOpen })
@@ -1259,7 +1278,10 @@ export function ChatApp() {
   if (isWide) {
     return (
       <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
-        <aside className="flex w-80 shrink-0 flex-col border-border border-r">
+        <aside
+          className="flex shrink-0 flex-col border-border border-r"
+          style={{ width: listWidth }}
+        >
           <AppHeader
             canBack={canNav.back}
             canForward={canNav.forward}
@@ -1291,6 +1313,11 @@ export function ChatApp() {
           </div>
           <ConnectionStatus online={online} />
         </aside>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
+        <div
+          className="-ml-0.5 w-1 shrink-0 cursor-col-resize hover:bg-accent"
+          onPointerDown={onListResizeDown}
+        />
         <section className="min-w-0 flex-1">
           {threadPanes}
           {keepAlive.mounted.length === 0 && (

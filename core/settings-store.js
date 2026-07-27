@@ -83,6 +83,7 @@ const DEVICE_KEY_PREFIXES = [
   "chatAiOpen_",
   "chatAiWidth_",
   "chatAiSession_",
+  "chatListWidth_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

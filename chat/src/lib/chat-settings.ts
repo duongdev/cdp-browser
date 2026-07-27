@@ -42,6 +42,9 @@ export interface ChatSettings {
   aiPanelOpen: boolean
   aiPanelWidth: number
   aiSessionId: string | null
+  /** Conversation-list column width on the wide layout (steering; mirrors the cdp-browser
+   *  sidebar's drag-resize). */
+  listWidth: number
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -57,6 +60,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   aiPanelOpen: false,
   aiPanelWidth: 380,
   aiSessionId: null,
+  listWidth: 320,
 }
 
 // The ui-state base key names. Each persists as `<base>_<deviceId>`; the server allows them
@@ -80,6 +84,15 @@ const AI_WIDTH_MAX = 640
 export function parseAiWidth(raw: unknown): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHAT_SETTINGS.aiPanelWidth
   return Math.min(AI_WIDTH_MAX, Math.max(AI_WIDTH_MIN, Math.round(raw)))
+}
+
+export const CHAT_LIST_WIDTH_BASE = "chatListWidth"
+export const LIST_WIDTH_MIN = 240
+export const LIST_WIDTH_MAX = 480
+
+export function parseListWidth(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHAT_SETTINGS.listWidth
+  return Math.min(LIST_WIDTH_MAX, Math.max(LIST_WIDTH_MIN, Math.round(raw)))
 }
 
 const FONT_SCALE_MIN = 0.85
@@ -176,6 +189,7 @@ export function readChatSettings(ui: Record<string, unknown>, deviceId: string):
       typeof ui[deviceKey(CHAT_AI_SESSION_BASE, deviceId)] === "string"
         ? (ui[deviceKey(CHAT_AI_SESSION_BASE, deviceId)] as string)
         : null,
+    listWidth: parseListWidth(ui[deviceKey(CHAT_LIST_WIDTH_BASE, deviceId)]),
   }
 }
 
@@ -206,6 +220,8 @@ export function writeChatSettings(
     out[deviceKey(CHAT_AI_WIDTH_BASE, deviceId)] = partial.aiPanelWidth
   if (partial.aiSessionId !== undefined)
     out[deviceKey(CHAT_AI_SESSION_BASE, deviceId)] = partial.aiSessionId
+  if (partial.listWidth !== undefined)
+    out[deviceKey(CHAT_LIST_WIDTH_BASE, deviceId)] = partial.listWidth
   return out
 }
 

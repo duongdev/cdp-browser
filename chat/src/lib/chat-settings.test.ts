@@ -36,6 +36,7 @@ describe("readChatSettings", () => {
       aiPanelOpen: false,
       aiPanelWidth: 380,
       aiSessionId: null,
+      listWidth: 320,
     })
   })
 

@@ -1,8 +1,10 @@
-// The AI assistant panel (t174, ADR-0021 decision 5): a third column beside list+thread on wide,
-// a full-screen stacked view on phone. Driven by @ai-sdk/react useChat against the t173 stream
-// route. Owned, minimal AI-Elements-style pieces (message list, streamed markdown via Streamdown,
-// prompt input) on the shared shadcn design system — Streamdown renders markdown to React elements
-// (no raw HTML injection), the same XSS posture as sanitize-message.ts.
+// The AI assistant panel (t174 + steering pass, ADR-0021 decision 5): a third column beside
+// list+thread on wide, a full-screen stacked view on phone. Two pages — a session LIST (new
+// session + rows) and a session VIEW (chat) — with the header AI mark swapping to a back arrow in
+// the view, plus a dropdown for quick switching. Opened sessions stay mounted (visible-hidden,
+// MRU cap) so switching preserves stream/scroll/draft state, mirroring the thread keep-alive.
+// Streamed markdown renders via Streamdown (React elements, no raw HTML — sanitize-message.ts
+// posture). All icon buttons carry shadcn Tooltips; no italic styling anywhere.
 
 import { useChat } from "@ai-sdk/react"
 import {
@@ -16,7 +18,7 @@ import {
   PlusSignIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons"
-import { HugeiconsIcon } from "@hugeicons/react"
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { DefaultChatTransport, type UIMessage } from "ai"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Streamdown } from "streamdown"
@@ -32,6 +34,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { extractCitations } from "../../lib/assistant-citations"
 import {
@@ -48,11 +51,11 @@ import {
 import { prompt } from "../prompt-dialog"
 
 export interface AssistantPanelProps {
-  /** Active session id (persisted in chat settings); null = pick/create on open. */
+  /** Active session id (persisted in chat settings); null = show the session list. */
   sessionId: string | null
   onSessionChange: (id: string | null) => void
   onClose: () => void
-  /** Phone stacked view: show a back affordance instead of the ✕. */
+  /** Phone stacked view: the list page's close affordance becomes a back arrow. */
   narrow?: boolean
   /** Conversation label lookup for citation chips. */
   labelForConv: (convId: string) => string
@@ -69,12 +72,55 @@ const SUGGESTED_PROMPTS = [
   "Tìm tin nhắn về deploy tuần này",
 ]
 
+/** Keep this many opened session panes mounted (MRU) — same idea as the thread keep-alive. */
+const SESSION_KEEPALIVE_CAP = 4
+
+function IconButton({
+  label,
+  icon,
+  onClick,
+  destructive,
+  className,
+}: {
+  label: string
+  icon: IconSvgElement
+  onClick: () => void
+  destructive?: boolean
+  className?: string
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={label}
+          className={cn(
+            "text-muted-foreground",
+            destructive && "hover:text-destructive",
+            className,
+          )}
+          onClick={onClick}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <HugeiconsIcon className="size-4" icon={icon} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function AssistantPanel(props: AssistantPanelProps) {
   const { sessionId, onSessionChange } = props
   const [sessions, setSessions] = useState<AssistantSession[] | null>(null)
   const [sessionsError, setSessionsError] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  // Two pages: the session list and the session view (steering). Booting with a persisted active
+  // session lands directly in its view.
+  const [page, setPage] = useState<"list" | "session">(sessionId ? "session" : "list")
+  // Opened sessions stay mounted (visible-hidden) so a switch preserves state — MRU, capped.
+  const [mounted, setMounted] = useState<string[]>(sessionId ? [sessionId] : [])
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -88,44 +134,34 @@ export function AssistantPanel(props: AssistantPanelProps) {
     }
   }, [])
 
-  // Load sessions on mount; ensure an active one exists (grilled default: create when none).
   useEffect(() => {
-    let alive = true
-    refreshSessions().then(async (list) => {
-      if (!alive || !list) return
-      if (sessionId && list.some((s) => s.id === sessionId)) return
-      const first = list[0]
-      if (first) {
-        onSessionChange(first.id)
-        return
-      }
-      try {
-        const created = await createSession()
-        if (!alive) return
-        setSessions([created])
-        onSessionChange(created.id)
-      } catch {
-        setSessionsError(true)
-      }
-    })
-    return () => {
-      alive = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- boot only
-  }, [])
+    refreshSessions()
+  }, [refreshSessions])
 
   const active = sessions?.find((s) => s.id === sessionId) ?? null
+
+  const openSession = useCallback(
+    (id: string) => {
+      onSessionChange(id)
+      setPage("session")
+      setPickerOpen(false)
+      setMounted((m) => {
+        const rest = m.filter((x) => x !== id)
+        return [...rest, id].slice(-SESSION_KEEPALIVE_CAP)
+      })
+    },
+    [onSessionChange],
+  )
 
   const newSession = useCallback(async () => {
     try {
       const created = await createSession()
       setSessions((l) => [created, ...(l ?? [])])
-      onSessionChange(created.id)
-      setPickerOpen(false)
+      openSession(created.id)
     } catch {
       setSessionsError(true)
     }
-  }, [onSessionChange])
+  }, [openSession])
 
   const renameActive = useCallback(async () => {
     if (!active) return
@@ -145,145 +181,191 @@ export function AssistantPanel(props: AssistantPanelProps) {
       await deleteSession(id).catch(() => {})
       const rest = (sessions ?? []).filter((s) => s.id !== id)
       setSessions(rest)
-      if (sessionId === id) onSessionChange(rest[0]?.id ?? null)
+      setMounted((m) => m.filter((x) => x !== id))
+      if (sessionId === id) {
+        onSessionChange(null)
+        setPage("list")
+      }
     },
     [sessions, sessionId, onSessionChange],
   )
 
+  const inSession = page === "session" && !!sessionId
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="titlebar flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
-        {props.narrow && (
-          <Button aria-label="Back" onClick={props.onClose} size="icon-sm" variant="ghost">
-            <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />
-          </Button>
-        )}
-        <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={AiChat02Icon} />
-        {/* Session picker: newest-updated first, switch/create/rename/delete. */}
-        <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
-          <PopoverTrigger asChild>
-            <button
-              className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-2 py-1 text-left text-sm hover:bg-accent"
-              type="button"
-            >
-              <span className="truncate font-medium">
-                {active?.title || (active ? "New session" : "Assistant")}
-              </span>
-              <HugeiconsIcon
-                className="size-3.5 shrink-0 text-muted-foreground"
-                icon={ArrowDown01Icon}
-              />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className="w-72 p-1">
-            <button
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-              onClick={newSession}
-              type="button"
-            >
-              <HugeiconsIcon className="size-4" icon={PlusSignIcon} />
-              New session
-            </button>
-            <div className="my-1 border-border border-t" />
-            <div className="max-h-72 overflow-y-auto">
-              {(sessions ?? []).map((s) => (
+    <TooltipProvider delayDuration={300}>
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="titlebar flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
+          {inSession ? (
+            // Session view: the AI mark yields to a back arrow (steering).
+            <IconButton
+              icon={ArrowLeft01Icon}
+              label="All sessions"
+              onClick={() => setPage("list")}
+            />
+          ) : props.narrow ? (
+            <IconButton icon={ArrowLeft01Icon} label="Back" onClick={props.onClose} />
+          ) : (
+            <HugeiconsIcon
+              className="mx-1.5 size-4 shrink-0 text-muted-foreground"
+              icon={AiChat02Icon}
+            />
+          )}
+          {inSession ? (
+            // Quick-switch dropdown stays in the session view (steering).
+            <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-2 py-1 text-left text-sm hover:bg-accent"
+                  type="button"
+                >
+                  <span className="truncate font-medium">{active?.title || "New session"}</span>
+                  <HugeiconsIcon
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                    icon={ArrowDown01Icon}
+                  />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-1">
+                <button
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                  onClick={newSession}
+                  type="button"
+                >
+                  <HugeiconsIcon className="size-4" icon={PlusSignIcon} />
+                  New session
+                </button>
+                <div className="my-1 border-border border-t" />
+                <div className="max-h-72 overflow-y-auto">
+                  {(sessions ?? []).map((s) => (
+                    <button
+                      className={cn(
+                        "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
+                        s.id === sessionId && "bg-accent/60",
+                      )}
+                      key={s.id}
+                      onClick={() => openSession(s.id)}
+                      type="button"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
+                      <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">
+                        {new Date(s.updatedAt).toLocaleDateString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          ) : (
+            <span className="flex-1 font-medium text-sm">Assistant</span>
+          )}
+          {inSession && active && (
+            <IconButton icon={PencilEdit02Icon} label="Rename session" onClick={renameActive} />
+          )}
+          {!inSession && (
+            <IconButton icon={PlusSignIcon} label="New session" onClick={newSession} />
+          )}
+          {(!props.narrow || inSession) && (
+            <IconButton icon={Cancel01Icon} label="Close assistant" onClick={props.onClose} />
+          )}
+        </header>
+
+        {/* ---- session list page ---- */}
+        <div className={cn("min-h-0 flex-1 flex-col", inSession ? "hidden" : "flex")}>
+          {sessionsError && !sessions && (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+              <p className="text-muted-foreground text-sm">Could not load assistant sessions.</p>
+              <Button onClick={() => refreshSessions()} size="sm" variant="outline">
+                Retry
+              </Button>
+            </div>
+          )}
+          {!sessionsError && sessions === null && <PanelSkeleton />}
+          {sessions !== null && sessions.length === 0 && (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+              <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChat02Icon} />
+              <p className="text-muted-foreground text-sm">
+                Ask about your messages — search, summarize, catch up. Answers cite the real
+                messages they come from.
+              </p>
+              <Button onClick={newSession} size="sm">
+                <HugeiconsIcon className="size-4" icon={PlusSignIcon} />
+                New session
+              </Button>
+            </div>
+          )}
+          {sessions !== null && sessions.length > 0 && (
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              {sessions.map((s) => (
                 <div
-                  className={cn(
-                    "group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm hover:bg-accent",
-                    s.id === sessionId && "bg-accent/60",
-                  )}
+                  className="group flex items-center gap-1 rounded-lg px-2 py-2 hover:bg-accent"
                   key={s.id}
                 >
                   <button
-                    className="min-w-0 flex-1 truncate text-left"
-                    onClick={() => {
-                      onSessionChange(s.id)
-                      setPickerOpen(false)
-                    }}
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => openSession(s.id)}
                     type="button"
                   >
-                    {s.title || "New session"}
-                    <span className="ml-2 text-[10px] text-muted-foreground">
-                      {new Date(s.updatedAt).toLocaleDateString()}
-                    </span>
+                    <div className="truncate font-medium text-sm">{s.title || "New session"}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {new Date(s.updatedAt).toLocaleString()}
+                    </div>
                   </button>
-                  <button
-                    aria-label="Delete session"
-                    className="rounded p-1 text-muted-foreground opacity-0 hover:text-destructive group-hover:opacity-100"
+                  <IconButton
+                    className="opacity-0 group-hover:opacity-100"
+                    destructive
+                    icon={Delete02Icon}
+                    label="Delete session"
                     onClick={() => setConfirmDelete(s.id)}
-                    type="button"
-                  >
-                    <HugeiconsIcon className="size-3.5" icon={Delete02Icon} />
-                  </button>
+                  />
                 </div>
               ))}
-              {sessions?.length === 0 && (
-                <div className="px-2 py-3 text-muted-foreground text-xs">No sessions yet</div>
-              )}
             </div>
-          </PopoverContent>
-        </Popover>
-        {active && (
-          <Button aria-label="Rename session" onClick={renameActive} size="icon-sm" variant="ghost">
-            <HugeiconsIcon className="size-4" icon={PencilEdit02Icon} />
-          </Button>
-        )}
-        {!props.narrow && (
-          <Button
-            aria-label="Close assistant"
-            onClick={props.onClose}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <HugeiconsIcon className="size-4" icon={Cancel01Icon} />
-          </Button>
-        )}
-      </header>
-
-      {sessionsError && !sessions && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-          <p className="text-muted-foreground text-sm">Could not load assistant sessions.</p>
-          <Button onClick={() => refreshSessions()} size="sm" variant="outline">
-            Retry
-          </Button>
+          )}
         </div>
-      )}
 
-      {!sessionsError && sessions === null && <PanelSkeleton />}
+        {/* ---- session view page: kept-alive panes, only the active one visible ---- */}
+        {mounted.map((id) => (
+          <div
+            className={cn(
+              "min-h-0 flex-1 flex-col",
+              inSession && id === sessionId ? "flex" : "hidden",
+            )}
+            key={`${id}:${props.refreshNonce ?? 0}`}
+          >
+            <SessionChat
+              contextRefs={(sessions?.find((s) => s.id === id) ?? null)?.contextRefs ?? []}
+              labelForConv={props.labelForConv}
+              onOpenCitation={props.onOpenCitation}
+              sessionId={id}
+            />
+          </div>
+        ))}
 
-      {sessions !== null && sessionId && (
-        <SessionChat
-          contextRefs={active?.contextRefs ?? []}
-          key={`${sessionId}:${props.refreshNonce ?? 0}`}
-          labelForConv={props.labelForConv}
-          onOpenCitation={props.onOpenCitation}
-          sessionId={sessionId}
-        />
-      )}
-
-      <AlertDialog onOpenChange={(v) => !v && setConfirmDelete(null)} open={!!confirmDelete}>
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete session?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The conversation with the assistant is removed. Your chat messages are untouched.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (confirmDelete) doDelete(confirmDelete)
-                setConfirmDelete(null)
-              }}
-              variant="destructive"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+        <AlertDialog onOpenChange={(v) => !v && setConfirmDelete(null)} open={!!confirmDelete}>
+          <AlertDialogContent size="sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete session?</AlertDialogTitle>
+              <AlertDialogDescription>
+                The conversation with the assistant is removed. Your chat messages are untouched.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (confirmDelete) doDelete(confirmDelete)
+                  setConfirmDelete(null)
+                }}
+                variant="destructive"
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </TooltipProvider>
   )
 }
 
@@ -297,7 +379,7 @@ function PanelSkeleton() {
   )
 }
 
-/** One session's chat surface. Remounted per session (key) so useChat + history re-init cleanly. */
+/** One session's chat surface. Stays mounted while in the keep-alive set. */
 function SessionChat({
   sessionId,
   contextRefs,
@@ -345,6 +427,21 @@ function SessionChat({
   )
 }
 
+/** ~4 chars per token, measured against the same 40K budget the server compacts at (t173). */
+const CONTEXT_BUDGET_TOKENS = 40_000
+
+function estimateContextPct(messages: UIMessage[]): number {
+  let chars = 0
+  for (const m of messages) {
+    for (const p of m.parts as { text?: string; output?: unknown; input?: unknown }[]) {
+      if (typeof p?.text === "string") chars += p.text.length
+      if (p?.output !== undefined) chars += JSON.stringify(p.output)?.length ?? 0
+      if (p?.input !== undefined) chars += JSON.stringify(p.input)?.length ?? 0
+    }
+  }
+  return Math.min(100, Math.round((chars / 4 / CONTEXT_BUDGET_TOKENS) * 100))
+}
+
 function SessionChatReady({
   sessionId,
   initial,
@@ -371,6 +468,7 @@ function SessionChatReady({
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const busy = status === "submitted" || status === "streaming"
+  const contextPct = useMemo(() => estimateContextPct(messages), [messages])
 
   // Stick to bottom while streaming / on new messages.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on any message change
@@ -426,7 +524,7 @@ function SessionChatReady({
               />
             ))}
             {status === "submitted" && (
-              <div className="text-muted-foreground text-xs italic">Thinking…</div>
+              <div className="text-muted-foreground text-xs">Thinking…</div>
             )}
           </div>
         )}
@@ -462,35 +560,59 @@ function SessionChatReady({
         </div>
       )}
 
-      <div className="flex shrink-0 items-end gap-1.5 border-border border-t p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <textarea
-          className="max-h-40 min-h-9 flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-ring"
-          onChange={(e) => {
-            setInput(e.target.value)
-            const el = e.target
-            el.style.height = "auto"
-            el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          placeholder="Ask about your messages…"
-          ref={inputRef}
-          rows={1}
-          value={input}
-        />
-        {busy ? (
-          <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
-            <HugeiconsIcon className="size-4" icon={StopIcon} />
-          </Button>
-        ) : (
-          <Button aria-label="Send" disabled={!input.trim()} onClick={submit} size="icon-sm">
-            <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
-          </Button>
-        )}
+      <div className="shrink-0 border-border border-t p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="flex items-end gap-1.5">
+          <textarea
+            className="max-h-40 min-h-9 flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-ring"
+            onChange={(e) => {
+              setInput(e.target.value)
+              const el = e.target
+              el.style.height = "auto"
+              el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+            placeholder="Ask about your messages…"
+            ref={inputRef}
+            rows={1}
+            value={input}
+          />
+          {busy ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
+                  <HugeiconsIcon className="size-4" icon={StopIcon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Stop</TooltipContent>
+            </Tooltip>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button aria-label="Send" disabled={!input.trim()} onClick={submit} size="icon-sm">
+                  <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Send</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        {/* Context-window usage (steering): the same chars/4 estimate the server compacts on. */}
+        <div className="mt-1 flex items-center gap-1.5 px-1">
+          <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn("h-full rounded-full", contextPct >= 80 ? "bg-destructive" : "bg-ring")}
+              style={{ width: `${Math.max(2, contextPct)}%` }}
+            />
+          </div>
+          <span className="text-[10px] text-muted-foreground tabular-nums">
+            {contextPct}% context
+          </span>
+        </div>
       </div>
     </>
   )
@@ -528,7 +650,7 @@ function AssistantMessage({
   return (
     <div className="mr-4 flex flex-col gap-1.5 self-start">
       {toolCalls.length > 0 && (
-        <div className="text-[10px] text-muted-foreground italic">
+        <div className="text-[10px] text-muted-foreground">
           {streaming && !displayText ? "Searching your messages…" : `Searched ${toolCalls.length}×`}
         </div>
       )}
