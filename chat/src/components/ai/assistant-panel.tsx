@@ -11,6 +11,7 @@ import {
   AiChipIcon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
+  ArrowRight01Icon,
   ArrowUp02Icon,
   Cancel01Icon,
   Copy01Icon,
@@ -856,6 +857,20 @@ function SessionChatReady({
   )
 }
 
+/** One row in the "+" menu. Shared so the current-chat row and the scope rows can't drift apart. */
+const MENU_ROW =
+  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:pointer-events-none"
+
+/** The tick column — always occupies its width, so a row's label and count stay put whether or not
+ *  it's already attached. */
+function TickSlot({ on }: { on?: boolean }) {
+  return (
+    <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+      {on && <HugeiconsIcon className="size-3.5 text-muted-foreground" icon={Tick01Icon} />}
+    </span>
+  )
+}
+
 /** The "+" attach menu (grilled): the only way a whole chat enters the tray from the panel.
  *  Messages are attached from the thread's ⋯ menu, and other conversations by navigating to them
  *  first — deliberately no picker here. */
@@ -892,7 +907,7 @@ function AttachMenu({
       </Tooltip>
       <PopoverContent align="start" className="w-64 p-1" side="top">
         <button
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50 disabled:hover:bg-transparent"
+          className={cn(MENU_ROW, !currentConv && "opacity-50 hover:bg-transparent")}
           disabled={disabled}
           onClick={() => {
             setOpen(false)
@@ -904,7 +919,7 @@ function AttachMenu({
           <span className="min-w-0 flex-1 truncate">
             {currentConv ? `Attach "${currentConv.title}"` : "Attach current chat"}
           </span>
-          {alreadyAttached && <HugeiconsIcon className="size-3.5 shrink-0" icon={Tick01Icon} />}
+          <TickSlot on={alreadyAttached} />
         </button>
         {/* Folders + labels attach as SCOPES (PSN-104): the chip holds the name, and membership is
             resolved per question, so a chat filed into the folder later is already in scope. */}
@@ -917,7 +932,7 @@ function AttachMenu({
               const on = attachedScopes?.has(`${s.kind}:${s.name}`)
               return (
                 <button
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50 disabled:hover:bg-transparent"
+                  className={cn(MENU_ROW, on && "cursor-default hover:bg-transparent")}
                   disabled={on}
                   key={`${s.kind}:${s.name}`}
                   onClick={() => {
@@ -931,8 +946,12 @@ function AttachMenu({
                     icon={s.kind === "folder" ? Folder01Icon : Tag01Icon}
                   />
                   <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                  <span className="shrink-0 text-muted-foreground text-xs">{s.count}</span>
-                  {on && <HugeiconsIcon className="size-3.5 shrink-0" icon={Tick01Icon} />}
+                  {/* Fixed-width count + a permanently reserved tick slot: the numbers line up in
+                      one column and a row doesn't shift when it becomes attached (steering). */}
+                  <span className="w-5 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
+                    {s.count}
+                  </span>
+                  <TickSlot on={on} />
                 </button>
               )
             })}
@@ -1042,9 +1061,10 @@ function AssistantMessage({
             onClick={() => setSourcesOpen((v) => !v)}
             type="button"
           >
+            {/* Disclosure chevron, same as the sidebar folders + attach tray: right → down. */}
             <HugeiconsIcon
-              className={cn("size-3 transition-transform", sourcesOpen && "rotate-180")}
-              icon={ArrowDown01Icon}
+              className={cn("size-3.5 transition-transform", sourcesOpen && "rotate-90")}
+              icon={ArrowRight01Icon}
             />
             {sourcesLabel}
           </button>
