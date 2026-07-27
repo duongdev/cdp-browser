@@ -623,16 +623,21 @@
 .teams-message-body blockquote[data-reply-id] {
   cursor: pointer;
 }
-/* Jump-landing flash (PSN-92 B5): a brief coral ring on the row the jump landed on. */
+/* Jump-landing flash (PSN-92 B5): highlight the bubble, not the row wrapper. The class now sits on
+   the bubble itself (PSN-105 L moved it in message-row.tsx), so this is a plain rule — the
+   descendant form it briefly had is gone. `outline` sits outside the element and never clips, and
+   it follows the bubble's own border-radius (data-pos/data-side rules below), so the ring traces
+   the exact bubble shape including a grouped run's asymmetric corners. A message with no bubble
+   (chips only) keeps the class on its row wrapper, which the same rule covers. */
 @keyframes msg-jump-flash {
   0%,
   60% {
-    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 70%, transparent);
-    border-radius: 1rem;
+    outline: 2px solid color-mix(in oklab, var(--ring) 70%, transparent);
+    outline-offset: 2px;
   }
   100% {
-    box-shadow: 0 0 0 2px transparent;
-    border-radius: 1rem;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
   }
 }
 .msg-jump-flash {

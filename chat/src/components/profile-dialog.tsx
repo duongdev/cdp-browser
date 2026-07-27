@@ -73,7 +73,18 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
         }}
         open={!!target}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent
+          className="max-w-sm"
+          // When the lightbox is open it IS the top layer — Radix Dialog must not steal Escape or
+          // outside-click from it. The lightbox's own keydown + backdrop handlers own those events
+          // until the lightbox is dismissed; only then do they propagate to the dialog layer.
+          onEscapeKeyDown={(e) => {
+            if (lightboxOpen) e.preventDefault()
+          }}
+          onInteractOutside={(e) => {
+            if (lightboxOpen) e.preventDefault()
+          }}
+        >
           <DialogHeader>
             <div className="flex items-center gap-4">
               {/* One button (no remount → no image flicker), disabled until a real photo loads, so the

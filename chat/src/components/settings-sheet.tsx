@@ -3,6 +3,7 @@ import {
   Cancel01Icon,
   CheckmarkCircle01Icon,
   ComputerIcon,
+  Copy01Icon,
   Moon02Icon,
   RefreshIcon,
   Sun03Icon,
@@ -313,6 +314,52 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
 
 // ---- About card ----------------------------------------------------------------
 
+function DeviceIdRow({ deviceId }: { deviceId: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const copy = useCallback(() => {
+    if (deviceId === "—") return
+    navigator.clipboard.writeText(deviceId).then(() => {
+      setCopied(true)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 2000)
+    })
+  }, [deviceId])
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  return (
+    <div className="flex items-start gap-2">
+      <span className="min-w-[72px] shrink-0 text-[11px] text-muted-foreground">Device ID</span>
+      <button
+        aria-label="Copy device ID"
+        className="group flex items-center gap-1 rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[10px] transition-colors hover:bg-foreground/[0.10] active:bg-foreground/[0.14] disabled:cursor-default"
+        disabled={deviceId === "—"}
+        onClick={copy}
+        title={deviceId === "—" ? undefined : deviceId}
+        type="button"
+      >
+        <span className="select-all break-all text-left">{deviceId}</span>
+        <HugeiconsIcon
+          className={cn(
+            "size-3 shrink-0 transition-colors",
+            copied
+              ? "text-green-500"
+              : "text-muted-foreground/60 group-hover:text-muted-foreground",
+          )}
+          icon={copied ? CheckmarkCircle01Icon : Copy01Icon}
+        />
+      </button>
+    </div>
+  )
+}
+
 type LoadState<T> = { phase: "loading" } | { phase: "ok"; data: T } | { phase: "error" }
 
 function ReachabilityDot({ ok }: { ok: boolean }) {
@@ -423,13 +470,8 @@ function AboutCard() {
         <VersionRow info={serverInfo} label="Server" />
         <VersionRow info={bffInfo} label="Chat BFF" />
 
-        {/* Device ID */}
-        <div className="flex items-start gap-2">
-          <span className="min-w-[72px] shrink-0 text-[11px] text-muted-foreground">Device ID</span>
-          <span className="max-w-[160px] truncate rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[10px]">
-            {deviceId}
-          </span>
-        </div>
+        {/* Device ID — click-to-copy so the diagnostic value is actually usable. */}
+        <DeviceIdRow deviceId={deviceId} />
       </div>
     </div>
   )
