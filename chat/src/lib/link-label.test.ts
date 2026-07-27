@@ -84,9 +84,21 @@ describe("elideLinkText", () => {
     expect((text.match(/…/g) ?? []).length).toBe(1)
     expect(text.startsWith("https://example.com/some/very")).toBe(true)
   })
-  it("leaves a labelled link untouched", () => {
-    const html = `<a href="${PR_URL}">the PR</a>`
-    expect(elideLinkText(html)).toBe(html)
+  it("adds title to a descriptive (non-url-text) link", () => {
+    const out = elideLinkText(`<a href="${PR_URL}">the PR</a>`)
+    expect(out).toContain(`title="${PR_URL}"`)
+    // Text label is NOT changed
+    expect(out).toContain(">the PR<")
+  })
+  it("adds title to a short url link that is not elided", () => {
+    const short = "https://x.com/a"
+    const out = elideLinkText(`<a href="${short}">${short}</a>`)
+    expect(out).toContain(`title="${short}"`)
+  })
+  it("does not overwrite an existing title", () => {
+    const out = elideLinkText(`<a href="${PR_URL}" title="my label">${PR_URL}</a>`)
+    expect(out).toContain('title="my label"')
+    expect(out).not.toContain(`title="${PR_URL}"`)
   })
   it("no-ops html without anchors", () => {
     expect(elideLinkText("<p>hello</p>")).toBe("<p>hello</p>")

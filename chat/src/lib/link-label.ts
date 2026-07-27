@@ -47,20 +47,26 @@ export function linkLabel(href: string): string | null {
 
 /** Rewrite each `<a>` that DISPLAYS a URL to `linkLabel`'s label, built from the **href** (the full,
  *  clean URL) — never from the visible text, which Teams may have already shortened with its own "…"
- *  (re-eliding that gave a double ellipsis, PSN-99). The href stays intact + goes in `title`. Operates
- *  on ALREADY-SANITIZED html — only shortens anchor text nodes (auto-escaped), so no XSS surface. */
+ *  (re-eliding that gave a double ellipsis, PSN-99). The href stays intact + goes in `title`.
+ *  Every anchor (including descriptive ones) gets its href as the tooltip so hovering always shows
+ *  the full URL. Operates on ALREADY-SANITIZED html — only shortens anchor text nodes (auto-escaped),
+ *  so no XSS surface. */
 export function elideLinkText(html: string): string {
   if (typeof DOMParser === "undefined" || !html.includes("<a")) return html
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html")
   let changed = false
   for (const a of Array.from(doc.querySelectorAll("a[href]"))) {
-    const txt = (a.textContent ?? "").trim()
     const href = a.getAttribute("href") ?? ""
-    // Only when the anchor is SHOWING a URL (not a descriptive label).
+    // Always stamp the full URL as title so every link shows its destination on hover.
+    if (!a.getAttribute("title")) {
+      a.setAttribute("title", href)
+      changed = true
+    }
+    const txt = (a.textContent ?? "").trim()
+    // Only elide/chip when the anchor is SHOWING a URL (not a descriptive label).
     if (!isUrlLike(txt)) continue
     const label = linkLabel(href)
     if (!label) continue
-    if (!a.getAttribute("title")) a.setAttribute("title", href)
     a.textContent = label
     changed = true
   }

@@ -8,6 +8,7 @@
 import { Copy01Icon, Tick01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useDismissOnHidden } from "../lib/use-dismiss-on-hidden"
 
 /** Copy `text` to clipboard; briefly flip to a "copied" tick for ~1.2 s. */
 export function useCopy(): [copied: boolean, copy: (text: string) => void] {
@@ -30,8 +31,9 @@ export function useCopy(): [copied: boolean, copy: (text: string) => void] {
 }
 
 /** Wire a rendered message body for link hover-copy. Spread `bodyProps` on the element that holds
- *  the links and render `overlay` as its sibling. `enabled` false (coarse pointer) → both are inert. */
-export function useLinkHoverCopy(enabled: boolean) {
+ *  the links and render `overlay` as its sibling. `enabled` false (coarse pointer) → both are inert.
+ *  `conversationId` — pass the active conversation id so a switch dismisses the overlay. */
+export function useLinkHoverCopy(enabled: boolean, conversationId?: string) {
   const [hovered, setHovered] = useState<{ href: string; rect: DOMRect } | null>(null)
   const [copied, copy] = useCopy()
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -46,6 +48,8 @@ export function useLinkHoverCopy(enabled: boolean) {
     hideTimer.current = setTimeout(() => setHovered(null), 180)
   }, [cancelHide])
   useEffect(() => cancelHide, [cancelHide])
+  const dismissNow = useCallback(() => setHovered(null), [])
+  useDismissOnHidden(dismissNow, conversationId)
 
   const onMouseOver = useCallback(
     (e: React.MouseEvent<HTMLElement>) => {

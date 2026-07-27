@@ -47,6 +47,7 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
     if (!target) return
     setState({ s: "loading" })
     setPhotoLoaded(false)
+    setLightboxOpen(false)
     const ctl = new AbortController()
     fetchProfile(target.userId, ctl.signal)
       .then((profile) => setState({ s: "ready", profile }))
@@ -63,7 +64,15 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
 
   return (
     <>
-      <Dialog onOpenChange={(open) => !open && onClose()} open={!!target}>
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) {
+            setLightboxOpen(false)
+            onClose()
+          }
+        }}
+        open={!!target}
+      >
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <div className="flex items-center gap-4">

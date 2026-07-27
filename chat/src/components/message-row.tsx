@@ -52,6 +52,7 @@ import { elideLinkText } from "../lib/link-label"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
+import { useDismissOnHidden } from "../lib/use-dismiss-on-hidden"
 import { getCatalogGlyph } from "../lib/use-emoji-catalog"
 import { DisplayName } from "./display-name"
 import { EmojiPicker } from "./emoji-picker"
@@ -179,7 +180,7 @@ function ChatMessageRow({
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
   // Link hover-copy overlay (PSN-99), shared with the assistant's answers (PSN-104).
-  const linkCopy = useLinkHoverCopy(!coarse)
+  const linkCopy = useLinkHoverCopy(!coarse, convId)
   // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then long bare-URL links
   // middle-elided (PSN-99). Memoized so the DOMParser pass runs once per body, not per poll re-render.
   const bodyHtml = useMemo(
@@ -214,6 +215,8 @@ function ChatMessageRow({
     },
     [],
   )
+  const closeReactBarNow = useCallback(() => setReactHover(false), [])
+  useDismissOnHidden(closeReactBarNow, convId)
   // Reply-with-quote (PSN-92 B): any confirmed, non-deleted message, own or others'.
   const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
