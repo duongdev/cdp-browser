@@ -6,12 +6,14 @@ import {
   getContextWindow,
   indexText,
   listConversationsByQuery,
+  listScopes,
   resolvePerson,
+  resolveScope,
   searchMessages,
   stripHtml,
   toMatchQuery,
 } from "./search.ts"
-import { migrate, upsertConversations, upsertMessages, upsertUsers } from "./store.ts"
+import { migrate, setPrefs, upsertConversations, upsertMessages, upsertUsers } from "./store.ts"
 
 function freshDb() {
   const db = new Database(":memory:")
@@ -280,5 +282,68 @@ describe("mentionsMe filter (steering: 'who mentioned me')", () => {
     expect(tagged.every((h) => h.msgId !== "m2")).toBe(true)
     const all = searchMessages(db, { query: "a", mentionsMe: true })
     expect(all.every((h) => h.msgId !== "m2")).toBe(true)
+  })
+})
+
+describe("scopes: the user's folders + labels", () => {
+  let db: ReturnType<typeof freshDb>
+  beforeEach(() => {
+    db = freshDb()
+    upsertConversations(db, "teams", [
+      { id: "c1", title: "FWD standup" },
+      { id: "c2", title: "Guru core" },
+      { id: "c3", title: "Random" },
+    ])
+    upsertMessages(db, "teams", "c1", [{ id: "m1", ts: 1, body: "deploy tonight" }])
+    upsertMessages(db, "teams", "c2", [{ id: "m2", ts: 2, body: "deploy blocked" }])
+    upsertMessages(db, "teams", "c3", [{ id: "m3", ts: 3, body: "deploy chatter" }])
+    setPrefs(db, "teams", "c1", { folder: "Công việc", labels: ["urgent"] })
+    setPrefs(db, "teams", "c2", { folder: "Công việc" })
+    setPrefs(db, "teams", "c3", { folder: "Personal", labels: ["urgent", "later"] })
+  })
+
+  test("listScopes counts every assigned folder and label", () => {
+    const s = listScopes(db, "teams")
+    expect(s.folders).toEqual([
+      { name: "Công việc", count: 2 },
+      { name: "Personal", count: 1 },
+    ])
+    expect(s.labels).toEqual([
+      { name: "urgent", count: 2 },
+      { name: "later", count: 1 },
+    ])
+  })
+
+  test("resolveScope is fold-matched (diacritics + casing) and prefers folders", () => {
+    expect(resolveScope(db, "teams", "cong viec")).toMatchObject({
+      kind: "folder",
+      name: "Công việc",
+    })
+    expect(resolveScope(db, "teams", "cong viec")?.convIds.sort()).toEqual(["c1", "c2"])
+    expect(resolveScope(db, "teams", "URGENT")).toMatchObject({ kind: "label", name: "urgent" })
+    expect(resolveScope(db, "teams", "nope")).toBeNull()
+    expect(resolveScope(db, "teams", "  ")).toBeNull()
+  })
+
+  test("an exact match wins over a longer substring match", () => {
+    setPrefs(db, "teams", "c3", { labels: ["urgent", "urgent-later"] })
+    expect(resolveScope(db, "teams", "urgent")?.name).toBe("urgent")
+  })
+
+  test("convIds scopes search and the conversation list; empty means nothing, not everything", () => {
+    const scope = resolveScope(db, "teams", "Công việc")
+    const ids = scope?.convIds ?? []
+    expect(
+      searchMessages(db, { query: "deploy", convIds: ids })
+        .map((h) => h.msgId)
+        .sort(),
+    ).toEqual(["m1", "m2"])
+    expect(
+      listConversationsByQuery(db, "teams", { convIds: ids })
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(["c1", "c2"])
+    expect(searchMessages(db, { query: "deploy", convIds: [] })).toEqual([])
+    expect(listConversationsByQuery(db, "teams", { convIds: [] })).toEqual([])
   })
 })

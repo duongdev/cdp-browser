@@ -155,6 +155,9 @@ export interface SearchOpts {
   /** Exact sender id (resolve names via `resolvePerson` first). */
   sender?: string
   convId?: string
+  /** Restrict to a set of conversations — how a folder/label scope is applied (resolveScope).
+   *  Empty array means "no conversation qualifies", NOT "unfiltered". */
+  convIds?: string[]
   /** ts range, exclusive of nothing — after <= ts <= before. */
   after?: number
   before?: number
@@ -169,7 +172,15 @@ export interface SearchOpts {
 export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
   const match = toMatchQuery(opts.query)
   if (!match) return []
+  if (opts.convIds && opts.convIds.length === 0) return []
   const limit = Number.isFinite(opts.limit) && (opts.limit as number) > 0 ? opts.limit : 20
+  // A scope is a variable-length IN list — generated named placeholders keep every value bound
+  // (the rest of this query binds by name, and the two styles can't be mixed).
+  const scopeIds = opts.convIds ?? []
+  const scope = scopeIds.length
+    ? `AND m.conv_id IN (${scopeIds.map((_, i) => `@scope${i}`).join(",")})`
+    : ""
+  const scopeParams = Object.fromEntries(scopeIds.map((id, i) => [`scope${i}`, id]))
   const rows = db
     .prepare(`
       SELECT m.service, m.conv_id, m.id, m.sender_id, m.sender_name, m.ts, m.body
@@ -180,6 +191,7 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
         AND (@service IS NULL OR m.service = @service)
         AND (@sender IS NULL OR m.sender_id = @sender)
         AND (@convId IS NULL OR m.conv_id = @convId)
+        ${scope}
         AND (@after IS NULL OR m.ts >= @after)
         AND (@before IS NULL OR m.ts <= @before)
         AND (@mentionsMe IS NULL OR m.mentions_me = @mentionsMe)
@@ -187,6 +199,7 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
       LIMIT @limit
     `)
     .all({
+      ...scopeParams,
       match,
       service: opts.service ?? null,
       sender: opts.sender ?? null,
@@ -296,13 +309,101 @@ export interface ConversationHit {
   lastMessageTs: number | null
 }
 
+// ---- scopes: the user's own folders + labels -------------------------------
+// A conversation's folder (one) and labels (many) are LOCAL organisation the user did by hand
+// (`conversation_prefs`, t156) — never provider state. They are the names the user actually thinks
+// in ("look in my FWD folder"), so the assistant resolves them the same way the sidebar does.
+
+export interface ScopeName {
+  name: string
+  /** How many conversations carry it — lets the model pick between near-identical names. */
+  count: number
+}
+
+export interface Scopes {
+  folders: ScopeName[]
+  labels: ScopeName[]
+}
+
+/** Every folder + label the user has actually assigned, with conversation counts. */
+export function listScopes(db: Db, service: string): Scopes {
+  const rows = db
+    .prepare("SELECT folder, labels FROM conversation_prefs WHERE service = ?")
+    .all(service) as { folder: string | null; labels: string | null }[]
+  const folders = new Map<string, number>()
+  const labels = new Map<string, number>()
+  for (const r of rows) {
+    const folder = (r.folder || "").trim()
+    if (folder) folders.set(folder, (folders.get(folder) ?? 0) + 1)
+    for (const l of parseLabelList(r.labels)) labels.set(l, (labels.get(l) ?? 0) + 1)
+  }
+  const toList = (m: Map<string, number>): ScopeName[] =>
+    [...m.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+  return { folders: toList(folders), labels: toList(labels) }
+}
+
+function parseLabelList(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []
+  } catch {
+    return []
+  }
+}
+
+export interface ResolvedScope {
+  kind: "folder" | "label"
+  /** The stored name, not what the user typed. */
+  name: string
+  convIds: string[]
+}
+
+/** Resolve a user-typed folder/label name to its conversation ids. Fold-matched (so "fwd" finds
+ *  "FWD" and diacritics don't matter), exact match preferred over substring; a folder wins a tie
+ *  with a label. Null when nothing matches — the caller shows the real list instead of guessing. */
+export function resolveScope(db: Db, service: string, rawName: string): ResolvedScope | null {
+  const want = fold(rawName || "").trim()
+  if (!want) return null
+  const rows = db
+    .prepare("SELECT conv_id, folder, labels FROM conversation_prefs WHERE service = ?")
+    .all(service) as { conv_id: string; folder: string | null; labels: string | null }[]
+  const buckets = new Map<string, { kind: "folder" | "label"; name: string; convIds: string[] }>()
+  const add = (kind: "folder" | "label", name: string, convId: string) => {
+    const key = `${kind}\n${name}`
+    const b = buckets.get(key) ?? { kind, name, convIds: [] }
+    b.convIds.push(convId)
+    buckets.set(key, b)
+  }
+  for (const r of rows) {
+    const folder = (r.folder || "").trim()
+    if (folder) add("folder", folder, r.conv_id)
+    for (const l of parseLabelList(r.labels)) add("label", l, r.conv_id)
+  }
+  const candidates = [...buckets.values()]
+  const exact = candidates.filter((c) => fold(c.name).trim() === want)
+  const partial = candidates.filter((c) => fold(c.name).includes(want))
+  const pool = exact.length ? exact : partial
+  if (!pool.length) return null
+  // Folder before label, then the bigger bucket — a deterministic pick beats an arbitrary one.
+  pool.sort(
+    (a, b) =>
+      (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1) || b.convIds.length - a.convIds.length,
+  )
+  return pool[0]
+}
+
 /** Fold-matched substring lookup over conversation title/topic, newest-first. Empty query lists
  *  the newest conversations. */
 export function listConversationsByQuery(
   db: Db,
   service: string,
-  opts: { query?: string; limit?: number } = {},
+  opts: { query?: string; limit?: number; convIds?: string[] } = {},
 ): ConversationHit[] {
+  if (opts.convIds && opts.convIds.length === 0) return []
+  const inScope = opts.convIds?.length ? new Set(opts.convIds) : null
   const limit =
     Number.isFinite(opts.limit) && (opts.limit as number) > 0
       ? Math.floor(opts.limit as number)
@@ -322,6 +423,7 @@ export function listConversationsByQuery(
   const q = fold(opts.query || "").trim()
   const out: ConversationHit[] = []
   for (const r of rows) {
+    if (inScope && !inScope.has(r.id)) continue
     const label = r.title || r.topic || ""
     if (q && !fold(label).includes(q)) continue
     out.push({ id: r.id, kind: r.kind, title: label || null, lastMessageTs: r.last_message_ts })

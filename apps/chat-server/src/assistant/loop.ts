@@ -10,7 +10,9 @@ import { z } from "zod"
 import {
   getContextWindow,
   listConversationsByQuery,
+  listScopes,
   resolvePerson,
+  resolveScope,
   searchMessages,
 } from "../search.ts"
 import type { ContextRef } from "./session-store.ts"
@@ -30,11 +32,12 @@ export function createAssistantTools(
   return {
     search_messages: tool({
       description:
-        "Full-text search over all synced chat messages. Vietnamese-safe: ASCII queries match diacritic text. Use short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, or time range (ms epoch). For 'who mentioned me' / 'what was I tagged in', set mentionsMe:true — do NOT search the user's own name, which matches people merely talking about them and misses mentions under a different display name.",
+        "Full-text search over all synced chat messages. Vietnamese-safe: ASCII queries match diacritic text. Use short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, a folder/label scope (pass the convIds from resolve_scope), or time range (ms epoch). For 'who mentioned me' / 'what was I tagged in', set mentionsMe:true — do NOT search the user's own name, which matches people merely talking about them and misses mentions under a different display name.",
       inputSchema: z.object({
         query: z.string().min(1),
         sender: z.string().optional(),
         convId: z.string().optional(),
+        convIds: z.array(z.string()).optional(),
         after: z.number().optional(),
         before: z.number().optional(),
         mentionsMe: z.boolean().optional(),
@@ -75,12 +78,28 @@ export function createAssistantTools(
     }),
     list_conversations: tool({
       description:
-        "List conversations by name (fold-matched substring; empty query lists newest). Returns conversation ids for use in other tools.",
+        "List conversations by name (fold-matched substring; empty query lists newest). Pass convIds from resolve_scope to list only one folder/label. Returns conversation ids for use in other tools.",
       inputSchema: z.object({
         query: z.string().optional(),
+        convIds: z.array(z.string()).optional(),
         limit: z.number().int().min(1).max(50).optional(),
       }),
       execute: async (input) => listConversationsByQuery(db, service, input),
+    }),
+    list_scopes: tool({
+      description:
+        "The user's own folders and labels (their manual organisation of conversations), with conversation counts. Call this when the question names a grouping you don't recognise.",
+      inputSchema: z.object({}),
+      execute: async () => listScopes(db, service),
+    }),
+    resolve_scope: tool({
+      description:
+        "Resolve a folder or label the user named ('the FWD folder', 'anything labelled urgent') to its conversation ids — pass those as convIds to search_messages / list_conversations. Fold-matched, so casing and diacritics don't matter. When the name matches nothing it returns matched:null plus every real folder and label; ask the user which one rather than guessing.",
+      inputSchema: z.object({ name: z.string().min(1) }),
+      execute: async (input) => {
+        const hit = resolveScope(db, service, input.name)
+        return hit ? { matched: hit } : { matched: null, available: listScopes(db, service) }
+      },
     }),
     resolve_person: tool({
       description: "Resolve a person's name to their sender id candidates.",
@@ -110,6 +129,7 @@ export function buildSystemPrompt(opts: {
   const lines = [
     "You are the assistant inside CDP Chats, answering questions over the user's own synced chat history (Microsoft Teams).",
     "Use the tools to find real messages before answering. Never invent message content.",
+    "The user organises conversations into their own folders and labels. When a question names one ('in my FWD folder', 'the urgent ones'), call resolve_scope and pass the convIds it returns — do not guess which conversations belong.",
     "CITATIONS: when your answer draws on a specific message, append an inline marker [msg:{convId}:{msgId}] right after the claim, using the exact convId and msgId from tool results. Markers referencing ids you did not see in tool results are stripped.",
     "Answer in the user's language (mirror Vietnamese with Vietnamese). Be concise.",
     `Current time: ${new Date(opts.now ?? Date.now()).toISOString()}`,
