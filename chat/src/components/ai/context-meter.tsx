@@ -23,7 +23,7 @@ export function ContextMeter({ pct, budgetTokens }: { pct: number; budgetTokens:
       <TooltipTrigger asChild>
         <button
           aria-label={`Context window ${clamped}% used`}
-          className="flex items-center gap-1.5 rounded-md px-1 py-0.5 text-muted-foreground text-xs hover:bg-accent"
+          className="flex items-center gap-1.5 rounded-md px-1 py-0.5 text-muted-foreground text-xs hover:bg-muted hover:text-foreground"
           type="button"
         >
           <svg
@@ -35,7 +35,9 @@ export function ContextMeter({ pct, budgetTokens }: { pct: number; budgetTokens:
             width={SIZE}
           >
             <circle
-              className="text-muted"
+              // Track reads against the hover fill too — `muted` matched the old hover background
+              // and the ring vanished on hover (steering).
+              className="text-border"
               cx={SIZE / 2}
               cy={SIZE / 2}
               fill="none"
@@ -63,8 +65,7 @@ export function ContextMeter({ pct, budgetTokens }: { pct: number; budgetTokens:
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        {clamped}% of this model's {formatTokens(budgetTokens)}-token context window. Older turns
-        summarize automatically as it fills.
+        {clamped}% of {formatTokens(budgetTokens)} tokens
       </TooltipContent>
     </Tooltip>
   )

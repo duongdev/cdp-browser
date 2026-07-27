@@ -372,6 +372,49 @@
 .ai-composer-input {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));
 }
+/* Assistant markdown (PSN-104): the SAME reading size as a message body, but none of the bubble
+   geometry — `.teams-message-body` carries a radius + padding, which clipped the assistant's
+   first line at the top-left corner. Typography only. */
+.ai-message-body {
+  font-size: calc(0.875rem * var(--chat-font-scale, 1));
+  white-space: normal;
+  line-height: 1.5;
+}
+.ai-message-body p + p,
+.ai-message-body ul,
+.ai-message-body ol,
+.ai-message-body pre,
+.ai-message-body blockquote {
+  margin-top: 0.5rem;
+}
+.ai-message-body ul,
+.ai-message-body ol {
+  padding-left: 1.25rem;
+}
+.ai-message-body ul {
+  list-style: disc;
+}
+.ai-message-body ol {
+  list-style: decimal;
+}
+.ai-message-body a {
+  text-decoration: underline;
+}
+.ai-message-body code {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.05rem 0.25rem;
+}
+.ai-message-body pre {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  background: var(--muted);
+  padding: 0.5rem 0.75rem;
+}
+.ai-message-body pre code {
+  background: none;
+  padding: 0;
+}
 .conv-row-title {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));
 }

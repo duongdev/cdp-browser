@@ -348,3 +348,35 @@ describe("buildSystemPrompt scope (steering)", () => {
     expect(buildSystemPrompt({})).not.toMatch(/currently viewing/i)
   })
 })
+
+describe("multi-turn persistence (steering: wrong order / lost replies)", () => {
+  test("each turn appends its own assistant row — replies never overwrite each other", async () => {
+    const db = freshDb()
+    upsertMessages(db, "teams", "c1", [
+      { id: "m2", ts: 2000, senderId: "u2", senderName: "Bob", body: "deploy is done" },
+    ])
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db)
+    for (const [i, text] of ["first", "second", "third"].entries()) {
+      const res = await app.request(`/${session.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ id: `u${i}`, role: "user", parts: [{ type: "text", text }] }],
+        }),
+      })
+      await res.text()
+      await vi.waitFor(() => {
+        expect(loadMessages(db, session.id).filter((m) => m.role === "assistant")).toHaveLength(
+          i + 1,
+        )
+      })
+    }
+    const roles = loadMessages(db, session.id).map((m) => m.role)
+    expect(roles).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"])
+    const ids = loadMessages(db, session.id)
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.id)
+    expect(new Set(ids).size).toBe(3)
+  })
+})

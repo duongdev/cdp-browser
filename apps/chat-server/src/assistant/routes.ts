@@ -2,6 +2,7 @@
 // mounted at /api/chat/assistant. The existing web/server.mjs path-prefix proxy forwards it
 // untouched; the WS hub stays Teams-deltas-only.
 
+import { randomUUID } from "node:crypto"
 import { convertToModelMessages, generateText, type UIMessage } from "ai"
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
@@ -251,6 +252,11 @@ export function createAssistantRoutes(deps: AssistantDeps) {
 
     return result.toUIMessageStreamResponse({
       originalMessages: stored as unknown as UIMessage[],
+      // Every assistant turn needs its OWN id. Without this the SDK reuses the last original
+      // assistant message's id, and `appendMessage` (which dedups by message id) then OVERWROTE
+      // the previous reply instead of appending — turns 2+ silently replaced turn 1's answer, so a
+      // reloaded session read back as user/assistant/user/user with replies missing.
+      generateMessageId: () => `a-${randomUUID()}`,
       onError: errorCodeOf,
       onEnd: ({ responseMessage, isAborted }) => {
         if (isAborted || !responseMessage) return

@@ -821,9 +821,16 @@ function AssistantMessage({
     .join("")
   const { text: displayText, citations } = useMemo(() => extractCitations(text), [text])
 
+  // The user bubble is the SAME one the thread renders for your own messages —
+  // `teams-message-body` carries the radius/padding and `teams-self-bubble` the low-glare dark-mode
+  // fill, so light AND dark match the chat instead of a hand-rolled copy that only matched light.
   if (isUser) {
     return (
-      <div className="ml-8 max-w-full self-end overflow-hidden rounded-2xl rounded-br-md bg-primary px-3 py-2 text-primary-foreground text-sm">
+      <div
+        className="teams-self-bubble teams-message-body ml-8 max-w-full self-end bg-primary px-3 py-2 text-primary-foreground text-sm leading-snug [overflow-wrap:anywhere]"
+        data-pos="solo"
+        data-side="self"
+      >
         <span className="whitespace-pre-wrap break-words">{text}</span>
       </div>
     )
@@ -837,7 +844,7 @@ function AssistantMessage({
         </div>
       )}
       {displayText && (
-        <div className="teams-message-body min-w-0 max-w-full overflow-x-auto text-sm [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p+p]:mt-2 [&_ul]:list-disc [&_ul]:pl-5">
+        <div className="ai-message-body min-w-0 max-w-full">
           <Streamdown parseIncompleteMarkdown>{displayText}</Streamdown>
         </div>
       )}
