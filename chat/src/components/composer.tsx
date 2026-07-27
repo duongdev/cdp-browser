@@ -8,6 +8,7 @@ import {
   LeftToRightListBulletIcon,
   LeftToRightListNumberIcon,
   Link01Icon,
+  MoreHorizontalIcon,
   QuoteUpIcon,
   SmileIcon,
   SourceCodeIcon,
@@ -26,10 +27,18 @@ import { type Editor, EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import { useEffect, useImperativeHandle, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { fetchRoster } from "../lib/chat-client"
+import { composerLayoutFor } from "../lib/composer-layout"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { pickFiles } from "../lib/image-attach"
 import { filterRoster } from "../lib/mention"
@@ -72,9 +81,7 @@ interface ComposerProps {
   namePref?: NamePref
 }
 
-/** Below which composer-card width the formatting actions collapse behind the Format (Aa) toggle
- *  instead of sitting inline (PSN-94 A — width-responsive action bar). */
-const FORMAT_INLINE_MIN_WIDTH = 480
+// Breakpoint constants live in composer-layout.ts; re-exported from there for test coverage.
 
 // A ghost icon button with a shadcn Tooltip (replaces the native `title`, PSN-94). The mousedown
 // preventDefault keeps the editor selection so the action lands on it.
@@ -206,7 +213,7 @@ export function Composer({
   const cardRef = useRef<HTMLDivElement>(null)
   const [hasContent, setHasContent] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  const [wide, setWide] = useState(true)
+  const [layout, setLayout] = useState(() => composerLayoutFor(9999))
   const [formatOpen, setFormatOpen] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [gifKind, setGifKind] = useState<GiphyKind | null>(null)
@@ -409,13 +416,14 @@ export function Composer({
     [editor],
   )
 
-  // Track the card width so the bar knows when to inline the format row.
+  // Track the card width to derive the layout for the toolbar (format inline vs collapsed, actions
+  // inline vs collapsed into the ⋯ dropdown). One observer, two breakpoints.
   useEffect(() => {
     const el = cardRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width ?? 0
-      if (w) setWide(w >= FORMAT_INLINE_MIN_WIDTH)
+      if (w) setLayout(composerLayoutFor(w))
     })
     ro.observe(el)
     return () => ro.disconnect()
@@ -547,129 +555,257 @@ export function Composer({
 
   return (
     <ComposerShell cardRef={cardRef}>
-      <>
-        {mention && mention.items.length > 0 && (
-          <div
-            className="fixed z-50 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md"
-            style={{
-              left: mention.left,
-              top: mention.top,
-              transform: "translateY(calc(-100% - 8px))",
-            }}
-          >
-            {mention.items.map((m, i) => (
-              <button
-                className={cn(
-                  "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm",
-                  i === mention.active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-                )}
-                key={m.mri}
-                onClick={() => commitMention(i)}
-                onMouseDown={(e) => e.preventDefault()}
-                type="button"
-              >
-                <span className="truncate">{formatName(m.name, namePref)}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {quotes && quotes.length > 0 && (
-          <div className="flex flex-col items-start gap-1 px-3 pt-3">
-            {quotes.map((q) => (
-              <div
-                className="flex w-fit max-w-full items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5"
-                key={q.id}
-              >
-                <div className="min-w-0 max-w-[20rem]">
-                  <div className="truncate font-medium text-ring text-xs">{q.authorName}</div>
-                  <div className="truncate text-muted-foreground text-xs">{q.preview}</div>
-                </div>
-                <button
-                  aria-label="Remove quoted message"
-                  className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
-                  onClick={() => {
-                    q.onCancel()
-                    editor?.commands.focus()
-                  }}
-                  type="button"
-                >
-                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
-                </button>
+      {mention && mention.items.length > 0 && (
+        <div
+          className="fixed z-50 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md"
+          style={{
+            left: mention.left,
+            top: mention.top,
+            transform: "translateY(calc(-100% - 8px))",
+          }}
+        >
+          {mention.items.map((m, i) => (
+            <button
+              className={cn(
+                "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm",
+                i === mention.active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+              )}
+              key={m.mri}
+              onClick={() => commitMention(i)}
+              onMouseDown={(e) => e.preventDefault()}
+              type="button"
+            >
+              <span className="truncate">{formatName(m.name, namePref)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {quotes && quotes.length > 0 && (
+        <div className="flex flex-col items-start gap-1 px-3 pt-3">
+          {quotes.map((q) => (
+            <div
+              className="flex w-fit max-w-full items-start gap-2 rounded-lg border-ring/30 border-l-2 bg-muted/40 py-1.5 pr-1.5 pl-2.5"
+              key={q.id}
+            >
+              <div className="min-w-0 max-w-[20rem]">
+                <div className="truncate font-medium text-ring text-xs">{q.authorName}</div>
+                <div className="truncate text-muted-foreground text-xs">{q.preview}</div>
               </div>
-            ))}
-          </div>
-        )}
-        {pendingFiles.length > 0 && (
-          <div className="flex flex-wrap gap-2 px-3 pt-3">
-            {pendingFiles.map((file) => (
-              <PendingFileChip
-                file={file}
-                key={`${file.name}-${file.size}-${file.lastModified}`}
-                onRemove={() => {
-                  setPendingFiles((cur) => {
-                    const i = cur.indexOf(file)
-                    return i === -1 ? cur : [...cur.slice(0, i), ...cur.slice(i + 1)]
-                  })
+              <button
+                aria-label="Remove quoted message"
+                className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
+                onClick={() => {
+                  q.onCancel()
                   editor?.commands.focus()
                 }}
-              />
-            ))}
-          </div>
-        )}
-        <EditorContent
-          className="[&_.ProseMirror]:min-h-[2.5rem] [&_.ProseMirror_.mention]:font-medium [&_.ProseMirror_.mention]:text-ring [&_.ProseMirror_blockquote]:border-ring/40 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:pl-3 [&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-muted [&_.ProseMirror_code]:px-1 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-5 [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:bg-muted [&_.ProseMirror_pre]:p-2 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-5 [&_.ProseMirror.ProseMirror-focused]:outline-none [&_.ProseMirror[data-placeholder]]:before:text-muted-foreground"
-          editor={editor}
-        />
-        <TooltipProvider delayDuration={300}>
-          {/* Narrow layout: the formatting row lives above the bar and toggles open. */}
-          {!wide && formatOpen && (
-            <div className="flex flex-wrap items-center gap-0.5 px-2 pb-1">{formatButtons}</div>
-          )}
-          <div className={COMPOSER_FOOTER}>
-            <input
-              className="hidden"
-              multiple
-              onChange={(e) => {
-                const picked = Array.from(e.target.files ?? [])
-                if (picked.length > 0) setPendingFiles((cur) => [...cur, ...picked])
-                e.target.value = ""
+                type="button"
+              >
+                <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {pendingFiles.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-3 pt-3">
+          {pendingFiles.map((file) => (
+            <PendingFileChip
+              file={file}
+              key={`${file.name}-${file.size}-${file.lastModified}`}
+              onRemove={() => {
+                setPendingFiles((cur) => {
+                  const i = cur.indexOf(file)
+                  return i === -1 ? cur : [...cur.slice(0, i), ...cur.slice(i + 1)]
+                })
+                editor?.commands.focus()
               }}
-              ref={fileRef}
-              type="file"
             />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label="Attach file"
-                  className="text-muted-foreground"
-                  onClick={() => fileRef.current?.click()}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Attach file</TooltipContent>
-            </Tooltip>
-            <div className="relative">
+          ))}
+        </div>
+      )}
+      <EditorContent
+        className="[&_.ProseMirror]:min-h-[2.5rem] [&_.ProseMirror_.mention]:font-medium [&_.ProseMirror_.mention]:text-ring [&_.ProseMirror_blockquote]:border-ring/40 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:pl-3 [&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-muted [&_.ProseMirror_code]:px-1 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-5 [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:bg-muted [&_.ProseMirror_pre]:p-2 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-5 [&_.ProseMirror.ProseMirror-focused]:outline-none [&_.ProseMirror[data-placeholder]]:before:text-muted-foreground"
+        editor={editor}
+      />
+      <TooltipProvider delayDuration={300}>
+        {/* Narrow layout: the formatting row lives above the bar and toggles open. */}
+        {!layout.formatInline && formatOpen && (
+          <div className="flex flex-wrap items-center gap-0.5 px-2 pb-1">{formatButtons}</div>
+        )}
+        <div className={COMPOSER_FOOTER}>
+          <input
+            className="hidden"
+            multiple
+            onChange={(e) => {
+              const picked = Array.from(e.target.files ?? [])
+              if (picked.length > 0) setPendingFiles((cur) => [...cur, ...picked])
+              e.target.value = ""
+            }}
+            ref={fileRef}
+            type="file"
+          />
+          {layout.actionsInline ? (
+            /* Wide enough: action buttons sit inline in the footer row. */
+            <>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    aria-label="Emoji"
-                    className={cn(
-                      "text-muted-foreground",
-                      emojiOpen && "bg-accent text-foreground",
-                    )}
-                    onClick={() => setEmojiOpen((v) => !v)}
-                    onMouseDown={(e) => e.preventDefault()}
+                    aria-label="Attach file"
+                    className="text-muted-foreground"
+                    onClick={() => fileRef.current?.click()}
                     size="icon-sm"
                     variant="ghost"
                   >
-                    <HugeiconsIcon className="size-4" icon={SmileIcon} />
+                    <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Emoji</TooltipContent>
+                <TooltipContent>Attach file</TooltipContent>
               </Tooltip>
+              <div className="relative">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      aria-label="Emoji"
+                      className={cn(
+                        "text-muted-foreground",
+                        emojiOpen && "bg-accent text-foreground",
+                      )}
+                      onClick={() => setEmojiOpen((v) => !v)}
+                      onMouseDown={(e) => e.preventDefault()}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <HugeiconsIcon className="size-4" icon={SmileIcon} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Emoji</TooltipContent>
+                </Tooltip>
+                {emojiOpen && (
+                  <>
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setEmojiOpen(false)}
+                      onKeyDown={(e) => e.key === "Escape" && setEmojiOpen(false)}
+                    />
+                    <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
+                      <EmojiPicker onClose={() => setEmojiOpen(false)} onSelect={insertEmoji} />
+                    </div>
+                  </>
+                )}
+              </div>
+              {/* GIF + sticker (PSN-94 D/E): both open one Giphy picker keyed by kind. */}
+              <div className="relative">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      aria-label="GIF"
+                      className={cn(
+                        "text-muted-foreground",
+                        gifKind === "gifs" && "bg-accent text-foreground",
+                      )}
+                      onClick={() => setGifKind((k) => (k === "gifs" ? null : "gifs"))}
+                      onMouseDown={(e) => e.preventDefault()}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <HugeiconsIcon className="size-4" icon={GifIcon} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>GIF</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      aria-label="Sticker"
+                      className={cn(
+                        "text-muted-foreground",
+                        gifKind === "stickers" && "bg-accent text-foreground",
+                      )}
+                      onClick={() => setGifKind((k) => (k === "stickers" ? null : "stickers"))}
+                      onMouseDown={(e) => e.preventDefault()}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <HugeiconsIcon className="size-4" icon={StickerIcon} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Sticker</TooltipContent>
+                </Tooltip>
+                {gifKind && (
+                  <>
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setGifKind(null)}
+                      onKeyDown={(e) => e.key === "Escape" && setGifKind(null)}
+                    />
+                    <div className="absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-border bg-popover shadow-lg">
+                      <GifPicker
+                        kind={gifKind}
+                        onClose={() => setGifKind(null)}
+                        onSelect={sendGif}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+            /* Narrow: collapse attach/emoji/GIF/sticker into a ⋯ DropdownMenu. The pickers
+             * (EmojiPicker, GifPicker) still mount when open — they render in a fixed portal
+             * so their position is independent of the collapsed button's location. */
+            <div className="relative">
+              <DropdownMenu>
+                <Tooltip>
+                  <DropdownMenuTrigger asChild>
+                    <TooltipTrigger asChild>
+                      <Button
+                        aria-label="More actions"
+                        className="text-muted-foreground"
+                        onMouseDown={(e) => e.preventDefault()}
+                        size="icon-sm"
+                        variant="ghost"
+                      >
+                        <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
+                      </Button>
+                    </TooltipTrigger>
+                  </DropdownMenuTrigger>
+                  <TooltipContent>More actions</TooltipContent>
+                </Tooltip>
+                <DropdownMenuContent align="start" side="top">
+                  <DropdownMenuItem
+                    onMouseDown={(e) => e.preventDefault()}
+                    onSelect={() => fileRef.current?.click()}
+                  >
+                    <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
+                    Attach file
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onMouseDown={(e) => e.preventDefault()}
+                    onSelect={() => setEmojiOpen((v) => !v)}
+                  >
+                    <HugeiconsIcon className="size-4" icon={SmileIcon} />
+                    Emoji
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onMouseDown={(e) => e.preventDefault()}
+                    onSelect={() => setGifKind((k) => (k === "gifs" ? null : "gifs"))}
+                  >
+                    <HugeiconsIcon className="size-4" icon={GifIcon} />
+                    GIF
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onMouseDown={(e) => e.preventDefault()}
+                    onSelect={() => setGifKind((k) => (k === "stickers" ? null : "stickers"))}
+                  >
+                    <HugeiconsIcon className="size-4" icon={StickerIcon} />
+                    Sticker
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {/* Pickers rendered outside the dropdown so they survive its close animation. */}
               {emojiOpen && (
                 <>
                   {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
@@ -683,45 +819,6 @@ export function Composer({
                   </div>
                 </>
               )}
-            </div>
-            {/* GIF + sticker (PSN-94 D/E): both open one Giphy picker keyed by kind. */}
-            <div className="relative">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    aria-label="GIF"
-                    className={cn(
-                      "text-muted-foreground",
-                      gifKind === "gifs" && "bg-accent text-foreground",
-                    )}
-                    onClick={() => setGifKind((k) => (k === "gifs" ? null : "gifs"))}
-                    onMouseDown={(e) => e.preventDefault()}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <HugeiconsIcon className="size-4" icon={GifIcon} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>GIF</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    aria-label="Sticker"
-                    className={cn(
-                      "text-muted-foreground",
-                      gifKind === "stickers" && "bg-accent text-foreground",
-                    )}
-                    onClick={() => setGifKind((k) => (k === "stickers" ? null : "stickers"))}
-                    onMouseDown={(e) => e.preventDefault()}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <HugeiconsIcon className="size-4" icon={StickerIcon} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Sticker</TooltipContent>
-              </Tooltip>
               {gifKind && (
                 <>
                   {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
@@ -736,48 +833,45 @@ export function Composer({
                 </>
               )}
             </div>
-            {wide ? (
-              <>
-                <div className="mx-1 h-4 w-px bg-border" />
-                {formatButtons}
-              </>
-            ) : (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    aria-label="Formatting"
-                    className={cn(
-                      "text-muted-foreground",
-                      formatOpen && "bg-accent text-foreground",
-                    )}
-                    onClick={() => setFormatOpen((v) => !v)}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <HugeiconsIcon className="size-4" icon={TextFontIcon} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Formatting</TooltipContent>
-              </Tooltip>
-            )}
-            <div className="flex-1" />
+          )}
+          {layout.formatInline ? (
+            <>
+              <div className="mx-1 h-4 w-px bg-border" />
+              {formatButtons}
+            </>
+          ) : (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  aria-label="Send"
-                  className="rounded-full"
-                  disabled={!canSend}
-                  onClick={doSend}
+                  aria-label="Formatting"
+                  className={cn("text-muted-foreground", formatOpen && "bg-accent text-foreground")}
+                  onClick={() => setFormatOpen((v) => !v)}
                   size="icon-sm"
+                  variant="ghost"
                 >
-                  <HugeiconsIcon className="size-4" icon={ArrowUp02Icon} />
+                  <HugeiconsIcon className="size-4" icon={TextFontIcon} />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Send (↵)</TooltipContent>
+              <TooltipContent>Formatting</TooltipContent>
             </Tooltip>
-          </div>
-        </TooltipProvider>
-      </>
+          )}
+          <div className="flex-1" />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Send"
+                className="rounded-full"
+                disabled={!canSend}
+                onClick={doSend}
+                size="icon-sm"
+              >
+                <HugeiconsIcon className="size-4" icon={ArrowUp02Icon} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Send (↵)</TooltipContent>
+          </Tooltip>
+        </div>
+      </TooltipProvider>
     </ComposerShell>
   )
 }
