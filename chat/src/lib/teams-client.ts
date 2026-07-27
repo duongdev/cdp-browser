@@ -41,6 +41,10 @@ export interface TeamsConversation {
   /** Local rename (t168): set by applyPrefs from the prefs map; the original title stays visible
    *  as a muted subtitle. Never from the server conversation payload. */
   customTitle?: string
+  /** Client-only (PSN-103): true while this is a push-deep-link placeholder that has not yet been
+   *  hydrated from the conversation list or the thread's sender names. Cleared when a real row
+   *  arrives. Never set by the server. */
+  stub?: true
 }
 
 /** One page of the conversation list plus the cursor to page older (null = end). */

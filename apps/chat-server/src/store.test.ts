@@ -112,6 +112,56 @@ describe("conversations", () => {
     upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 1, readHorizonTs: 5000 }])
     expect(getReadState(db, "teams", "c")?.readHorizonTs).toBe(5000)
   })
+
+  test("title round-trips through upsert → listConversations", () => {
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 1, title: "Alice" }])
+    expect(listConversations(db, "teams")[0].title).toBe("Alice")
+  })
+
+  test("upsert with no/empty title does NOT clobber a stored title", () => {
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 1, title: "Alice" }])
+    // Version bump but no title → stored title must survive.
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 2 }])
+    expect(listConversations(db, "teams")[0].title).toBe("Alice")
+    // Explicit empty string also must not clear it.
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 3, title: "" }])
+    expect(listConversations(db, "teams")[0].title).toBe("Alice")
+  })
+
+  test("a new non-empty title lands even when lastMessageVersion did not rise", () => {
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 5, lastMessagePreview: "hi" }])
+    // Same version — version-gated DO UPDATE won't fire, but title must still land.
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 5, title: "Bob" }])
+    const row = listConversations(db, "teams")[0]
+    expect(row.title).toBe("Bob")
+    // The version-gated fields are unchanged (preview was not overwritten).
+    expect(row.lastMessagePreview).toBe("hi")
+  })
+
+  test("migrate() on a DB without the title column adds it, and running twice does not throw", () => {
+    // Build a DB that mimics a pre-migration state: create the conversations table without `title`.
+    const db2 = new Database(":memory:")
+    db2.exec(`
+      CREATE TABLE conversations (
+        service TEXT NOT NULL, id TEXT NOT NULL,
+        kind TEXT, topic TEXT,
+        last_message_id TEXT, last_message_version INTEGER,
+        last_message_ts INTEGER, last_message_preview TEXT,
+        last_message_from_me INTEGER DEFAULT 0,
+        newest_synced_ts INTEGER, oldest_synced_ts INTEGER,
+        muted INTEGER DEFAULT 0, updated_at INTEGER,
+        PRIMARY KEY (service, id)
+      )
+    `)
+    expect(() => {
+      migrate(db2)
+      migrate(db2) // second call must not throw
+    }).not.toThrow()
+    const cols = (db2.prepare("PRAGMA table_info(conversations)").all() as { name: string }[]).map(
+      (r) => r.name,
+    )
+    expect(cols).toContain("title")
+  })
 })
 
 describe("read state", () => {
