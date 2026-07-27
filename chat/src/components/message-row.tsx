@@ -20,15 +20,7 @@ import {
   Xls01Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
-import {
-  type MouseEvent,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -55,6 +47,7 @@ import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
 import { useDismissOnHidden } from "../lib/use-dismiss-on-hidden"
 import { getCatalogGlyph } from "../lib/use-emoji-catalog"
+import { useHoverOverlay } from "../lib/use-hover-overlay"
 import { DisplayName } from "./display-name"
 import { EmojiPicker } from "./emoji-picker"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
@@ -83,6 +76,37 @@ function reactorTitle(r: TeamsReaction, pref: NamePref): string | undefined {
   if (shown.length === 0) return undefined
   const hidden = r.count - shown.length
   return hidden > 0 ? `${shown.join(", ")} and ${hidden} more` : shown.join(", ")
+}
+
+/**
+ * Tooltip state for a control that ALSO opens a menu/popover (PSN-105 L).
+ *
+ * The ghost: open the ⋯ menu, click "Copy link", the menu closes — and the tooltip reappears
+ * anchored to nothing, because the ⋯ button itself is gone (the row lost hover while the menu
+ * covered it, so the tooltip's own open state outlived its trigger).
+ *
+ * Rule: suppressed while the overlay is open, and cleared when it closes — it comes back only from
+ * a fresh pointer-enter on the trigger, which is the only honest proof the pointer is really there.
+ * (Probing `:hover` on close was tried first and is a trap: Chrome doesn't recompute the hover
+ * chain until the pointer next moves, so right after an overlay unmounts the answer is stale.)
+ */
+function useMenuTooltip(menuOpen: boolean) {
+  const [tipOpen, setTipOpen] = useState(false)
+  const [pointerOver, setPointerOver] = useState(false)
+  useEffect(() => {
+    if (!menuOpen) {
+      setTipOpen(false)
+      setPointerOver(false)
+    }
+  }, [menuOpen])
+  return {
+    /** Spread on the trigger button. */
+    hoverProps: {
+      onPointerEnter: () => setPointerOver(true),
+      onPointerLeave: () => setPointerOver(false),
+    },
+    tipProps: { open: tipOpen && pointerOver && !menuOpen, onOpenChange: setTipOpen },
+  }
 }
 
 /** A keyboard command targeted at the focused row (t152). The `nonce` changes on each dispatch so a
@@ -196,29 +220,12 @@ function ChatMessageRow({
   // Reaction toolbar as a PORTALED hover Popover (PSN-99): an absolute bar inside the bubble extended
   // the thread's scroll width (a stray horizontal scrollbar) and clipped/overflowed at the edges. A
   // Popover portals out of the scroll container, so it can't do either, and Radix keeps it on-screen.
-  // Open on hover with a grace delay so the cursor can cross the anchor→content gap; stay open while
-  // the "+" catalog is open.
-  const [reactHover, setReactHover] = useState(false)
-  const reactHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const openReactBar = useCallback(() => {
-    if (reactHideTimer.current) {
-      clearTimeout(reactHideTimer.current)
-      reactHideTimer.current = null
-    }
-    setReactHover(true)
-  }, [])
-  const closeReactBarSoon = useCallback(() => {
-    if (reactHideTimer.current) clearTimeout(reactHideTimer.current)
-    reactHideTimer.current = setTimeout(() => setReactHover(false), 140)
-  }, [])
-  useEffect(
-    () => () => {
-      if (reactHideTimer.current) clearTimeout(reactHideTimer.current)
-    },
-    [],
-  )
-  const closeReactBarNow = useCallback(() => setReactHover(false), [])
-  useDismissOnHidden(closeReactBarNow, convId)
+  //
+  // Which row shows it is NOT this row's decision (PSN-105 L): the shared hoverOverlay store owns
+  // "one toolbar on screen" as an invariant, plus the open/close delay policy. This row only reports
+  // enter/leave and whether its picker pins it open.
+  const reactBar = useHoverOverlay(message.id, canReact && !coarse, pickerOpen)
+  useDismissOnHidden(reactBar.close, convId)
   // Reply-with-quote (PSN-92 B): any confirmed, non-deleted message, own or others'.
   const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
@@ -349,8 +356,10 @@ function ChatMessageRow({
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
-        // Jump-landing flash (PSN-92 B5): a brief highlight so the eye finds the jumped-to message.
-        highlighted && "msg-jump-flash",
+        // Jump-landing flash (PSN-92 B5): the ring belongs on the BUBBLE (below), which owns the
+        // radius; on the row wrapper it drew a 1rem rectangle around the whole column. A message
+        // with no bubble (chips only) still flashes here — there's nothing else to point at.
+        highlighted && !hasBody && "msg-jump-flash",
       )}
       data-msg-id={message.id}
       ref={rowRef}
@@ -438,12 +447,12 @@ function ChatMessageRow({
         >
           {/* XSS BOUNDARY: message.body is site-authored HTML. It MUST pass through sanitize()
               (DOMPurify, strict allowlist) before it hits the DOM — never render body raw. */}
-          <Popover open={canReact && !coarse && (reactHover || pickerOpen)}>
+          <Popover open={reactBar.open}>
             <PopoverAnchor asChild>
               <div
                 className="relative min-w-0 max-w-[85%] md:max-w-[65ch]"
-                onMouseEnter={canReact && !coarse ? openReactBar : undefined}
-                onMouseLeave={canReact && !coarse ? closeReactBarSoon : undefined}
+                onMouseEnter={reactBar.onEnter}
+                onMouseLeave={reactBar.onLeave}
               >
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
@@ -463,6 +472,9 @@ function ChatMessageRow({
                     deleted && "italic opacity-70",
                     pending && "opacity-60",
                     failed && "opacity-70 ring-1 ring-destructive/40",
+                    // Jump-landing flash (PSN-92 B5) — on the bubble so the ring follows its own
+                    // (possibly asymmetric, group-position) radius and sits outside it, unclipped.
+                    highlighted && "msg-jump-flash",
                   )}
                   // bodyHtml is memoized: names + reply-ids stamped before sanitize (the XSS boundary),
                   // then long bare-URL links middle-elided (PSN-99).
@@ -479,9 +491,16 @@ function ChatMessageRow({
             {canReact && !coarse && (
               <PopoverContent
                 align={self ? "start" : "end"}
-                className="flex w-auto flex-row items-center gap-0.5 rounded-full border border-border p-1"
-                onMouseEnter={openReactBar}
-                onMouseLeave={closeReactBarSoon}
+                // No exit animation: Radix keeps a closing content mounted until its animation ends,
+                // so on a fast row-to-row travel the outgoing bar cross-faded with the incoming one
+                // and you genuinely saw two toolbars. `animate-none` on close makes Radix unmount it
+                // synchronously — one bar, always (PSN-105 L).
+                className="flex w-auto flex-row items-center gap-0.5 rounded-full border border-border p-1 data-[state=closed]:animate-none"
+                // The catalog pins the bar open, so the anchor can scroll out from under it; Radix
+                // then hides it instead of leaving it floating over unrelated messages.
+                hideWhenDetached
+                onMouseEnter={reactBar.onEnter}
+                onMouseLeave={reactBar.onLeave}
                 onOpenAutoFocus={(e) => e.preventDefault()}
                 side="top"
                 sideOffset={6}
@@ -710,6 +729,9 @@ function QuickReact({
   onPickerPick: (key: string) => void
   side: "start" | "end"
 }) {
+  // Same ghost-tooltip rule as the ⋯ trigger: picking an emoji unmounts the whole bar, so the
+  // "More reactions" tip must not flash back when the catalog closes.
+  const { hoverProps, tipProps } = useMenuTooltip(pickerOpen)
   return (
     <>
       {QUICK_REACTIONS.map((r) => (
@@ -729,18 +751,27 @@ function QuickReact({
       ))}
       {/* "+" opens the Teams catalog picker in a nested shadcn Popover — portaled + collision-aware. */}
       <Popover onOpenChange={onPickerOpenChange} open={pickerOpen}>
-        <Tooltip>
+        <Tooltip {...tipProps}>
           <TooltipTrigger asChild>
             <PopoverTrigger
               aria-label="More reactions"
               className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent"
+              {...hoverProps}
             >
               <HugeiconsIcon className="size-3.5" icon={Add01Icon} />
             </PopoverTrigger>
           </TooltipTrigger>
           <TooltipContent>More reactions</TooltipContent>
         </Tooltip>
-        <PopoverContent align={side === "end" ? "end" : "start"} className="w-auto p-0" side="top">
+        <PopoverContent
+          align={side === "end" ? "end" : "start"}
+          className="w-auto p-0"
+          // Radix's own open-autofocus lands on the content box and beats the search field's mount
+          // focus — so the picker opened with nothing focused and typing went nowhere. Let the
+          // EmojiPicker focus its search input itself.
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          side="top"
+        >
           <EmojiPicker
             onClose={() => onPickerOpenChange(false)}
             onSelect={(key) => {
@@ -847,10 +878,9 @@ function MessageActions({
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
-  // The tooltip is CONTROLLED from the first render. It used to be `open={open ? false : undefined}`,
-  // which starts undefined (uncontrolled) and becomes a boolean the moment the menu opens — React
-  // warns about exactly that switch. Own the hover state instead and suppress it while the menu is up.
-  const [tipOpen, setTipOpen] = useState(false)
+  // The tooltip is CONTROLLED from the first render (an uncontrolled→controlled switch warns), is
+  // suppressed while the menu is up, and never re-shows onto a trigger the pointer has left.
+  const { hoverProps, tipProps } = useMenuTooltip(open)
   const [, copyText] = useCopy()
   const run = (fn: () => void) => {
     setOpen(false)
@@ -861,7 +891,7 @@ function MessageActions({
   // (steering). Radix portals to the body and flips/shifts to stay on screen.
   return (
     <Popover onOpenChange={setOpen} open={open}>
-      <Tooltip onOpenChange={setTipOpen} open={tipOpen && !open}>
+      <Tooltip {...tipProps}>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
             <button
@@ -871,6 +901,7 @@ function MessageActions({
                 coarse || open ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
               )}
               type="button"
+              {...hoverProps}
             >
               <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
             </button>
