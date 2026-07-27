@@ -7,6 +7,7 @@ import {
   getReadState,
   getUsers,
   listConversations,
+  listMessageEdits,
   listMessages,
   listMessagesAfter,
   listMessagesAround,
@@ -393,5 +394,40 @@ describe("jump windows (t175)", () => {
     const end = listMessagesBefore(db, "teams", "c1", 200, 5)
     expect(end.messages.map((m) => m.id)).toEqual(["m1"])
     expect(end.hasOlder).toBe(false)
+  })
+})
+
+describe("edit history (PSN-105 C)", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+    upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 1 }])
+  })
+
+  test("snapshots the old body on every observed edit, newest first", () => {
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v1" }])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v2", edited: true, editTs: 111 }])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v3", edited: true, editTs: 222 }])
+    const versions = listMessageEdits(db, "teams", "c", "a")
+    expect(versions.map((v) => v.body)).toEqual(["v2", "v1"])
+    expect(versions[0].editTs).toBe(222)
+    expect(listMessages(db, "teams", "c")[0].body).toBe("v3")
+  })
+
+  test("recovers the text of a deleted message, and records nothing on a re-sweep", () => {
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "secret" }])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "message deleted", deleted: true }])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "message deleted", deleted: true }])
+    expect(listMessageEdits(db, "teams", "c", "a").map((v) => v.body)).toEqual(["secret"])
+  })
+
+  test("caps the stored versions per message", () => {
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v0" }])
+    for (let i = 1; i <= 25; i++) {
+      upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: `v${i}`, edited: true }])
+    }
+    const versions = listMessageEdits(db, "teams", "c", "a")
+    expect(versions).toHaveLength(20)
+    expect(versions[0].body).toBe("v24")
   })
 })

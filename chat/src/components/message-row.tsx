@@ -58,6 +58,7 @@ import { DisplayName } from "./display-name"
 import { EmojiPicker } from "./emoji-picker"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
 import { useCopy, useLinkHoverCopy } from "./link-hover-copy"
+import { MessageHistoryPopover } from "./message-history-popover"
 import { UserAvatar } from "./user-avatar"
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
@@ -629,8 +630,18 @@ function ChatMessageRow({
       )}
       {/* No inline timestamps (t160, Messenger grouping) — separators + the bubble tooltip carry
           the time. The "(edited)" marker stays; it's meaning, not chrome. */}
-      {!unconfirmed && message.edited && !deleted && (
+      {/* The marker is also the way into the local version history (PSN-105 C) — a popover, so the
+          flex-col-reverse thread never shifts. Without a convId there's nothing to query, so it
+          stays a plain label. */}
+      {!unconfirmed && message.edited && !deleted && convId && (
+        <MessageHistoryPopover convId={convId} label="(edited)" msgId={message.id} />
+      )}
+      {!unconfirmed && message.edited && !deleted && !convId && (
         <span className="px-1 font-mono text-[10px] text-muted-foreground">(edited)</span>
+      )}
+      {/* A tombstone's original text only exists in our own snapshot — Teams blanked its copy. */}
+      {deleted && convId && (
+        <MessageHistoryPopover convId={convId} label="view original" msgId={message.id} />
       )}
       <ImageLightbox media={lightboxMedia} onClose={() => setLightboxMedia(null)} />
     </div>

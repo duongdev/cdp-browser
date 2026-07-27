@@ -94,6 +94,9 @@ export interface ChatMessage {
   body: string
   self?: boolean
   edited?: boolean
+  /** When the last edit landed (epoch ms). Present only on an edited message; the BFF stamps the
+   *  body version it snapshots with it (PSN-105 C). */
+  editTs?: number
   deleted?: boolean
   attachments?: ChatAttachment[]
   reactions?: ChatReaction[]

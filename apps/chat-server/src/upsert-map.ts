@@ -16,6 +16,7 @@ export function toMessageInput(m: ChatMessage): MessageInput {
     raw: m,
     deleted: m.deleted,
     edited: m.edited,
+    editTs: m.editTs,
     mentionsMe: m.mentionsMe,
   }
 }

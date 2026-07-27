@@ -14,6 +14,7 @@ type Db = BetterSqlite3.Database
 
 import { migrateAssistant } from "./assistant/session-store.ts"
 import type { ChatConversation, ChatPrefs } from "./contract.ts"
+import { MAX_VERSIONS_PER_MESSAGE, type PrevBody, planSnapshot } from "./edit-history.ts"
 import { extractImages } from "./media-images.ts"
 import { captionsForMessage, migrateMedia, recordMessageImages } from "./media-store.ts"
 import { backfillSearchIndex, migrateSearch, syncMessageFts } from "./search.ts"
@@ -51,6 +52,19 @@ const SCHEMA = [
     mentions_me INTEGER DEFAULT 0,
     PRIMARY KEY (service, conv_id, id)
   )`,
+  // Superseded message bodies (PSN-105 C). Teams keeps no previous version, so this is the ONLY
+  // copy — appended in `upsertMessages` the moment before the row's body is overwritten. Not keyed
+  // by a primary key: a message has many versions, ordered by rowid (append order).
+  `CREATE TABLE IF NOT EXISTS message_edits (
+    service     TEXT NOT NULL,
+    conv_id     TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    body        TEXT,
+    edit_ts     INTEGER,
+    captured_at INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS message_edits_msg
+     ON message_edits (service, conv_id, msg_id)`,
   `CREATE TABLE IF NOT EXISTS read_state (
     service            TEXT NOT NULL,
     conv_id            TEXT NOT NULL,
@@ -98,6 +112,7 @@ const SCHEMA = [
 const ADDED_COLUMNS: [table: string, column: string, decl: string][] = [
   ["conversations", "title", "TEXT"],
   ["read_state", "unread_bookmark_ts", "INTEGER"],
+  ["messages", "edit_ts", "INTEGER"],
 ]
 
 /** Idempotent — safe on every boot (`CREATE … IF NOT EXISTS` + the column adds above). */
@@ -302,6 +317,8 @@ export interface MessageInput {
   raw?: unknown
   deleted?: boolean
   edited?: boolean
+  /** When the provider says the last edit landed (epoch ms) — stamps the snapshot it supersedes. */
+  editTs?: number
   mentionsMe?: boolean
 }
 
@@ -318,9 +335,9 @@ export function upsertMessages(
   if (list.length === 0) return
   const stmt = db.prepare(`
     INSERT INTO messages
-      (service, conv_id, id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me)
+      (service, conv_id, id, version, sender_id, sender_name, ts, body, raw, deleted, edited, edit_ts, mentions_me)
     VALUES
-      (@service, @conv_id, @id, @version, @sender_id, @sender_name, @ts, @body, @raw, @deleted, @edited, @mentions_me)
+      (@service, @conv_id, @id, @version, @sender_id, @sender_name, @ts, @body, @raw, @deleted, @edited, @edit_ts, @mentions_me)
     ON CONFLICT(service, conv_id, id) DO UPDATE SET
       version = excluded.version,
       sender_id = excluded.sender_id,
@@ -330,7 +347,29 @@ export function upsertMessages(
       raw = excluded.raw,
       deleted = excluded.deleted,
       edited = excluded.edited,
+      edit_ts = excluded.edit_ts,
       mentions_me = excluded.mentions_me
+  `)
+  // Edit history (PSN-105 C): the bodies about to be overwritten. Read in ONE batched statement —
+  // this runs on the 4s/12s sweep path, so a per-message SELECT would be a round-trip tax.
+  const prevBodies = readBodies(
+    db,
+    service,
+    convId,
+    list.map((m) => String(m.id)),
+  )
+  const snapStmt = db.prepare(`
+    INSERT INTO message_edits (service, conv_id, msg_id, body, edit_ts, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  // Keep the newest MAX_VERSIONS_PER_MESSAGE (R3) — append order is rowid order.
+  const trimStmt = db.prepare(`
+    DELETE FROM message_edits
+    WHERE service = ? AND conv_id = ? AND msg_id = ? AND rowid NOT IN (
+      SELECT rowid FROM message_edits
+      WHERE service = ? AND conv_id = ? AND msg_id = ?
+      ORDER BY rowid DESC LIMIT ${MAX_VERSIONS_PER_MESSAGE}
+    )
   `)
   const advance = db.prepare(`
     UPDATE conversations SET
@@ -347,6 +386,12 @@ export function upsertMessages(
     let newest = Number.NEGATIVE_INFINITY
     for (const m of rows) {
       const ts = Number(m.ts) || 0
+      const msgId = String(m.id)
+      const snapshot = planSnapshot(prevBodies.get(msgId), m, now)
+      if (snapshot) {
+        snapStmt.run(service, convId, msgId, snapshot.body, snapshot.editTs, now)
+        trimStmt.run(service, convId, msgId, service, convId, msgId)
+      }
       stmt.run({
         service,
         conv_id: convId,
@@ -359,6 +404,7 @@ export function upsertMessages(
         raw: m.raw === undefined ? null : JSON.stringify(m.raw),
         deleted: m.deleted ? 1 : 0,
         edited: m.edited ? 1 : 0,
+        edit_ts: Number.isFinite(m.editTs) ? m.editTs : null,
         mentions_me: m.mentionsMe ? 1 : 0,
       })
       // Inline images are registered here (PSN-104) so the caption worker — which drains
@@ -382,6 +428,49 @@ export function upsertMessages(
     }
   })
   run(list)
+}
+
+/** The stored bodies for a page of ids, in ONE statement (the upsert path is the hot sweep lane).
+ *  SQLite's parameter ceiling is ~32k and a page is ~30 rows, so a single `IN (…)` is safe. */
+function readBodies(db: Db, service: string, convId: string, ids: string[]): Map<string, PrevBody> {
+  const out = new Map<string, PrevBody>()
+  if (ids.length === 0) return out
+  const rows = db
+    .prepare(
+      `SELECT id, body, deleted FROM messages
+       WHERE service = ? AND conv_id = ? AND id IN (${ids.map(() => "?").join(",")})`,
+    )
+    .all(service, convId, ...ids) as { id: string; body: string; deleted: number }[]
+  for (const r of rows) out.set(r.id, { body: r.body || "", deleted: !!r.deleted })
+  return out
+}
+
+/** One superseded body as `listMessageEdits` returns it. */
+export interface MessageEdit {
+  body: string
+  editTs: number | null
+  capturedAt: number | null
+}
+
+/** A message's superseded bodies, NEWEST first (PSN-105 C). Capped at MAX_VERSIONS_PER_MESSAGE by
+ *  the write path — a full list means older versions were dropped, which the UI must say. */
+export function listMessageEdits(
+  db: Db,
+  service: string,
+  convId: string,
+  msgId: string,
+): MessageEdit[] {
+  const rows = db
+    .prepare(
+      `SELECT body, edit_ts, captured_at FROM message_edits
+       WHERE service = ? AND conv_id = ? AND msg_id = ? ORDER BY rowid DESC`,
+    )
+    .all(service, convId, msgId) as { body: string; edit_ts: number; captured_at: number }[]
+  return rows.map((r) => ({
+    body: r.body || "",
+    editTs: r.edit_ts ?? null,
+    capturedAt: r.captured_at ?? null,
+  }))
 }
 
 /** Register one stored message's inline images (PSN-104) — the lazy path for a message that landed

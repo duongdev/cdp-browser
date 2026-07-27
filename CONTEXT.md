@@ -148,6 +148,10 @@ _Avoid_: context window (that's the token budget), attachments, pinned context.
 The text an inline image's pixels were reduced to (`message_media.caption`, PSN-104) — a verbatim reading of everything visible, made once per AMS object by the caption model. It is indexed alongside the message, so a phrase that exists ONLY inside a screenshot still finds it, and it is what a text-only model sees of that image. Shown under the picture in the lightbox.
 _Avoid_: caption in the "photo caption" sense, alt text, OCR (it is a transcription plus a describing line, not either alone).
 
+**Message Version** (edit history):
+One superseded body of a message, kept in the BFF's `message_edits` table (PSN-105). Teams exposes NO previous version — only an `edittime` stamp and the current body — so a Message Version exists only because the BFF snapshots the stored body the instant before `upsertMessages` overwrites it, on an observed body change or a flip to deleted. Consequences to state plainly: a change made before the feature shipped, or while the server was down, has no Message Version; and only the newest 20 per message are kept, which the popover says out loud when the cap is hit.
+_Avoid_: revision, draft, history (ambiguous — that's the thread's message history).
+
 **Vision Model**:
 An assistant model the router reports as taking image input (or one force-listed in `LLM_VISION_MODELS`). Only such a model gets the `view_image` tool; every other model answers from **Image Transcription**s. Fetched pixels never ride in a tool result — they are appended as a user message on the next step, because the OpenAI-compatible mapping stringifies a multi-modal tool output.
 _Avoid_: multimodal model (ambiguous — audio/video are not supported), image model (that generates images).
