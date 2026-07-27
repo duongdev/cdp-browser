@@ -82,6 +82,9 @@ export interface AssistantModel {
   id: string
   label: string
   default: boolean
+  /** The model's real context window in tokens, when the provider reports one. */
+  contextWindow?: number
+  maxOutput?: number
 }
 
 export async function listModels(): Promise<AssistantModel[]> {

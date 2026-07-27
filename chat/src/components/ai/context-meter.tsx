@@ -10,6 +10,11 @@ const STROKE = 2.5
 const R = (SIZE - STROKE) / 2
 const CIRCUMFERENCE = 2 * Math.PI * R
 
+/** 200000 → "200K", 8192 → "8,192" — exact when it isn't a round thousand. */
+function formatTokens(n: number): string {
+  return n >= 1000 && n % 1000 === 0 ? `${n / 1000}K` : n.toLocaleString()
+}
+
 export function ContextMeter({ pct, budgetTokens }: { pct: number; budgetTokens: number }) {
   const clamped = Math.min(100, Math.max(0, pct))
   const high = clamped >= 80
@@ -58,8 +63,8 @@ export function ContextMeter({ pct, budgetTokens }: { pct: number; budgetTokens:
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        Context window {clamped}% used of ~{Math.round(budgetTokens / 1000)}K tokens. Older turns
-        summarize automatically past the budget.
+        {clamped}% of this model's {formatTokens(budgetTokens)}-token context window. Older turns
+        summarize automatically as it fills.
       </TooltipContent>
     </Tooltip>
   )

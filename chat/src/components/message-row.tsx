@@ -880,113 +880,83 @@ function MessageActions({
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
+  const run = (fn: () => void) => {
+    setOpen(false)
+    fn()
+  }
+  // A portalled Popover, not an absolutely-positioned div: the old menu was clipped by the
+  // thread's own overflow/stacking context, so on a wide message it slid under the panels
+  // (steering). Radix portals to the body and flips/shifts to stay on screen.
   return (
-    <div className="relative shrink-0">
-      <button
-        aria-expanded={open}
-        aria-label="Message actions"
-        className={cn(
-          "flex size-7 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
-          coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
-        )}
-        onClick={() => setOpen((v) => !v)}
-        type="button"
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger asChild>
+        <button
+          aria-label="Message actions"
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+            coarse || open ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+          )}
+          type="button"
+        >
+          <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align={side === "end" ? "end" : "start"}
+        className="flex w-max min-w-44 flex-col p-1"
+        side="top"
       >
-        <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
-      </button>
-      {open && (
-        <>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-away dismiss backdrop */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: the menu buttons are focusable */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            className={cn(
-              "absolute bottom-full z-50 mb-1 flex w-max min-w-40 flex-col whitespace-nowrap rounded-lg border border-border bg-popover py-1 shadow-md",
-              side === "end" ? "right-0" : "left-0",
-            )}
-          >
-            {onReact && (
-              <button
-                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onReact()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4" icon={Add01Icon} />
-                React
-              </button>
-            )}
-            {onAskAi && (
-              <button
-                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onAskAi()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4 shrink-0" icon={AiChipIcon} />
-                Ask AI about this
-              </button>
-            )}
-            {onDraftReply && (
-              <button
-                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onDraftReply()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4 shrink-0" icon={AiEditingIcon} />
-                Draft reply with AI
-              </button>
-            )}
-            {onSummarizeConv && (
-              <button
-                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onSummarizeConv()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4 shrink-0" icon={AiChipIcon} />
-                Summarize conversation
-              </button>
-            )}
-            {canEdit && (
-              <button
-                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onEdit()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4" icon={PencilEdit02Icon} />
-                Edit
-              </button>
-            )}
-            {canDelete && (
-              <button
-                className="flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-destructive text-sm hover:bg-accent"
-                onClick={() => {
-                  setOpen(false)
-                  onDelete()
-                }}
-                type="button"
-              >
-                <HugeiconsIcon className="size-4" icon={Delete02Icon} />
-                Delete
-              </button>
-            )}
-          </div>
-        </>
+        {onReact && <MenuItem icon={Add01Icon} label="React" onRun={() => run(onReact)} />}
+        {onAskAi && (
+          <MenuItem icon={AiChipIcon} label="Ask AI about this" onRun={() => run(onAskAi)} />
+        )}
+        {onDraftReply && (
+          <MenuItem
+            icon={AiEditingIcon}
+            label="Draft reply with AI"
+            onRun={() => run(onDraftReply)}
+          />
+        )}
+        {onSummarizeConv && (
+          <MenuItem
+            icon={AiChipIcon}
+            label="Summarize conversation"
+            onRun={() => run(onSummarizeConv)}
+          />
+        )}
+        {canEdit && <MenuItem icon={PencilEdit02Icon} label="Edit" onRun={() => run(onEdit)} />}
+        {canDelete && (
+          <MenuItem destructive icon={Delete02Icon} label="Delete" onRun={() => run(onDelete)} />
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** One row in the message-actions menu — never wraps, icon never shrinks. */
+function MenuItem({
+  icon,
+  label,
+  onRun,
+  destructive,
+}: {
+  icon: IconSvgElement
+  label: string
+  onRun: () => void
+  destructive?: boolean
+}) {
+  return (
+    <button
+      className={cn(
+        "flex items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-accent",
+        destructive && "text-destructive",
       )}
-    </div>
+      onClick={onRun}
+      type="button"
+    >
+      <HugeiconsIcon className="size-4 shrink-0" icon={icon} />
+      {label}
+    </button>
   )
 }
 

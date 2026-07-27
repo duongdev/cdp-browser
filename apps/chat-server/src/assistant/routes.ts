@@ -5,7 +5,14 @@
 import { convertToModelMessages, generateText, type UIMessage } from "ai"
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
-import { LlmUnconfiguredError, parseModelList, readLlmConfig, resolveModel } from "../llm.ts"
+import {
+  enrichModelLimits,
+  LlmUnconfiguredError,
+  type ModelOption,
+  parseModelList,
+  readLlmConfig,
+  resolveModel,
+} from "../llm.ts"
 import { getContextWindow } from "../search.ts"
 import {
   citationKey,
@@ -31,6 +38,9 @@ type Db = BetterSqlite3.Database
 
 const DEFAULT_SERVICE = "teams"
 
+/** Hard ceiling for one assistant turn (tool loop included). Past this the stream aborts. */
+const TURN_TIMEOUT_MS = 180_000
+
 export interface AssistantDeps {
   db: Db
   /** Injectable for tests (mock LanguageModel). Default resolves from env per request. */
@@ -39,9 +49,10 @@ export interface AssistantDeps {
 
 function errorCodeOf(err: unknown): string {
   if (err instanceof LlmUnconfiguredError) return "llm-unconfigured"
+  const name = String((err as Error)?.name || "")
   const msg = String((err as Error)?.message || err || "")
   if (/429|rate.?limit/i.test(msg)) return "llm-rate-limited"
-  if (/timeout|timed?.?out|aborted/i.test(msg)) return "llm-timeout"
+  if (name === "TimeoutError" || /timeout|timed?.?out|aborted/i.test(msg)) return "llm-timeout"
   return "llm-error"
 }
 
@@ -80,7 +91,16 @@ export function createAssistantRoutes(deps: AssistantDeps) {
   // ---- models (t177) -------------------------------------------------------
   // The curated LLM_MODELS list (id[:label] pairs), never the raw router dump.
 
-  app.get("/models", (c) => c.json({ models: parseModelList() }))
+  // Limits come from the provider once per process — a model's context window doesn't change
+  // under us, and the meter shouldn't pay a round-trip per panel mount.
+  let modelsCache: ModelOption[] | null = null
+  app.get("/models", async (c) => {
+    if (!modelsCache) {
+      const curated = parseModelList()
+      modelsCache = await enrichModelLimits(curated, readLlmConfig())
+    }
+    return c.json({ models: modelsCache })
+  })
 
   // ---- session CRUD --------------------------------------------------------
 
@@ -210,6 +230,9 @@ export function createAssistantRoutes(deps: AssistantDeps) {
         ? { convId: b.focusConv.convId, title: b.focusConv.title }
         : null
     const result = runAgentTurn({
+      // A provider that stops producing must not hang the panel forever — the stream aborts and
+      // surfaces as a typed error the client can retry (steering: "freezes forever").
+      abortSignal: AbortSignal.timeout(TURN_TIMEOUT_MS),
       model,
       system: buildSystemPrompt({
         summary: session.summary,

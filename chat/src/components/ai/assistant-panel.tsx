@@ -51,6 +51,7 @@ import {
   loadSessionMessages,
   patchSession,
 } from "../../lib/assistant-client"
+import { COMPOSER_FOOTER, ComposerShell } from "../composer-shell"
 import { prompt } from "../prompt-dialog"
 import { ContextMeter } from "./context-meter"
 import { ModelSelector } from "./model-selector"
@@ -363,7 +364,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
               "min-h-0 flex-1 flex-col",
               inSession && id === sessionId ? "flex" : "hidden",
             )}
-            key={`${id}:${props.refreshNonce ?? 0}`}
+            key={id}
           >
             <SessionChat
               contextRefs={(sessions?.find((s) => s.id === id) ?? null)?.contextRefs ?? []}
@@ -374,6 +375,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
               onOpenCitation={props.onOpenCitation}
               onPickModel={(modelId) => pickModel(id, modelId)}
               pendingPrompt={id === sessionId ? props.pendingPrompt : undefined}
+              refreshNonce={props.refreshNonce}
               sessionId={id}
               sessionModel={(sessions?.find((s) => s.id === id) ?? null)?.model ?? null}
             />
@@ -429,6 +431,7 @@ function SessionChat({
   sessionModel,
   onPickModel,
   focusConv,
+  refreshNonce,
 }: {
   sessionId: string
   contextRefs: AssistantSession["contextRefs"]
@@ -440,6 +443,7 @@ function SessionChat({
   sessionModel: string | null
   onPickModel: (modelId: string) => void
   focusConv?: { convId: string; title: string } | null
+  refreshNonce?: number
 }) {
   const [initial, setInitial] = useState<UIMessage[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -477,16 +481,26 @@ function SessionChat({
       onOpenCitation={onOpenCitation}
       onPickModel={onPickModel}
       pendingPrompt={pendingPrompt}
+      refreshNonce={refreshNonce}
       sessionId={sessionId}
       sessionModel={sessionModel}
     />
   )
 }
 
-/** ~4 chars per token, measured against the same 40K budget the server compacts at (t173). */
-const CONTEXT_BUDGET_TOKENS = 40_000
+/** The compaction threshold the server actually applies (t173) — what the meter measures against
+ *  when the provider doesn't report the model's real window. */
+const COMPACT_BUDGET_TOKENS = 40_000
 
-function estimateContextPct(messages: UIMessage[]): number {
+/** Tokens the panel measures against: the active model's REAL context window when the provider
+ *  reports one (steering), else the server's compaction threshold. */
+export function contextBudgetFor(model: AssistantModel | undefined): number {
+  return model?.contextWindow && model.contextWindow > 0
+    ? model.contextWindow
+    : COMPACT_BUDGET_TOKENS
+}
+
+function estimateTokens(messages: UIMessage[]): number {
   let chars = 0
   for (const m of messages) {
     for (const p of m.parts as { text?: string; output?: unknown; input?: unknown }[]) {
@@ -495,7 +509,7 @@ function estimateContextPct(messages: UIMessage[]): number {
       if (p?.input !== undefined) chars += JSON.stringify(p.input)?.length ?? 0
     }
   }
-  return Math.min(100, Math.round((chars / 4 / CONTEXT_BUDGET_TOKENS) * 100))
+  return Math.ceil(chars / 4)
 }
 
 function SessionChatReady({
@@ -510,6 +524,7 @@ function SessionChatReady({
   sessionModel,
   onPickModel,
   focusConv,
+  refreshNonce,
 }: {
   sessionId: string
   initial: UIMessage[]
@@ -522,6 +537,7 @@ function SessionChatReady({
   sessionModel: string | null
   onPickModel: (modelId: string) => void
   focusConv?: { convId: string; title: string } | null
+  refreshNonce?: number
 }) {
   // The viewing conversation rides every turn as the assistant's default scope (steering). A ref
   // keeps the transport stable while still sending the CURRENT conversation.
@@ -537,11 +553,12 @@ function SessionChatReady({
       }),
     [sessionId],
   )
-  const { messages, sendMessage, status, error, stop, regenerate, clearError } = useChat({
-    id: sessionId,
-    messages: initial,
-    transport,
-  })
+  const { messages, setMessages, sendMessage, status, error, stop, regenerate, clearError } =
+    useChat({
+      id: sessionId,
+      messages: initial,
+      transport,
+    })
   const [input, setInput] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -550,7 +567,15 @@ function SessionChatReady({
     if (window.matchMedia("(pointer: fine)").matches) inputRef.current?.focus()
   }, [])
   const busy = status === "submitted" || status === "streaming"
-  const contextPct = useMemo(() => estimateContextPct(messages), [messages])
+  const activeModel = useMemo(() => {
+    const def = models?.find((m) => m.default) ?? models?.[0]
+    return (sessionModel ? models?.find((m) => m.id === sessionModel) : undefined) ?? def
+  }, [models, sessionModel])
+  const contextBudget = contextBudgetFor(activeModel)
+  const contextPct = useMemo(
+    () => Math.min(100, Math.round((estimateTokens(messages) / contextBudget) * 100)),
+    [messages, contextBudget],
+  )
   // Scroll-to-bottom affordance (steering): shown whenever the log is scrolled off the bottom.
   const [offBottom, setOffBottom] = useState(false)
   const onScroll = useCallback(() => {
@@ -575,6 +600,20 @@ function SessionChatReady({
     setInput("")
     sendMessage({ text })
   }, [input, busy, sendMessage])
+
+  // "Ask AI about this" appended a context excerpt server-side. Re-read the stored messages IN
+  // PLACE (never a remount — that used to abort the in-flight stream and re-fire the auto-send,
+  // which looked like the assistant hanging forever). Skipped while a turn is streaming.
+  const seenRefreshRef = useRef(refreshNonce ?? 0)
+  useEffect(() => {
+    const n = refreshNonce ?? 0
+    if (n === seenRefreshRef.current) return
+    seenRefreshRef.current = n
+    if (busy) return
+    loadSessionMessages(sessionId)
+      .then((r) => setMessages(r.messages as UIMessage[]))
+      .catch(() => {})
+  }, [refreshNonce, busy, sessionId, setMessages])
 
   // A quick action's canned prompt auto-sends once per nonce (t176) — visible in history like any
   // other user message.
@@ -686,10 +725,10 @@ function SessionChatReady({
 
       {/* One composer card (steering): the multi-line input, model picker, context ring and the
           send/stop button all live inside a single bordered card, mirroring the thread composer. */}
-      <div className="shrink-0 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <div className="rounded-xl border border-border bg-background focus-within:border-ring">
+      <ComposerShell>
+        <>
           <textarea
-            className="ai-composer-input max-h-48 min-h-[2.5rem] w-full resize-none bg-transparent px-3.5 py-2.5 outline-none placeholder:text-muted-foreground"
+            className="ai-composer-input block max-h-48 min-h-[2.5rem] w-full resize-none bg-transparent px-3.5 py-2.5 outline-none placeholder:text-muted-foreground"
             onChange={(e) => {
               setInput(e.target.value)
               const el = e.target
@@ -708,14 +747,20 @@ function SessionChatReady({
             rows={1}
             value={input}
           />
-          <div className="flex items-center gap-1.5 px-2 pb-2">
+          <div className={COMPOSER_FOOTER}>
             <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
-            <ContextMeter budgetTokens={CONTEXT_BUDGET_TOKENS} pct={contextPct} />
+            <ContextMeter budgetTokens={contextBudget} pct={contextPct} />
             <div className="flex-1" />
             {busy ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
+                  <Button
+                    aria-label="Stop"
+                    className="rounded-full"
+                    onClick={() => stop()}
+                    size="icon-sm"
+                    variant="outline"
+                  >
                     <HugeiconsIcon className="size-4" icon={StopIcon} />
                   </Button>
                 </TooltipTrigger>
@@ -726,6 +771,7 @@ function SessionChatReady({
                 <TooltipTrigger asChild>
                   <Button
                     aria-label="Send"
+                    className="rounded-full"
                     disabled={!input.trim()}
                     onClick={submit}
                     size="icon-sm"
@@ -733,12 +779,12 @@ function SessionChatReady({
                     <HugeiconsIcon className="size-4" icon={ArrowUp02Icon} />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Send</TooltipContent>
+                <TooltipContent>Send (↵)</TooltipContent>
               </Tooltip>
             )}
           </div>
-        </div>
-      </div>
+        </>
+      </ComposerShell>
     </>
   )
 }
@@ -765,6 +811,14 @@ function AssistantMessage({
   const toolCalls = message.parts.filter(
     (p) => typeof p.type === "string" && (p.type.startsWith("tool-") || p.type === "dynamic-tool"),
   )
+  // Reasoning models (GLM) stream a long reasoning phase before any text — live-measured at ~15s
+  // with 70+ reasoning deltas. Without a marker the turn renders as a blank gap and reads as a
+  // hang (steering: "freezes forever"), so an in-flight turn with no text yet always shows a
+  // live state.
+  const reasoning = message.parts
+    .filter((p): p is { type: "reasoning"; text: string } => p.type === "reasoning")
+    .map((p) => p.text)
+    .join("")
   const { text: displayText, citations } = useMemo(() => extractCitations(text), [text])
 
   if (isUser) {
@@ -777,9 +831,19 @@ function AssistantMessage({
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1.5 self-start pr-4">
       <ToolCalls parts={toolCalls as ToolPart[]} streaming={streaming && !displayText} />
-      {(displayText || streaming) && (
+      {streaming && !displayText && (
+        <div className="text-xs">
+          <ShimmerText>{reasoning ? "Thinking it through…" : "Working…"}</ShimmerText>
+        </div>
+      )}
+      {displayText && (
         <div className="teams-message-body min-w-0 max-w-full overflow-x-auto text-sm [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p+p]:mt-2 [&_ul]:list-disc [&_ul]:pl-5">
           <Streamdown parseIncompleteMarkdown>{displayText}</Streamdown>
+        </div>
+      )}
+      {!streaming && !displayText && toolCalls.length > 0 && (
+        <div className="text-muted-foreground text-xs">
+          No answer came back for that — try rephrasing, or ask for a narrower time range.
         </div>
       )}
       {!streaming && displayText && onInsertToComposer && (

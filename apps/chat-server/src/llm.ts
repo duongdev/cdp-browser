@@ -39,6 +39,53 @@ export interface ModelOption {
   id: string
   label: string
   default: boolean
+  /** The model's real context window in tokens, when the provider reports one (see
+   *  `enrichModelLimits`). Absent → the client falls back to a conservative default. */
+  contextWindow?: number
+  maxOutput?: number
+}
+
+/** Ask the provider for the CURATED models' real limits. This is not model discovery (ADR-0021
+ *  still rejects offering the raw `/v1/models` dump) — the offered set is env-curated; this only
+ *  looks up `capabilities.contextWindow` / `maxOutput` for models we already offer, so the context
+ *  meter shows the model's actual budget instead of a guess. Failure degrades silently. */
+export async function enrichModelLimits(
+  models: ModelOption[],
+  config: LlmConfig | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ModelOption[]> {
+  if (!config || models.length === 0) return models
+  try {
+    const res = await fetchImpl(`${config.baseURL.replace(/\/$/, "")}/models`, {
+      headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return models
+    const body = (await res.json()) as { data?: unknown }
+    const byId = new Map<string, { contextWindow?: number; maxOutput?: number }>()
+    for (const row of Array.isArray(body.data) ? body.data : []) {
+      const m = row as {
+        id?: string
+        capabilities?: { contextWindow?: number; maxOutput?: number }
+      }
+      if (typeof m?.id === "string" && m.capabilities) {
+        byId.set(m.id, {
+          contextWindow: numberOrUndefined(m.capabilities.contextWindow),
+          maxOutput: numberOrUndefined(m.capabilities.maxOutput),
+        })
+      }
+    }
+    return models.map((m) => {
+      const hit = byId.get(m.id)
+      return hit?.contextWindow || hit?.maxOutput ? { ...m, ...hit } : m
+    })
+  } catch {
+    return models
+  }
+}
+
+function numberOrUndefined(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined
 }
 
 /** Curated model list (t177) from `LLM_MODELS` — comma-separated `id[:label]` pairs (a model id

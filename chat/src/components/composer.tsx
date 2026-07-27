@@ -37,6 +37,7 @@ import { type OutgoingMessage, outgoingFromEditor } from "../lib/rich-compose"
 import type { RosterMember } from "../lib/teams-client"
 import { type GifItem, type GiphyKind, gifToOutgoing } from "../lib/teams-gif"
 import { useEmojiCatalog } from "../lib/use-emoji-catalog"
+import { COMPOSER_FOOTER, ComposerShell } from "./composer-shell"
 import { EmojiPicker } from "./emoji-picker"
 import { GifPicker } from "./gif-picker"
 import { prompt } from "./prompt-dialog"
@@ -545,14 +546,8 @@ export function Composer({
   )
 
   return (
-    <div className="shrink-0 px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-      <div
-        className={cn(
-          "relative rounded-2xl border border-input bg-card shadow-sm transition-shadow",
-          "focus-within:border-ring/40 focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/25",
-        )}
-        ref={cardRef}
-      >
+    <ComposerShell cardRef={cardRef}>
+      <>
         {mention && mention.items.length > 0 && (
           <div
             className="fixed z-50 max-h-60 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md"
@@ -630,7 +625,7 @@ export function Composer({
           {!wide && formatOpen && (
             <div className="flex flex-wrap items-center gap-0.5 px-2 pb-1">{formatButtons}</div>
           )}
-          <div className="flex items-center gap-0.5 px-2 pb-2">
+          <div className={COMPOSER_FOOTER}>
             <input
               className="hidden"
               multiple
@@ -782,7 +777,7 @@ export function Composer({
             </Tooltip>
           </div>
         </TooltipProvider>
-      </div>
-    </div>
+      </>
+    </ComposerShell>
   )
 }

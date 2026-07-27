@@ -142,6 +142,8 @@ export interface AgentTurnOpts {
   messages: any
   tools: ToolSet
   onFinish?: Parameters<typeof streamText>[0]["onFinish"]
+  /** Hard ceiling for the whole turn — a stalled provider aborts instead of hanging (steering). */
+  abortSignal?: AbortSignal
 }
 
 /** One streamed assistant turn. Thin assembly so tests drive it with a mock LanguageModel. */
@@ -152,6 +154,7 @@ export function runAgentTurn(opts: AgentTurnOpts) {
     messages: opts.messages,
     tools: opts.tools,
     stopWhen: stepCountIs(STEP_CAP),
+    abortSignal: opts.abortSignal,
     onFinish: opts.onFinish,
   })
 }

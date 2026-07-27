@@ -2,7 +2,13 @@ import { generateText, tool } from "ai"
 import { MockLanguageModelV3 } from "ai/test"
 import { describe, expect, test } from "vitest"
 import { z } from "zod"
-import { type LlmUnconfiguredError, parseModelList, readLlmConfig, resolveModel } from "./llm.ts"
+import {
+  enrichModelLimits,
+  type LlmUnconfiguredError,
+  parseModelList,
+  readLlmConfig,
+  resolveModel,
+} from "./llm.ts"
 
 describe("readLlmConfig", () => {
   test("parses env", () => {
@@ -103,5 +109,41 @@ describe("parseModelList (t177)", () => {
   test("nothing configured → empty; dupes collapse", () => {
     expect(parseModelList({})).toEqual([])
     expect(parseModelList({ LLM_MODELS: "a,a:Label A" })).toHaveLength(1)
+  })
+})
+
+describe("enrichModelLimits (steering: exact context window)", () => {
+  const cfg = { baseURL: "http://router/v1", apiKey: "k", model: "glm/glm-5.2" }
+  const body = {
+    data: [
+      { id: "glm/glm-5.2", capabilities: { contextWindow: 200000, maxOutput: 128000 } },
+      { id: "other", capabilities: { contextWindow: 8192 } },
+      { id: "no-caps" },
+    ],
+  }
+  const okFetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch
+
+  test("enriches only the curated models, leaves unknown ones untouched", async () => {
+    const out = await enrichModelLimits(
+      [
+        { id: "glm/glm-5.2", label: "GLM 5.2", default: true },
+        { id: "no-caps", label: "No caps", default: false },
+      ],
+      cfg,
+      okFetch,
+    )
+    expect(out[0]).toMatchObject({ contextWindow: 200000, maxOutput: 128000 })
+    expect(out[1].contextWindow).toBeUndefined()
+  })
+
+  test("degrades silently on a failed lookup / no config", async () => {
+    const models = [{ id: "m", label: "m", default: true }]
+    const bad = (async () => {
+      throw new Error("network")
+    }) as typeof fetch
+    expect(await enrichModelLimits(models, cfg, bad)).toEqual(models)
+    expect(await enrichModelLimits(models, null)).toEqual(models)
+    const notOk = (async () => new Response("nope", { status: 500 })) as typeof fetch
+    expect(await enrichModelLimits(models, cfg, notOk)).toEqual(models)
   })
 })
