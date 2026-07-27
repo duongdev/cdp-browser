@@ -79,6 +79,10 @@ const DEVICE_KEY_PREFIXES = [
   "chatNotificationsEnabled_",
   // PSN-99 per-device font-scale slider (0.85–1.4).
   "chatFontScale_",
+  // PSN-104 assistant panel state: open flag, width, active session id.
+  "chatAiOpen_",
+  "chatAiWidth_",
+  "chatAiSession_",
 ]
 const isDeviceKey = (k) => DEVICE_KEY_PREFIXES.some((p) => k.startsWith(p))
 

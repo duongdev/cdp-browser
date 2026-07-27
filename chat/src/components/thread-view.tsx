@@ -170,13 +170,24 @@ interface ThreadViewProps {
    *  a title. The caller (chat-app) patches the conversation's provisional title so the header clears
    *  its skeleton without a fetch. */
   onNameResolved?: (convId: string, name: string) => void
+  /** "Ask AI about this" (t174, PSN-104) — passed through to each row's actions menu. */
+  onAskAi?: (msg: TeamsMessage) => void
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
 export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
-  { conversation, onBack, visible = true, onFocusChange, namePref, onOpenProfile, onNameResolved },
+  {
+    conversation,
+    onBack,
+    visible = true,
+    onFocusChange,
+    namePref,
+    onOpenProfile,
+    onNameResolved,
+    onAskAi,
+  },
   ref,
 ) {
   const [state, setState] = useState<State>({ status: "loading" })
@@ -1122,6 +1133,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     key={item.key}
                     message={item.message}
                     namePref={namePref}
+                    onAskAi={onAskAi}
                     onDelete={onDelete}
                     onDiscardSend={onDiscardSend}
                     onEdit={onEdit}

@@ -111,7 +111,7 @@ cdp-browser/
 ├── chat/                # Standalone Teams chat app (t128, ADR-0019) — a second Vite entry served at /chat
 │   ├── index.html       # Chat app Vite entry HTML (title "Teams Chat")
 │   ├── public/          # Chat PWA assets: manifest.webmanifest + sw.js scoped to /chat/ (icons shared from /icons via absolute refs)
-│   └── src/             # Chat renderer: main.tsx, chat-app.tsx, lib/ (chat-client — the /api/chat client; chat-ws — the WS delta client; teams-client — pure type home; conversation-view + test), components/ (conversation-list, conversation-row). index.css re-imports the shared src/index.css theme
+│   └── src/             # Chat renderer: main.tsx, chat-app.tsx, lib/ (chat-client — the /api/chat client; chat-ws — the WS delta client; teams-client — pure type home; conversation-view + test; assistant-client — /api/chat/assistant session CRUD + typed error copy; assistant-citations — pure [msg:convId:msgId] marker → chip parsing, t174), components/ (conversation-list, conversation-row, ai/assistant-panel — the t174 assistant third column/phone view: @ai-sdk/react useChat + streamdown markdown + session picker + citation chips; open/width/session persist per device via chatAi* settings slots). index.css re-imports the shared src/index.css theme
 ├── public/              # Web static assets copied into dist/ by Vite: manifest.webmanifest, sw.js, icon.svg, icons/
 ├── index.html           # Vite entry HTML
 ├── vite.config.ts       # Vite + React + Tailwind config (the / build → dist/)

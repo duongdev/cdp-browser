@@ -1,5 +1,6 @@
 import {
   Add01Icon,
+  AiChat02Icon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
   Copy01Icon,
@@ -136,6 +137,9 @@ interface MessageRowProps {
   onOpenProfile?: (target: { userId: string; name: string }) => void
   /** Position in the same-sender run (t169) — tightens the corners facing group neighbours. */
   groupPos?: "solo" | "first" | "middle" | "last"
+  /** "Ask AI about this" (t174, PSN-104): attach this message as assistant context. Passed for any
+   *  confirmed, non-deleted message when the assistant is available. */
+  onAskAi?: (msg: TeamsMessage) => void
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -165,6 +169,7 @@ function ChatMessageRow({
   namePref = FULL_NAME,
   onOpenProfile,
   groupPos = "solo",
+  onAskAi,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -232,6 +237,8 @@ function ChatMessageRow({
   const canReply = !deleted && !unconfirmed && !!onReply
   // Own, non-deleted messages get the edit/delete menu (t144). A tombstone / others' message never does.
   const canManage = self && !deleted && !unconfirmed && (!!onEdit || !!onDelete)
+  // Any confirmed, non-deleted message can be attached as assistant context (t174).
+  const canAskAi = !deleted && !unconfirmed && !!onAskAi
 
   // Inline edit + delete-confirm state (t144).
   const [editing, setEditing] = useState(false)
@@ -556,11 +563,12 @@ function ChatMessageRow({
               {formatHms(message.ts)}
             </time>
             {canReply && <ReplyButton coarse={coarse} onClick={() => onReply?.(message)} />}
-            {(canManage || (canReact && coarse)) && (
+            {(canManage || (canReact && coarse) || canAskAi) && (
               <MessageActions
                 canDelete={canManage && !!onDelete}
                 canEdit={canManage && !!onEdit}
                 coarse={coarse}
+                onAskAi={canAskAi ? () => onAskAi?.(message) : undefined}
                 onDelete={() => setConfirmOpen(true)}
                 onEdit={startEdit}
                 onReact={canReact && coarse ? () => setPickerOpen(true) : undefined}
@@ -842,6 +850,7 @@ function MessageActions({
   onEdit,
   onDelete,
   onReact,
+  onAskAi,
   side,
 }: {
   coarse: boolean
@@ -851,6 +860,8 @@ function MessageActions({
   onDelete: () => void
   /** Open the reaction picker (B1) — passed only on coarse pointers, where there's no hover bar. */
   onReact?: () => void
+  /** Attach this message as assistant context (t174). */
+  onAskAi?: () => void
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
@@ -890,6 +901,19 @@ function MessageActions({
               >
                 <HugeiconsIcon className="size-4" icon={Add01Icon} />
                 React
+              </button>
+            )}
+            {onAskAi && (
+              <button
+                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                onClick={() => {
+                  setOpen(false)
+                  onAskAi()
+                }}
+                type="button"
+              >
+                <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
+                Ask AI about this
               </button>
             )}
             {canEdit && (
