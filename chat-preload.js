@@ -14,4 +14,5 @@ contextBridge.exposeInMainWorld("chatShell", {
   getServerUrl: () => ipcRenderer.invoke("chat:get-server-url"),
   setServerUrl: (url) => ipcRenderer.send("chat:set-server-url", url),
   routeChanged: (path) => ipcRenderer.send("chat:route", path),
+  getAppInfo: () => ipcRenderer.invoke("chat:get-app-info"),
 })

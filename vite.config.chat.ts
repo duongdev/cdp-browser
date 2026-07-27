@@ -1,8 +1,19 @@
+import { execSync } from "node:child_process"
 import path from "node:path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 import pkg from "./package.json"
+
+const gitSha = (() => {
+  try {
+    return execSync("git rev-parse --short HEAD").toString().trim()
+  } catch {
+    return "unknown"
+  }
+})()
+
+const builtAt = new Date().toISOString()
 
 // Second Vite entry for the standalone Teams chat app (t128, ADR-0019). Root is `chat/`,
 // served at the same-origin path `/chat` (hence `base: "/chat/"` so assets + deep links
@@ -28,7 +39,8 @@ export default defineConfig({
     : undefined,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
-    __GIT_SHA__: JSON.stringify("chat"),
+    __GIT_SHA__: JSON.stringify(gitSha),
+    __BUILT_AT__: JSON.stringify(builtAt),
   },
   resolve: {
     alias: {

@@ -26,6 +26,22 @@ type Db = BetterSqlite3.Database
 export const LIST_SWEEP_MS = 12_000
 export const FOCUS_SWEEP_MS = 4_000
 
+const SYNC_LOG_CAP = 20
+
+export interface SyncEvent {
+  kind: string
+  ts: number
+  ok: boolean
+  code?: string
+}
+
+export interface SyncLogData {
+  lastHealthOk: number | null
+  lastError: number | null
+  lastErrorCode?: string
+  events: SyncEvent[]
+}
+
 /** Injected timer surface so tests drive fake timers. Defaults to the globals. */
 export interface Timers {
   setInterval: (fn: () => void, ms: number) => { unref?: () => void }
@@ -61,6 +77,8 @@ export interface SweepEngine {
   runFocusOnce(convIds: string[]): Promise<void>
   /** The last health state — `null` until the first sweep runs. */
   health(): { ok: boolean; code?: string } | null
+  /** The last 20 sync events + latest error info. */
+  getSyncLog(): SyncLogData
 }
 
 export function createSweepEngine(deps: SweepDeps): SweepEngine {
@@ -69,11 +87,23 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
   const listMs = deps.listMs ?? LIST_SWEEP_MS
   const focusMs = deps.focusMs ?? FOCUS_SWEEP_MS
   let lastHealthOk: boolean | null = null
+  let lastHealthOkAt: number | null = null
+  let lastErrorAt: number | null = null
+  let lastErrorCode: string | undefined
+  const syncEvents: SyncEvent[] = []
   let listTimer: { unref?: () => void } | null = null
   let focusTimer: { unref?: () => void } | null = null
 
+  function pushSyncEvent(event: SyncEvent): void {
+    syncEvents.push(event)
+    if (syncEvents.length > SYNC_LOG_CAP) syncEvents.splice(0, syncEvents.length - SYNC_LOG_CAP)
+  }
+
   // Broadcast a health flip only when it changes (no chatty repeats). A clean sweep recovers.
   function markHealthy(): void {
+    const ts = Date.now()
+    pushSyncEvent({ kind: "list", ts, ok: true })
+    lastHealthOkAt = ts
     if (lastHealthOk !== true) {
       lastHealthOk = true
       broadcast({ type: "health", service, ok: true })
@@ -82,6 +112,10 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
   function markUnhealthy(code: string): void {
     // Always re-broadcast the failure (the code may change; FE shows the reconnecting banner) but
     // never loop hot — the interval itself paces retries.
+    const ts = Date.now()
+    pushSyncEvent({ kind: "list", ts, ok: false, code })
+    lastErrorAt = ts
+    lastErrorCode = code
     lastHealthOk = false
     broadcast({ type: "health", service, ok: false, code })
   }
@@ -203,6 +237,12 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     runListOnce,
     runFocusOnce,
     health: () => (lastHealthOk == null ? null : { ok: lastHealthOk }),
+    getSyncLog: (): SyncLogData => ({
+      lastHealthOk: lastHealthOkAt,
+      lastError: lastErrorAt,
+      lastErrorCode,
+      events: [...syncEvents],
+    }),
   }
 }
 

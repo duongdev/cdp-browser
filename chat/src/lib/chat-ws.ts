@@ -23,6 +23,14 @@ export type ChatWsFrame =
   | { type: "read-state"; convId: string; readTs: number; unreadSticky: boolean }
   | { type: "backfill-progress"; status: unknown }
   | { type: "health"; ok: boolean; code?: string }
+  /** Sync diagnostics pushed by the BFF sweep engine (Workstream D). */
+  | {
+      type: "sync-log"
+      lastHealthOk: number | null
+      lastError: number | null
+      lastErrorCode?: string
+      events: import("./sync-log").SyncEvent[]
+    }
   /** Server liveness heartbeat (PSN-106) — consumed by the watchdog, never forwarded to the app. */
   | { type: "ping"; ts: number }
 

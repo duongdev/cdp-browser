@@ -9,6 +9,7 @@
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
 import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
+import { MAX_VERSIONS_PER_MESSAGE } from "./edit-history.ts"
 import { amsObjectId, amsUrlFromSrc } from "./media-images.ts"
 import { findByObjectId } from "./media-store.ts"
 import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provider.ts"
@@ -37,6 +38,8 @@ export interface RoutesDeps {
   /** service id → image transcription worker (PSN-104). Absent → `/media/caption` reports whatever
    *  is stored and never transcribes on demand. */
   captioners?: Map<ChatService, { captionObject(objectId: string): Promise<string | null> }>
+  /** Sync log accessor — wired by index.ts when a sweep engine exists. */
+  getSyncLog?: () => import("./sweep.ts").SyncLogData
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -191,6 +194,24 @@ export function createRoutes(deps: RoutesDeps) {
       b.text,
     )
     return c.json(r)
+  })
+
+  // A message's local version history (PSN-105 C). Teams keeps no previous version, so this reads
+  // ONLY what our sweep observed and snapshotted — nothing is fetched from the provider. `truncated`
+  // means the per-message cap was hit and older versions were dropped; the UI says so out loud.
+  app.get("/message-history", (c) => {
+    const { service } = pick(deps, c.req.query("service"))
+    const convId = c.req.query("convId")
+    const msgId = c.req.query("msgId")
+    if (!convId || !msgId) throw new ProviderError("missing_message", 400)
+    const versions = store.listMessageEdits(deps.db, service, convId, msgId)
+    const row = store.getMessage(deps.db, service, convId, msgId)
+    return c.json({
+      versions,
+      current: row ? { body: row.body, deleted: row.deleted, ts: row.ts ?? null } : null,
+      truncated: versions.length >= MAX_VERSIONS_PER_MESSAGE,
+      cap: MAX_VERSIONS_PER_MESSAGE,
+    })
   })
 
   // ---- profile / bytes (stream provider bytes back) -----------------------
@@ -382,6 +403,21 @@ export function createRoutes(deps: RoutesDeps) {
     if (!b.endpoint) throw new ProviderError("missing_endpoint", 400)
     store.deletePushSub(deps.db, service, b.endpoint)
     return c.json({ ok: true })
+  })
+
+  // ---- build identity + sync diagnostics ----------------------------------
+
+  app.get("/version", (c) =>
+    c.json({
+      version: process.env.npm_package_version || "0.0.0",
+      sha: process.env.GIT_SHA || "dev",
+      builtAt: process.env.BUILT_AT || new Date().toISOString(),
+    }),
+  )
+
+  app.get("/sync-log", (c) => {
+    if (!deps.getSyncLog) return c.json({ lastHealthOk: null, lastError: null, events: [] })
+    return c.json(deps.getSyncLog())
   })
 
   return app

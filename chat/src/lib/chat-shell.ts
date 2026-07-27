@@ -17,6 +17,8 @@ export interface ChatShellBridge {
   setServerUrl(url: string): void
   /** Persist the current SPA path so the next launch reopens the last conversation. */
   routeChanged(path: string): void
+  /** App version + build timestamp for the About card in Settings. */
+  getAppInfo(): Promise<{ version: string; builtAt: string | null }>
 }
 
 export function chatShell(): ChatShellBridge | null {

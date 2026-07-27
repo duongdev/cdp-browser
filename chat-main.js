@@ -160,6 +160,12 @@ ipcMain.on("chat:route", (_e, routePath) => {
     writeConfig({ lastPath: routePath })
 })
 
+// App identity for the About card in Settings.
+ipcMain.handle("chat:get-app-info", () => ({
+  version: app.getVersion(),
+  builtAt: process.env.BUILT_AT ?? null,
+}))
+
 app.whenReady().then(() => {
   createWindow()
   app.on("activate", () => {

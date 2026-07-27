@@ -161,6 +161,36 @@ export function mediaUrl(url: string): string {
   return `/api/chat/media?service=${SERVICE}&url=${encodeURIComponent(url)}`
 }
 
+/** One superseded body of a message, plus when it was replaced (PSN-105 C). */
+export interface MessageVersion {
+  body: string
+  editTs: number | null
+  capturedAt: number | null
+}
+
+export interface MessageHistory {
+  /** Superseded bodies, NEWEST first. Empty = no change was observed while this server was up. */
+  versions: MessageVersion[]
+  current: { body: string; deleted: boolean; ts: number | null } | null
+  /** The per-message cap was hit — older versions were dropped, and the UI must say so. */
+  truncated: boolean
+  cap: number
+}
+
+/** A message's LOCAL edit/delete history. Teams keeps no previous version, so this only ever holds
+ *  what our BFF observed after the feature shipped. */
+export async function fetchMessageHistory(
+  convId: string,
+  msgId: string,
+  signal?: AbortSignal,
+): Promise<MessageHistory> {
+  const q = new URLSearchParams({ service: SERVICE, convId, msgId })
+  const res = await fetch(`/api/chat/message-history?${q}`, { signal })
+  const data = (await res.json().catch(() => ({}))) as MessageHistory & { error?: string }
+  if (!res.ok || data.error) throw new ChatApiError(data.error || `http_${res.status}`, res.status)
+  return { ...data, versions: data.versions ?? [] }
+}
+
 export interface MediaCaption {
   status: "pending" | "done" | "failed" | "unsupported"
   caption: string | null
@@ -375,6 +405,49 @@ export async function markRead(convId: string, msgId: string, ts: string): Promi
  *  Throws ChatApiError on failure — the caller owns the revert. */
 export async function markUnread(convId: string, ts: number): Promise<void> {
   await post("mark-unread", { convId, ts })
+}
+
+// ---- build identity + sync diagnostics ------------------------------------
+
+import type { SyncLogData } from "./sync-log"
+
+export interface VersionInfo {
+  version: string
+  sha: string
+  builtAt?: string
+}
+
+/** The web server's (/api/version) build identity. Null on failure. */
+export async function getServerVersion(): Promise<VersionInfo | null> {
+  try {
+    const res = await fetch("/api/version")
+    if (!res.ok) return null
+    return (await res.json()) as VersionInfo
+  } catch {
+    return null
+  }
+}
+
+/** The chat BFF's (/api/chat/version) build identity. Null on failure. */
+export async function getBffVersion(): Promise<VersionInfo | null> {
+  try {
+    const res = await fetch("/api/chat/version")
+    if (!res.ok) return null
+    return (await res.json()) as VersionInfo
+  } catch {
+    return null
+  }
+}
+
+/** The BFF's sync log (last 20 events + error info). Null on failure. */
+export async function getSyncLog(): Promise<SyncLogData | null> {
+  try {
+    const res = await fetch("/api/chat/sync-log")
+    if (!res.ok) return null
+    return (await res.json()) as SyncLogData
+  } catch {
+    return null
+  }
 }
 
 // ---- backfill (PSN-93 WS-H) ------------------------------------------------

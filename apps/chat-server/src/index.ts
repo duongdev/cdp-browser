@@ -106,9 +106,22 @@ app.route(
         : undefined,
   }),
 )
+// Sweep engines created before routes so getSyncLog can be wired at startup.
+const sweepEngines = new Map<ChatService, import("./sweep.ts").SweepEngine>()
+
 app.route(
   "/api/chat",
-  createRoutes({ db, providers, backfills, captioners, vapidPublicKey: VAPID_PUBLIC_KEY }),
+  createRoutes({
+    db,
+    providers,
+    backfills,
+    captioners,
+    vapidPublicKey: VAPID_PUBLIC_KEY,
+    getSyncLog: () => {
+      const engine = sweepEngines.values().next().value
+      return engine?.getSyncLog() ?? { lastHealthOk: null, lastError: null, events: [] }
+    },
+  }),
 )
 
 const port = Number(process.env.CHAT_SERVER_PORT) || 7810
@@ -133,6 +146,7 @@ for (const [service, provider] of providers) {
     getFocusedConvIds,
     pushSender,
   })
+  sweepEngines.set(service, sweep)
   sweep.start()
 }
 
