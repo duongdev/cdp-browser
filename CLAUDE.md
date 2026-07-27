@@ -233,6 +233,8 @@ CI (`.github/workflows/ci.yml`, on PR + push to main) runs: install (frozen),
 `check:changed`. Biome is scoped to the PR diff (not pristine `pnpm check`, which reds
 on pre-existing errors in untouched files).
 
+Manual QA checklist for the `/chat` surface: [`docs/testing/chat-qa.md`](docs/testing/chat-qa.md).
+
 ### Local mock chat stack (no tenant, no deploy)
 
 The whole chat product — the web `/chat` surface, the BFF, and the **CDP Chats Electron shell** —
