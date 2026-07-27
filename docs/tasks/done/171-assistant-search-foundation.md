@@ -1,6 +1,6 @@
 # 171 — assistant search foundation: folded FTS5 + retrieval tool data layer
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** AFK
 - **Estimate:** 1d
 - **Depends on:** none

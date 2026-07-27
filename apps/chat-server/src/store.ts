@@ -13,6 +13,7 @@ import type BetterSqlite3 from "better-sqlite3"
 type Db = BetterSqlite3.Database
 
 import type { ChatConversation, ChatPrefs } from "./contract.ts"
+import { backfillSearchIndex, migrateSearch, syncMessageFts } from "./search.ts"
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS conversations (
@@ -106,6 +107,8 @@ export function migrate(db: Db): Db {
       // already present
     }
   }
+  migrateSearch(db)
+  backfillSearchIndex(db)
   return db
 }
 
@@ -331,6 +334,9 @@ export function upsertMessages(
       updated_at = @now
     WHERE service = @service AND id = @convId
   `)
+  const rowidStmt = db.prepare(
+    "SELECT rowid FROM messages WHERE service = ? AND conv_id = ? AND id = ?",
+  )
   const run = db.transaction((rows: MessageInput[]) => {
     let oldest = Number.POSITIVE_INFINITY
     let newest = Number.NEGATIVE_INFINITY
@@ -350,6 +356,9 @@ export function upsertMessages(
         edited: m.edited ? 1 : 0,
         mentions_me: m.mentionsMe ? 1 : 0,
       })
+      // Keep the FTS shadow in lockstep — the single write funnel (ADR-0021).
+      const row = rowidStmt.get(service, convId, String(m.id)) as { rowid: number } | undefined
+      if (row) syncMessageFts(db, row.rowid, m.body || "", !!m.deleted)
       if (ts > 0) {
         if (ts < oldest) oldest = ts
         if (ts > newest) newest = ts
