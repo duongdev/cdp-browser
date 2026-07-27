@@ -52,12 +52,15 @@ export function createAssistantTools(
           sender: h.senderName || h.senderId || "?",
           ts: h.ts,
           snippet: h.snippet,
+          // What this message replies to, when it quotes one (Teams inlines the parent). The
+          // parent's msgId is real — read it with get_context({aroundMsgId}) before relying on it.
+          ...(h.quotes?.length ? { repliesTo: h.quotes } : {}),
         }))
       },
     }),
     get_context: tool({
       description:
-        "Read a window of messages from one conversation: around a specific message (aroundMsgId), before a timestamp (beforeTs, ms), or the newest messages.",
+        "Read a window of messages from one conversation: around a specific message (aroundMsgId), before a timestamp (beforeTs, ms), or the newest messages. A row's `repliesTo` carries the message it quotes (with the parent's msgId) — pass that id back as aroundMsgId to follow a reply chain.",
       inputSchema: z.object({
         convId: z.string().min(1),
         aroundMsgId: z.string().optional(),
@@ -73,6 +76,7 @@ export function createAssistantTools(
           sender: m.senderName || m.senderId || "?",
           ts: m.ts,
           text: m.deleted ? "[deleted]" : m.text,
+          ...(m.quotes?.length ? { repliesTo: m.quotes } : {}),
         }))
       },
     }),
@@ -129,6 +133,7 @@ export function buildSystemPrompt(opts: {
   const lines = [
     "You are the assistant inside CDP Chats, answering questions over the user's own synced chat history (Microsoft Teams).",
     "Use the tools to find real messages before answering. Never invent message content.",
+    "A message that replies to another carries `repliesTo` (the quoted sender + excerpt + the parent's msgId). Those words are the PARENT's, not the replier's — never attribute them to the replier, and follow the chain with get_context(aroundMsgId) when the answer depends on what was replied to.",
     "The user organises conversations into their own folders and labels. When a question names one ('in my FWD folder', 'the urgent ones'), call resolve_scope and pass the convIds it returns — do not guess which conversations belong.",
     "CITATIONS: when your answer draws on a specific message, append an inline marker [msg:{convId}:{msgId}] right after the claim, using the exact convId and msgId from tool results. Markers referencing ids you did not see in tool results are stripped.",
     "Answer in the user's language (mirror Vietnamese with Vietnamese). Be concise.",

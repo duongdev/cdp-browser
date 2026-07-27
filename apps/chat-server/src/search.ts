@@ -78,9 +78,50 @@ function safeCodePoint(n: number): string {
   }
 }
 
-/** body → the folded plain-text shadow the index stores. Empty when nothing indexable remains. */
+/** body → the folded plain-text shadow the index stores. Empty when nothing indexable remains.
+ *  Quoted reply text stays IN the index on purpose — searching a phrase should find the message
+ *  that quoted it too. */
 export function indexText(body: string): string {
   return fold(stripHtml(body))
+}
+
+// ---- reply chains ----------------------------------------------------------
+// A Teams reply carries the parent inline: `<blockquote itemtype="…/Reply" itemid="{parentMsgId}">`
+// wrapping the quoted text, followed by the author's own words. Flattening that with the rest of
+// the body (what stripHtml alone does) hands the model ONE utterance and no parent id — so it can
+// attribute the quoted sentence to the replier and can't follow the thread. Split them instead.
+
+const REPLY_BLOCKQUOTE_RE =
+  /<blockquote\b[^>]*\bitemtype\s*=\s*(["'])[^"']*Reply[^"']*\1[^>]*>([\s\S]*?)<\/blockquote>/gi
+
+export interface ReplyQuote {
+  /** The quoted message's id — feed it to `getContextWindow({aroundMsgId})` to read the original. */
+  msgId?: string
+  sender?: string
+  excerpt: string
+}
+
+const QUOTE_EXCERPT_CAP = 160
+
+/** Split a body into the author's OWN words and the messages it quotes. */
+export function splitReplyQuotes(html: string): { own: string; quotes: ReplyQuote[] } {
+  const raw = html || ""
+  if (!raw.toLowerCase().includes("<blockquote")) return { own: stripHtml(raw), quotes: [] }
+  const quotes: ReplyQuote[] = []
+  const own = raw.replace(REPLY_BLOCKQUOTE_RE, (whole, _q, inner: string) => {
+    const id = /\bitemid\s*=\s*(["'])([^"']+)\1/i.exec(whole)?.[2]
+    // Teams renders the quoted author in the first <strong> inside the blockquote.
+    const strong = /<strong\b[^>]*>([\s\S]*?)<\/strong>/i.exec(inner)?.[1]
+    const sender = strong ? stripHtml(strong) : undefined
+    const body = sender ? inner.replace(/<strong\b[^>]*>[\s\S]*?<\/strong>/i, " ") : inner
+    quotes.push({
+      msgId: id,
+      sender: sender || undefined,
+      excerpt: stripHtml(body).slice(0, QUOTE_EXCERPT_CAP),
+    })
+    return " "
+  })
+  return { own: stripHtml(own), quotes }
 }
 
 // ---- schema + sync --------------------------------------------------------
@@ -143,8 +184,10 @@ export interface SearchHit {
   senderName: string | null
   ts: number | null
   /** Plain-text excerpt of the ORIGINAL body (diacritics intact) — the folded index text is for
-   *  matching only, never shown. */
+   *  matching only, never shown. Excludes quoted reply text, which rides `quotes` instead. */
   snippet: string
+  /** Messages this one replies to (Teams inlines them as a quote block). Empty for a plain message. */
+  quotes?: ReplyQuote[]
 }
 
 const SNIPPET_CAP = 240
@@ -217,18 +260,24 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
     ts: number | null
     body: string
   }[]
-  return rows.map((r) => ({
-    service: r.service,
-    convId: r.conv_id,
-    msgId: r.id,
-    senderId: r.sender_id,
-    senderName: r.sender_name,
-    ts: r.ts,
-    snippet: stripHtml(r.body).slice(0, SNIPPET_CAP),
-  }))
+  return rows.map((r) => {
+    const { own, quotes } = splitReplyQuotes(r.body)
+    return {
+      service: r.service,
+      convId: r.conv_id,
+      msgId: r.id,
+      senderId: r.sender_id,
+      senderName: r.sender_name,
+      ts: r.ts,
+      snippet: own.slice(0, SNIPPET_CAP),
+      ...(quotes.length ? { quotes } : {}),
+    }
+  })
 }
 
 export interface WindowMessage {
+  /** Messages this one replies to — the parent's id lets the model walk the chain. */
+  quotes?: ReplyQuote[]
   msgId: string
   senderId: string | null
   senderName: string | null
@@ -283,14 +332,18 @@ export function getContextWindow(
         .all({ service, convId: opts.convId, before, limit }) as WinRow[]
     ).reverse()
   }
-  return rows.map((r) => ({
-    msgId: r.id,
-    senderId: r.sender_id,
-    senderName: r.sender_name,
-    ts: r.ts,
-    text: r.deleted ? "" : stripHtml(r.body),
-    deleted: !!r.deleted,
-  }))
+  return rows.map((r) => {
+    const { own, quotes } = r.deleted ? { own: "", quotes: [] } : splitReplyQuotes(r.body)
+    return {
+      msgId: r.id,
+      senderId: r.sender_id,
+      senderName: r.sender_name,
+      ts: r.ts,
+      text: own,
+      deleted: !!r.deleted,
+      ...(quotes.length ? { quotes } : {}),
+    }
+  })
 }
 
 interface WinRow {

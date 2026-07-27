@@ -10,6 +10,7 @@ import {
   resolvePerson,
   resolveScope,
   searchMessages,
+  splitReplyQuotes,
   stripHtml,
   toMatchQuery,
 } from "./search.ts"
@@ -65,6 +66,48 @@ describe("stripHtml", () => {
   })
   test("whitespace collapses", () => {
     expect(stripHtml("<p>a</p><p>b</p>")).toBe("a b")
+  })
+})
+
+describe("splitReplyQuotes (PSN-104: reply chains)", () => {
+  const reply =
+    '<blockquote itemtype="http://schema.skype.com/Reply" itemid="1785000000000">' +
+    "<strong>Alice</strong><p>can we ship friday?</p></blockquote>" +
+    "<p>yes, after QA signs off</p>"
+
+  test("separates the author's own words from what they quoted", () => {
+    const { own, quotes } = splitReplyQuotes(reply)
+    // The replier said only this — the quoted sentence must NOT be attributed to them.
+    expect(own).toBe("yes, after QA signs off")
+    expect(quotes).toEqual([
+      { msgId: "1785000000000", sender: "Alice", excerpt: "can we ship friday?" },
+    ])
+  })
+
+  test("a plain message has no quotes and keeps its whole text", () => {
+    expect(splitReplyQuotes("<p>just a message</p>")).toEqual({
+      own: "just a message",
+      quotes: [],
+    })
+    expect(splitReplyQuotes("")).toEqual({ own: "", quotes: [] })
+  })
+
+  test("stacked quotes all resolve; a quote without itemid still carries its text", () => {
+    const stacked =
+      '<blockquote itemtype="x/Reply" itemid="a"><strong>A</strong>one</blockquote>' +
+      '<blockquote itemtype="x/Reply"><strong>B</strong>two</blockquote><p>ok</p>'
+    const { own, quotes } = splitReplyQuotes(stacked)
+    expect(own).toBe("ok")
+    expect(quotes).toEqual([
+      { msgId: "a", sender: "A", excerpt: "one" },
+      { msgId: undefined, sender: "B", excerpt: "two" },
+    ])
+  })
+
+  test("a non-reply blockquote is left in the body", () => {
+    const { own, quotes } = splitReplyQuotes("<blockquote>quoted prose</blockquote><p>hi</p>")
+    expect(own).toBe("quoted prose hi")
+    expect(quotes).toEqual([])
   })
 })
 
@@ -139,6 +182,25 @@ describe("searchMessages", () => {
 
   test("empty query → []", () => {
     expect(searchMessages(db, { query: "  " })).toEqual([])
+  })
+
+  test("a reply hit carries its parent, and the snippet is the replier's own words", () => {
+    upsertMessages(db, "teams", "c1", [
+      {
+        id: "m9",
+        ts: 9000,
+        senderName: "Bob",
+        body:
+          '<blockquote itemtype="x/Reply" itemid="m3"><strong>Dương</strong>về deploy ngày mai</blockquote>' +
+          "<p>đồng ý</p>",
+      },
+    ])
+    const [hit] = searchMessages(db, { query: "dong y" })
+    expect(hit.msgId).toBe("m9")
+    expect(hit.snippet).toBe("đồng ý")
+    expect(hit.quotes).toEqual([{ msgId: "m3", sender: "Dương", excerpt: "về deploy ngày mai" }])
+    // The quoted text still MATCHES (the index keeps it) — it just isn't the replier's snippet.
+    expect(searchMessages(db, { query: "deploy ngay mai" }).map((h) => h.msgId)).toContain("m9")
   })
 })
 
