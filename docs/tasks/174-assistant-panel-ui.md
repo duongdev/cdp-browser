@@ -54,7 +54,7 @@ Keyboard: register panel toggle + "new session" in `chat-keys.ts` `routeKey`; âŒ
 
 - Scroll-to-message jump mechanics (t175 â€” chips just navigate).
 - Quick actions (t176).
-- Per-session model picker UI (env default only; picker later if wanted).
+- Per-session model picker UI (env default only; t177 follow-up).
 
 ## Definition of Done
 

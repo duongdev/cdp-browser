@@ -17,7 +17,7 @@ The extras grilled into v1 — each is a prompt seed + at most one new tool over
 ## Acceptance criteria
 
 - [ ] Summarize: thread header + message-actions entry; opens panel, attaches conv ref, runs a canned summarize prompt; output cites key messages.
-- [ ] Catch-up: panel suggestion + ⌘K; new tool `get_unread_overview` (per-conversation unread counts + recent unread excerpts from `read_state`/`messages`) feeds a digest grouped by conversation with deep links; respects muted conversations by default.
+- [ ] Catch-up: panel suggestion + ⌘K; new tool `get_unread_overview` (per-conversation unread counts + recent unread excerpts) feeds a digest grouped by conversation with deep links; respects muted conversations by default. Unread is derived via ADR-0022's single `effectiveReadTs` derivation (horizon + bookmark + local overlay) — never raw `read_state` columns, and the tool is read-only (never writes read state or the Teams horizon).
 - [ ] Draft reply: message-actions entry; assistant drafts in the thread's dominant language (VN/EN mirroring); "Insert into composer" puts the draft into the Tiptap composer for editing — no auto-send path exists; draft tone guidance read from a user-editable prefs blob (DB `prefs`, NOT committed to the repo — OSS boundary).
 - [ ] Action items: panel suggestion + ⌘K; cited checklist of asks/deadlines targeting the user; states "none found" honestly.
 - [ ] All four ride the normal session model (visible in history, compactable) — no hidden side-channel calls.

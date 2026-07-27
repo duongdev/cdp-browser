@@ -22,7 +22,7 @@ Citations to old messages are weak without it — the chip opens the conversatio
 - [ ] A "jump to latest" affordance exits jump mode instantly.
 - [ ] Target message not in DB (never synced/deleted): honest fallback — conversation opens at newest with a small "message not available" notice; no spinner dead-ends.
 - [ ] Deep link works cold (app boot from URL) and warm (chip click), on wide and phone shells.
-- [ ] Read-state semantics: opening in jump mode still follows the existing local-read rules (no special-casing that breaks mark-unread).
+- [ ] Read-state semantics follow ADR-0022 (bidirectional Teams sync): jump mode rides the existing gated auto-read (pane visible + window focused + mark-unread latch) and never advances the Teams horizon on its own — the horizon is unrecoverably monotonic, so jumping to an old message must not write anything the normal open path wouldn't.
 
 ## Test plan
 
