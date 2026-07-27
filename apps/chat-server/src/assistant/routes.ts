@@ -52,6 +52,26 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     return c.json({ error: code }, code === "llm-unconfigured" ? 503 : 500)
   })
 
+  // ---- assistant prefs (t176) ---------------------------------------------
+  // The draft-reply tone guidance blob. User-editable, DB-only (`settings` table, service
+  // "assistant") — never committed to the repo (OSS boundary).
+
+  app.get("/prefs", (c) => {
+    const r = db
+      .prepare("SELECT value FROM settings WHERE service = 'assistant' AND key = 'voice'")
+      .get() as { value: string } | undefined
+    return c.json({ voice: r?.value ?? "" })
+  })
+
+  app.post("/prefs", async (c) => {
+    const b = await body(c)
+    const voice = typeof b.voice === "string" ? b.voice.slice(0, 2000) : ""
+    db.prepare(
+      "INSERT INTO settings (service, key, value) VALUES ('assistant', 'voice', ?) ON CONFLICT(service, key) DO UPDATE SET value = excluded.value",
+    ).run(voice)
+    return c.json({ voice })
+  })
+
   // ---- session CRUD --------------------------------------------------------
 
   app.get("/sessions", (c) => c.json({ sessions: listSessions(db) }))

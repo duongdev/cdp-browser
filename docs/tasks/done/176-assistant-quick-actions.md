@@ -1,6 +1,6 @@
 # 176 — assistant quick actions: summarize, catch-up, draft reply, action items
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
 - **Depends on:** t174
@@ -59,3 +59,15 @@ Catch-up token discipline: excerpts, not full bodies, capped per conversation �
 - [ ] `pnpm check:changed` clean, `pnpm typecheck` clean, `pnpm test` green, `pnpm chat:build` succeeds
 - [ ] CLAUDE.md updated (chat app section)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
+
+## Notes (build)
+
+- Prompt-seed builders live in the FE (`chat/src/lib/assistant-actions.ts`), not the BFF — the
+  seed IS the user message the FE sends, and only the `voice` blob is server state
+  (GET/POST /api/chat/assistant/prefs). Spec said BFF; FE is the smaller, truer home.
+- Voice-editing UI deferred: the blob is settable via the prefs endpoint; a Settings field can
+  come with a later pass.
+- Summarize entry lives in the message-actions ⋯ menu + ⌘K (no thread-header menu exists to hang
+  it off; adding one was out of proportion).
+- Live end-to-end for each action vs 9router remains HITL (router down during build); the
+  auto-send → panel → typed-error path was verified in the mock harness.

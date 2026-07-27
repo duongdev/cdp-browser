@@ -46,6 +46,8 @@ export interface ComposerHandle {
   focus: () => void
   /** Open the native file picker (the hidden <input type="file"> click). */
   openFilePicker: () => void
+  /** Insert plain text at the caret and focus (t176: the assistant's "Insert into composer"). */
+  insertText: (text: string) => void
 }
 
 interface ComposerProps {
@@ -399,6 +401,10 @@ export function Composer({
     () => ({
       focus: () => editor?.commands.focus(),
       openFilePicker: () => fileRef.current?.click(),
+      insertText: (text: string) => {
+        editor?.commands.focus()
+        editor?.commands.insertContent(text)
+      },
     }),
     [editor],
   )

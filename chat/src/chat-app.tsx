@@ -20,7 +20,13 @@ import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
-import { attachContext, createSession } from "./lib/assistant-client"
+import {
+  actionItemsPrompt,
+  catchUpPrompt,
+  draftReplyPrompt,
+  summarizePrompt,
+} from "./lib/assistant-actions"
+import { attachContext, createSession, getAssistantVoice } from "./lib/assistant-client"
 import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
@@ -649,36 +655,69 @@ export function ChatApp() {
     if (route && msg) setJumpTarget({ convId: route.convId, id: msg, nonce: Date.now() })
   }, [])
 
-  // "Ask AI about this": ensure a session (grilled default: create when none), attach the message
-  // as a context ref, open the panel, and reload the session pane so the excerpt shows.
-  const askAiAboutMessage = useCallback(
-    async (msg: TeamsMessage) => {
-      const convId = activeConvRef.current
-      if (!convId) return
+  // Quick actions (t176) ride one runner: ensure a session (grilled default: create when none),
+  // optionally attach a context ref, open the panel, and optionally auto-send a canned prompt.
+  const [aiPrompt, setAiPrompt] = useState<{ text: string; nonce: number } | null>(null)
+  const runAiAction = useCallback(
+    async (promptText: string | null, ref?: { convId: string; msgId?: string }) => {
       try {
         let sessionId = settings.aiSessionId
         if (!sessionId) sessionId = (await createSession()).id
-        await attachContext(sessionId, {
-          convId,
-          msgId: msg.id,
-          title: labelForConv(convId),
-        })
+        if (ref) {
+          await attachContext(sessionId, {
+            convId: ref.convId,
+            msgId: ref.msgId,
+            title: labelForConv(ref.convId),
+          })
+          setAiRefreshNonce((n) => n + 1)
+        }
         updateSettings({ aiPanelOpen: true, aiSessionId: sessionId })
-        setAiRefreshNonce((n) => n + 1)
+        if (promptText) setAiPrompt({ text: promptText, nonce: Date.now() })
       } catch {
-        toast.error("Could not attach to the assistant")
+        toast.error("Could not reach the assistant")
       }
     },
     [settings.aiSessionId, labelForConv, updateSettings],
   )
+
+  const askAiAboutMessage = useCallback(
+    (msg: TeamsMessage) => {
+      const convId = activeConvRef.current
+      if (convId) runAiAction(null, { convId, msgId: msg.id })
+    },
+    [runAiAction],
+  )
+
+  // Draft reply (t176): drafts into the panel; "Insert into composer" is the only path into the
+  // editor — nothing is ever auto-sent.
+  const draftReplyAction = useCallback(
+    async (msg: TeamsMessage) => {
+      const convId = activeConvRef.current
+      if (!convId) return
+      const voice = await getAssistantVoice()
+      runAiAction(draftReplyPrompt(voice), { convId, msgId: msg.id })
+    },
+    [runAiAction],
+  )
+
+  const summarizeConvAction = useCallback(
+    (convId: string) => runAiAction(summarizePrompt(labelForConv(convId)), { convId }),
+    [runAiAction, labelForConv],
+  )
+
+  const insertDraftToComposer = useCallback((text: string) => {
+    activeThreadRef.current?.insertDraft(text)
+  }, [])
 
   const aiPanel = aiOpen ? (
     <AssistantPanel
       labelForConv={labelForConv}
       narrow={!isWide}
       onClose={() => updateSettings({ aiPanelOpen: false })}
+      onInsertToComposer={insertDraftToComposer}
       onOpenCitation={openCitation}
       onSessionChange={setAiSession}
+      pendingPrompt={aiPrompt}
       refreshNonce={aiRefreshNonce}
       sessionId={settings.aiSessionId}
     />
@@ -784,6 +823,28 @@ export function ChatApp() {
         run: async () => {
           const s = await createSession().catch(() => null)
           if (s) updateSettings({ aiSessionId: s.id, aiPanelOpen: true })
+        },
+      },
+      {
+        id: "ai-catch-up",
+        label: "AI: What did I miss?",
+        group: "App",
+        run: () => runAiAction(catchUpPrompt()),
+      },
+      {
+        id: "ai-action-items",
+        label: "AI: Action items for me",
+        group: "App",
+        run: () => runAiAction(actionItemsPrompt()),
+      },
+      {
+        id: "ai-summarize-conv",
+        label: "AI: Summarize conversation",
+        group: "Conversation",
+        when: (c) => !!c.focusedConversationId,
+        run: () => {
+          const id = ctx.focusedConversationId
+          if (id) summarizeConvAction(id)
         },
       },
       {
@@ -1061,6 +1122,8 @@ export function ChatApp() {
     collapsed,
     toggleFolderCollapsed,
     toggleAi,
+    runAiAction,
+    summarizeConvAction,
   ])
 
   // Global keydown router. Suppressed while the palette/overlay is open (their own Dialog owns keys).
@@ -1241,9 +1304,11 @@ export function ChatApp() {
         namePref={namePref}
         onAskAi={askAiAboutMessage}
         onBack={isWide ? undefined : backToList}
+        onDraftReply={draftReplyAction}
         onFocusChange={isActive ? setThreadFocus : undefined}
         onNameResolved={onNameResolved}
         onOpenProfile={setProfileTarget}
+        onSummarizeConv={summarizeConvAction}
         ref={isActive ? activeThreadRef : undefined}
         visible={isActive && (isWide || phoneView === "thread")}
       />

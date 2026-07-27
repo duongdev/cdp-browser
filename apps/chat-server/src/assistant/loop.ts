@@ -14,6 +14,7 @@ import {
   searchMessages,
 } from "../search.ts"
 import type { ContextRef } from "./session-store.ts"
+import { getUnreadOverview } from "./unread-overview.ts"
 
 type Db = BetterSqlite3.Database
 
@@ -84,6 +85,18 @@ export function createAssistantTools(
       description: "Resolve a person's name to their sender id candidates.",
       inputSchema: z.object({ name: z.string().min(1) }),
       execute: async (input) => resolvePerson(db, service, input),
+    }),
+    get_unread_overview: tool({
+      description:
+        "The user's unread conversations: per-conversation unread counts + short excerpts of the unread messages, oldest first. Muted conversations are excluded unless includeMuted. Read-only — never changes read state.",
+      inputSchema: z.object({ includeMuted: z.boolean().optional() }),
+      execute: async (input) => {
+        const overview = getUnreadOverview(db, service, input)
+        for (const conv of overview) {
+          for (const e of conv.excerpts) onSurfaced(conv.convId, e.msgId)
+        }
+        return overview
+      },
     }),
   }
 }

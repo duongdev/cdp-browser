@@ -150,6 +150,8 @@ export interface ThreadHandle {
   replyFocused: () => void
   /** Open the file picker to stage an attachment. */
   openFilePicker: () => void
+  /** Insert assistant-drafted text into the composer for editing — never auto-sent (t176). */
+  insertDraft: (text: string) => void
 }
 
 interface ThreadViewProps {
@@ -173,6 +175,10 @@ interface ThreadViewProps {
   onNameResolved?: (convId: string, name: string) => void
   /** "Ask AI about this" (t174, PSN-104) — passed through to each row's actions menu. */
   onAskAi?: (msg: TeamsMessage) => void
+  /** "Draft reply with AI" (t176) — passed through to each row's actions menu. */
+  onDraftReply?: (msg: TeamsMessage) => void
+  /** "Summarize conversation" (t176) — passed through to each row's actions menu. */
+  onSummarizeConv?: (convId: string) => void
   /** Jump-to-message (t175): land on this message (DB-served window + highlight). `nonce` bumps so
    *  a repeat jump to the same id re-fires. */
   jumpTarget?: { id: string; nonce: number } | null
@@ -191,6 +197,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     onOpenProfile,
     onNameResolved,
     onAskAi,
+    onDraftReply,
+    onSummarizeConv,
     jumpTarget,
   },
   ref,
@@ -1112,6 +1120,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         if (msg) onReply(msg)
       },
       openFilePicker: () => composerRef.current?.openFilePicker(),
+      insertDraft: (text: string) => composerRef.current?.insertText(text),
     }),
     [moveFocus, focused, focusedId, focusable, onReply, jumpToUnread],
   )
@@ -1236,12 +1245,14 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     onAskAi={onAskAi}
                     onDelete={onDelete}
                     onDiscardSend={onDiscardSend}
+                    onDraftReply={onDraftReply}
                     onEdit={onEdit}
                     onJumpToMessage={jumpToMessage}
                     onOpenProfile={onOpenProfile}
                     onReact={onReact}
                     onReply={onReply}
                     onRetrySend={onRetrySend}
+                    onSummarizeConv={onSummarizeConv ? () => onSummarizeConv(convId) : undefined}
                     showMeta={item.showMeta}
                   />
                 )

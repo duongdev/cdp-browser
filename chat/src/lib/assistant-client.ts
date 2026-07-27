@@ -77,6 +77,19 @@ export async function attachContext(
   ).session
 }
 
+/** The draft-reply tone guidance blob (t176) — DB-stored, user-editable, empty = none. */
+export async function getAssistantVoice(): Promise<string> {
+  try {
+    return (await req<{ voice: string }>("/prefs")).voice ?? ""
+  } catch {
+    return ""
+  }
+}
+
+export async function setAssistantVoice(voice: string): Promise<void> {
+  await req("/prefs", { method: "POST", body: JSON.stringify({ voice }) })
+}
+
 /** Typed error code → user copy (four-state error coverage, t174). */
 export function assistantErrorCopy(code: string | undefined): string {
   switch (code) {

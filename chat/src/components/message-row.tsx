@@ -140,6 +140,10 @@ interface MessageRowProps {
   /** "Ask AI about this" (t174, PSN-104): attach this message as assistant context. Passed for any
    *  confirmed, non-deleted message when the assistant is available. */
   onAskAi?: (msg: TeamsMessage) => void
+  /** "Draft reply with AI" (t176): assistant drafts a reply into the panel; insert is manual. */
+  onDraftReply?: (msg: TeamsMessage) => void
+  /** "Summarize conversation" (t176): seeds a summarize run for the whole conversation. */
+  onSummarizeConv?: () => void
 }
 
 /** One message bubble. Own messages align right with the accent; others align left with the
@@ -170,6 +174,8 @@ function ChatMessageRow({
   onOpenProfile,
   groupPos = "solo",
   onAskAi,
+  onDraftReply,
+  onSummarizeConv,
 }: MessageRowProps) {
   const self = !!message.self
   const deleted = !!message.deleted
@@ -570,8 +576,10 @@ function ChatMessageRow({
                 coarse={coarse}
                 onAskAi={canAskAi ? () => onAskAi?.(message) : undefined}
                 onDelete={() => setConfirmOpen(true)}
+                onDraftReply={canAskAi && onDraftReply ? () => onDraftReply(message) : undefined}
                 onEdit={startEdit}
                 onReact={canReact && coarse ? () => setPickerOpen(true) : undefined}
+                onSummarizeConv={canAskAi ? onSummarizeConv : undefined}
                 side={self ? "end" : "start"}
               />
             )}
@@ -851,6 +859,8 @@ function MessageActions({
   onDelete,
   onReact,
   onAskAi,
+  onDraftReply,
+  onSummarizeConv,
   side,
 }: {
   coarse: boolean
@@ -862,6 +872,10 @@ function MessageActions({
   onReact?: () => void
   /** Attach this message as assistant context (t174). */
   onAskAi?: () => void
+  /** Assistant drafts a reply to this message (t176). */
+  onDraftReply?: () => void
+  /** Summarize the whole conversation (t176). */
+  onSummarizeConv?: () => void
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
@@ -914,6 +928,32 @@ function MessageActions({
               >
                 <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
                 Ask AI about this
+              </button>
+            )}
+            {onDraftReply && (
+              <button
+                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                onClick={() => {
+                  setOpen(false)
+                  onDraftReply()
+                }}
+                type="button"
+              >
+                <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
+                Draft reply with AI
+              </button>
+            )}
+            {onSummarizeConv && (
+              <button
+                className="flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+                onClick={() => {
+                  setOpen(false)
+                  onSummarizeConv()
+                }}
+                type="button"
+              >
+                <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
+                Summarize conversation
               </button>
             )}
             {canEdit && (

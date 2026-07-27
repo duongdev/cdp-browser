@@ -64,12 +64,18 @@ export interface AssistantPanelProps {
   /** Bumped by "Ask AI about this" so the active session reloads its messages (a context excerpt
    *  was appended server-side). */
   refreshNonce?: number
+  /** A quick action's canned prompt (t176) — auto-sent into the active session once. */
+  pendingPrompt?: { text: string; nonce: number } | null
+  /** Insert assistant-drafted text into the active thread's composer — never auto-sent (t176). */
+  onInsertToComposer?: (text: string) => void
 }
 
-const SUGGESTED_PROMPTS = [
-  "What did I miss today?",
-  "Summarize my unread conversations",
-  "Tìm tin nhắn về deploy tuần này",
+import { actionItemsPrompt, catchUpPrompt } from "../../lib/assistant-actions"
+
+const SUGGESTED_PROMPTS: { label: string; text: string }[] = [
+  { label: "What did I miss?", text: catchUpPrompt() },
+  { label: "Action items for me", text: actionItemsPrompt() },
+  { label: "Tìm tin nhắn về deploy tuần này", text: "Tìm tin nhắn về deploy tuần này" },
 ]
 
 /** Keep this many opened session panes mounted (MRU) — same idea as the thread keep-alive. */
@@ -336,7 +342,9 @@ export function AssistantPanel(props: AssistantPanelProps) {
             <SessionChat
               contextRefs={(sessions?.find((s) => s.id === id) ?? null)?.contextRefs ?? []}
               labelForConv={props.labelForConv}
+              onInsertToComposer={props.onInsertToComposer}
               onOpenCitation={props.onOpenCitation}
+              pendingPrompt={id === sessionId ? props.pendingPrompt : undefined}
               sessionId={id}
             />
           </div>
@@ -385,11 +393,15 @@ function SessionChat({
   contextRefs,
   labelForConv,
   onOpenCitation,
+  pendingPrompt,
+  onInsertToComposer,
 }: {
   sessionId: string
   contextRefs: AssistantSession["contextRefs"]
   labelForConv: (convId: string) => string
   onOpenCitation: (convId: string, msgId: string) => void
+  pendingPrompt?: { text: string; nonce: number } | null
+  onInsertToComposer?: (text: string) => void
 }) {
   const [initial, setInitial] = useState<UIMessage[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -421,7 +433,9 @@ function SessionChat({
       contextRefs={contextRefs}
       initial={initial}
       labelForConv={labelForConv}
+      onInsertToComposer={onInsertToComposer}
       onOpenCitation={onOpenCitation}
+      pendingPrompt={pendingPrompt}
       sessionId={sessionId}
     />
   )
@@ -448,12 +462,16 @@ function SessionChatReady({
   contextRefs,
   labelForConv,
   onOpenCitation,
+  pendingPrompt,
+  onInsertToComposer,
 }: {
   sessionId: string
   initial: UIMessage[]
   contextRefs: AssistantSession["contextRefs"]
   labelForConv: (convId: string) => string
   onOpenCitation: (convId: string, msgId: string) => void
+  pendingPrompt?: { text: string; nonce: number } | null
+  onInsertToComposer?: (text: string) => void
 }) {
   const transport = useMemo(
     () => new DefaultChatTransport({ api: `${ASSISTANT_BASE}/${sessionId}` }),
@@ -484,6 +502,15 @@ function SessionChatReady({
     sendMessage({ text })
   }, [input, busy, sendMessage])
 
+  // A quick action's canned prompt auto-sends once per nonce (t176) — visible in history like any
+  // other user message.
+  const sentNonceRef = useRef(0)
+  useEffect(() => {
+    if (!pendingPrompt || pendingPrompt.nonce === sentNonceRef.current) return
+    sentNonceRef.current = pendingPrompt.nonce
+    sendMessage({ text: pendingPrompt.text })
+  }, [pendingPrompt, sendMessage])
+
   const empty = messages.length === 0
 
   return (
@@ -500,14 +527,14 @@ function SessionChatReady({
               {SUGGESTED_PROMPTS.map((p) => (
                 <button
                   className="rounded-full border border-border px-3 py-1.5 text-muted-foreground text-xs hover:bg-accent"
-                  key={p}
+                  key={p.label}
                   onClick={() => {
-                    setInput(p)
+                    setInput(p.text)
                     inputRef.current?.focus()
                   }}
                   type="button"
                 >
-                  {p}
+                  {p.label}
                 </button>
               ))}
             </div>
@@ -519,6 +546,7 @@ function SessionChatReady({
                 key={m.id}
                 labelForConv={labelForConv}
                 message={m}
+                onInsertToComposer={onInsertToComposer}
                 onOpenCitation={onOpenCitation}
                 streaming={busy && m === messages[messages.length - 1]}
               />
@@ -624,11 +652,13 @@ function AssistantMessage({
   streaming,
   labelForConv,
   onOpenCitation,
+  onInsertToComposer,
 }: {
   message: UIMessage
   streaming: boolean
   labelForConv: (convId: string) => string
   onOpenCitation: (convId: string, msgId: string) => void
+  onInsertToComposer?: (text: string) => void
 }) {
   const isUser = message.role === "user"
   const text = message.parts
@@ -657,6 +687,17 @@ function AssistantMessage({
       {(displayText || streaming) && (
         <div className="teams-message-body max-w-full text-sm [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p+p]:mt-2 [&_ul]:list-disc [&_ul]:pl-5">
           <Streamdown parseIncompleteMarkdown>{displayText}</Streamdown>
+        </div>
+      )}
+      {!streaming && displayText && onInsertToComposer && (
+        <div>
+          <button
+            className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => onInsertToComposer(displayText)}
+            type="button"
+          >
+            Insert into composer
+          </button>
         </div>
       )}
       {citations.length > 0 && (
