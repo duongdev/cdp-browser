@@ -632,7 +632,7 @@ function SessionChatReady({
     return (sessionModel ? models?.find((m) => m.id === sessionModel) : undefined) ?? def
   }, [models, sessionModel])
   const contextBudget = contextBudgetFor(activeModel)
-  // Which scopes are already in the tray — the "+" menu ticks and disables those rows.
+  // Which scopes are already in the tray — the "+" menu ticks those rows.
   const attachedScopes = useMemo(
     () =>
       new Set(
@@ -642,6 +642,22 @@ function SessionChatReady({
       ),
     [contextRefs],
   )
+  // Menu rows TOGGLE (steering): a ticked row detaches instead of sitting there inert, and the
+  // popover stays open so several can be picked in one visit.
+  const toggleScope = useCallback(
+    (kind: "folder" | "label", name: string) => {
+      const existing = contextRefs.find((r) => r.kind === kind && r.name === name)
+      if (existing) onDetach?.(existing)
+      else onAttachScope?.(kind, name)
+    },
+    [contextRefs, onDetach, onAttachScope],
+  )
+  const toggleCurrentConv = useCallback(() => {
+    const existing =
+      currentConv && contextRefs.find((r) => r.convId === currentConv.convId && !r.msgId)
+    if (existing) onDetach?.(existing)
+    else onAttachCurrent?.()
+  }, [contextRefs, currentConv, onDetach, onAttachCurrent])
   const contextPct = useMemo(
     () => Math.min(100, Math.round((estimateTokens(messages) / contextBudget) * 100)),
     [messages, contextBudget],
@@ -815,8 +831,8 @@ function SessionChatReady({
               }
               attachedScopes={attachedScopes}
               currentConv={currentConv}
-              onAttachCurrent={onAttachCurrent}
-              onAttachScope={onAttachScope}
+              onToggleCurrent={toggleCurrentConv}
+              onToggleScope={toggleScope}
               scopes={scopes}
             />
             <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
@@ -877,20 +893,21 @@ function TickSlot({ on }: { on?: boolean }) {
 function AttachMenu({
   currentConv,
   alreadyAttached,
-  onAttachCurrent,
+  onToggleCurrent,
   scopes,
   attachedScopes,
-  onAttachScope,
+  onToggleScope,
 }: {
   currentConv?: { convId: string; title: string } | null
   alreadyAttached: boolean
-  onAttachCurrent?: () => void
+  /** Attach the current conversation, or detach it when it's already ticked. */
+  onToggleCurrent?: () => void
   scopes?: AssistantScopes
   attachedScopes?: Set<string>
-  onAttachScope?: (kind: "folder" | "label", name: string) => void
+  /** Attach the scope, or detach it when it's already ticked. */
+  onToggleScope?: (kind: "folder" | "label", name: string) => void
 }) {
   const [open, setOpen] = useState(false)
-  const disabled = !currentConv || alreadyAttached
   const folders = scopes?.folders ?? []
   const labels = scopes?.labels ?? []
   return (
@@ -908,11 +925,8 @@ function AttachMenu({
       <PopoverContent align="start" className="w-64 p-1" side="top">
         <button
           className={cn(MENU_ROW, !currentConv && "opacity-50 hover:bg-transparent")}
-          disabled={disabled}
-          onClick={() => {
-            setOpen(false)
-            onAttachCurrent?.()
-          }}
+          disabled={!currentConv}
+          onClick={onToggleCurrent}
           type="button"
         >
           <HugeiconsIcon className="size-4 shrink-0" icon={MessageMultiple01Icon} />
@@ -932,13 +946,10 @@ function AttachMenu({
               const on = attachedScopes?.has(`${s.kind}:${s.name}`)
               return (
                 <button
-                  className={cn(MENU_ROW, on && "cursor-default hover:bg-transparent")}
-                  disabled={on}
+                  aria-pressed={on}
+                  className={MENU_ROW}
                   key={`${s.kind}:${s.name}`}
-                  onClick={() => {
-                    setOpen(false)
-                    onAttachScope?.(s.kind, s.name)
-                  }}
+                  onClick={() => onToggleScope?.(s.kind, s.name)}
                   type="button"
                 >
                   <HugeiconsIcon
