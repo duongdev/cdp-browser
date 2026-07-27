@@ -1,5 +1,5 @@
 import { generateText, tool } from "ai"
-import { MockLanguageModelV3 } from "ai/test"
+import { convertArrayToReadableStream, MockLanguageModelV3 } from "ai/test"
 import { afterEach, describe, expect, test } from "vitest"
 import { z } from "zod"
 import {
@@ -8,6 +8,7 @@ import {
   modelHasVision,
   parseModelList,
   readLlmConfig,
+  reasoningFallbackMiddleware,
   resolveModel,
   tolerantFetch,
 } from "./llm.ts"
@@ -230,5 +231,65 @@ describe("tolerantFetch (9router body quirk)", () => {
     })
     expect(res.bodyUsed).toBe(false)
     expect(await res.text()).toBe(streamBody)
+  })
+})
+
+describe("reasoningFallbackMiddleware (GLM answers inside the thinking channel)", () => {
+  const mw = reasoningFallbackMiddleware()
+  // biome-ignore lint/suspicious/noExplicitAny: structural stand-ins for the SDK's part unions
+  const run = async (parts: any[]) => {
+    const out: any[] = []
+    const { stream } = await (mw.wrapStream as any)({
+      doStream: async () => ({ stream: convertArrayToReadableStream(parts) }),
+    })
+    for await (const p of stream as any) out.push(p)
+    return out
+  }
+  const finish = (unified: string) => ({ type: "finish", finishReason: { unified } })
+
+  test("a reasoning-only step is promoted to the answer", async () => {
+    const out = await run([
+      { type: "reasoning-delta", id: "r", delta: "Nothing. You have no unread conversations." },
+      finish("stop"),
+    ])
+    const text = out.filter((p) => p.type === "text-delta").map((p) => p.delta)
+    expect(text).toEqual(["Nothing. You have no unread conversations."])
+    // The reasoning is still forwarded; the fallback lands before the finish part.
+    expect(out.map((p) => p.type)).toEqual([
+      "reasoning-delta",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "finish",
+    ])
+  })
+
+  test("a normal step is untouched — reasoning stays reasoning", async () => {
+    const out = await run([
+      { type: "reasoning-delta", id: "r", delta: "thinking out loud" },
+      { type: "text-delta", id: "t", delta: "the answer" },
+      finish("stop"),
+    ])
+    expect(out.filter((p) => p.type === "text-delta").map((p) => p.delta)).toEqual(["the answer"])
+    expect(out.filter((p) => p.type === "text-start")).toHaveLength(0)
+  })
+
+  test("a tool-call step legitimately has no text and is left alone", async () => {
+    const out = await run([
+      { type: "reasoning-delta", id: "r", delta: "I should search" },
+      { type: "tool-call", toolCallId: "c1", toolName: "search_messages", input: "{}" },
+      finish("tool-calls"),
+    ])
+    expect(out.some((p) => p.type === "text-delta")).toBe(false)
+  })
+
+  test("generate: reasoning-only content gains a text part", async () => {
+    const result = await (mw.wrapGenerate as any)({
+      doGenerate: async () => ({
+        content: [{ type: "reasoning", text: "the whole answer" }],
+        finishReason: "stop",
+      }),
+    })
+    expect(result.content).toContainEqual({ type: "text", text: "the whole answer" })
   })
 })

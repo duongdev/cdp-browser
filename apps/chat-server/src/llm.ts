@@ -8,7 +8,7 @@
 // is router config, the user's responsibility.
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import type { LanguageModel } from "ai"
+import { type LanguageModel, type LanguageModelMiddleware, wrapLanguageModel } from "ai"
 
 export interface LlmConfig {
   baseURL: string
@@ -203,7 +203,75 @@ export function resolveModel(config: LlmConfig | null, modelId?: string): Langua
     apiKey: config.apiKey ?? "unused",
     fetch: tolerantFetch,
   })
-  return provider.chatModel(modelId || config.model)
+  return wrapLanguageModel({
+    model: provider.chatModel(modelId || config.model),
+    middleware: reasoningFallbackMiddleware(),
+  })
+}
+
+/** A thinking model sometimes finishes its whole answer INSIDE the reasoning channel and emits no
+ *  content at all (`finish_reason: stop`, `reasoning_content` holds the reply, `content` empty).
+ *  Reproduced on 9router + GLM 4.7 at roughly one turn in three: the panel then renders an empty
+ *  answer, and the citation validator has no text to check.
+ *
+ *  This promotes that reasoning to the answer when — and only when — the step produced no text and
+ *  isn't a tool-call step (a tool-call step legitimately has no text). A normal turn is untouched:
+ *  its reasoning stays reasoning. */
+/** The finish reason as a plain string — the SDK reports it as `{unified, raw}` on a stream part
+ *  and as a bare string elsewhere. */
+function unifiedFinish(reason: unknown): string | undefined {
+  if (typeof reason === "string") return reason
+  return (reason as { unified?: string } | undefined)?.unified
+}
+
+export function reasoningFallbackMiddleware(): LanguageModelMiddleware {
+  return {
+    async wrapGenerate({ doGenerate }) {
+      const result = await doGenerate()
+      const hasText = result.content.some((p) => p.type === "text" && p.text.trim())
+      if (hasText || unifiedFinish(result.finishReason) === "tool-calls") return result
+      const reasoning = result.content
+        .filter((p) => p.type === "reasoning")
+        .map((p) => (p as { text: string }).text)
+        .join("")
+        .trim()
+      if (!reasoning) return result
+      console.warn("[llm] answer arrived as reasoning only — promoted to text")
+      return { ...result, content: [...result.content, { type: "text" as const, text: reasoning }] }
+    },
+
+    async wrapStream({ doStream }) {
+      const { stream, ...rest } = await doStream()
+      let sawText = false
+      let reasoning = ""
+      // Structurally typed: the SDK's stream-part union isn't exported from `ai`, and only three
+      // of its members matter here.
+      type Part = { type: string; id?: string; delta?: string; finishReason?: unknown }
+      const transform = new TransformStream<Part, Part>({
+        transform(part, controller) {
+          if (part.type === "text-delta" && part.delta?.trim()) sawText = true
+          if (part.type === "reasoning-delta") reasoning += part.delta ?? ""
+          if (part.type === "finish" && !sawText && reasoning.trim()) {
+            if (unifiedFinish(part.finishReason) !== "tool-calls") {
+              // The reply only ever existed as "thinking" — re-emit it as the answer, before the
+              // finish part so the consumer sees a normal text block.
+              console.warn("[llm] answer arrived as reasoning only — promoted to text")
+              const id = "reasoning-fallback"
+              controller.enqueue({ type: "text-start", id })
+              controller.enqueue({ type: "text-delta", id, delta: reasoning.trim() })
+              controller.enqueue({ type: "text-end", id })
+            }
+          }
+          controller.enqueue(part)
+        },
+      })
+      return {
+        // biome-ignore lint/suspicious/noExplicitAny: structural Part type vs the SDK's union
+        stream: (stream as any).pipeThrough(transform),
+        ...rest,
+      }
+    },
+  }
 }
 
 /** 9router answers a NON-streaming completion with a plain JSON body but labels it
@@ -214,7 +282,7 @@ export function resolveModel(config: LlmConfig | null, modelId?: string): Langua
  *  The request, not the response, decides what to do: only a `stream:false` call is read and
  *  cleaned, so a real SSE body is never consumed here. */
 export const tolerantFetch: typeof fetch = async (input, init) => {
-  const res = await fetch(input as RequestInfo, init as RequestInit)
+  const res = await fetch(input, init)
   const body = typeof init?.body === "string" ? init.body : ""
   const streamed = /"stream"\s*:\s*true/.test(body)
   if (streamed || !res.ok) return res

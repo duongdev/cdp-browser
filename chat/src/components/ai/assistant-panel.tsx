@@ -610,7 +610,13 @@ function SessionChatReady({
   refreshNonce?: number
 }) {
   const transport = useMemo(
-    () => new DefaultChatTransport({ api: `${ASSISTANT_BASE}/${sessionId}` }),
+    () =>
+      new DefaultChatTransport({
+        api: `${ASSISTANT_BASE}/${sessionId}`,
+        // The server runs in UTC; "today" means the user's day. Send the browser's own zone with
+        // every turn so the assistant doesn't call this morning "yesterday" (PSN-104).
+        body: { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      }),
     [sessionId],
   )
   const { messages, setMessages, sendMessage, status, error, stop, regenerate, clearError } =

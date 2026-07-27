@@ -4,7 +4,7 @@
 import Database from "better-sqlite3"
 import { describe, expect, test, vi } from "vitest"
 import { migrate, upsertMessages } from "../store.ts"
-import { buildSystemPrompt, createAssistantTools, createImageBuffer } from "./loop.ts"
+import { buildSystemPrompt, createAssistantTools, createImageBuffer, timeContext } from "./loop.ts"
 
 const AMS = "https://as-api.asm.skype.com/v1/objects/obj-1/views/imgo"
 const PROXIED = `/api/chat/media?service=teams&url=${encodeURIComponent(AMS)}`
@@ -76,5 +76,30 @@ describe("view_image", () => {
     const blind = buildSystemPrompt({})
     expect(blind).not.toContain("view_image")
     expect(blind).toContain("that text is all you can see")
+  })
+})
+
+describe("timeContext (PSN-104: 'today' in the user's zone, not UTC)", () => {
+  // 2026-07-27 00:30 Asia/Ho_Chi_Minh === 2026-07-26 17:30 UTC — the case that made the assistant
+  // call this morning "yesterday".
+  const now = Date.parse("2026-07-26T17:30:00Z")
+
+  test("today is the LOCAL date, with day bounds as epoch ms", () => {
+    const lines = timeContext(now, "Asia/Ho_Chi_Minh").join("\n")
+    expect(lines).toContain("Asia/Ho_Chi_Minh")
+    expect(lines).toContain('"Today" means 2026-07-27 LOCAL')
+    // Midnight local that day = 2026-07-26T17:00Z.
+    const start = Date.parse("2026-07-26T17:00:00Z")
+    expect(lines).toContain(String(start))
+    expect(lines).toContain(String(start + 86_400_000))
+  })
+
+  test("a different zone yields a different day for the same instant", () => {
+    expect(timeContext(now, "UTC").join("\n")).toContain('"Today" means 2026-07-26 LOCAL')
+  })
+
+  test("a garbage zone degrades to UTC instead of throwing", () => {
+    expect(() => timeContext(now, "Not/AZone")).not.toThrow()
+    expect(timeContext(now, "Not/AZone").join("\n")).toContain("UTC")
   })
 })

@@ -262,10 +262,50 @@ const RESPONSE_STYLE: string[] = [
   "If the user asks you to explain or walk through something, explain fully — still no preamble, still no closer.",
 ]
 
+/** "Today", in the user's zone, spelled out for the model (PSN-104). A UTC clock made it call this
+ *  morning "yesterday" for anyone east of Greenwich, and every relative-time question ("what did I
+ *  miss today", "since this morning") inherited that error. The day boundaries are given as ms
+ *  epoch so the model can pass them straight to `search_messages`'s after/before instead of doing
+ *  timezone arithmetic itself. */
+export function timeContext(now: number, timeZone: string): string[] {
+  const zone = safeZone(timeZone)
+  const fmt = (o: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: zone, ...o }).format(new Date(now))
+  const today = fmt({ year: "numeric", month: "2-digit", day: "2-digit" })
+  // Midnight local, expressed in ms epoch: what the local date means as an absolute instant.
+  const startOfDay = Date.parse(`${today}T00:00:00${offsetOf(now, zone)}`)
+  return [
+    `TIME: now is ${fmt({ dateStyle: "full", timeStyle: "short" })} in ${zone} (the user's timezone) — epoch ms ${now}.`,
+    `"Today" means ${today} LOCAL: epoch ms ${startOfDay} to ${startOfDay + 86_400_000}. "Yesterday" is the 24h before that.`,
+    "Message `ts` values are epoch ms — compare them against those numbers, never against a UTC calendar date, and state times in the user's timezone.",
+  ]
+}
+
+/** The zone's UTC offset at `now` as `+07:00`, from the formatter itself (no DST table). */
+function offsetOf(now: number, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" })
+    .formatToParts(new Date(now))
+    .find((p) => p.type === "timeZoneName")
+  const m = /GMT([+-]\d{2}:\d{2})/.exec(parts?.value || "")
+  return m ? m[1] : "Z"
+}
+
+/** A client can send any string; an invalid zone would throw inside Intl. */
+function safeZone(timeZone: string): string {
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone })
+    return timeZone
+  } catch {
+    return "UTC"
+  }
+}
+
 export function buildSystemPrompt(opts: {
   summary?: string | null
   contextRefs?: ContextRef[]
   now?: number
+  /** IANA zone the question was asked from (the browser's). Defaults to the server's. */
+  timeZone?: string
   /** The picked model can see images — `view_image` exists (PSN-104). */
   vision?: boolean
 }): string {
@@ -280,7 +320,10 @@ export function buildSystemPrompt(opts: {
     "CITATIONS: when your answer draws on a specific message, append an inline marker [msg:{convId}:{msgId}] right after the claim, using the exact convId and msgId from tool results. Markers referencing ids you did not see in tool results are stripped.",
     "Answer in the user's language — mirror Vietnamese with Vietnamese. Simple words; he reads English as a second language.",
     ...RESPONSE_STYLE,
-    `Current time: ${new Date(opts.now ?? Date.now()).toISOString()}`,
+    ...timeContext(
+      opts.now ?? Date.now(),
+      opts.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    ),
   ]
   if (opts.summary) {
     lines.push("", "Summary of the earlier part of this session:", opts.summary)

@@ -270,6 +270,8 @@ export function createAssistantRoutes(deps: AssistantDeps) {
         summary: session.summary,
         contextRefs: session.contextRefs,
         vision: canSee,
+        // The browser sends its own zone with each turn; the server clock is UTC in prod.
+        timeZone: typeof b.timeZone === "string" ? b.timeZone : undefined,
       }),
       messages: modelMessages,
       tools,
