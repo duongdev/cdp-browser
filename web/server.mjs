@@ -1128,38 +1128,75 @@ async function fetchTeamsGroupRostersInPage(cred, convIds) {
   return res && typeof res === "object" ? res : {}
 }
 
+// Whether a typed Graph-batch failure reason is worth retrying once. 401/403 are auth errors that
+// require re-authz (a different mechanism) — never retry those. Everything else is transient.
+function isTransientGraphFailure(reason) {
+  if (!reason) return false
+  if (reason === "no_token") return true
+  if (reason.startsWith("http_5") || reason === "http_429") return true
+  if (reason.startsWith("throw:")) return true
+  return false
+}
+
 // Resolve MRIs → names in ONE Graph getByIds batch, IN-PAGE. The Graph bearer is read from the
 // page's own MSAL cache (the accesstoken entry scoped to graph.microsoft.com) — a localStorage
 // read, not a network call, so CA doesn't apply; the POST is the browser's own authenticated
-// request. Returns { oid: displayName }; any failure → {} (all misses stay unresolved).
+// request. Returns { oid: displayName }; any failure → {} (all misses stay unresolved, degrading
+// callers to their existing fallback labels). Logs the failure reason and retries once on transient
+// failures (missing token, 5xx, 429, thrown error); never retries 401/403.
 async function resolveTeamsNamesInPage(oids) {
   if (oids.length === 0) return {}
+  // The in-page script returns { ok: true, names: {...} } on success or { ok: false, reason } on
+  // any failure, so the host side can log a useful reason and decide whether to retry.
   const script = `(async () => {
     try {
       let key = null
       for (const k of Object.keys(localStorage)) {
         if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
       }
-      if (!key) return {}
+      if (!key) return { ok: false, reason: "no_token" }
       let bearer = ""
-      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return {} }
-      if (!bearer) return {}
+      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { ok: false, reason: "no_token" } }
+      if (!bearer) return { ok: false, reason: "no_token" }
       const r = await fetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", {
         method: "POST",
         headers: { Authorization: "Bearer " + bearer, "Content-Type": "application/json" },
         body: JSON.stringify({ ids: ${JSON.stringify(oids)}, types: ["user"] }),
       })
-      if (!r.ok) return {}
+      if (!r.ok) return { ok: false, reason: "http_" + r.status }
       const j = await r.json()
-      const out = {}
+      const names = {}
       for (const u of (Array.isArray(j.value) ? j.value : [])) {
-        if (u && u.id && u.displayName) out[u.id] = u.displayName
+        if (u && u.id && u.displayName) names[u.id] = u.displayName
       }
-      return out
-    } catch (e) { return {} }
+      return { ok: true, names }
+    } catch (e) { return { ok: false, reason: "throw:" + (e && e.message || String(e)) } }
   })()`
-  const res = await notificationCenter.runInTeamsPage(script)
-  return res && typeof res === "object" ? res : {}
+
+  const attempt = async () => {
+    const res = await notificationCenter.runInTeamsPage(script)
+    if (res && typeof res === "object" && res.ok === true)
+      return { ok: true, names: res.names || {} }
+    const reason = (res && res.reason) || "unknown"
+    return { ok: false, reason }
+  }
+
+  let result = await attempt()
+  if (!result.ok) {
+    console.error(`[web] teams graph name resolution failed: ${result.reason}`)
+    if (isTransientGraphFailure(result.reason)) {
+      // One retry after a short pause — e.g. a token key not yet written to localStorage on first
+      // load, or a transient 5xx. A hard auth error (401/403) is not retried here; that path goes
+      // through markTeamsCredsStale.
+      await new Promise((r) => setTimeout(r, 1500))
+      result = await attempt()
+      if (!result.ok) {
+        console.error(`[web] teams graph name resolution retry also failed: ${result.reason}`)
+      }
+    }
+  }
+
+  return result.ok ? result.names : {}
 }
 
 // ---- mention roster (PSN-92 D) --------------------------------------------

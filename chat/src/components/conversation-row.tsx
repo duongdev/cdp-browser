@@ -8,7 +8,13 @@ import {
   useRef,
 } from "react"
 import { cn } from "@/lib/utils"
-import { conversationLabel, isUnread, previewLine, relativeTime } from "../lib/conversation-view"
+import {
+  conversationLabel,
+  conversationLabelStatus,
+  isUnread,
+  previewLine,
+  relativeTime,
+} from "../lib/conversation-view"
 import { FULL_NAME, formatConversationLabel, type NamePref } from "../lib/display-name"
 import type { TeamsConversation } from "../lib/teams-client"
 import { FacepileAvatar, UserAvatar } from "./user-avatar"
@@ -36,8 +42,9 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
   ) {
     // Raw title (pref-independent) — the avatar initials clean this themselves (strip org/tags),
     // so a "first name"/regex display pref never starves them of the real name (PSN-99).
-    const avatarName = conversationLabel(conversation)
-    const label = formatConversationLabel(avatarName, conversation, namePref ?? FULL_NAME)
+    const { label: rawLabel, pending } = conversationLabelStatus(conversation)
+    const avatarName = rawLabel
+    const label = formatConversationLabel(rawLabel, conversation, namePref ?? FULL_NAME)
     // Local rename (t168): the custom title leads; the original stays visible, small + muted.
     const customTitle = conversation.customTitle
     const title = customTitle || label
@@ -109,14 +116,22 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline justify-between gap-2">
               <span className="flex min-w-0 items-baseline gap-1.5">
-                <span
-                  className={cn(
-                    "conv-row-title truncate text-foreground",
-                    unread ? "font-semibold" : "font-medium",
-                  )}
-                >
-                  {title}
-                </span>
+                {pending ? (
+                  <span
+                    aria-label={title}
+                    className="h-3.5 w-2/5 animate-pulse rounded bg-muted"
+                    role="status"
+                  />
+                ) : (
+                  <span
+                    className={cn(
+                      "conv-row-title truncate text-foreground",
+                      unread ? "font-semibold" : "font-medium",
+                    )}
+                  >
+                    {title}
+                  </span>
+                )}
                 {customTitle && (
                   <span className="hidden truncate text-[11px] text-muted-foreground sm:inline">
                     {label}

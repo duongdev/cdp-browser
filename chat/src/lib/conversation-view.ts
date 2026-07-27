@@ -3,15 +3,34 @@
 // DM without a topic degrades to a kind label and the preview is tag-stripped raw content.
 import type { TeamsConversation } from "./teams-client"
 
+/** Display label with a pending flag (PSN-103). `pending` is true when the conversation is a
+ *  client-side stub — a push deep-link placeholder that has not yet been hydrated from the list or
+ *  the thread's sender names. In that state the caller should render a loading skeleton rather than
+ *  the kind label. `label` is always valid (the kind fallback) — use it as the skeleton aria-label.
+ *
+ *  A conversation from the HTTP list or a WS frame with no title is TERMINAL (resolution was
+ *  attempted and failed, or the row is genuinely title-less) — `pending` is false and the kind label
+ *  IS the correct label. */
+export function conversationLabelStatus(conv: TeamsConversation): {
+  label: string
+  pending: boolean
+} {
+  const title = conv.title?.trim()
+  if (title) return { label: title, pending: false }
+  const topic = conv.topic?.trim()
+  if (topic) return { label: topic, pending: false }
+  if (conv.kind === "self") return { label: "Notes", pending: false }
+  const kindLabel = conv.kind === "oneOnOne" ? "Direct message" : "Group chat"
+  // A stub (push deep-link placeholder) has no title/topic because hydration is still pending — show
+  // a skeleton, not the kind label. Any real server row (list HTTP or WS) is terminal: resolution was
+  // attempted; the kind label is correct.
+  return { label: kindLabel, pending: conv.stub === true }
+}
+
 /** Display label: the server-resolved title (real member names, t131) if present, else the topic,
  *  else a fallback keyed by conversation kind. */
 export function conversationLabel(conv: TeamsConversation): string {
-  const title = conv.title?.trim()
-  if (title) return title
-  const topic = conv.topic?.trim()
-  if (topic) return topic
-  if (conv.kind === "self") return "Notes"
-  return conv.kind === "oneOnOne" ? "Direct message" : "Group chat"
+  return conversationLabelStatus(conv).label
 }
 
 /** One-line last-message preview (t151). The list stores the RAW last-message content, so a quoted

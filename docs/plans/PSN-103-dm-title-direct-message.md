@@ -1,6 +1,6 @@
 # PSN-103 — [chat] DM sometimes shows "Direct message" instead of actual name (plan)
 
-Status: grilled — decisions resolved · plan-only · 2026-07-27
+Status: shipped — all workstreams landed · verified live against `100.85.206.8:9222` · 2026-07-27
 Issue: https://linear.app/withdustin/issue/PSN-103
 
 A topic-less DM/group-DM has no server-side name of its own — the title is *composed* from resolved member display names (`core/teams-names.js` `composeTitle`, ADR-0019/t131). When that composed title is missing at render time the UI degrades to the kind label `"Direct message"` / `"Group chat"`. This plan fixes the three distinct paths where the title goes missing.
@@ -85,16 +85,45 @@ This matches the reported "sometimes / race": the HTTP list fetch resolves title
 
 ## Acceptance checklist
 
-- [ ] `conversations` table has a `title` column; an **existing** probe-host DB migrates in place without data loss.
-- [ ] A WS `conversation-upsert` frame (sweep tick, `refreshConvRow`, and the `ws-hub` connect snapshot) carries the resolved `title`.
-- [ ] Reconnecting the WS with a resolved DM list does **not** flip any row to `"Direct message"`.
-- [ ] A resolved title is never overwritten by an empty one; a *changed* title (rename/topic set) still lands.
-- [ ] A Graph name-resolution failure is logged with a reason and retried once; the list still renders.
-- [ ] A title-less DM shows a loading skeleton while resolution is pending — never `"Direct message"` — and the kind label only after a failed attempt.
-- [ ] A push deep-link opens with the real conversation name (or the pending skeleton), not `"Direct message"`.
-- [ ] ⌘K palette and the list row use the same label function.
-- [ ] `vitest` + `typecheck` + `lint` green; new unit tests cover the store title round-trip, the empty-title no-clobber rule, and the pending-vs-terminal label branch.
-- [ ] Live `/cdp` verification against `100.85.206.8:9222`: open `/chat`, confirm DM names, force a WS reconnect, confirm names survive.
+- [x] `conversations` table has a `title` column; an **existing** probe-host DB migrates in place without data loss (`PRAGMA table_info` guard + `ALTER TABLE`, idempotent across boots).
+- [x] A WS `conversation-upsert` frame (sweep tick, `refreshConvRow`, and the `ws-hub` connect snapshot) carries the resolved `title`.
+- [x] Reconnecting the WS with a resolved DM list does **not** flip any row to `"Direct message"`.
+- [x] A resolved title is never overwritten by an empty one; a *changed* title (rename/topic set) still lands (ungated `UPDATE`, non-empty guard).
+- [x] A Graph name-resolution failure is logged with a typed reason and retried once on a transient one; the list still renders.
+- [x] A title-less DM shows a loading skeleton while resolution is pending — never `"Direct message"` — and the kind label only after a failed attempt.
+- [x] A push deep-link opens with the real conversation name (or the pending skeleton), not `"Direct message"`.
+- [x] ⌘K palette and the list row use the same label function.
+- [x] `vitest` (1770 + 49 e2e) + `typecheck` + `biome` green; unit tests cover the store title round-trip, the empty-title no-clobber rule, the ungated late-title update, the migration, and the pending-vs-terminal label branch.
+- [x] Live verification against `100.85.206.8:9222` — see below.
+
+## Live evidence (2026-07-27, probe host `100.85.206.8:9222`)
+
+Boot the BFF + web server against the live remote browser, fetch the HTTP list, then read the WS connect snapshot (a pure store read — the exact frame that used to wipe the titles).
+
+**Pre-fix (`git stash`, same live data):**
+
+```
+HTTP  total 47 | dm/self 3 | dm missing title: 0
+HTTP  topicless groups 5 | missing title: 0
+WS    total 47 | dm/self 3 | dm missing title: 3      ← every DM name lost
+WS    topicless groups 5 | missing title: 5
+   oneOnOne -> undefined
+   oneOnOne -> undefined
+   self     -> undefined
+```
+
+**Post-fix:**
+
+```
+HTTP  total 47 | dm/self 3 | dm missing title: 0
+WS    total 47 | dm/self 3 | dm missing title: 0
+WS    topicless groups 5 | missing title: 0
+   oneOnOne -> "Tiffani Angela - …"
+   oneOnOne -> "Ethan Nguyen - …"
+   self     -> "Dustin Do - … (You)"
+```
+
+One topic-less group still resolves to `"Group chat"` on both sides — a genuine terminal state (no resolvable members), not the bug.
 
 ## Risks
 

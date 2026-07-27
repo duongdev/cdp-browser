@@ -34,7 +34,7 @@ import {
   uploadImages,
 } from "../lib/chat-client"
 import { useChatWsFrames } from "../lib/chat-ws-context"
-import { conversationLabel } from "../lib/conversation-view"
+import { conversationLabel, conversationLabelStatus } from "../lib/conversation-view"
 import { FULL_NAME, formatConversationLabel, formatName, type NamePref } from "../lib/display-name"
 import { htmlToPlain } from "../lib/html-to-plain"
 import {
@@ -165,13 +165,18 @@ interface ThreadViewProps {
   namePref?: NamePref
   /** Open a sender's profile card (t166) — passed through to each row's sender header. */
   onOpenProfile?: (target: { userId: string; name: string }) => void
+  /** PSN-103: called once when history loads for a stub 1:1 conversation and we can derive the other
+   *  party's name from the messages. Never called for group/self or when the conversation already has
+   *  a title. The caller (chat-app) patches the conversation's provisional title so the header clears
+   *  its skeleton without a fetch. */
+  onNameResolved?: (convId: string, name: string) => void
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
  *  server-sanitized ReaderMessages. Four states; scroll-to-top lazily loads an older page. Kept
  *  mounted across conversation switches (t132) — hidden when inactive, never refetched. */
 export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function ThreadView(
-  { conversation, onBack, visible = true, onFocusChange, namePref, onOpenProfile },
+  { conversation, onBack, visible = true, onFocusChange, namePref, onOpenProfile, onNameResolved },
   ref,
 ) {
   const [state, setState] = useState<State>({ status: "loading" })
@@ -190,6 +195,13 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // merge setState. Cleared per conversation switch below.
   const pendingReactions = useRef<PendingReactions>(new Map())
   const convId = conversation.id
+  // Stable refs so the load callback keeps `[convId]` deps: taking `conversation` fields as deps
+  // would re-mint `load`, and the reload effect below would refetch the whole thread the moment
+  // onNameResolved patches the title — exactly the refetch t132's keep-alive exists to avoid.
+  const onNameResolvedRef = useRef(onNameResolved)
+  onNameResolvedRef.current = onNameResolved
+  const convRef = useRef(conversation)
+  convRef.current = conversation
 
   // Keyboard message focus (t152): the id of the focused message row + the command dispatched to it.
   const [focusedId, setFocusedId] = useState<string | null>(null)
@@ -212,6 +224,14 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           setState({ status: "ready", messages: page.messages })
           olderCursor.current = page.cursor
           setHasMore(page.cursor != null)
+          // PSN-103: for a stub 1:1 with no title, derive the other party's name from the first
+          // non-self message in history. Restricted to oneOnOne — a group would name the wrong party.
+          // Fires once: app.tsx clears the stub flag on the first resolution.
+          const conv = convRef.current
+          if (conv.stub && conv.kind === "oneOnOne" && !conv.title?.trim()) {
+            const other = page.messages.find((m) => !m.self && m.senderName?.trim())
+            if (other?.senderName) onNameResolvedRef.current?.(convId, other.senderName.trim())
+          }
         })
         .catch((e) => {
           if (!signal?.aborted) setState({ status: "error", message: errorMessage(e) })
@@ -1024,23 +1044,34 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           </Button>
         )}
         <span className="flex min-w-0 flex-1 items-baseline gap-1.5 px-1">
-          <span className="truncate font-heading font-semibold text-foreground text-sm">
-            {conversation.customTitle ||
-              formatConversationLabel(
-                conversationLabel(conversation),
-                conversation,
-                namePref ?? FULL_NAME,
+          {conversationLabelStatus(conversation).pending && !conversation.customTitle ? (
+            // PSN-103: stub not yet hydrated — show a skeleton so the header never reads "Direct message".
+            <span
+              aria-label={conversationLabelStatus(conversation).label}
+              className="h-4 w-36 animate-pulse rounded bg-muted"
+              role="status"
+            />
+          ) : (
+            <>
+              <span className="truncate font-heading font-semibold text-foreground text-sm">
+                {conversation.customTitle ||
+                  formatConversationLabel(
+                    conversationLabel(conversation),
+                    conversation,
+                    namePref ?? FULL_NAME,
+                  )}
+              </span>
+              {/* Local rename (t168): the original title stays visible beside the custom one. */}
+              {conversation.customTitle && (
+                <span className="truncate text-muted-foreground text-xs">
+                  {formatConversationLabel(
+                    conversationLabel(conversation),
+                    conversation,
+                    namePref ?? FULL_NAME,
+                  )}
+                </span>
               )}
-          </span>
-          {/* Local rename (t168): the original title stays visible beside the custom one. */}
-          {conversation.customTitle && (
-            <span className="truncate text-muted-foreground text-xs">
-              {formatConversationLabel(
-                conversationLabel(conversation),
-                conversation,
-                namePref ?? FULL_NAME,
-              )}
-            </span>
+            </>
           )}
         </span>
       </header>
