@@ -37,7 +37,7 @@ Follow-up to t174 (which ships env-default only). Live testing showed a real qua
 
 ### Layer 3 — Visual review
 
-- [ ] Screenshots: selector closed/open, deviating-session tag, single-model hidden state; wide + phone shells
+- [ ] Screenshots via /cdp + chrome-devtools MCP: selector closed/open, deviating-session tag, single-model hidden state; wide + phone shells
 
 ## Design notes
 

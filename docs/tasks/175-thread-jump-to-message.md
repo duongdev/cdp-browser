@@ -37,8 +37,8 @@ n/a — BFF DB reads only (covered by Layer 1 against `:memory:`).
 
 ### Layer 3 — Visual review
 
-- [ ] Jump to a months-old cited message: no scroll jank, highlight visible, load-newer rejoins live cleanly
-- [ ] Phone shell: same flow stacked
+- [ ] Via /cdp + chrome-devtools MCP (screenshots + console): jump to a months-old cited message — no scroll jank, highlight visible, load-newer rejoins live cleanly
+- [ ] Phone shell: same flow stacked (viewport-resized screenshot)
 
 ## Design notes
 

@@ -33,11 +33,11 @@ The extras grilled into v1 — each is a prompt seed + at most one new tool over
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-- [ ] Live: each action once against real data via 9router; verify citations resolve and draft lands in composer unsent
+- [ ] Live: each action once against real data via 9router; verify citations resolve and draft lands in composer unsent. Never send to chats with other users — if a send must be verified end-to-end, self-chat (`48:notes` Notes) only
 
 ### Layer 3 — Visual review
 
-- [ ] Menu/⌘K entries + suggestion chips in panel empty state; four states for each action's run
+- [ ] Via /cdp + chrome-devtools MCP: menu/⌘K entries + suggestion chips in panel empty state; four states for each action's run, screenshots captured
 
 ## Design notes
 

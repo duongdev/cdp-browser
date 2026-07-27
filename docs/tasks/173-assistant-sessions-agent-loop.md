@@ -24,7 +24,8 @@ Everything user-visible (t174–t176) renders what this task produces. Isolating
 - [ ] Context refs ("ask AI about this"): attach endpoint appends `{service, convId, msgId?, title, deepLink}` to `context_refs`, injects referenced content once as a message part; every later turn pins only the one-line descriptors into the system prompt.
 - [ ] Titles: after first exchange, fire-and-forget `generateText` (≤50 chars, same language as user); failure leaves first-40-chars fallback.
 - [ ] Compaction: when projected prompt exceeds ~40K tokens (chars/4 estimate, reconciled by returned `usage` accumulated into `total_tokens`), summarize older messages into `summary` + advance `summary_upto_idx`; stored rows never deleted.
-- [ ] All LLM-dependent tests run against a mock `LanguageModel` (t172 pattern) — deterministic, no network.
+- [ ] Tool set is strictly read-only over chat data (search/get_context/list_conversations/resolve_person) — no send/react/edit/mark-read tools exist in v1, so the agent loop cannot mutate conversations or read state even if prompted to.
+- [ ] All LLM-dependent tests run against a mock `LanguageModel` (t172 pattern) — deterministic, no network. Live smoke runs against the real chat.db (real messages are the fixture); safe because the loop is read-only.
 
 ## Test plan
 

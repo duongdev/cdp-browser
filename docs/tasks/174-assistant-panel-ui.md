@@ -35,11 +35,11 @@ First user-visible payoff of the epic; t175/t176 hang affordances off this panel
 
 ### Layer 2 — Manual smoke (CDP/IPC)
 
-- [ ] Live end-to-end: ask about a real Teams message via 9router, citation chip opens the right conversation
+- [ ] Live end-to-end against real data: ask about a real Teams message via 9router, citation chip opens the right conversation. Never send messages during verification; note a citation click marks the opened conversation read (ADR-0022 auto-read) — own account, acceptable, but prefer already-read conversations or the self-chat (`48:notes`) when preserving unread state matters
 
 ### Layer 3 — Visual review
 
-- [ ] Screenshots via Chrome MCP: wide three-column + phone stacked, all four states
+- [ ] Screenshots via /cdp + chrome-devtools MCP: wide three-column + phone stacked, all four states
 - [ ] Panel resize/collapse doesn't jiggle list+thread layout
 
 ## Design notes
