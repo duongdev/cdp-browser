@@ -164,6 +164,32 @@ Re-walk every item, re-run the gates, catch regressions from A–F.
 - [ ] `pnpm test`, `pnpm test:e2e`, `pnpm typecheck`, `pnpm check:changed` all green.
 - [ ] Every UI-touching change has a light + dark screenshot from a real build.
 
+## Delivered (2026-07-27)
+
+All seven workstreams shipped on `chat-enhancements`. Verified against a live local stack (mock Teams provider, real store + sweep + BFF) driven through Chrome.
+
+| WS | Commit | Verification |
+|---|---|---|
+| A | `2d69ea9` | Unit + e2e; the delta fan-out is exercised by `sweep.test.ts`. Two-window minimised-Electron check still owed against the real host. |
+| B | `20cd419` | Live: the link-copy overlay disappears on `window` blur (present → absent, measured in-page). |
+| C | `33b258b` | Live end-to-end: edited a message through the UI → sweep → prior body captured in `message_edits` → `/api/chat/message-history` returned it → popover rendered the version stack. |
+| D | `cc1bbd6` | Live: About card shows the real SHA (`3cc872b` = HEAD), server + BFF reachability green, device id; Sync card shows last sync and the event log. |
+| E | `6be2062` | Live: `…/browse/GU-1933` renders as `GU-1933`, bold, full URL in `title`; a long URL elides and keeps its full-URL tooltip. |
+| F | `3cc872b` | Live: swept the composer card 1000→120px, no wrap at any width. |
+| G | `b141660` | Four defects found by driving the UI, each fixed and re-verified (below). |
+
+### Found and fixed in the sweep
+
+1. **Composer wrapped between ~480 and ~640px** — both breakpoints had been guessed. Re-derived from the measured rendered widths (full inline row needs 640px, actions-only 220px), and the test now sweeps every width 0–1200 asserting the row never overflows. Consequence, accepted: at the default three-column layout the format cluster now sits behind `Aa` — it never actually fit inline there.
+2. **Version-history popover ran off the right edge** on an own (right-aligned) message — `align="center"` + `collisionPadding`.
+3. **React warning "Tooltip is changing from uncontrolled to controlled"** — the ⋯ trigger passed `open={open ? false : undefined}`, undefined until first open. Now controlled from the first render.
+4. **One bad conversation marked the whole service unhealthy** — `runFocusOnce`'s per-conversation catch called the service-scoped `markUnhealthy`, so a single 404 conversation painted the "Reconnecting…" banner for every client on every tick. A per-conversation failure is now its own `focus` sync event carrying the convId, and never touches service health. Pre-existing, but workstream A widened its blast radius by routing the delta fan-out through the same function.
+
+### Not verified live (needs the real Teams host)
+
+- The two-window minimised-Electron delivery check for PSN-106. The mechanism is unit-tested and the mock stack behaves, but the reported symptom lives on the real transport.
+- The **native Teams deep-link format** (decision 5) is still unproven. `buildTeamsMessageUrl` carries a `ponytail:` comment naming the assumption. Per decision 5 the menu item must be dropped if it can't be proven.
+
 ## Risks
 
 - **R1 — Teams deep-link format is undocumented.** Mitigation: prove it live against the probe host early in E; if unprovable, ship the app link alone (decision 5 already allows this).
