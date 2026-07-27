@@ -250,6 +250,10 @@ export type ChatWsServerMessage =
     }
   | { type: "backfill-progress"; service: ChatService; status: BackfillStatus }
   | { type: "health"; service: ChatService; ok: boolean; code?: string }
+  /** Liveness heartbeat (PSN-106). A browser WebSocket never surfaces the protocol-level pong, so
+   *  an application-level frame is the only signal a client can use to tell a live socket from a
+   *  half-open one. Carries nothing but its send time. */
+  | { type: "ping"; ts: number }
 
 /**
  * Assistant contract (t173, ADR-0021). Sessions live under `/api/chat/assistant`:

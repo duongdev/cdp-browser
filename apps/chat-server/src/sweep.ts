@@ -18,7 +18,7 @@ import type { ChatProvider } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
 import { buildPushPayload, type PushSender, shouldPush } from "./push.ts"
 import * as store from "./store.ts"
-import { planConversationSweep, planMessageSweep } from "./sweep-plan.ts"
+import { planConversationSweep, planDeltaFetch, planMessageSweep } from "./sweep-plan.ts"
 import { toConversationInput, toMessageInput } from "./upsert-map.ts"
 
 type Db = BetterSqlite3.Database
@@ -122,6 +122,20 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
         })
       }
       markHealthy()
+      // Push the actual MESSAGES of every conversation that changed, not just its row (PSN-106).
+      // Without this a new message outside the one focused conversation reached the client only as a
+      // version bump, so its thread stayed stale until a manual refetch. The focused convs keep their
+      // own faster lane and are excluded. runFocusOnce swallows its own per-conv errors, so one bad
+      // conversation can't take the list lane down with it.
+      const { convIds, skipped } = planDeltaFetch(
+        changedConversations.map((c) => c.id),
+        getFocusedConvIds(),
+      )
+      if (skipped.length)
+        console.warn(
+          `[sweep] delta fan-out capped: fetched ${convIds.length}, deferred ${skipped.length} (${skipped.join(", ")})`,
+        )
+      if (convIds.length) await runFocusOnce(convIds)
     } catch (err) {
       markUnhealthy(healthCodeOf(err))
     }

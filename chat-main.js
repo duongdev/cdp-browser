@@ -71,6 +71,10 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       preload: path.join(__dirname, "chat-preload.js"),
+      // A minimised/occluded renderer otherwise gets its timers stretched to ~1/s, which starves the
+      // WS liveness watchdog and the fallback polls — the exact "worse when unfocused" half of
+      // PSN-106. Delivery must not depend on the window being visible.
+      backgroundThrottling: false,
     },
   })
   win.loadURL(`${serverUrl}${lastPath}`)

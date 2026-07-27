@@ -314,17 +314,20 @@ export function ConversationList({
     onConnectionChange?.(status === "online")
   }, [status, onConnectionChange])
 
+  // Refresh on window focus ALWAYS (PSN-106) — never gated on the WS status. A status of "online"
+  // can lie (a half-open socket reports open until the liveness watchdog trips), and gating this
+  // left the sidebar with no recovery path at all short of a reload. The thread does the same.
+  useEffect(() => {
+    const onFocus = () => refresh()
+    window.addEventListener("focus", onFocus)
+    return () => window.removeEventListener("focus", onFocus)
+  }, [refresh])
+
   // Fallback poll: only while the WS is down. When online, the WS pushes deltas so no poll runs.
-  // Also refresh on window focus so a returning tab reconciles immediately even mid-reconnect.
   useEffect(() => {
     if (status === "online") return
     const timer = setInterval(refresh, LIST_FALLBACK_POLL_MS)
-    const onFocus = () => refresh()
-    window.addEventListener("focus", onFocus)
-    return () => {
-      clearInterval(timer)
-      window.removeEventListener("focus", onFocus)
-    }
+    return () => clearInterval(timer)
   }, [status, refresh])
 
   const loadMore = useCallback(() => {

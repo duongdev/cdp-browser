@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest"
 import type { ChatConversation, ChatMessage } from "./contract.ts"
 import {
+  MAX_DELTA_FETCH,
   type PriorConversation,
   type PriorMessage,
   planConversationSweep,
+  planDeltaFetch,
   planMessageSweep,
   reactionSignature,
 } from "./sweep-plan.ts"
@@ -131,5 +133,31 @@ describe("reactionSignature — order-independent", () => {
       ],
     })
     expect(a).toBe(b)
+  })
+})
+
+describe("planDeltaFetch", () => {
+  test("returns the changed conversations that are not already focused", () => {
+    expect(planDeltaFetch(["a", "b", "c"], ["b"])).toEqual({ convIds: ["a", "c"], skipped: [] })
+  })
+
+  test("dedups repeated ids", () => {
+    expect(planDeltaFetch(["a", "a", "b"], []).convIds).toEqual(["a", "b"])
+  })
+
+  test("nothing to fetch when every changed conversation is focused", () => {
+    expect(planDeltaFetch(["a"], ["a"])).toEqual({ convIds: [], skipped: [] })
+  })
+
+  test("caps the fan-out and reports the deferred ids rather than dropping them silently", () => {
+    const ids = ["a", "b", "c", "d", "e", "f", "g"]
+    const { convIds, skipped } = planDeltaFetch(ids, [], 3)
+    expect(convIds).toEqual(["a", "b", "c"])
+    expect(skipped).toEqual(["d", "e", "f", "g"])
+  })
+
+  test("defaults to MAX_DELTA_FETCH", () => {
+    const ids = Array.from({ length: MAX_DELTA_FETCH + 2 }, (_, i) => `c${i}`)
+    expect(planDeltaFetch(ids, []).convIds).toHaveLength(MAX_DELTA_FETCH)
   })
 })

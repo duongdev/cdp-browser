@@ -94,6 +94,48 @@ describe("sweep list lane", () => {
     if (up?.type === "conversation-upsert") expect(up.conversations[0].id).toBe("a")
   })
 
+  // PSN-106: a changed conversation must push its MESSAGES too, not only its row — otherwise a
+  // non-focused thread stays stale until the user refetches it by hand.
+  test("broadcasts messages-upsert for a changed, non-focused conversation", async () => {
+    provider.convPage = {
+      conversations: [conv({ id: "a", lastMessageVersion: 2 })],
+      cursor: null,
+    }
+    provider.history.set("a", { messages: [msg({ id: "m1", body: "hello" })], cursor: null })
+    const { engine, sent } = makeEngine(provider) // nothing focused
+    await engine.runListOnce()
+    const up = sent.find((m) => m.type === "messages-upsert")
+    expect(up).toBeTruthy()
+    if (up?.type === "messages-upsert") {
+      expect(up.convId).toBe("a")
+      expect(up.messages.map((m) => m.id)).toEqual(["m1"])
+    }
+  })
+
+  test("skips the message fetch for the focused conversation (its own lane owns it)", async () => {
+    provider.convPage = {
+      conversations: [conv({ id: "a", lastMessageVersion: 2 })],
+      cursor: null,
+    }
+    provider.history.set("a", { messages: [msg({ id: "m1", body: "hello" })], cursor: null })
+    const { engine, sent } = makeEngine(provider, ["a"])
+    await engine.runListOnce()
+    expect(sent.find((m) => m.type === "messages-upsert")).toBeUndefined()
+  })
+
+  test("an unchanged conversation triggers no message fetch", async () => {
+    provider.convPage = {
+      conversations: [conv({ id: "a", lastMessageVersion: 2 })],
+      cursor: null,
+    }
+    provider.history.set("a", { messages: [msg({ id: "m1", body: "hello" })], cursor: null })
+    const { engine, sent } = makeEngine(provider)
+    await engine.runListOnce() // seeds
+    sent.length = 0
+    await engine.runListOnce() // same version → no fetch, no delta
+    expect(sent.find((m) => m.type === "messages-upsert")).toBeUndefined()
+  })
+
   test("a re-swept unchanged conversation broadcasts no upsert", async () => {
     provider.convPage = {
       conversations: [conv({ id: "a", lastMessageVersion: 2 })],

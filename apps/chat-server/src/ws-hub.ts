@@ -179,6 +179,10 @@ export function attachWsHub(
       try {
         ws.ping()
       } catch {}
+      // Also send an application-level heartbeat: a browser client never sees the protocol pong, so
+      // this frame is the only thing that lets it distinguish a live socket from a half-open one
+      // (PSN-106). Rides the same cadence as the ping.
+      trySend(sock, { type: "ping", ts: Date.now() })
     }
     state.reap()
   }, PING_MS)
