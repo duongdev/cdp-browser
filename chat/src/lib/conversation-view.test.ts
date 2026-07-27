@@ -167,7 +167,7 @@ describe("relativeTime", () => {
   })
 })
 
-describe("isUnread (t155)", () => {
+describe("isUnread (t155 / PSN-102)", () => {
   it("unread when the last message is newer than readTs and not own", () => {
     expect(isUnread(conv({ lastMessageTs: 200, readTs: 100 }))).toBe(true)
   })
@@ -185,35 +185,57 @@ describe("isUnread (t155)", () => {
     expect(isUnread(conv({ lastMessageTs: null, readTs: 0 }))).toBe(false)
   })
 
-  it("mark-unread sentinel (server zeroes readTs) reads as unread", () => {
+  // PSN-102: unreadSticky mirrors bookmarkTs > 0 on the server (readTs = bookmarkTs - 1 < lastTs).
+  // The server already computes readTs correctly, so the client just reads the row as-is.
+  it("bookmarkTs > 0: server sets readTs = bookmarkTs - 1, so lastMessageTs > readTs = unread", () => {
+    // Simulate: bookmarkTs = 100, so server sets readTs = 99; last message at 200.
+    expect(isUnread(conv({ lastMessageTs: 200, readTs: 99, unreadSticky: true }))).toBe(true)
+  })
+
+  it("optimistic mark-unread overlay (readTs zeroed + unreadSticky) reads as unread", () => {
     expect(isUnread(conv({ lastMessageTs: 200, readTs: 0, unreadSticky: true }))).toBe(true)
   })
 })
 
-describe("applyReadOverride (t155)", () => {
-  it("read override raises readTs to its ts and drops the sentinel", () => {
+describe("applyReadOverride (t155 / PSN-102)", () => {
+  const NOW = 1_700_000_000_000
+
+  it("read override raises readTs to its ts and drops unreadSticky", () => {
     const c = conv({ lastMessageTs: 200, readTs: 100 })
-    const out = applyReadOverride(c, { action: "read", ts: 200 })
+    const out = applyReadOverride(c, { action: "read", ts: 200, laidAt: NOW })
     expect(out.readTs).toBe(200)
     expect(isUnread(out)).toBe(false)
   })
 
   it("read override is a no-op (same ref) once the server covers it", () => {
     const c = conv({ lastMessageTs: 200, readTs: 300 })
-    expect(applyReadOverride(c, { action: "read", ts: 200 })).toBe(c)
+    expect(applyReadOverride(c, { action: "read", ts: 200, laidAt: NOW })).toBe(c)
   })
 
   it("a LATER message re-arms the dot past a read override", () => {
     const c = conv({ lastMessageTs: 500, readTs: 0 })
-    expect(isUnread(applyReadOverride(c, { action: "read", ts: 200 }))).toBe(true)
+    expect(isUnread(applyReadOverride(c, { action: "read", ts: 200, laidAt: NOW }))).toBe(true)
   })
 
-  it("unread override forces the sticky-unread shape; poll can't clobber", () => {
-    const fresh = conv({ lastMessageTs: 200, readTs: 999 }) // server says read
-    const out = applyReadOverride(fresh, { action: "unread", ts: 200 })
-    expect(out.readTs).toBe(0)
+  it("read override clears an unreadSticky bookmark overlay", () => {
+    const c = conv({ lastMessageTs: 200, readTs: 0, unreadSticky: true })
+    const out = applyReadOverride(c, { action: "read", ts: 200, laidAt: NOW })
+    expect(out.readTs).toBe(200)
+    expect(out.unreadSticky).toBe(false)
+    expect(isUnread(out)).toBe(false)
+  })
+
+  it("unread override drops readTs just below the flagged message; poll can't clobber (PSN-102)", () => {
+    const fresh = conv({ lastMessageTs: 200, readTs: 999 }) // server still says read
+    const out = applyReadOverride(fresh, { action: "unread", ts: 200, laidAt: NOW })
+    expect(out.readTs).toBe(199) // mirrors the server's bookmarkTs - 1
     expect(out.unreadSticky).toBe(true)
     expect(isUnread(out)).toBe(true)
+  })
+
+  it("unread override is a no-op (same ref) once the server confirms (unreadSticky already set)", () => {
+    const c = conv({ lastMessageTs: 200, readTs: 0, unreadSticky: true })
+    expect(applyReadOverride(c, { action: "unread", ts: 200, laidAt: NOW })).toBe(c)
   })
 
   it("no override → same ref", () => {

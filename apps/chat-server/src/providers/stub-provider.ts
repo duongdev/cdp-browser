@@ -22,6 +22,7 @@ export function stubProvider(
     edit: async () => {},
     delete: async () => {},
     markRead: async () => {},
+    markUnread: async () => {},
     roster: async () => [],
     uploadImage: throwUnused as ChatProvider["uploadImage"],
     uploadImages: throwUnused as ChatProvider["uploadImages"],

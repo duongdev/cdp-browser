@@ -6,6 +6,7 @@ import {
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
@@ -17,7 +18,7 @@ import { PromptDialog, prompt } from "./components/prompt-dialog"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
-import { markReadLocal } from "./lib/chat-client"
+import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
 import { chatShell } from "./lib/chat-shell"
@@ -258,19 +259,90 @@ export function ChatApp() {
     })
   }, [])
 
-  // Optimistic read-state overrides by conv id (t155). The visible rows live in ConversationList's
-  // OWN state, so the override map is passed down and applied THERE (patching the app-side copy
-  // never reached the screen — the iteration-2 bug). `patchConvRead` lays an override (instant dot
-  // change, poll-proof via applyReadOverride's max-merge) and, when `persist`, POSTs
-  // /api/chat/read-local so the server agrees (opens persist too — a kept-alive re-open has no
-  // history load to write local_read for it).
+  // Optimistic read-state overrides by conv id (t155 / PSN-102). The visible rows live in
+  // ConversationList's OWN state, so the override map is passed down and applied THERE (patching any
+  // other copy never reaches the screen — the iteration-2 bug). `patchConvRead` lays an override
+  // (instant dot change, poll-proof via applyReadOverride's max-merge), writes Teams via markRead/
+  // markUnread, and reverts + toasts on failure.
+  //
+  // `autoOpen` true → the visibility gate runs: the call is suppressed when the document is hidden
+  // or unfocused, or when a mark-unread latch is active for this conv (decision 1 + 3, PSN-102).
   const [readOverrides, setReadOverrides] = useState<Record<string, ReadOverride>>({})
-  const patchConvRead = useCallback((id: string, action: "read" | "unread", persist: boolean) => {
-    const c = conversationsRef.current.find((x) => x.id === id)
-    // Fallback for a not-yet-listed conv (push deep-link): "now" covers everything currently shown.
-    const ts = c?.lastMessageTs ?? Date.now()
-    setReadOverrides((m) => ({ ...m, [id]: { action, ts } }))
-    if (persist) markReadLocal(id, action, ts)
+
+  // Per-conv mark-unread latch (PSN-102 decision 3): marks an explicit "unread" so auto-read-on-open
+  // is suppressed until the user navigates away from that conversation and returns.
+  const unreadLatchRef = useRef(new Set<string>())
+
+  // Clear the latch for a conversation when it stops being the active pane (navigate away).
+  const prevActiveRef = useRef<string | null>(null)
+  useEffect(() => {
+    const prev = prevActiveRef.current
+    const next = keepAlive.active ?? null
+    if (prev && prev !== next) unreadLatchRef.current.delete(prev)
+    prevActiveRef.current = next
+  }, [keepAlive.active])
+
+  const patchConvRead = useCallback(
+    (id: string, action: "read" | "unread", persist: boolean, autoOpen = false) => {
+      const c = conversationsRef.current.find((x) => x.id === id)
+      // Fallback for a not-yet-listed conv (push deep-link): "now" covers everything shown.
+      const ts = c?.lastMessageTs ?? Date.now()
+
+      // Visibility gate (PSN-102 decision 1): auto-read only fires when visible + focused.
+      // Explicit mark-read/unread from the `u` key or ⌘K always goes through.
+      if (action === "read" && autoOpen) {
+        if (document.hidden || !document.hasFocus()) return
+        if (unreadLatchRef.current.has(id)) return
+      }
+
+      const laidAt = Date.now()
+      setReadOverrides((m) => ({ ...m, [id]: { action, ts, laidAt } }))
+
+      if (!persist) return
+
+      // Arm the latch before the await so the visibility guard fires synchronously on the next open.
+      if (action === "unread") unreadLatchRef.current.add(id)
+
+      const run = async () => {
+        try {
+          if (action === "read") {
+            // Teams' horizon is "{msgId};{ts};0" and a Teams message id IS its arrival ms, so the
+            // ts is a correct fallback when the row hasn't landed yet (push deep-link).
+            await markRead(id, c?.lastMessageId ?? String(ts), String(ts))
+          } else {
+            await markUnread(id, ts)
+          }
+        } catch {
+          // Revert the optimistic override and surface the failure.
+          setReadOverrides((m) => {
+            const { [id]: _, ...rest } = m
+            return rest
+          })
+          toast.error(action === "read" ? "Could not mark as read" : "Could not mark as unread")
+          if (action === "unread") unreadLatchRef.current.delete(id)
+        }
+      }
+      run()
+    },
+    [],
+  )
+
+  // TTL cleanup for read overrides (PSN-102 belt-and-suspenders). Failures revert immediately above,
+  // but a browser-aborted fetch could skip the catch. Overrides older than 20s are dropped so a
+  // phantom sticky-unread can't linger past a lost write. Runs infrequently — no perf concern.
+  const READ_OVERRIDE_TTL_MS = 20_000
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const cutoff = Date.now() - READ_OVERRIDE_TTL_MS
+      setReadOverrides((m) => {
+        const stale = Object.keys(m).filter((id) => m[id].laidAt < cutoff)
+        if (stale.length === 0) return m
+        const next = { ...m }
+        for (const id of stale) delete next[id]
+        return next
+      })
+    }, READ_OVERRIDE_TTL_MS)
+    return () => clearInterval(timer)
   }, [])
 
   // Renderer-owned back/forward for the Electron header (PSN-91). Electron's webContents
@@ -299,9 +371,9 @@ export function ChatApp() {
       setConvById((m) => (m[conv.id] === conv ? m : { ...m, [conv.id]: conv }))
       setKeepAlive((s) => openThread(s, conv.id))
       setPhoneView("thread")
-      // persist=true: a kept-alive pane re-open doesn't refetch history (whose non-poll load is the
-      // other server-side read write), so the open itself must clear a mark-unread sentinel durably.
-      patchConvRead(conv.id, "read", true)
+      // autoOpen=true: visibility gate applies — hidden/unfocused windows don't advance the Teams
+      // horizon, and a latched mark-unread survives until the user navigates away and returns.
+      patchConvRead(conv.id, "read", true, true)
       pushPath(pathFor(conv.id))
     },
     [patchConvRead, pushPath],
@@ -312,7 +384,7 @@ export function ChatApp() {
       setConvById((m) => (m[id] ? m : { ...m, [id]: stubConversation(id) }))
       setKeepAlive((s) => openThread(s, id))
       setPhoneView("thread")
-      patchConvRead(id, "read", true)
+      patchConvRead(id, "read", true, true)
       if (push) pushPath(pathFor(id))
     },
     [patchConvRead, pushPath],

@@ -121,29 +121,39 @@ describe("read state", () => {
     upsertConversations(db, "teams", [{ id: "c", lastMessageVersion: 1, lastMessageTs: 10_000 }])
   })
 
-  test("mark-unread sentinel survives a horizon advance", () => {
-    markConversationUnread(db, "teams", "c")
-    // A later read-elsewhere horizon that covers the last message must NOT clear the sentinel.
+  test("mark-unread bookmark survives a horizon advance", () => {
+    markConversationUnread(db, "teams", "c", 10_000)
+    // A read-elsewhere horizon that covers the last message must NOT clear the bookmark — the
+    // horizon can only move forward, so it can never express "unread again".
     setReadHorizon(db, "teams", "c", 20_000)
     const row = listConversations(db, "teams")[0]
     expect(row.unreadSticky).toBe(true)
-    expect(row.readTs).toBe(0)
+    expect(row.readTs).toBe(9_999) // one tick below the flagged message
   })
 
-  test("mark-unread sentinel survives a full sweep upsert re-syncing the horizon (PSN-93 WS-J)", () => {
-    // The real sweep path: markUnread, then a conversations sweep carries Teams' advanced
-    // consumptionHorizon in via upsertConversations(readHorizonTs) — must NOT clear the sentinel.
-    markConversationUnread(db, "teams", "c")
+  test("a sweep re-syncing the service's own state is authoritative both ways", () => {
+    // Marked unread elsewhere → the sweep carries the bookmark in alongside the advanced horizon.
     upsertConversations(db, "teams", [
-      { id: "c", lastMessageVersion: 2, lastMessageTs: 20_000, readHorizonTs: 20_000 },
+      {
+        id: "c",
+        lastMessageVersion: 2,
+        lastMessageTs: 20_000,
+        readHorizonTs: 20_000,
+        unreadBookmarkTs: 20_000,
+      },
+    ])
+    expect(listConversations(db, "teams")[0].unreadSticky).toBe(true)
+    // …then read elsewhere → the bookmark comes back cleared (0) and the row reads again.
+    upsertConversations(db, "teams", [
+      { id: "c", lastMessageVersion: 3, lastMessageTs: 20_000, unreadBookmarkTs: 0 },
     ])
     const row = listConversations(db, "teams")[0]
-    expect(row.unreadSticky).toBe(true)
-    expect(row.readTs).toBe(0)
+    expect(row.unreadSticky).toBe(false)
+    expect(row.readTs).toBe(20_000)
   })
 
-  test("explicit mark-read clears the sentinel", () => {
-    markConversationUnread(db, "teams", "c")
+  test("explicit mark-read clears the bookmark", () => {
+    markConversationUnread(db, "teams", "c", 10_000)
     markConversationRead(db, "teams", "c", 10_000)
     const row = listConversations(db, "teams")[0]
     expect(row.unreadSticky).toBe(false)

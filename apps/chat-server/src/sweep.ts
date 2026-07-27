@@ -110,12 +110,15 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
       // per-conversation prefs; a cold-start conv (no prior) seeds silently.
       if (pushSender) await maybePush(rows, prior)
       for (const rs of readStateChanges) {
+        // Use the post-upsert store row (bookmark-derived readTs + unreadSticky) — the provider row
+        // has the raw Teams horizon and never sets unreadSticky, so it would clear the dot.
+        const derived = after.get(rs.convId)
         broadcast({
           type: "read-state",
           service,
           convId: rs.convId,
-          readTs: rs.readTs,
-          unreadSticky: rs.unreadSticky,
+          readTs: derived?.readTs ?? rs.readTs,
+          unreadSticky: derived?.unreadSticky ?? rs.unreadSticky,
         })
       }
       markHealthy()
@@ -152,28 +155,16 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     for (const convId of convIds) {
       try {
         const prior = store.priorMessages(db, service, convId)
-        const beforeRead = store.getReadState(db, service, convId)
         const page = await provider.fetchHistory(convId, null, true)
         store.upsertMessages(db, service, convId, page.messages.map(toMessageInput))
         persistSenders(db, service, page.messages)
         const changed = planMessageSweep(page.messages, prior)
         if (changed.length)
           broadcast({ type: "messages-upsert", service, convId, messages: changed })
-        // A focused fetch can shift the conv row (new last message) + read horizon.
+        // A focused fetch can shift the conv row (a new last message). Read state is NOT touched
+        // here (PSN-102) — it changes only on an explicit mark-read/unread or the list lane's
+        // ingest of the service's own state, both of which broadcast their own `read-state`.
         if (changed.length) await refreshConvRow(convId)
-        const afterRead = store.getReadState(db, service, convId)
-        if (readMoved(beforeRead, afterRead)) {
-          const row = store.listConversations(db, service).find((c) => c.id === convId)
-          if (row) {
-            broadcast({
-              type: "read-state",
-              service,
-              convId,
-              readTs: row.readTs,
-              unreadSticky: row.unreadSticky,
-            })
-          }
-        }
         markHealthy()
       } catch (err) {
         markUnhealthy(healthCodeOf(err))
@@ -199,15 +190,6 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     runFocusOnce,
     health: () => (lastHealthOk == null ? null : { ok: lastHealthOk }),
   }
-}
-
-function readMoved(
-  before: { readHorizonTs: number | null; localReadTs: number | null } | null,
-  after: { readHorizonTs: number | null; localReadTs: number | null } | null,
-): boolean {
-  const b = before ?? { readHorizonTs: null, localReadTs: null }
-  const a = after ?? { readHorizonTs: null, localReadTs: null }
-  return b.readHorizonTs !== a.readHorizonTs || b.localReadTs !== a.localReadTs
 }
 
 // Cache sender display names off a history page (same as routes.ts) so later name lookups hit store.

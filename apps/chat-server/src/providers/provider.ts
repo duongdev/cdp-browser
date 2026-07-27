@@ -4,7 +4,7 @@
 // implementation — the sweep/routes never learn a provider's transport.
 //
 // Every method returns the service-agnostic contract types (from `../contract`); the provider is
-// responsible for stamping `service`. read-local/prefs are LOCAL to the BFF store and are NOT on
+// responsible for stamping `service`. Prefs are LOCAL to the BFF store and are NOT on
 // this interface — the store owns them.
 
 import type {
@@ -71,6 +71,8 @@ export interface ChatProvider {
   edit(convId: string, msgId: string, text: string): Promise<void>
   delete(convId: string, msgId: string): Promise<void>
   markRead(convId: string, msgId: string, ts: number): Promise<void>
+  /** Flag the conversation unread from `ts` on, service-side (PSN-102). */
+  markUnread(convId: string, ts: number): Promise<void>
   roster(convId: string): Promise<RosterMember[]>
   uploadImage(convId: string, image: UploadImage, text?: string): Promise<UploadResult>
   uploadImages(convId: string, images: UploadImage[], text?: string): Promise<UploadResult>

@@ -1,7 +1,7 @@
 // The `/api/chat/*` HTTP contract (PSN-93, Workstream C). Wires every route from contract.ts into
 // a Hono router. A provider registry maps `service` → ChatProvider; reads/writes go through the
 // provider, then persist to the store (decision 10: the DB is a durable platform, so every read
-// keeps the raw payload). Local-only state (prefs, read-local) never touches the provider.
+// keeps the raw payload). Local-only state (prefs) never touches the provider; read state does.
 //
 // The sweep (WS-D) drives background refresh + WS deltas — this workstream just makes the contract
 // serve correctly, provider-first.
@@ -60,7 +60,14 @@ export function createRoutes(deps: RoutesDeps) {
     const { service, provider } = pick(deps, b.service)
     const page = await provider.listConversations(b.cursor ?? null)
     store.upsertConversations(deps.db, service, page.conversations.map(toConversationInput))
-    return c.json(page)
+    // Return the STORE's rows for this page, not the provider's: read state is derived (PSN-102 —
+    // a mark-unread bookmark lowers `readTs` and sets `unreadSticky`), and only the store knows it.
+    // Provider order is preserved so the client's cursor paging still appends in place.
+    const derived = new Map(store.listConversations(deps.db, service).map((row) => [row.id, row]))
+    return c.json({
+      ...page,
+      conversations: page.conversations.map((row) => derived.get(row.id) ?? row),
+    })
   })
 
   app.post("/history", async (c) => {
@@ -252,25 +259,26 @@ export function createRoutes(deps: RoutesDeps) {
 
   // ---- read state ----------------------------------------------------------
 
-  // Write-through: advance the provider's read horizon AND the local one.
+  // Read state is written THROUGH to the service (PSN-102): the provider write goes first, so a
+  // failure surfaces as an error the client can revert on instead of the two silently diverging.
+  // The local row is only touched once the service accepted the change.
   app.post("/mark-read", async (c) => {
     const b = await readBody(c)
     const { service, provider } = pick(deps, b.service)
     if (!b.convId) throw new ProviderError("missing_conv", 400)
-    await provider.markRead(b.convId, b.msgId ?? "", Number(b.ts) || 0)
-    store.markConversationRead(deps.db, service, b.convId, Number(b.ts) || 0)
+    const ts = Number(b.ts) || 0
+    await provider.markRead(b.convId, b.msgId ?? "", ts)
+    store.markConversationRead(deps.db, service, b.convId, ts)
     return c.json({ ok: true })
   })
 
-  // Local-only: mark-read / mark-unread / open — never touches the provider.
-  app.post("/read-local", async (c) => {
+  app.post("/mark-unread", async (c) => {
     const b = await readBody(c)
-    const service = b.service || DEFAULT_SERVICE
+    const { service, provider } = pick(deps, b.service)
     if (!b.convId) throw new ProviderError("missing_conv", 400)
     const ts = Number(b.ts) || 0
-    if (b.action === "unread") store.markConversationUnread(deps.db, service, b.convId)
-    else if (b.action === "read") store.markConversationRead(deps.db, service, b.convId, ts)
-    else store.setLocalRead(deps.db, service, b.convId, ts)
+    await provider.markUnread(b.convId, ts)
+    store.markConversationUnread(deps.db, service, b.convId, ts)
     return c.json({ ok: true })
   })
 
