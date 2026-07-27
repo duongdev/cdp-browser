@@ -3,6 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   ensureChatPushSubscription,
   isChatPushSubscribed,
@@ -81,20 +82,27 @@ export function NotifyToggle() {
   }
 
   return (
-    <Button
-      aria-label={subscribed ? "Disable notifications" : "Enable notifications"}
-      aria-pressed={subscribed}
-      className="text-muted-foreground"
-      disabled={busy}
-      onClick={toggle}
-      size="icon-sm"
-      variant="ghost"
-    >
-      <HugeiconsIcon
-        className="size-4"
-        icon={subscribed ? Notification03Icon : NotificationOff03Icon}
-      />
-    </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={subscribed ? "Disable notifications" : "Enable notifications"}
+          aria-pressed={subscribed}
+          className="text-muted-foreground"
+          disabled={busy}
+          onClick={toggle}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <HugeiconsIcon
+            className="size-4"
+            icon={subscribed ? Notification03Icon : NotificationOff03Icon}
+          />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {subscribed ? "Disable notifications" : "Enable notifications"}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 

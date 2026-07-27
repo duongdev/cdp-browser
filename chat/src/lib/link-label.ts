@@ -36,12 +36,21 @@ export function parseAzurePr(href: string): AzurePr | null {
   return { repo: decodeURIComponent(m[1]), id: m[2] }
 }
 
+/** `https://<tenant>.atlassian.net/browse/<TICKET-KEY>` → ticket key string.
+ *  Matches any tenant. Case-insensitive host, ticket key is upper-case by convention. */
+export function parseJiraTicket(href: string): string | null {
+  const m = /^https?:\/\/[^/]+\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)/i.exec(href.trim())
+  return m ? m[1].toUpperCase() : null
+}
+
 const ELIDE_OVER = 48
 
 /** The label a bare URL should DISPLAY. Returns null when the URL is short enough to show as-is. */
 export function linkLabel(href: string): string | null {
   const pr = parseAzurePr(href)
   if (pr) return `${pr.repo}#${pr.id}`
+  const jira = parseJiraTicket(href)
+  if (jira) return jira
   return href.length > ELIDE_OVER ? middleEllipsis(href) : null
 }
 

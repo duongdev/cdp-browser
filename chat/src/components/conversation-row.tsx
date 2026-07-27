@@ -154,7 +154,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             <span
               className={cn(
                 "conv-row-preview mt-0.5 block truncate text-sm",
-                unread ? "text-foreground/80" : "text-muted-foreground",
+                unread ? "font-semibold text-foreground/80" : "text-muted-foreground",
               )}
             >
               {previewLine(conversation)}

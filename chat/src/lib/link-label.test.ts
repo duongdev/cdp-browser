@@ -8,6 +8,7 @@ import {
   linkLabel,
   middleEllipsis,
   parseAzurePr,
+  parseJiraTicket,
 } from "./link-label"
 
 const PR_URL =
@@ -58,6 +59,21 @@ describe("parseAzurePr", () => {
   })
 })
 
+describe("parseJiraTicket", () => {
+  it("extracts ticket key from a standard Jira URL", () => {
+    expect(parseJiraTicket("https://foo.atlassian.net/browse/GU-1933")).toBe("GU-1933")
+  })
+  it("works with a different tenant", () => {
+    expect(parseJiraTicket("https://bar.atlassian.net/browse/CUBEFIB-8106")).toBe("CUBEFIB-8106")
+  })
+  it("rejects non-atlassian hosts", () => {
+    expect(parseJiraTicket("https://github.com/browse/GU-1")).toBeNull()
+  })
+  it("rejects atlassian non-browse paths", () => {
+    expect(parseJiraTicket("https://foo.atlassian.net/issues/GU-1933")).toBeNull()
+  })
+})
+
 describe("linkLabel", () => {
   it("chips an azure PR", () => {
     expect(linkLabel(PR_URL)).toBe(PR_CHIP)
@@ -67,6 +83,9 @@ describe("linkLabel", () => {
   })
   it("leaves a short url alone", () => {
     expect(linkLabel("https://x.com/a")).toBeNull()
+  })
+  it("chips a Jira ticket URL", () => {
+    expect(linkLabel("https://foo.atlassian.net/browse/GU-1933")).toBe("GU-1933")
   })
 })
 

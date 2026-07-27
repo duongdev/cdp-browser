@@ -49,6 +49,7 @@ import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { elideLinkText } from "../lib/link-label"
+import { buildChatMessageUrl, buildTeamsMessageUrl } from "../lib/message-url"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -512,6 +513,8 @@ function ChatMessageRow({
                 canDelete={canManage && !!onDelete}
                 canEdit={canManage && !!onEdit}
                 coarse={coarse}
+                convId={convId}
+                msgId={message.id}
                 onAskAi={canAskAi ? () => onAskAi?.(message) : undefined}
                 onDelete={() => setConfirmOpen(true)}
                 onDraftReply={canAskAi && onDraftReply ? () => onDraftReply(message) : undefined}
@@ -604,7 +607,6 @@ function ChatMessageRow({
       )}
       {/* Optimistic send status (t159): a quiet "Sending…" while in flight; a failed send keeps the
           bubble with honest copy + retry/discard instead of blocking the composer. */}
-      {pending && <span className="px-1 text-[10px] text-muted-foreground">Sending…</span>}
       {failed && (
         <span className="flex items-center gap-2 px-1 text-[11px] text-destructive">
           {sendErrorCopy(message.failed ?? "")}
@@ -672,17 +674,22 @@ function SystemRow({ body }: { body: string }) {
  *  as QuickReact — fade-in on hover for a fine pointer, always-visible for coarse. */
 function ReplyButton({ coarse, onClick }: { coarse: boolean; onClick: () => void }) {
   return (
-    <button
-      aria-label="Reply"
-      className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
-        coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
-      )}
-      onClick={onClick}
-      type="button"
-    >
-      <HugeiconsIcon className="size-4" icon={ArrowTurnBackwardIcon} />
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label="Reply"
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+            coarse ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+          )}
+          onClick={onClick}
+          type="button"
+        >
+          <HugeiconsIcon className="size-4" icon={ArrowTurnBackwardIcon} />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>Reply</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -706,24 +713,33 @@ function QuickReact({
   return (
     <>
       {QUICK_REACTIONS.map((r) => (
-        <button
-          aria-label={r.key}
-          className="flex size-7 items-center justify-center rounded-full text-base transition-transform hover:scale-125"
-          key={r.key}
-          onClick={() => onPick(r.key, r.emoji)}
-          type="button"
-        >
-          {r.emoji}
-        </button>
+        <Tooltip key={r.key}>
+          <TooltipTrigger asChild>
+            <button
+              aria-label={r.key}
+              className="flex size-7 items-center justify-center rounded-full text-base transition-transform hover:scale-125"
+              onClick={() => onPick(r.key, r.emoji)}
+              type="button"
+            >
+              {r.emoji}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{r.key}</TooltipContent>
+        </Tooltip>
       ))}
       {/* "+" opens the Teams catalog picker in a nested shadcn Popover — portaled + collision-aware. */}
       <Popover onOpenChange={onPickerOpenChange} open={pickerOpen}>
-        <PopoverTrigger
-          aria-label="More reactions"
-          className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent"
-        >
-          <HugeiconsIcon className="size-3.5" icon={Add01Icon} />
-        </PopoverTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <PopoverTrigger
+              aria-label="More reactions"
+              className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent"
+            >
+              <HugeiconsIcon className="size-3.5" icon={Add01Icon} />
+            </PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent>More reactions</TooltipContent>
+        </Tooltip>
         <PopoverContent align={side === "end" ? "end" : "start"} className="w-auto p-0" side="top">
           <EmojiPicker
             onClose={() => onPickerOpenChange(false)}
@@ -809,6 +825,8 @@ function MessageActions({
   onAskAi,
   onDraftReply,
   onSummarizeConv,
+  convId,
+  msgId,
   side,
 }: {
   coarse: boolean
@@ -824,9 +842,12 @@ function MessageActions({
   onDraftReply?: () => void
   /** Summarize the whole conversation (t176). */
   onSummarizeConv?: () => void
+  convId?: string
+  msgId: string
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
+  const [, copyText] = useCopy()
   const run = (fn: () => void) => {
     setOpen(false)
     fn()
@@ -836,23 +857,48 @@ function MessageActions({
   // (steering). Radix portals to the body and flips/shifts to stay on screen.
   return (
     <Popover onOpenChange={setOpen} open={open}>
-      <PopoverTrigger asChild>
-        <button
-          aria-label="Message actions"
-          className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
-            coarse || open ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
-          )}
-          type="button"
-        >
-          <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
-        </button>
-      </PopoverTrigger>
+      <Tooltip open={open ? false : undefined}>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              aria-label="Message actions"
+              className={cn(
+                "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:bg-accent focus-visible:opacity-100",
+                coarse || open ? "opacity-60" : "opacity-0 group-hover/msg:opacity-100",
+              )}
+              type="button"
+            >
+              <HugeiconsIcon className="size-4" icon={MoreHorizontalIcon} />
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>More actions</TooltipContent>
+      </Tooltip>
       <PopoverContent
         align={side === "end" ? "end" : "start"}
         className="flex w-max min-w-44 flex-col p-1"
         side="top"
       >
+        {convId && (
+          <MenuItem
+            icon={Copy01Icon}
+            label="Copy link"
+            onRun={() => {
+              run(() => copyText(buildChatMessageUrl(convId, msgId, window.location.origin)))
+            }}
+          />
+        )}
+        {convId && (
+          <MenuItem
+            icon={Copy01Icon}
+            label="Copy Teams link"
+            onRun={() => {
+              // ponytail: Teams deep-link format unverified — derived from observed Teams URL patterns.
+              // Confirm against a live Teams client before relying on this link opening correctly.
+              run(() => copyText(buildTeamsMessageUrl(convId, msgId)))
+            }}
+          />
+        )}
         {onReact && <MenuItem icon={Add01Icon} label="React" onRun={() => run(onReact)} />}
         {onAskAi && <MenuItem icon={AiChipIcon} label="Attach to AI" onRun={() => run(onAskAi)} />}
         {onDraftReply && (
@@ -933,21 +979,25 @@ const CHIP_CLASS =
 function ChipCopyButton({ url }: { url: string }) {
   const [copied, copy] = useCopy()
   return (
-    <button
-      aria-label="Copy link"
-      className="ml-auto shrink-0 opacity-0 transition-opacity group-hover/chip:opacity-100 [@media(pointer:coarse)]:hidden"
-      onClick={(e) => {
-        e.preventDefault()
-        copy(url)
-      }}
-      title="Copy link"
-      type="button"
-    >
-      <HugeiconsIcon
-        className="size-3.5 text-muted-foreground"
-        icon={copied ? Tick01Icon : Copy01Icon}
-      />
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label="Copy link"
+          className="ml-auto shrink-0 opacity-0 transition-opacity group-hover/chip:opacity-100 [@media(pointer:coarse)]:hidden"
+          onClick={(e) => {
+            e.preventDefault()
+            copy(url)
+          }}
+          type="button"
+        >
+          <HugeiconsIcon
+            className="size-3.5 text-muted-foreground"
+            icon={copied ? Tick01Icon : Copy01Icon}
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{copied ? "Copied!" : "Copy link"}</TooltipContent>
+    </Tooltip>
   )
 }
 
