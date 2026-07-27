@@ -13,6 +13,7 @@ import { serve } from "@hono/node-server"
 import Database from "better-sqlite3"
 import { Hono } from "hono"
 import webpush from "web-push"
+import { createAssistantRoutes } from "./assistant/routes.ts"
 import { createBackfillEngine } from "./backfill.ts"
 import type { ChatService } from "./contract.ts"
 import { MockProvider } from "./providers/mock-provider.ts"
@@ -53,6 +54,7 @@ for (const [service, provider] of providers) {
 
 const app = new Hono()
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
+app.route("/api/chat/assistant", createAssistantRoutes({ db }))
 app.route("/api/chat", createRoutes({ db, providers, backfills, vapidPublicKey: VAPID_PUBLIC_KEY }))
 
 const port = Number(process.env.CHAT_SERVER_PORT) || 7810

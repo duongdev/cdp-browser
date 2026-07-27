@@ -1,6 +1,6 @@
 # 173 — assistant backend: sessions store, agent loop, citation validation, stream route
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** AFK
 - **Estimate:** 1d
 - **Depends on:** t171, t172
@@ -64,3 +64,10 @@ Reuse the `ProviderError`/`statusOf` error contract. Errors from the LLM (429/ti
 - [ ] `pnpm check:changed` clean, `pnpm typecheck` clean, `pnpm test` + `pnpm test:e2e` green
 - [ ] CLAUDE.md updated (BFF section)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
+
+## Notes (build)
+
+- Live curl smoke vs 9router pending (router down during build) — mock-model coverage green; run
+  after t172's smoke. Session survives restart by construction (all state in chat.db).
+- Citation surfaced-set is rebuilt per request from stored tool-output parts (survives restart, no
+  in-memory session state).

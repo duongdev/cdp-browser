@@ -12,6 +12,7 @@ import type BetterSqlite3 from "better-sqlite3"
 
 type Db = BetterSqlite3.Database
 
+import { migrateAssistant } from "./assistant/session-store.ts"
 import type { ChatConversation, ChatPrefs } from "./contract.ts"
 import { backfillSearchIndex, migrateSearch, syncMessageFts } from "./search.ts"
 
@@ -109,6 +110,7 @@ export function migrate(db: Db): Db {
   }
   migrateSearch(db)
   backfillSearchIndex(db)
+  migrateAssistant(db)
   return db
 }
 
