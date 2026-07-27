@@ -20,20 +20,26 @@ export function ContextMeter({
   pct,
   budgetTokens,
   exact = true,
+  loading = false,
 }: {
   pct: number
   budgetTokens: number
   /** False when the provider didn't report a window and this is the compaction fallback — the
    *  tooltip says so instead of implying it's the model's real limit. */
   exact?: boolean
+  /** The model list — and with it the real context window — hasn't loaded yet. The ring spins
+   *  instead of showing a percentage of the fallback budget, which would visibly jump the moment
+   *  the real window (200K vs 40K) arrives. */
+  loading?: boolean
 }) {
   const clamped = Math.min(100, Math.max(0, pct))
-  const high = clamped >= 80
+  const high = !loading && clamped >= 80
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          aria-label={`Context window ${clamped}% used`}
+          aria-busy={loading}
+          aria-label={loading ? "Measuring context window" : `Context window ${clamped}% used`}
           className="gap-1.5 px-1.5 text-muted-foreground text-xs"
           size="sm"
           variant="ghost"
@@ -62,6 +68,9 @@ export function ContextMeter({
               className={cn(
                 "transition-[stroke-dashoffset] duration-300",
                 high ? "text-destructive" : "text-ring",
+                // A quarter-ring sweeping the track: the same shape as the real meter, so nothing
+                // moves when the number lands.
+                loading && "origin-center animate-spin text-muted-foreground",
               )}
               cx={SIZE / 2}
               cy={SIZE / 2}
@@ -69,17 +78,27 @@ export function ContextMeter({
               r={R}
               stroke="currentColor"
               strokeDasharray={CIRCUMFERENCE}
-              strokeDashoffset={CIRCUMFERENCE * (1 - clamped / 100)}
+              strokeDashoffset={CIRCUMFERENCE * (1 - (loading ? 0.25 : clamped / 100))}
               strokeLinecap="round"
               strokeWidth={STROKE}
             />
           </svg>
-          <span className="tabular-nums">{clamped}%</span>
+          {loading ? (
+            <span className="h-3 w-6 animate-pulse rounded-full bg-muted" />
+          ) : (
+            <span className="tabular-nums">{clamped}%</span>
+          )}
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        {clamped}% of {formatTokens(budgetTokens)} tokens
-        {exact ? "" : " (est.)"}
+        {loading ? (
+          "Measuring context…"
+        ) : (
+          <>
+            {clamped}% of {formatTokens(budgetTokens)} tokens
+            {exact ? "" : " (est.)"}
+          </>
+        )}
       </TooltipContent>
     </Tooltip>
   )

@@ -845,6 +845,7 @@ function SessionChatReady({
             <ContextMeter
               budgetTokens={contextBudget}
               exact={!!activeModel?.contextWindow}
+              loading={models === null}
               pct={contextPct}
             />
             <div className="flex-1" />

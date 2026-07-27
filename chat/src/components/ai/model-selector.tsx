@@ -1,7 +1,7 @@
 // Per-session model picker (t177), Copilot-chat placement: a compact control in the prompt-input
 // footer — active model label + chevron opening the curated model list. Selection persists on the
 // session (PATCH) and applies from the NEXT turn (no mid-stream switch). Four states: loading
-// (disabled, default label), empty/single (hidden), error (hidden), populated.
+// (skeleton pill, PSN-104), empty/single (hidden), error (hidden), populated.
 
 import { ArrowDown01Icon, Tick01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -27,6 +27,21 @@ export function ModelSelector({
   // Hidden only when nothing is configured. A SINGLE curated model still renders (steering): the
   // selector is how you see which model answers, and a hidden control reads as a missing feature.
   if (models !== null && models.length === 0) return null
+  // Loading is a skeleton, not the word "model" in a disabled button — a placeholder shaped like a
+  // value reads as the model actually being called "model", and it flickers to the real name a
+  // moment later. The skeleton occupies the same 8px-tall slot, so the footer never reflows.
+  if (models === null) {
+    return (
+      <div
+        aria-busy="true"
+        aria-label="Loading models"
+        className="flex h-8 items-center px-1.5"
+        role="status"
+      >
+        <span className="h-3.5 w-20 animate-pulse rounded-full bg-muted" />
+      </div>
+    )
+  }
   const def = models?.find((m) => m.default) ?? models?.[0]
   const activeId =
     sessionModel && models?.some((m) => m.id === sessionModel) ? sessionModel : def?.id
@@ -41,7 +56,6 @@ export function ModelSelector({
             <Button
               aria-label="Model"
               className="gap-1 px-1.5 text-muted-foreground text-xs"
-              disabled={models === null}
               size="sm"
               variant="ghost"
             >
