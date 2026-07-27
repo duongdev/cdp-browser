@@ -32,6 +32,7 @@ export function extractCitations(text: string): { text: string; citations: Citat
     }
     return ""
   })
-  // Collapse doubled spaces the removal leaves behind (marker mid-sentence).
-  return { text: cleaned.replace(/ {2,}/g, " "), citations }
+  // Collapse doubled spaces the removal leaves behind (marker mid-sentence); drop stray reasoning
+  // tag remnants GLM-through-router occasionally leaks into the text stream (live-observed t173).
+  return { text: cleaned.replace(/<\/?think>/g, "").replace(/ {2,}/g, " "), citations }
 }

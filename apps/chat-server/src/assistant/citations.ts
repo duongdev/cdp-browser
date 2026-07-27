@@ -49,6 +49,12 @@ export function collectIds(value: unknown, set: Set<string>, depth = 0): void {
   for (const v of Object.values(o)) collectIds(v, set, depth + 1)
 }
 
+/** GLM-through-router quirk (live-observed t173): reasoning tags occasionally leak into the text
+ *  stream as stray `</think>` remnants. Strip them from anything user-visible. */
+export function stripReasoningRemnants(text: string): string {
+  return (text || "").replace(/<\/?think>/g, "")
+}
+
 /** Strip markers not in the surfaced set; return the cleaned text + the citations kept (deduped,
  *  in order of first appearance). Malformed markers are stripped (degrade to plain text). */
 export function validateCitations(

@@ -7,7 +7,12 @@ import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
 import { LlmUnconfiguredError, parseModelList, readLlmConfig, resolveModel } from "../llm.ts"
 import { getContextWindow } from "../search.ts"
-import { citationKey, surfacedIdsFromMessages, validateCitations } from "./citations.ts"
+import {
+  citationKey,
+  stripReasoningRemnants,
+  surfacedIdsFromMessages,
+  validateCitations,
+} from "./citations.ts"
 import { planCompaction, transcriptForSummary } from "./compact.ts"
 import { buildSystemPrompt, createAssistantTools, runAgentTurn } from "./loop.ts"
 import {
@@ -221,7 +226,7 @@ export function createAssistantRoutes(deps: AssistantDeps) {
         const citations: { convId: string; msgId: string }[] = []
         const parts = (responseMessage.parts as { type?: string; text?: string }[]).map((p) => {
           if (p?.type !== "text" || typeof p.text !== "string") return p
-          const v = validateCitations(p.text, surfaced)
+          const v = validateCitations(stripReasoningRemnants(p.text), surfaced)
           citations.push(...v.citations)
           return { ...p, text: v.text }
         })

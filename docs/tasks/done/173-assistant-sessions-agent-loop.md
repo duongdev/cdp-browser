@@ -71,3 +71,13 @@ Reuse the `ProviderError`/`statusOf` error contract. Errors from the LLM (429/ti
   after t172's smoke. Session survives restart by construction (all state in chat.db).
 - Citation surfaced-set is rebuilt per request from stored tool-output parts (survives restart, no
   in-memory session state).
+
+## Notes (live smoke, 2026-07-27)
+
+- Live 9router run done (glm/glm-4.7): VN question → search_messages found the seeded Vietnamese
+  message → streamed cited answer; citation validated + persisted; dropped-client persistence
+  confirmed (consumeStream finished + onEnd wrote the row after curl disconnected).
+- GLM quirks observed: (1) with a relative-time question over data outside the window the loop
+  searches to the step cap and ends with NO text — honest but empty; keep fixtures/time sane.
+  (2) stray `</think>` reasoning remnants leak into the text stream — stripped server-side at
+  persist (stripReasoningRemnants) and client-side at display.

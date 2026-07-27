@@ -2,7 +2,13 @@ import { convertArrayToReadableStream, MockLanguageModelV3 } from "ai/test"
 import Database from "better-sqlite3"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { migrate, upsertMessages, upsertUsers } from "../store.ts"
-import { citationKey, collectIds, surfacedIdsFromMessages, validateCitations } from "./citations.ts"
+import {
+  citationKey,
+  collectIds,
+  stripReasoningRemnants,
+  surfacedIdsFromMessages,
+  validateCitations,
+} from "./citations.ts"
 import { KEEP_RECENT_MESSAGES, planCompaction } from "./compact.ts"
 import { createAssistantRoutes } from "./routes.ts"
 import {
@@ -319,5 +325,13 @@ describe("chat route (mock model)", () => {
     const msgs = loadMessages(db, s.id)
     expect(msgs).toHaveLength(1)
     expect((msgs[0].parts[0] as { text: string }).text).toContain("deploy is done")
+  })
+})
+
+describe("stripReasoningRemnants", () => {
+  test("drops stray think tags, keeps everything else", () => {
+    expect(stripReasoningRemnants("answer [msg:c:m].</think>")).toBe("answer [msg:c:m].")
+    expect(stripReasoningRemnants("<think>hidden</think>visible")).toBe("hiddenvisible")
+    expect(stripReasoningRemnants("plain")).toBe("plain")
   })
 })
