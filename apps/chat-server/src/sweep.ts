@@ -28,11 +28,20 @@ export const FOCUS_SWEEP_MS = 4_000
 
 const SYNC_LOG_CAP = 20
 
+/** One sweep outcome in the diagnostics log.
+ *  - `list`  — the service-level lane. Its failure IS a service failure (auth, transport, the
+ *              conversation-list fetch itself) and flips health.
+ *  - `focus` — ONE conversation's history fetch. A 404 on a stale conv id is real information and
+ *              belongs in the log, but it says nothing about the service, so it never flips health
+ *              (PSN-105 G: it used to, and a single dead conversation showed every client a false
+ *              "Reconnecting…" banner on every tick). Carries the `convId` it happened on. */
 export interface SyncEvent {
-  kind: string
+  kind: "list" | "focus"
   ts: number
   ok: boolean
   code?: string
+  /** Set on `focus` events — which conversation the outcome belongs to. */
+  convId?: string
 }
 
 export interface SyncLogData {
@@ -99,16 +108,18 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     if (syncEvents.length > SYNC_LOG_CAP) syncEvents.splice(0, syncEvents.length - SYNC_LOG_CAP)
   }
 
-  // Broadcast a health flip only when it changes (no chatty repeats). A clean sweep recovers.
-  function markHealthy(): void {
+  // Broadcast a health flip only when it changes (no chatty repeats). A clean sweep recovers —
+  // either lane, since a successful fetch of any kind proves auth + transport are alive.
+  function markHealthy(kind: SyncEvent["kind"], convId?: string): void {
     const ts = Date.now()
-    pushSyncEvent({ kind: "list", ts, ok: true })
+    pushSyncEvent({ kind, ts, ok: true, convId })
     lastHealthOkAt = ts
     if (lastHealthOk !== true) {
       lastHealthOk = true
       broadcast({ type: "health", service, ok: true })
     }
   }
+  /** A SERVICE-level failure: the list fetch, auth, or transport. Flips health for every client. */
   function markUnhealthy(code: string): void {
     // Always re-broadcast the failure (the code may change; FE shows the reconnecting banner) but
     // never loop hot — the interval itself paces retries.
@@ -118,6 +129,14 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     lastErrorCode = code
     lastHealthOk = false
     broadcast({ type: "health", service, ok: false, code })
+  }
+  /** ONE conversation failed to sync. Logged (it's real information, and the Sync card shows it)
+   *  but deliberately NOT a health flip — the service is fine, this conversation isn't. */
+  function recordConvFailure(convId: string, code: string): void {
+    const ts = Date.now()
+    pushSyncEvent({ kind: "focus", ts, ok: false, code, convId })
+    lastErrorAt = ts
+    lastErrorCode = code
   }
 
   // A provider failure → a typed health code; anything else → "sweep_error". Never rethrows.
@@ -155,7 +174,7 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
           unreadSticky: derived?.unreadSticky ?? rs.unreadSticky,
         })
       }
-      markHealthy()
+      markHealthy("list")
       // Push the actual MESSAGES of every conversation that changed, not just its row (PSN-106).
       // Without this a new message outside the one focused conversation reached the client only as a
       // version bump, so its thread stayed stale until a manual refetch. The focused convs keep their
@@ -213,9 +232,11 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
         // here (PSN-102) — it changes only on an explicit mark-read/unread or the list lane's
         // ingest of the service's own state, both of which broadcast their own `read-state`.
         if (changed.length) await refreshConvRow(convId)
-        markHealthy()
+        markHealthy("focus", convId)
       } catch (err) {
-        markUnhealthy(healthCodeOf(err))
+        // Per-conversation, per-conversation only. One conv that 404s (a client focused on a
+        // conversation the provider no longer has) must not take the whole service down with it.
+        recordConvFailure(convId, healthCodeOf(err))
       }
     }
   }

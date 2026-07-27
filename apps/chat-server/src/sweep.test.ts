@@ -40,6 +40,8 @@ class ControllableProvider {
   convPage: ConversationsPage = { conversations: [], cursor: null }
   history = new Map<string, HistoryPage>()
   failNext: ProviderError | null = null
+  /** Conversation ids whose history fetch always fails — models a stale/deleted conversation. */
+  failHistoryFor = new Set<string>()
   provider = stubProvider({
     service: SERVICE,
     listConversations: async () => {
@@ -47,6 +49,7 @@ class ControllableProvider {
       return this.convPage
     },
     fetchHistory: async (convId) => {
+      if (this.failHistoryFor.has(convId)) throw new ProviderError("not_found", 404)
       this.throwIfArmed()
       return this.history.get(convId) ?? { messages: [], cursor: null }
     },
@@ -194,6 +197,69 @@ describe("sweep health", () => {
     const good = sent.find((m) => m.type === "health")
     expect(good).toEqual({ type: "health", service: SERVICE, ok: true })
     expect(engine.health()).toEqual({ ok: true })
+  })
+
+  // PSN-105 G: one conversation the provider no longer has (a stale focused tab) used to call
+  // markUnhealthy on EVERY tick, so every connected client showed a false "Reconnecting…" banner.
+  test("a single failing conversation does NOT flip service health", async () => {
+    const provider = new ControllableProvider()
+    provider.failHistoryFor.add("gone")
+    const { engine, sent } = makeEngine(provider, ["gone"])
+
+    await engine.runListOnce() // a clean list lane → healthy
+    expect(engine.health()).toEqual({ ok: true })
+    sent.length = 0
+
+    await engine.runFocusOnce(["gone"])
+    expect(sent.find((m) => m.type === "health")).toBeUndefined()
+    expect(engine.health()).toEqual({ ok: true })
+  })
+
+  test("a failing conversation is logged as its own focus event carrying the convId", async () => {
+    const provider = new ControllableProvider()
+    provider.failHistoryFor.add("gone")
+    const { engine } = makeEngine(provider, ["gone"])
+    await engine.runFocusOnce(["gone"])
+
+    const log = engine.getSyncLog()
+    expect(log.events).toEqual([
+      { kind: "focus", ts: expect.any(Number), ok: false, code: "not_found", convId: "gone" },
+    ])
+    expect(log.lastErrorCode).toBe("not_found")
+    // The failure is real information, but it isn't a service outage.
+    expect(engine.health()).toBeNull()
+  })
+
+  test("a healthy conversation still syncs when a sibling in the same pass fails", async () => {
+    const provider = new ControllableProvider()
+    provider.failHistoryFor.add("gone")
+    provider.history.set("a", { messages: [msg({ id: "m1", body: "hi" })], cursor: null })
+    const { engine, sent } = makeEngine(provider, ["gone", "a"])
+    await engine.runFocusOnce(["gone", "a"])
+
+    const up = sent.find((m) => m.type === "messages-upsert")
+    expect(up).toBeTruthy()
+    if (up?.type === "messages-upsert") expect(up.convId).toBe("a")
+    expect(engine.health()).toEqual({ ok: true })
+  })
+
+  // Workstream A routes the changed-conversation delta fan-out through runFocusOnce, so a bad
+  // conversation in that fan-out must not take the list lane's health down either.
+  test("a bad conversation in the list-lane delta fan-out keeps the service healthy", async () => {
+    const provider = new ControllableProvider()
+    provider.convPage = {
+      conversations: [conv({ id: "gone", lastMessageVersion: 2 })],
+      cursor: null,
+    }
+    provider.failHistoryFor.add("gone")
+    const { engine, sent } = makeEngine(provider) // nothing focused → "gone" enters the fan-out
+    await engine.runListOnce()
+
+    expect(engine.health()).toEqual({ ok: true })
+    expect(sent.filter((m) => m.type === "health")).toEqual([
+      { type: "health", service: SERVICE, ok: true },
+    ])
+    expect(engine.getSyncLog().events.map((e) => e.kind)).toEqual(["list", "focus"])
   })
 
   test("start/stop drives the lanes on fake timers without throwing", async () => {

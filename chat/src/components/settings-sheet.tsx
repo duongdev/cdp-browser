@@ -52,7 +52,12 @@ import { chatShell } from "../lib/chat-shell"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { formatName } from "../lib/display-name"
 import { playNotifySound } from "../lib/notify-sound"
-import { formatRelativeTime, type SyncEvent, type SyncLogData } from "../lib/sync-log"
+import {
+  formatRelativeTime,
+  type SyncEvent,
+  type SyncLogData,
+  syncEventLabel,
+} from "../lib/sync-log"
 import { NotifyControl } from "./notify-toggle"
 
 const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = [
@@ -443,8 +448,11 @@ function SyncEventRow({ event, now }: { event: SyncEvent; now: number }) {
         icon={isOk ? CheckmarkCircle01Icon : Alert02Icon}
         strokeWidth={2}
       />
-      <span className="truncate text-[10px] text-muted-foreground">
-        {event.kind}
+      <span
+        className="truncate text-[10px] text-muted-foreground"
+        title={event.convId ?? undefined}
+      >
+        {syncEventLabel(event)}
         {event.code && <span className="ml-1 text-destructive">{event.code}</span>}
       </span>
       <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">

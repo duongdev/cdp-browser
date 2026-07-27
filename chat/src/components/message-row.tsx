@@ -847,6 +847,10 @@ function MessageActions({
   side: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
+  // The tooltip is CONTROLLED from the first render. It used to be `open={open ? false : undefined}`,
+  // which starts undefined (uncontrolled) and becomes a boolean the moment the menu opens — React
+  // warns about exactly that switch. Own the hover state instead and suppress it while the menu is up.
+  const [tipOpen, setTipOpen] = useState(false)
   const [, copyText] = useCopy()
   const run = (fn: () => void) => {
     setOpen(false)
@@ -857,7 +861,7 @@ function MessageActions({
   // (steering). Radix portals to the body and flips/shifts to stay on screen.
   return (
     <Popover onOpenChange={setOpen} open={open}>
-      <Tooltip open={open ? false : undefined}>
+      <Tooltip onOpenChange={setTipOpen} open={tipOpen && !open}>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
             <button

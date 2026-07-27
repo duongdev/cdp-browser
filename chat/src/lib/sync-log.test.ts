@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatRelativeTime } from "./sync-log"
+import { formatRelativeTime, syncEventLabel } from "./sync-log"
 
 const SEC = 1_000
 const MIN = 60 * SEC
@@ -31,5 +31,30 @@ describe("formatRelativeTime", () => {
   it("returns days for >= 24h", () => {
     expect(formatRelativeTime(0, DAY)).toBe("1d ago")
     expect(formatRelativeTime(0, 3 * DAY)).toBe("3d ago")
+  })
+})
+
+describe("syncEventLabel", () => {
+  const at = (over: Partial<Parameters<typeof syncEventLabel>[0]>) =>
+    syncEventLabel({ kind: "list", ts: 0, ok: true, ...over })
+
+  it("labels a service-level event by its lane", () => {
+    expect(at({ kind: "list" })).toBe("list")
+  })
+
+  it("names the conversation a per-conversation failure happened on", () => {
+    expect(at({ kind: "focus", ok: false, code: "not_found", convId: "19:abcdef@thread.v2" })).toBe(
+      "focus · abcdef",
+    )
+  })
+
+  it("truncates a long conversation id", () => {
+    expect(at({ kind: "focus", convId: "19:0123456789abcdef@thread.v2" })).toBe(
+      "focus · 0123456789ab…",
+    )
+  })
+
+  it("falls back to the bare lane when a focus event carries no convId", () => {
+    expect(at({ kind: "focus" })).toBe("focus")
   })
 })

@@ -66,9 +66,14 @@ export function MessageHistoryPopover({
       >
         {label}
       </PopoverTrigger>
+      {/* Collision handling, not a fixed alignment: the trigger sits under a RIGHT-aligned own
+          message, so a hard `align="start"` pushed the 20rem panel off the window's right edge and
+          it got clipped. `align="center"` + a collision padding lets Radix shift it back on-screen
+          (and flip sides when the bubble is near the bottom), at phone width too. */}
       <PopoverContent
-        align="start"
+        align="center"
         className="max-h-80 w-[min(20rem,calc(100vw-2rem))] overflow-y-auto p-0"
+        collisionPadding={8}
       >
         <div className="border-border border-b px-3 py-2">
           <p className="font-medium text-xs">Version history</p>
