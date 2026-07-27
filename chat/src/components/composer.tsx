@@ -1,5 +1,5 @@
 import {
-  ArrowUp01Icon,
+  ArrowUp02Icon,
   Attachment01Icon,
   Cancel01Icon,
   CodeIcon,
@@ -776,7 +776,7 @@ export function Composer({
                   onClick={doSend}
                   size="icon-sm"
                 >
-                  <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
+                  <HugeiconsIcon className="size-4" icon={ArrowUp02Icon} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Send (↵)</TooltipContent>

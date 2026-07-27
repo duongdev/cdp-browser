@@ -105,6 +105,9 @@ export function buildSystemPrompt(opts: {
   summary?: string | null
   contextRefs?: ContextRef[]
   now?: number
+  /** The conversation the user is currently viewing — the DEFAULT scope for questions unless the
+   *  prompt asks to go wider (steering). */
+  focusConv?: { convId: string; title?: string } | null
 }): string {
   const lines = [
     "You are the assistant inside CDP Chats, answering questions over the user's own synced chat history (Microsoft Teams).",
@@ -113,6 +116,11 @@ export function buildSystemPrompt(opts: {
     "Answer in the user's language (mirror Vietnamese with Vietnamese). Be concise.",
     `Current time: ${new Date(opts.now ?? Date.now()).toISOString()}`,
   ]
+  if (opts.focusConv?.convId) {
+    lines.push(
+      `The user is currently viewing the conversation "${opts.focusConv.title || opts.focusConv.convId}" (convId ${opts.focusConv.convId}). Default to THIS conversation — pass its convId to search_messages/get_context — unless the question clearly asks about other conversations or everything.`,
+    )
+  }
   if (opts.summary) {
     lines.push("", "Summary of the earlier part of this session:", opts.summary)
   }

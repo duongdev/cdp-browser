@@ -8,10 +8,10 @@
 
 import { useChat } from "@ai-sdk/react"
 import {
-  AiChat02Icon,
+  AiChipIcon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
-  ArrowUp01Icon,
+  ArrowUp02Icon,
   Cancel01Icon,
   Delete02Icon,
   PencilEdit02Icon,
@@ -36,6 +36,7 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { actionItemsPrompt, catchUpPrompt } from "../../lib/assistant-actions"
 import { extractCitations } from "../../lib/assistant-citations"
 import {
   ASSISTANT_BASE,
@@ -51,7 +52,10 @@ import {
   patchSession,
 } from "../../lib/assistant-client"
 import { prompt } from "../prompt-dialog"
+import { ContextMeter } from "./context-meter"
 import { ModelSelector } from "./model-selector"
+import { ShimmerText } from "./shimmer-text"
+import { ToolCalls, type ToolPart } from "./tool-calls"
 
 export interface AssistantPanelProps {
   /** Active session id (persisted in chat settings); null = show the session list. */
@@ -71,9 +75,9 @@ export interface AssistantPanelProps {
   pendingPrompt?: { text: string; nonce: number } | null
   /** Insert assistant-drafted text into the active thread's composer — never auto-sent (t176). */
   onInsertToComposer?: (text: string) => void
+  /** The conversation the user is viewing — the assistant's DEFAULT scope (steering). */
+  focusConv?: { convId: string; title: string } | null
 }
-
-import { actionItemsPrompt, catchUpPrompt } from "../../lib/assistant-actions"
 
 const SUGGESTED_PROMPTS: { label: string; text: string }[] = [
   { label: "What did I miss?", text: catchUpPrompt() },
@@ -231,7 +235,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
           ) : (
             <HugeiconsIcon
               className="mx-1.5 size-4 shrink-0 text-muted-foreground"
-              icon={AiChat02Icon}
+              icon={AiChipIcon}
             />
           )}
           {inSession ? (
@@ -272,11 +276,11 @@ export function AssistantPanel(props: AssistantPanelProps) {
                     >
                       <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
                       {s.model && s.model !== defaultModelId && (
-                        <span className="ml-2 max-w-24 shrink-0 truncate rounded bg-accent px-1 text-[9px] text-muted-foreground">
+                        <span className="ml-2 max-w-24 shrink-0 truncate rounded bg-accent px-1 text-[11px] text-muted-foreground">
                           {s.model}
                         </span>
                       )}
-                      <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">
+                      <span className="ml-2 shrink-0 text-muted-foreground text-xs">
                         {new Date(s.updatedAt).toLocaleDateString()}
                       </span>
                     </button>
@@ -311,7 +315,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
           {!sessionsError && sessions === null && <PanelSkeleton />}
           {sessions !== null && sessions.length === 0 && (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-              <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChat02Icon} />
+              <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChipIcon} />
               <p className="text-muted-foreground text-sm">
                 Ask about your messages — search, summarize, catch up. Answers cite the real
                 messages they come from.
@@ -335,7 +339,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
                     type="button"
                   >
                     <div className="truncate font-medium text-sm">{s.title || "New session"}</div>
-                    <div className="text-[11px] text-muted-foreground">
+                    <div className="text-muted-foreground text-xs">
                       {new Date(s.updatedAt).toLocaleString()}
                     </div>
                   </button>
@@ -363,6 +367,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
           >
             <SessionChat
               contextRefs={(sessions?.find((s) => s.id === id) ?? null)?.contextRefs ?? []}
+              focusConv={props.focusConv}
               labelForConv={props.labelForConv}
               models={models}
               onInsertToComposer={props.onInsertToComposer}
@@ -423,6 +428,7 @@ function SessionChat({
   models,
   sessionModel,
   onPickModel,
+  focusConv,
 }: {
   sessionId: string
   contextRefs: AssistantSession["contextRefs"]
@@ -433,6 +439,7 @@ function SessionChat({
   models: AssistantModel[] | null
   sessionModel: string | null
   onPickModel: (modelId: string) => void
+  focusConv?: { convId: string; title: string } | null
 }) {
   const [initial, setInitial] = useState<UIMessage[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -462,6 +469,7 @@ function SessionChat({
   return (
     <SessionChatReady
       contextRefs={contextRefs}
+      focusConv={focusConv}
       initial={initial}
       labelForConv={labelForConv}
       models={models}
@@ -501,6 +509,7 @@ function SessionChatReady({
   models,
   sessionModel,
   onPickModel,
+  focusConv,
 }: {
   sessionId: string
   initial: UIMessage[]
@@ -512,9 +521,20 @@ function SessionChatReady({
   models: AssistantModel[] | null
   sessionModel: string | null
   onPickModel: (modelId: string) => void
+  focusConv?: { convId: string; title: string } | null
 }) {
+  // The viewing conversation rides every turn as the assistant's default scope (steering). A ref
+  // keeps the transport stable while still sending the CURRENT conversation.
+  const focusRef = useRef(focusConv)
+  focusRef.current = focusConv
   const transport = useMemo(
-    () => new DefaultChatTransport({ api: `${ASSISTANT_BASE}/${sessionId}` }),
+    () =>
+      new DefaultChatTransport({
+        api: `${ASSISTANT_BASE}/${sessionId}`,
+        prepareSendMessagesRequest: ({ messages, body }) => ({
+          body: { ...body, messages, focusConv: focusRef.current ?? null },
+        }),
+      }),
     [sessionId],
   )
   const { messages, sendMessage, status, error, stop, regenerate, clearError } = useChat({
@@ -558,7 +578,7 @@ function SessionChatReady({
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3" ref={scrollRef}>
         {empty ? (
           <div className="flex h-full flex-col items-center justify-center gap-4 px-3 text-center">
-            <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChat02Icon} />
+            <HugeiconsIcon className="size-8 text-muted-foreground/50" icon={AiChipIcon} />
             <p className="text-muted-foreground text-sm">
               Ask about your messages — search, summarize, catch up. Answers cite the real messages
               they come from.
@@ -566,7 +586,7 @@ function SessionChatReady({
             <div className="flex flex-col gap-2">
               {SUGGESTED_PROMPTS.map((p) => (
                 <button
-                  className="rounded-full border border-border px-3 py-1.5 text-muted-foreground text-xs hover:bg-accent"
+                  className="rounded-full border border-border px-3 py-1.5 text-muted-foreground text-sm hover:bg-accent"
                   key={p.label}
                   onClick={() => {
                     setInput(p.text)
@@ -592,7 +612,9 @@ function SessionChatReady({
               />
             ))}
             {status === "submitted" && (
-              <div className="text-muted-foreground text-xs">Thinking…</div>
+              <div className="text-xs">
+                <ShimmerText>Thinking…</ShimmerText>
+              </div>
             )}
           </div>
         )}
@@ -618,7 +640,7 @@ function SessionChatReady({
         <div className="flex flex-wrap gap-1 px-3 pb-1">
           {contextRefs.map((r) => (
             <span
-              className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-muted-foreground"
+              className="rounded-full bg-accent px-2.5 py-1 text-muted-foreground text-xs"
               key={`${r.convId}:${r.msgId ?? ""}`}
               title={r.title}
             >
@@ -628,18 +650,21 @@ function SessionChatReady({
         </div>
       )}
 
-      <div className="shrink-0 border-border border-t p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <div className="flex items-end gap-1.5">
+      {/* One composer card (steering): the multi-line input, model picker, context ring and the
+          send/stop button all live inside a single bordered card, mirroring the thread composer. */}
+      <div className="shrink-0 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="rounded-xl border border-border bg-background focus-within:border-ring">
           <textarea
-            className="max-h-40 min-h-9 flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-ring"
+            className="max-h-48 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm outline-none placeholder:text-muted-foreground"
             onChange={(e) => {
               setInput(e.target.value)
               const el = e.target
               el.style.height = "auto"
-              el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+              el.style.height = `${Math.min(el.scrollHeight, 192)}px`
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              // Enter sends; Shift+Enter and ⌥Enter insert a newline (multi-line support).
+              if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
                 e.preventDefault()
                 submit()
               }
@@ -649,39 +674,35 @@ function SessionChatReady({
             rows={1}
             value={input}
           />
-          {busy ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
-                  <HugeiconsIcon className="size-4" icon={StopIcon} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Stop</TooltipContent>
-            </Tooltip>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button aria-label="Send" disabled={!input.trim()} onClick={submit} size="icon-sm">
-                  <HugeiconsIcon className="size-4" icon={ArrowUp01Icon} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Send</TooltipContent>
-            </Tooltip>
-          )}
-        </div>
-        {/* Footer: model picker (t177, Copilot placement) + context-window usage (steering). */}
-        <div className="mt-1 flex items-center gap-1.5 px-1">
-          <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
-          <div className="flex-1" />
-          <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
-            <div
-              className={cn("h-full rounded-full", contextPct >= 80 ? "bg-destructive" : "bg-ring")}
-              style={{ width: `${Math.max(2, contextPct)}%` }}
-            />
+          <div className="flex items-center gap-1.5 px-2 pb-2">
+            <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
+            <ContextMeter budgetTokens={CONTEXT_BUDGET_TOKENS} pct={contextPct} />
+            <div className="flex-1" />
+            {busy ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
+                    <HugeiconsIcon className="size-4" icon={StopIcon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Stop generating</TooltipContent>
+              </Tooltip>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Send"
+                    disabled={!input.trim()}
+                    onClick={submit}
+                    size="icon-sm"
+                  >
+                    <HugeiconsIcon className="size-4" icon={ArrowUp02Icon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Send</TooltipContent>
+              </Tooltip>
+            )}
           </div>
-          <span className="text-[10px] text-muted-foreground tabular-nums">
-            {contextPct}% context
-          </span>
         </div>
       </div>
     </>
@@ -721,11 +742,7 @@ function AssistantMessage({
   }
   return (
     <div className="mr-4 flex flex-col gap-1.5 self-start">
-      {toolCalls.length > 0 && (
-        <div className="text-[10px] text-muted-foreground">
-          {streaming && !displayText ? "Searching your messages…" : `Searched ${toolCalls.length}×`}
-        </div>
-      )}
+      <ToolCalls parts={toolCalls as ToolPart[]} streaming={streaming && !displayText} />
       {(displayText || streaming) && (
         <div className="teams-message-body max-w-full text-sm [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p+p]:mt-2 [&_ul]:list-disc [&_ul]:pl-5">
           <Streamdown parseIncompleteMarkdown>{displayText}</Streamdown>
@@ -734,7 +751,7 @@ function AssistantMessage({
       {!streaming && displayText && onInsertToComposer && (
         <div>
           <button
-            className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="rounded-full border border-border px-2.5 py-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
             onClick={() => onInsertToComposer(displayText)}
             type="button"
           >
@@ -746,7 +763,7 @@ function AssistantMessage({
         <div className="flex flex-wrap gap-1">
           {citations.map((c) => (
             <button
-              className="max-w-56 truncate rounded-full border border-border bg-accent/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="max-w-56 truncate rounded-full border border-border bg-accent/50 px-2.5 py-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground"
               key={`${c.convId}:${c.msgId}`}
               onClick={() => onOpenCitation(c.convId, c.msgId)}
               title={`Open in ${labelForConv(c.convId)}`}

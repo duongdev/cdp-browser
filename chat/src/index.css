@@ -553,6 +553,16 @@
 .msg-jump-flash {
   animation: msg-jump-flash 1.6s ease-out;
 }
+/* Shimmering text for in-flight assistant states (PSN-104 steering): the gradient sweeps across
+   the clipped glyphs. Paired with the utility class in components/ai/shimmer-text.tsx. */
+@keyframes chat-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
 /* Inline media by kind (t139). A plain image (AMS-proxied or a public-CDN GIF) is a bounded
    thumbnail that opens a lightbox on click; custom emoji render inline at text size; stickers get a
    small cap; AMS video plays inline. The itemtype attribute (kept through the sanitizer) drives the

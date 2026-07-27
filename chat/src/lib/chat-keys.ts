@@ -40,6 +40,7 @@ export type KeyIntent =
   | { type: "conv-next" } // ⌘⇧] — switch to the next conversation
   | { type: "conv-prev" } // ⌘⇧[ — switch to the previous conversation
   | { type: "conv-index"; index: number } // ⌘1..⌘9 — open the Nth conversation
+  | { type: "toggle-ai" } // ⌘⌥B — toggle the AI assistant panel
 
 /** True when the event target is a text-editing surface (input/textarea/select/contenteditable).
  *  Bare-char shortcuts must be suppressed there so typing isn't hijacked. */
@@ -71,6 +72,10 @@ export function routeKey(e: KeyLike, ctx: ChatContext, pendingG: boolean): KeyIn
   if ((e.metaKey || e.ctrlKey) && e.key === "/") return { type: "overlay" }
   // ⌘, — settings. Global (works from the composer too).
   if ((e.metaKey || e.ctrlKey) && e.key === ",") return { type: "settings" }
+  // ⌘⌥B — toggle the AI assistant panel. Global. Matched on `code` because Option rewrites the
+  // character on macOS (⌥B → "∫"); `key` is the test-only fallback.
+  if ((e.metaKey || e.ctrlKey) && e.altKey && (e.code === "KeyB" || e.key === "b" || e.key === "B"))
+    return { type: "toggle-ai" }
   // ⌘1..⌘9 — open the Nth conversation. Global; a digit chord is never a text op.
   if ((e.metaKey || e.ctrlKey) && !e.altKey && /^[1-9]$/.test(e.key))
     return { type: "conv-index", index: Number(e.key) }

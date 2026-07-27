@@ -1,6 +1,7 @@
 import {
   Add01Icon,
-  AiChat02Icon,
+  AiChipIcon,
+  AiEditingIcon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
   Copy01Icon,
@@ -926,7 +927,7 @@ function MessageActions({
                 }}
                 type="button"
               >
-                <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
+                <HugeiconsIcon className="size-4" icon={AiChipIcon} />
                 Ask AI about this
               </button>
             )}
@@ -939,7 +940,7 @@ function MessageActions({
                 }}
                 type="button"
               >
-                <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
+                <HugeiconsIcon className="size-4" icon={AiEditingIcon} />
                 Draft reply with AI
               </button>
             )}
@@ -952,7 +953,7 @@ function MessageActions({
                 }}
                 type="button"
               >
-                <HugeiconsIcon className="size-4" icon={AiChat02Icon} />
+                <HugeiconsIcon className="size-4" icon={AiChipIcon} />
                 Summarize conversation
               </button>
             )}

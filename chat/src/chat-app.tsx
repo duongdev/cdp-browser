@@ -1,5 +1,5 @@
 import {
-  AiChat02Icon,
+  AiChipIcon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
   ReloadIcon,
@@ -125,7 +125,7 @@ function AppHeader({
           the bar (PSN-99 regression — the Electron nav cluster drifted left toward the traffic lights). */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5">
-          <HeaderButton icon={AiChat02Icon} label="AI assistant" onClick={onToggleAi} />
+          <HeaderButton icon={AiChipIcon} label="AI assistant (⌘⌥B)" onClick={onToggleAi} />
           <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
           {shell && (
             <>
@@ -709,8 +709,14 @@ export function ChatApp() {
     activeThreadRef.current?.insertDraft(text)
   }, [])
 
+  // The conversation the user is viewing = the assistant's default scope (steering).
+  const focusConv = keepAlive.active
+    ? { convId: keepAlive.active, title: labelForConv(keepAlive.active) }
+    : null
+
   const aiPanel = aiOpen ? (
     <AssistantPanel
+      focusConv={focusConv}
       labelForConv={labelForConv}
       narrow={!isWide}
       onClose={() => updateSettings({ aiPanelOpen: false })}
@@ -814,6 +820,7 @@ export function ChatApp() {
         id: "toggle-ai",
         label: "Toggle AI assistant",
         group: "App",
+        keys: "⌘⌥B",
         run: toggleAi,
       },
       {
@@ -1133,6 +1140,9 @@ export function ChatApp() {
       const intent = routeKey(
         {
           key: e.key,
+          // Physical key — load-bearing for chords whose character the modifier rewrites
+          // (⌘⇧[ → "{", ⌘⌥B → "∫" on macOS). Without it those shortcuts silently never match.
+          code: e.code,
           metaKey: e.metaKey,
           ctrlKey: e.ctrlKey,
           altKey: e.altKey,
@@ -1209,6 +1219,10 @@ export function ChatApp() {
           e.preventDefault()
           setSettingsOpen((v) => !v)
           break
+        case "toggle-ai":
+          e.preventDefault()
+          toggleAi()
+          break
         case "conv-next":
           e.preventDefault()
           switchConversation(1)
@@ -1239,6 +1253,7 @@ export function ChatApp() {
     toggleReadUnread,
     switchConversation,
     openConvByIndex,
+    toggleAi,
   ])
 
   // In the Electron shell (window.chatShell present), flag the root so the CSS can turn the top

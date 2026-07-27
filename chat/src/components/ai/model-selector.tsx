@@ -34,7 +34,7 @@ export function ModelSelector({
       <PopoverTrigger asChild>
         <button
           aria-label="Model"
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-foreground text-xs hover:bg-accent hover:text-foreground disabled:opacity-50"
           disabled={models === null}
           type="button"
         >
@@ -44,7 +44,7 @@ export function ModelSelector({
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 p-1" side="top">
         {stale && (
-          <p className="px-2 py-1 text-[10px] text-muted-foreground">
+          <p className="px-2 py-1 text-muted-foreground text-xs">
             Saved model isn't available — using the default.
           </p>
         )}
@@ -62,7 +62,7 @@ export function ModelSelector({
             type="button"
           >
             <span className="min-w-0 flex-1 truncate">{m.label}</span>
-            {m.default && <span className="text-[10px] text-muted-foreground">default</span>}
+            {m.default && <span className="text-muted-foreground text-xs">default</span>}
             {m.id === activeId && <HugeiconsIcon className="size-3.5" icon={Tick01Icon} />}
           </button>
         ))}

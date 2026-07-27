@@ -204,9 +204,18 @@ export function createAssistantRoutes(deps: AssistantDeps) {
       { tools, ignoreIncompleteToolCalls: true },
     )
 
+    // Default scope = the conversation the user is viewing (steering); the FE sends it per turn.
+    const focusConv =
+      b.focusConv && typeof b.focusConv.convId === "string"
+        ? { convId: b.focusConv.convId, title: b.focusConv.title }
+        : null
     const result = runAgentTurn({
       model,
-      system: buildSystemPrompt({ summary: session.summary, contextRefs: session.contextRefs }),
+      system: buildSystemPrompt({
+        summary: session.summary,
+        contextRefs: session.contextRefs,
+        focusConv,
+      }),
       messages: modelMessages,
       tools,
       onFinish: ({ totalUsage }) => {

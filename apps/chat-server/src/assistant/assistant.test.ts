@@ -10,6 +10,7 @@ import {
   validateCitations,
 } from "./citations.ts"
 import { KEEP_RECENT_MESSAGES, planCompaction } from "./compact.ts"
+import { buildSystemPrompt } from "./loop.ts"
 import { createAssistantRoutes } from "./routes.ts"
 import {
   appendMessage,
@@ -333,5 +334,17 @@ describe("stripReasoningRemnants", () => {
     expect(stripReasoningRemnants("answer [msg:c:m].</think>")).toBe("answer [msg:c:m].")
     expect(stripReasoningRemnants("<think>hidden</think>visible")).toBe("hiddenvisible")
     expect(stripReasoningRemnants("plain")).toBe("plain")
+  })
+})
+
+describe("buildSystemPrompt scope (steering)", () => {
+  test("pins the viewed conversation as the default scope", () => {
+    const p = buildSystemPrompt({ focusConv: { convId: "19:x@thread", title: "Deploy crew" } })
+    expect(p).toContain("Deploy crew")
+    expect(p).toContain("19:x@thread")
+    expect(p).toMatch(/unless the question clearly asks/i)
+  })
+  test("no focus conversation → no scope line", () => {
+    expect(buildSystemPrompt({})).not.toMatch(/currently viewing/i)
   })
 })
