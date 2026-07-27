@@ -30,13 +30,14 @@ export function createAssistantTools(
   return {
     search_messages: tool({
       description:
-        "Full-text search over all synced chat messages. Vietnamese-safe: ASCII queries match diacritic text. Use short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, or time range (ms epoch).",
+        "Full-text search over all synced chat messages. Vietnamese-safe: ASCII queries match diacritic text. Use short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, or time range (ms epoch). For 'who mentioned me' / 'what was I tagged in', set mentionsMe:true — do NOT search the user's own name, which matches people merely talking about them and misses mentions under a different display name.",
       inputSchema: z.object({
         query: z.string().min(1),
         sender: z.string().optional(),
         convId: z.string().optional(),
         after: z.number().optional(),
         before: z.number().optional(),
+        mentionsMe: z.boolean().optional(),
         limit: z.number().int().min(1).max(50).optional(),
       }),
       execute: async (input) => {

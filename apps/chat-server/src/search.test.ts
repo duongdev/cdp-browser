@@ -226,3 +226,47 @@ describe("resolvePerson", () => {
     expect(resolvePerson(db, "teams", { name: "" })).toEqual([])
   })
 })
+
+describe("mentionsMe filter (steering: 'who mentioned me')", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+    upsertMessages(db, "teams", "c1", [
+      // A real @-mention: the flag is set AND the rendered body carries the name.
+      {
+        id: "m1",
+        ts: 1000,
+        senderName: "Bob",
+        body: '<p><span class="mention">@Dustin Do</span> can you review?</p>',
+        mentionsMe: true,
+      },
+      // Someone merely TALKING about the user — a name search matches this, a mention search must not.
+      { id: "m2", ts: 2000, senderName: "Ann", body: "<p>Dustin is on leave today</p>" },
+      // A mention under a different display name — a name search misses this, the flag catches it.
+      {
+        id: "m3",
+        ts: 3000,
+        senderName: "Cara",
+        body: '<p><span class="mention">@Đường</span> ping</p>',
+        mentionsMe: true,
+      },
+    ])
+  })
+
+  test("a plain name query is NOT equivalent to mentions", () => {
+    const byName = searchMessages(db, { query: "Dustin" })
+      .map((h) => h.msgId)
+      .sort()
+    expect(byName).toEqual(["m1", "m2"]) // false positive m2, missing m3
+  })
+
+  test("mentionsMe returns exactly the tagged messages", () => {
+    const tagged = searchMessages(db, { query: "review ping can", mentionsMe: true })
+    expect(searchMessages(db, { query: "ping", mentionsMe: true }).map((h) => h.msgId)).toEqual([
+      "m3",
+    ])
+    expect(tagged.every((h) => h.msgId !== "m2")).toBe(true)
+    const all = searchMessages(db, { query: "a", mentionsMe: true })
+    expect(all.every((h) => h.msgId !== "m2")).toBe(true)
+  })
+})

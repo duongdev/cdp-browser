@@ -141,6 +141,10 @@ export interface SearchOpts {
   /** ts range, exclusive of nothing — after <= ts <= before. */
   after?: number
   before?: number
+  /** Only messages that @-mention the user. Uses the provider's authoritative `mentions_me` flag —
+   *  searching the user's NAME is not equivalent: it matches anyone merely talking ABOUT them and
+   *  misses mentions rendered under a different display name. */
+  mentionsMe?: boolean
   limit?: number
 }
 
@@ -161,6 +165,7 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
         AND (@convId IS NULL OR m.conv_id = @convId)
         AND (@after IS NULL OR m.ts >= @after)
         AND (@before IS NULL OR m.ts <= @before)
+        AND (@mentionsMe IS NULL OR m.mentions_me = @mentionsMe)
       ORDER BY f.rank, m.ts DESC
       LIMIT @limit
     `)
@@ -171,6 +176,7 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
       convId: opts.convId ?? null,
       after: opts.after ?? null,
       before: opts.before ?? null,
+      mentionsMe: opts.mentionsMe ? 1 : null,
       limit,
     }) as {
     service: string
