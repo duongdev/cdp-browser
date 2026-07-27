@@ -108,25 +108,30 @@ function AppHeader({
       {/* Web/PWA hoists the list filters into the top bar's empty space (PSN-99); Electron keeps them
           in the list because its titlebar is the OS drag region with traffic lights + nav buttons. */}
       {shell ? <div /> : <ListFilterPills filter={filter} onFilterChange={onFilterChange} />}
+      {/* One flex group so justify-between keeps the actions packed at the RIGHT of the sidebar.
+          Without the wrapper the individual buttons are direct flex children and get spread across
+          the bar (PSN-99 regression — the Electron nav cluster drifted left toward the traffic lights). */}
       <TooltipProvider delayDuration={300}>
-        <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
-        {shell && (
-          <>
-            <HeaderButton icon={ReloadIcon} label="Refresh" onClick={() => shell.reload()} />
-            <HeaderButton
-              disabled={!canBack}
-              icon={ArrowLeft01Icon}
-              label="Back"
-              onClick={() => window.history.back()}
-            />
-            <HeaderButton
-              disabled={!canForward}
-              icon={ArrowRight01Icon}
-              label="Forward"
-              onClick={() => window.history.forward()}
-            />
-          </>
-        )}
+        <div className="flex items-center gap-0.5">
+          <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
+          {shell && (
+            <>
+              <HeaderButton icon={ReloadIcon} label="Refresh" onClick={() => shell.reload()} />
+              <HeaderButton
+                disabled={!canBack}
+                icon={ArrowLeft01Icon}
+                label="Back"
+                onClick={() => window.history.back()}
+              />
+              <HeaderButton
+                disabled={!canForward}
+                icon={ArrowRight01Icon}
+                label="Forward"
+                onClick={() => window.history.forward()}
+              />
+            </>
+          )}
+        </div>
       </TooltipProvider>
     </header>
   )

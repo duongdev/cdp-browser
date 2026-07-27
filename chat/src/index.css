@@ -376,6 +376,16 @@
   font-size: calc(1rem * var(--chat-font-scale, 1));
 }
 
+/* Tiptap placeholder (PSN-94): the empty editor's first paragraph shows "Type a message…" via the
+   @tiptap/extension-placeholder attr, mirroring the old contenteditable's empty:before hint. */
+.composer-editor p.is-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
 /* Bubble geometry (t169): CSS owns the radius (not a Tailwind class) so density can scale it and
    grouped same-sender runs get asymmetric corners — the corners facing a group neighbour tighten
    (Messenger-style), driven by data-pos (solo/first/middle/last) + data-side (self/other). */
@@ -672,4 +682,12 @@
    every click inside it (including the close button) is delivered to the renderer. */
 .is-electron [data-slot="sheet-content"] {
   -webkit-app-region: no-drag;
+}
+/* PSN-94: the settings Sheet is a LEFT drawer (PSN-99), so in the Electron frameless window its
+   header opens directly under the macOS traffic lights (top-left, ~48px strip) — the "Settings"
+   title collided with them. Push the header down so it clears the traffic-light band. Web/PWA has no
+   traffic lights, so this is gated by `.is-electron`. Only the settings Sheet mounts SheetContent
+   in the chat app. */
+.is-electron [data-slot="sheet-content"] [data-slot="sheet-header"] {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 2.5rem);
 }
