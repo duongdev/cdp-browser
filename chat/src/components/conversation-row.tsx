@@ -9,7 +9,6 @@ import {
 } from "react"
 import { cn } from "@/lib/utils"
 import {
-  conversationLabel,
   conversationLabelStatus,
   isUnread,
   previewLine,
@@ -132,32 +131,31 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
                     {title}
                   </span>
                 )}
-                {customTitle && (
-                  <span className="hidden truncate text-[11px] text-muted-foreground sm:inline">
-                    {label}
-                  </span>
-                )}
+                {/* Original label intentionally omitted from the row — the rename IS the identity here.
+                    The original stays readable in the thread's top toolbar. */}
               </span>
               <span className="flex shrink-0 items-center gap-1.5">
                 {time && <span className="font-mono text-xs text-muted-foreground">{time}</span>}
-                {/* Unread + @mention indicators both live on the avatar corner now (unified t170);
-                    this column keeps only the mute bell. */}
-                {muted && (
-                  <HugeiconsIcon
-                    aria-label="Muted"
-                    className="size-3.5 text-muted-foreground"
-                    icon={NotificationOff03Icon}
-                  />
-                )}
               </span>
             </span>
-            <span
-              className={cn(
-                "conv-row-preview mt-0.5 block truncate text-sm",
-                unread ? "text-foreground/80" : "text-muted-foreground",
+            {/* Second row: preview + optional mute bell. The bell lives here so it doesn't compete
+                with the timestamp — muted is a background state, not a notification. */}
+            <span className="mt-0.5 flex items-center gap-1">
+              <span
+                className={cn(
+                  "conv-row-preview min-w-0 flex-1 truncate text-sm",
+                  unread ? "font-semibold text-foreground/80" : "text-muted-foreground",
+                )}
+              >
+                {previewLine(conversation)}
+              </span>
+              {muted && (
+                <HugeiconsIcon
+                  aria-label="Muted"
+                  className="size-3 shrink-0 text-muted-foreground/50"
+                  icon={NotificationOff03Icon}
+                />
               )}
-            >
-              {previewLine(conversation)}
             </span>
           </span>
         </span>

@@ -47,6 +47,7 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
     if (!target) return
     setState({ s: "loading" })
     setPhotoLoaded(false)
+    setLightboxOpen(false)
     const ctl = new AbortController()
     fetchProfile(target.userId, ctl.signal)
       .then((profile) => setState({ s: "ready", profile }))
@@ -63,15 +64,31 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
 
   return (
     <>
-      <Dialog onOpenChange={(open) => !open && onClose()} open={!!target}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <div className="flex items-center gap-4">
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) {
+            setLightboxOpen(false)
+            onClose()
+          }
+        }}
+        open={!!target}
+      >
+        {/* No Escape/outside-click guards here: the lightbox is its own Radix layer, and Radix only
+            dismisses the TOP layer — so Escape reaches this dialog only once the lightbox is gone.
+            The card fades out while the lightbox is up: a dialog card paints ABOVE any later
+            fixed sibling in this app regardless of z-index (reproducible with a plain z-100 div,
+            no lightbox involved), so it would otherwise sit on the lightbox's dim backdrop. It is
+            already `aria-hidden` at that point, so hiding it visually just matches the semantics. */}
+        <DialogContent
+          className={`max-w-sm transition-opacity duration-150 ${lightboxOpen ? "opacity-0" : ""}`}
+        >
+          <DialogHeader className="min-w-0">
+            <div className="flex min-w-0 items-center gap-4">
               {/* One button (no remount → no image flicker), disabled until a real photo loads, so the
                   zoom affordance only appears when there's something to zoom (initials → inert). */}
               <button
                 aria-label="View full-size avatar"
-                className="rounded-full disabled:cursor-default enabled:cursor-zoom-in"
+                className="shrink-0 rounded-full disabled:cursor-default enabled:cursor-zoom-in"
                 disabled={!photoLoaded}
                 onClick={() => setLightboxOpen(true)}
                 type="button"
@@ -84,10 +101,24 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
                   userId={target?.userId}
                 />
               </button>
-              <div className="min-w-0">
-                <DialogTitle className="truncate">{name}</DialogTitle>
+              {/* Identity block: the name wraps (it's the one thing you must be able to read in
+                  full — capped at 2 lines so a pathological one can't stretch the card), the job
+                  title clamps to 2 lines with the full string on hover. Both break inside a long
+                  unbroken token, so neither can widen the card. */}
+              <div className="min-w-0 space-y-1">
+                <DialogTitle
+                  className="line-clamp-2 [overflow-wrap:anywhere] leading-tight"
+                  title={name}
+                >
+                  {name}
+                </DialogTitle>
                 {profile?.jobTitle && (
-                  <p className="truncate text-muted-foreground text-sm">{profile.jobTitle}</p>
+                  <p
+                    className="line-clamp-2 [overflow-wrap:anywhere] text-muted-foreground text-sm leading-snug"
+                    title={profile.jobTitle}
+                  >
+                    {profile.jobTitle}
+                  </p>
                 )}
               </div>
             </div>
@@ -114,10 +145,20 @@ export function ProfileDialog({ target, onClose, onMessage }: ProfileDialogProps
                   </a>
                 ) : null}
               </ProfileField>
-              <ProfileField icon={Building03Icon} label="Department">
+              <ProfileField
+                clamp
+                fullText={profile.department ?? undefined}
+                icon={Building03Icon}
+                label="Department"
+              >
                 {profile.department || null}
               </ProfileField>
-              <ProfileField icon={Location01Icon} label="Office">
+              <ProfileField
+                clamp
+                fullText={profile.officeLocation ?? undefined}
+                icon={Location01Icon}
+                label="Office"
+              >
                 {profile.officeLocation || null}
               </ProfileField>
               <ProfileField icon={Call02Icon} label="Phone">
@@ -161,21 +202,28 @@ function profileErrorCopy(code: string): string {
 }
 
 /** One labelled row of the card. A null child (field absent in the directory) renders nothing —
- *  the card only shows what it actually knows. */
+ *  the card only shows what it actually knows. Values always break inside a long unbroken token so
+ *  they can't widen the card; `clamp` additionally caps prose-y fields (department, office) at two
+ *  lines with the full text on hover, while contact details (mail, phone) wrap in full because a
+ *  half-shown address is useless. */
 function ProfileField({
   icon,
   label,
+  clamp,
+  fullText,
   children,
 }: {
   icon: IconSvgElement
   label: string
+  clamp?: boolean
+  fullText?: string
   children: React.ReactNode
 }) {
   if (children == null || children === "") return null
   return (
-    <div className="flex items-start gap-2 text-sm">
+    <div className="flex min-w-0 items-start gap-2 text-sm">
       <HugeiconsIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" icon={icon} />
-      <div className="min-w-0">
+      <div className={`min-w-0 ${clamp ? "line-clamp-2" : ""}`} title={fullText}>
         <span className="mr-1.5 text-muted-foreground">{label}</span>
         <span className="[overflow-wrap:anywhere]">{children}</span>
       </div>

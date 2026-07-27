@@ -443,6 +443,15 @@ function toEpochMs(iso) {
   return Number.isFinite(t) ? t : null
 }
 
+// `properties.edittime` → epoch ms, or null. Teams sends it as an epoch-ms STRING (not ISO), but a
+// tenant has been seen returning an ISO stamp, so both are accepted (PSN-105 C).
+function toEditTs(raw) {
+  if (raw === null || raw === undefined || raw === "") return null
+  const n = Number(raw)
+  if (Number.isFinite(n) && n > 0) return n
+  return toEpochMs(raw)
+}
+
 // ---- system events (t151) -------------------------------------------------
 // Meeting/group threads carry non-conversation events — ThreadActivity/* (member add/remove, rename,
 // app added…) and Event/Call (call ended / meeting scheduled). t129 SKIPPED ThreadActivity entirely
@@ -597,6 +606,11 @@ function toReaderMessages(list, selfId) {
       body,
       self: isSelf(senderId, selfId),
       edited: !deleted && !!m.properties?.edittime,
+      // The edit's timestamp, not only its truthiness (PSN-105 C) — the BFF stamps the version it
+      // snapshots with it so the history popover can say when each version was replaced.
+      ...(!deleted && toEditTs(m.properties?.edittime)
+        ? { editTs: toEditTs(m.properties.edittime) }
+        : {}),
       deleted,
       // The viewer is @mentioned (t160) — drives the row highlight without re-parsing the HTML.
       ...(body.includes("mention-self") ? { mentionsMe: true } : {}),

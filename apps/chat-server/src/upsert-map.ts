@@ -16,6 +16,7 @@ export function toMessageInput(m: ChatMessage): MessageInput {
     raw: m,
     deleted: m.deleted,
     edited: m.edited,
+    editTs: m.editTs,
     mentionsMe: m.mentionsMe,
   }
 }
@@ -29,6 +30,8 @@ export function toConversationInput(
     kind: c.kind,
     topic: c.topic,
     title: c.title,
+    avatarUserId: c.avatarUserId,
+    memberIds: c.memberIds,
     lastMessageId: c.lastMessageId,
     lastMessageVersion: c.lastMessageVersion,
     lastMessageTs: c.lastMessageTs,

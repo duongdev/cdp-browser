@@ -19,12 +19,13 @@ import { type Captioner, createCaptioner, downscaleImage } from "./caption.ts"
 import type { ChatService } from "./contract.ts"
 import { resolveCaptionModel } from "./llm.ts"
 import { findByObjectId } from "./media-store.ts"
-import { MockProvider } from "./providers/mock-provider.ts"
+import { MOCK_PREFS, MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
+import { ProviderError } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
 import { createPushSender } from "./push.ts"
-import { type BackfillAccessor, createRoutes } from "./routes.ts"
-import { migrate } from "./store.ts"
+import { type BackfillAccessor, createRoutes, statusOf } from "./routes.ts"
+import { migrate, setPrefs } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
 import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
 
@@ -46,11 +47,17 @@ if (VAPID_PRIVATE_KEY) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, 
 else console.warn("[chat-server] VAPID_PRIVATE_KEY unset — Teams web push disabled")
 
 const providers = new Map<ChatService, ChatProvider>()
+let mock: { service: ChatService; provider: MockProvider } | null = null
 if (process.env.CHAT_PROVIDER === "mock") {
   // Default "mock" service id for hermetic e2e; CHAT_MOCK_SERVICE=teams lets the real FE (which
   // pins service "teams") run against fixtures for local visual dev.
   const mockService = (process.env.CHAT_MOCK_SERVICE || "mock") as ChatService
-  providers.set(mockService, new MockProvider(mockService))
+  const provider = new MockProvider(mockService)
+  providers.set(mockService, provider)
+  mock = { service: mockService, provider }
+  // Mute / rename / folder are BFF-local prefs the provider can't express — seed them so those
+  // row states are reachable in the local mock stack.
+  for (const { convId, patch } of MOCK_PREFS) setPrefs(db, mockService, convId, patch)
 } else providers.set("teams", new TeamsProvider())
 
 // A backfill engine per provider; the routes read/start through this map.
@@ -81,6 +88,12 @@ const [assistantService, assistantProvider] = providers.entries().next().value ?
 const assistantCaptioner = assistantService ? captioners.get(assistantService) : undefined
 
 const app = new Hono()
+// Routes mounted directly on the root app (the mock harness) get the same typed error mapping as
+// /api/chat — a ProviderError("not_found", 404) must read as 404, not as a bare 500 (QE DEF-8).
+app.onError((err, c) => {
+  if (err instanceof ProviderError) return c.json({ error: err.code }, statusOf(err.status))
+  return c.json({ error: (err as Error)?.message || "internal_error" }, 500)
+})
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
 app.route(
   "/api/chat/assistant",
@@ -106,9 +119,38 @@ app.route(
         : undefined,
   }),
 )
+// Sweep engines created before routes so getSyncLog can be wired at startup.
+const sweepEngines = new Map<ChatService, import("./sweep.ts").SweepEngine>()
+
+// Local-only inbound simulator (PSN-105 I). Mock provider only — with a real provider this route
+// does not exist. Appends an inbound message and runs the list sweep immediately, so the full
+// delivery path (WS delta → FE, web push, Electron notification, dock badge) fires on demand and
+// "does it arrive while minimised?" is testable with no tenant. Registered before the real
+// /api/chat routes so it isn't shadowed.
+//   curl -X POST localhost:7800/api/chat/mock/say -d '{"text":"ping"}'
+if (mock) {
+  const { service, provider } = mock
+  app.all("/api/chat/mock/say", async (c) => {
+    const q = c.req.query()
+    const body = c.req.method === "POST" ? await c.req.json().catch(() => ({})) : {}
+    const sent = provider.inject(body.convId ?? q.convId, body.text ?? q.text)
+    await sweepEngines.get(service)?.runListOnce()
+    return c.json({ ok: true, ...sent })
+  })
+}
+
 app.route(
   "/api/chat",
-  createRoutes({ db, providers, backfills, captioners, vapidPublicKey: VAPID_PUBLIC_KEY }),
+  createRoutes({
+    db,
+    providers,
+    backfills,
+    captioners,
+    vapidPublicKey: VAPID_PUBLIC_KEY,
+    // null when no sweep engine is running — the route turns that into a real error status so the
+    // client can say "unreachable" instead of rendering it as an empty log (QE DEF-6).
+    getSyncLog: () => sweepEngines.values().next().value?.getSyncLog() ?? null,
+  }),
 )
 
 const port = Number(process.env.CHAT_SERVER_PORT) || 7810
@@ -133,6 +175,7 @@ for (const [service, provider] of providers) {
     getFocusedConvIds,
     pushSender,
   })
+  sweepEngines.set(service, sweep)
   sweep.start()
 }
 

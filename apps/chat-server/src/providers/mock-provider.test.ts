@@ -10,7 +10,8 @@ describe("MockProvider", () => {
 
   test("lists the seed conversations, service stamped", async () => {
     const { conversations, cursor } = await p.listConversations()
-    expect(conversations.map((c) => c.id)).toEqual([
+    // The first three are the seeds these tests pin; the rest are the rich local-dev fixtures.
+    expect(conversations.slice(0, 3).map((c) => c.id)).toEqual([
       "48:notes",
       "19:oneonone@unq.gbl.spaces",
       "19:group@thread.v2",
@@ -18,6 +19,23 @@ describe("MockProvider", () => {
     expect(conversations.every((c) => c.service === "teams")).toBe(true)
     expect(conversations[0].kind).toBe("self")
     expect(cursor).toBeNull()
+  })
+
+  test("inject appends an inbound message and raises the version (the sweep's change gate)", async () => {
+    const read = async () =>
+      (await p.listConversations()).conversations.find((c) => c.id === "19:group@thread.v2")!
+    const before = await read()
+    const sent = p.inject("19:group@thread.v2", "ping")
+    const after = await read()
+
+    expect(after.lastMessageId).toBe(sent.msgId)
+    expect(after.lastMessageFromMe).toBe(false)
+    expect(after.lastMessagePreview).toBe("ping")
+    expect(after.lastMessageVersion).toBeGreaterThan(before.lastMessageVersion)
+
+    const newest = (await p.fetchHistory("19:group@thread.v2")).messages.at(-1)!
+    expect(newest.id).toBe(sent.msgId)
+    expect(newest.self).toBeUndefined()
   })
 
   test("history pages newest-first and chains the cursor to the end", async () => {

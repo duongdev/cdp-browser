@@ -1,6 +1,7 @@
 import { Cancel01Icon, Download04Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
+import { Dialog as DialogPrimitive } from "radix-ui"
 import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
@@ -43,8 +44,12 @@ const WHEEL_STEP = 0.0025 // scale delta per wheel px
 const PAN_SCALE = 1 // px per wheel px (plain scroll pans 1:1)
 
 /** Full-screen dimmed overlay showing one image (zoom/pan, t164) or a video (native controls, t165),
- *  with a smooth open/close animation and a download affordance. Rendered inline (position:fixed
- *  escapes the flow); a null media animates the overlay out. Theme-aware via the shared tokens. */
+ *  with a smooth open/close animation and a download affordance. It is a real Radix dialog layer, so
+ *  it nests correctly when opened from another dialog (the profile card): the layer stack hands the
+ *  TOP layer pointer-events, Escape and the focus trap. A plain fixed overlay never got those from
+ *  inside a modal dialog — Radix sets `pointer-events: none` on everything outside the dialog's own
+ *  content, so the backdrop/X/download were unclickable no matter their z-index. A null media
+ *  animates the overlay out. Theme-aware via the shared tokens. */
 export function ImageLightbox({ media, onClose }: ImageLightboxProps) {
   return (
     <AnimatePresence>
@@ -65,14 +70,13 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
   // Whether the current single-pointer gesture has moved (a drag) — suppresses click actions.
   const dragged = useRef(false)
   const isVideo = media.kind === "video"
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
-    }
-    document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
-  }, [onClose])
+  // Captured during the FIRST render — before Radix's focus scope pulls focus into this layer — so
+  // it is the element that opened the lightbox. Radix's own restore lands on <body> when the opener
+  // lives inside another dialog (that dialog is still aria-hidden while this layer tears down), so
+  // the restore is done here, one frame after unmount.
+  const opener = useRef<Element | null>(
+    typeof document === "undefined" ? null : document.activeElement,
+  )
 
   const viewport = useCallback((): ViewSize => {
     const r = stageRef.current?.getBoundingClientRect()
@@ -187,87 +191,117 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
       }
 
   return (
-    <motion.div
-      animate={{ opacity: 1 }}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"
-      exit={{ opacity: 0 }}
-      initial={{ opacity: 0 }}
-      transition={{ duration: reduce ? 0.1 : 0.16 }}
+    // `open` is constant: AnimatePresence owns the lifetime, so the layer stays mounted (and stays
+    // the top layer) for the whole exit animation. Escape/dismiss route through onOpenChange, which
+    // Radix only fires for the topmost layer — one press closes the lightbox, not the parent dialog.
+    <DialogPrimitive.Root
+      onOpenChange={(next) => {
+        if (!next) onClose()
+      }}
+      open
     >
-      <div
-        className="absolute right-3 z-10 flex gap-2"
-        style={
-          {
-            top: isElectron ? "60px" : "12px",
-            WebkitAppRegion: "no-drag",
-          } as React.CSSProperties
-        }
-      >
-        <a
-          aria-label="Download"
-          className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
-          download={isVideo ? "teams-video" : "teams-image"}
-          href={media.src}
-          rel="noopener noreferrer"
-        >
-          <HugeiconsIcon className="size-5" icon={Download04Icon} />
-        </a>
-        <button
-          aria-label="Close"
-          className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose()
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Content
+          aria-describedby={undefined}
+          asChild
+          onCloseAutoFocus={(e) => {
+            e.preventDefault()
+            const el = opener.current
+            if (el instanceof HTMLElement) requestAnimationFrame(() => el.focus())
           }}
-          type="button"
         >
-          <HugeiconsIcon className="size-5" icon={Cancel01Icon} />
-        </button>
-      </div>
-      <div
-        className="flex size-full touch-none select-none items-center justify-center overflow-hidden"
-        ref={stageRef}
-        {...stageHandlers}
-      >
-        {/* Outer card owns the open/close scale+fade; inner media holds its own transform/controls,
-            so the two never fight over `transform`. */}
-        <motion.div
-          className="flex max-h-full max-w-full items-center justify-center"
-          transition={{ duration: reduce ? 0.1 : 0.18, ease: "easeOut" }}
-          {...cardAnim}
-        >
-          {isVideo ? (
-            // biome-ignore lint/a11y/useMediaCaption: user-authored chat clip, no caption track available.
-            <video
-              autoPlay
-              className="max-h-full max-w-full rounded-md"
-              controls
-              onClick={(e) => e.stopPropagation()}
-              src={media.src}
-            />
-          ) : (
-            // biome-ignore lint/a11y/noStaticElementInteractions: image click zooms (lightbox gesture).
-            // biome-ignore lint/a11y/useKeyWithClickEvents: Esc/keyboard handled by stage keydown listener.
-            <img
-              alt=""
-              className="max-h-full max-w-full rounded-md object-contain"
-              draggable={false}
-              onClick={onImageClick}
-              onDoubleClick={onDoubleClick}
-              src={media.src}
-              style={{
-                transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
-                transformOrigin: "0 0",
-                cursor: isZoomed(zoom) ? "grab" : "zoom-in",
-              }}
-            />
-          )}
-        </motion.div>
-      </div>
-      {!isVideo && media.convId && media.msgId && (
-        <CaptionPanel convId={media.convId} msgId={media.msgId} src={media.src} />
-      )}
-    </motion.div>
+          <motion.div
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4"
+            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }}
+            // The stage owns the backdrop click, but this element's `p-4` ring sits outside it — a
+            // click there is still "outside the image" and must dismiss. Image/control clicks stop
+            // propagation, so they never reach here.
+            onClick={onStageClick}
+            transition={{ duration: reduce ? 0.1 : 0.16 }}
+          >
+            <DialogPrimitive.Title className="sr-only">
+              {isVideo ? "Video viewer" : "Image viewer"}
+            </DialogPrimitive.Title>
+            <div
+              className="absolute right-3 z-10 flex gap-2"
+              style={
+                {
+                  top: isElectron ? "60px" : "12px",
+                  WebkitAppRegion: "no-drag",
+                } as React.CSSProperties
+              }
+            >
+              <a
+                aria-label="Download"
+                className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+                download={isVideo ? "teams-video" : "teams-image"}
+                href={media.src}
+                onClick={(e) => e.stopPropagation()}
+                rel="noopener noreferrer"
+              >
+                <HugeiconsIcon className="size-5" icon={Download04Icon} />
+              </a>
+              <button
+                aria-label="Close"
+                className="flex size-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClose()
+                }}
+                type="button"
+              >
+                <HugeiconsIcon className="size-5" icon={Cancel01Icon} />
+              </button>
+            </div>
+            <div
+              className="flex size-full touch-none select-none items-center justify-center overflow-hidden"
+              ref={stageRef}
+              {...stageHandlers}
+            >
+              {/* Outer card owns the open/close scale+fade; inner media holds its own
+                  transform/controls, so the two never fight over `transform`. */}
+              <motion.div
+                className="flex max-h-full max-w-full items-center justify-center"
+                transition={{ duration: reduce ? 0.1 : 0.18, ease: "easeOut" }}
+                {...cardAnim}
+              >
+                {isVideo ? (
+                  // biome-ignore lint/a11y/useMediaCaption: user-authored chat clip, no caption track available.
+                  <video
+                    autoPlay
+                    className="max-h-full max-w-full rounded-md"
+                    controls
+                    onClick={(e) => e.stopPropagation()}
+                    src={media.src}
+                  />
+                ) : (
+                  // biome-ignore lint/a11y/noStaticElementInteractions: image click zooms (lightbox gesture).
+                  // biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the dialog layer.
+                  <img
+                    alt=""
+                    className="max-h-full max-w-full rounded-md object-contain"
+                    draggable={false}
+                    onClick={onImageClick}
+                    onDoubleClick={onDoubleClick}
+                    src={media.src}
+                    style={{
+                      transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
+                      transformOrigin: "0 0",
+                      cursor: isZoomed(zoom) ? "grab" : "zoom-in",
+                    }}
+                  />
+                )}
+              </motion.div>
+            </div>
+            {!isVideo && media.convId && media.msgId && (
+              <CaptionPanel convId={media.convId} msgId={media.msgId} src={media.src} />
+            )}
+          </motion.div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   )
 }
 
@@ -299,7 +333,7 @@ function CaptionPanel({ convId, msgId, src }: { convId: string; msgId: string; s
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: swallows clicks so reading text can't close the lightbox.
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Esc still closes via the stage listener.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: Escape still closes via the dialog layer.
     <div
       className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom))]"
       onClick={(e) => e.stopPropagation()}

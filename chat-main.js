@@ -71,6 +71,10 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       preload: path.join(__dirname, "chat-preload.js"),
+      // A minimised/occluded renderer otherwise gets its timers stretched to ~1/s, which starves the
+      // WS liveness watchdog and the fallback polls — the exact "worse when unfocused" half of
+      // PSN-106. Delivery must not depend on the window being visible.
+      backgroundThrottling: false,
     },
   })
   win.loadURL(`${serverUrl}${lastPath}`)
@@ -98,6 +102,10 @@ function createWindow() {
 // Notification whose click shows/focuses the window and posts the convId back so the
 // renderer opens that conversation.
 ipcMain.on("chat:notify", (_e, { title, body, convId } = {}) => {
+  // The OS toast can only be verified by eye, so log the hop too: against the local mock stack
+  // (`pnpm chat:mock` + `chat:mock:say`) this line is the terminal-visible proof that delivery
+  // reached the shell while the window was unfocused or minimised.
+  console.info(`[chat] notify ${convId}: ${title} — ${body}`)
   if (!Notification.isSupported()) return
   const n = new Notification({ title: title || "CDP Chats", body: body || "" })
   liveNotifications.add(n)
@@ -155,6 +163,12 @@ ipcMain.on("chat:route", (_e, routePath) => {
   if (typeof routePath === "string" && routePath.startsWith("/chat"))
     writeConfig({ lastPath: routePath })
 })
+
+// App identity for the About card in Settings.
+ipcMain.handle("chat:get-app-info", () => ({
+  version: app.getVersion(),
+  builtAt: process.env.BUILT_AT ?? null,
+}))
 
 app.whenReady().then(() => {
   createWindow()

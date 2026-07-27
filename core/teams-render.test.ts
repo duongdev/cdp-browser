@@ -854,6 +854,34 @@ describe("toReaderMessages", () => {
     expect(out[0].edited).toBe(true)
   })
 
+  it("carries the edittime VALUE as editTs (epoch-ms string)", () => {
+    const out = toReaderMessages(
+      [msg({ id: "e", properties: { edittime: "1700000000000" } })],
+      "ME",
+    )
+    expect(out[0].editTs).toBe(1700000000000)
+  })
+
+  it("accepts an ISO edittime and omits editTs when absent or on a deleted message", () => {
+    const iso = toReaderMessages(
+      [msg({ id: "i", properties: { edittime: "2023-11-14T22:13:20.000Z" } })],
+      "ME",
+    )
+    expect(iso[0].editTs).toBe(Date.parse("2023-11-14T22:13:20.000Z"))
+    expect(toReaderMessages([msg({ id: "p" })], "ME")[0].editTs).toBeUndefined()
+    const del = toReaderMessages(
+      [
+        msg({
+          id: "d",
+          content: "",
+          properties: { edittime: "1700000000000", deletetime: "1700000000000" },
+        }),
+      ],
+      "ME",
+    )
+    expect(del[0].editTs).toBeUndefined()
+  })
+
   it("skips entries with no id and tolerates a null list", () => {
     expect(toReaderMessages(null, "ME")).toEqual([])
     expect(toReaderMessages([{ content: "x" }], "ME")).toEqual([])

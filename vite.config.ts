@@ -22,6 +22,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __GIT_SHA__: JSON.stringify(gitSha),
+    __BUILT_AT__: JSON.stringify(new Date().toISOString()),
   },
   build: {
     outDir: "dist",

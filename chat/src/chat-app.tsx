@@ -836,7 +836,9 @@ export function ChatApp() {
     ? { convId: keepAlive.active, title: labelForConv(keepAlive.active) }
     : null
 
-  const aiPanel = aiOpen ? (
+  // Always mounted (never unmounted on close) so typed draft, scroll position, and
+  // expanded states survive a hide/show — same display:none pattern as thread-keepalive.ts.
+  const aiPanel = (
     <AssistantPanel
       contextRefs={aiRefs}
       currentConv={currentConv}
@@ -854,7 +856,7 @@ export function ChatApp() {
       scopes={aiScopes}
       sessionId={settings.aiSessionId}
     />
-  ) : null
+  )
 
   // Drag-resize for the wide third column (width persisted on release).
   const onAiResizeDown = useCallback(
@@ -1542,18 +1544,19 @@ export function ChatApp() {
             </div>
           )}
         </section>
-        {aiPanel && (
-          <aside className="relative shrink-0 border-border border-l" style={{ width: aiWidth }}>
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
-            <div
-              className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
-              onDoubleClick={resetAiWidth}
-              onPointerDown={onAiResizeDown}
-              title="Drag to resize · double-click to reset"
-            />
-            {aiPanel}
-          </aside>
-        )}
+        <aside
+          className="relative shrink-0 border-border border-l"
+          style={{ width: aiOpen ? aiWidth : 0, display: aiOpen ? undefined : "none" }}
+        >
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
+          <div
+            className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+            onDoubleClick={resetAiWidth}
+            onPointerDown={onAiResizeDown}
+            title="Drag to resize · double-click to reset"
+          />
+          {aiPanel}
+        </aside>
         {palette}
       </div>
     )
@@ -1592,12 +1595,14 @@ export function ChatApp() {
         <ConnectionStatus online={online} />
       </div>
       <div className={cn("min-h-0 flex-1", phoneView === "list" && "hidden")}>{threadPanes}</div>
-      {/* Phone: the assistant is a full-screen stacked destination above list/thread (t174). */}
-      {aiPanel && (
-        <div className="fixed inset-0 z-40 flex h-[var(--app-h,100dvh)] flex-col bg-background">
-          {aiPanel}
-        </div>
-      )}
+      {/* Phone: the assistant is a full-screen stacked destination above list/thread (t174).
+          Always mounted (display:none when closed) to preserve draft/scroll state. */}
+      <div
+        className="fixed inset-0 z-40 flex h-[var(--app-h,100dvh)] flex-col bg-background"
+        style={{ display: aiOpen ? undefined : "none" }}
+      >
+        {aiPanel}
+      </div>
       {palette}
     </div>
   )

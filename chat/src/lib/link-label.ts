@@ -36,31 +36,46 @@ export function parseAzurePr(href: string): AzurePr | null {
   return { repo: decodeURIComponent(m[1]), id: m[2] }
 }
 
+/** `https://<tenant>.atlassian.net/browse/<TICKET-KEY>` → ticket key string.
+ *  Matches any tenant. Case-insensitive host, ticket key is upper-case by convention. */
+export function parseJiraTicket(href: string): string | null {
+  const m = /^https?:\/\/[^/]+\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)/i.exec(href.trim())
+  return m ? m[1].toUpperCase() : null
+}
+
 const ELIDE_OVER = 48
 
 /** The label a bare URL should DISPLAY. Returns null when the URL is short enough to show as-is. */
 export function linkLabel(href: string): string | null {
   const pr = parseAzurePr(href)
   if (pr) return `${pr.repo}#${pr.id}`
+  const jira = parseJiraTicket(href)
+  if (jira) return jira
   return href.length > ELIDE_OVER ? middleEllipsis(href) : null
 }
 
 /** Rewrite each `<a>` that DISPLAYS a URL to `linkLabel`'s label, built from the **href** (the full,
  *  clean URL) — never from the visible text, which Teams may have already shortened with its own "…"
- *  (re-eliding that gave a double ellipsis, PSN-99). The href stays intact + goes in `title`. Operates
- *  on ALREADY-SANITIZED html — only shortens anchor text nodes (auto-escaped), so no XSS surface. */
+ *  (re-eliding that gave a double ellipsis, PSN-99). The href stays intact + goes in `title`.
+ *  Every anchor (including descriptive ones) gets its href as the tooltip so hovering always shows
+ *  the full URL. Operates on ALREADY-SANITIZED html — only shortens anchor text nodes (auto-escaped),
+ *  so no XSS surface. */
 export function elideLinkText(html: string): string {
   if (typeof DOMParser === "undefined" || !html.includes("<a")) return html
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html")
   let changed = false
   for (const a of Array.from(doc.querySelectorAll("a[href]"))) {
-    const txt = (a.textContent ?? "").trim()
     const href = a.getAttribute("href") ?? ""
-    // Only when the anchor is SHOWING a URL (not a descriptive label).
+    // Always stamp the full URL as title so every link shows its destination on hover.
+    if (!a.getAttribute("title")) {
+      a.setAttribute("title", href)
+      changed = true
+    }
+    const txt = (a.textContent ?? "").trim()
+    // Only elide/chip when the anchor is SHOWING a URL (not a descriptive label).
     if (!isUrlLike(txt)) continue
     const label = linkLabel(href)
     if (!label) continue
-    if (!a.getAttribute("title")) a.setAttribute("title", href)
     a.textContent = label
     changed = true
   }

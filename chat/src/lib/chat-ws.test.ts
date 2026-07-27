@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { type ChatWsClient, type ChatWsFrame, type ChatWsStatus, createChatWs } from "./chat-ws"
+import {
+  type ChatWsClient,
+  type ChatWsFrame,
+  type ChatWsStatus,
+  createChatWs,
+  WS_LIVENESS_TIMEOUT_MS,
+} from "./chat-ws"
 
 const last = <T>(a: T[]): T => a[a.length - 1]
 
@@ -36,38 +42,63 @@ class FakeWs {
   }
 }
 
+interface Timer {
+  id: number
+  fn: () => void
+  ms: number
+  cancelled: boolean
+}
+
 interface Harness {
   client: ChatWsClient
   frames: ChatWsFrame[]
   statuses: ChatWsStatus[]
-  timers: Array<{ fn: () => void; ms: number }>
+  /** Timers still armed (cancelled ones drop out, as they would with a real clearTimeout). */
+  readonly timers: Timer[]
+  /** Run the oldest armed timer. */
   runTimer(): void
+  /** Advance the injected clock (drives the liveness watchdog). */
+  advance(ms: number): void
 }
 
 function makeHarness(): Harness {
   const frames: ChatWsFrame[] = []
   const statuses: ChatWsStatus[] = []
-  const timers: Array<{ fn: () => void; ms: number }> = []
+  const all: Timer[] = []
+  let clock = 1_000
+  let nextId = 1
   const client = createChatWs({
     onFrame: (f) => frames.push(f),
     onStatus: (s) => statuses.push(s),
     // biome-ignore lint/suspicious/noExplicitAny: fake ws satisfies the used subset
     WebSocketImpl: FakeWs as any,
     setTimer: (fn, ms) => {
-      timers.push({ fn, ms })
-      return timers.length as unknown as ReturnType<typeof setTimeout>
+      const id = nextId++
+      all.push({ id, fn, ms, cancelled: false })
+      return id as unknown as ReturnType<typeof setTimeout>
     },
-    clearTimer: () => {},
+    clearTimer: (h) => {
+      const t = all.find((x) => x.id === (h as unknown as number))
+      if (t) t.cancelled = true
+    },
+    now: () => clock,
     url: "ws://test/api/chat/ws",
   })
   return {
     client,
     frames,
     statuses,
-    timers,
+    get timers() {
+      return all.filter((t) => !t.cancelled)
+    },
     runTimer() {
-      const t = timers.shift()
-      t?.fn()
+      const t = all.find((x) => !x.cancelled)
+      if (!t) return
+      t.cancelled = true
+      t.fn()
+    },
+    advance(ms: number) {
+      clock += ms
     },
   }
 }
@@ -139,6 +170,65 @@ describe("createChatWs", () => {
     expect(h.timers).toHaveLength(1)
     h.runTimer()
     expect(FakeWs.instances).toHaveLength(2)
+  })
+
+  it("swallows the server ping frame instead of forwarding it to the app", () => {
+    const h = makeHarness()
+    const ws = FakeWs.instances[0]
+    ws.open()
+    ws.emit({ type: "ping", ts: 1 })
+    expect(h.frames).toHaveLength(0)
+  })
+
+  it("force-reconnects a silent socket once the liveness budget elapses", () => {
+    const h = makeHarness()
+    const ws = FakeWs.instances[0]
+    ws.open()
+    expect(last(h.statuses)).toBe("online")
+
+    h.advance(WS_LIVENESS_TIMEOUT_MS)
+    h.runTimer() // the watchdog fires: nothing has arrived
+    expect(last(h.statuses)).toBe("reconnecting")
+    h.runTimer() // the backoff retry
+    expect(FakeWs.instances).toHaveLength(2)
+  })
+
+  it("keeps a socket alive while frames (incl. pings) keep arriving", () => {
+    const h = makeHarness()
+    const ws = FakeWs.instances[0]
+    ws.open()
+
+    // Two heartbeats inside the budget, then the watchdog checks: still fed → stays online.
+    h.advance(20_000)
+    ws.emit({ type: "ping", ts: 1 })
+    h.advance(20_000)
+    ws.emit({ type: "ping", ts: 2 })
+    h.advance(5_000)
+    h.runTimer()
+    expect(h.statuses).toEqual(["online"])
+    expect(FakeWs.instances).toHaveLength(1)
+
+    // …and it re-arms, so a later silence still trips it.
+    h.advance(WS_LIVENESS_TIMEOUT_MS)
+    h.runTimer()
+    expect(last(h.statuses)).toBe("reconnecting")
+  })
+
+  it("does not double-schedule when the forced close fires onclose late", () => {
+    const h = makeHarness()
+    const ws = FakeWs.instances[0]
+    ws.open()
+    h.advance(WS_LIVENESS_TIMEOUT_MS)
+    h.runTimer() // watchdog closes the socket and schedules one retry
+    ws.drop() // the zombie's close event lands afterwards — handlers are detached
+    expect(h.timers).toHaveLength(1)
+  })
+
+  it("stops the watchdog after close()", () => {
+    const h = makeHarness()
+    FakeWs.instances[0].open()
+    h.client.close()
+    expect(h.timers).toHaveLength(0)
   })
 
   it("stops reconnecting after close()", () => {

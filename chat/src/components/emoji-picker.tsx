@@ -13,9 +13,12 @@ export function EmojiPicker({ onSelect, onClose }: Props) {
   const [query, setQuery] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Focus the search box once it exists — on the FIRST render the catalog is still loading and
+  // there is no input to focus, so a mount-only effect silently never focused anything (PSN-105 L).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: catalog is the deliberate re-run trigger — it's what makes the input exist
   useEffect(() => {
     inputRef.current?.focus()
-  }, [])
+  }, [catalog])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

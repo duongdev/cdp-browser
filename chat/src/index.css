@@ -519,6 +519,17 @@
   text-underline-offset: 2px;
   border-radius: 4px;
   transition: background-color 0.12s ease;
+  font-weight: 600;
+  color: var(--ring);
+}
+/* Self-bubble links sit on --primary (coral fill in light / tinted dark fill), so the coral --ring
+   accent fails contrast. Use primary-foreground in light; in dark the self-bubble already uses
+   --foreground text so inherit keeps it readable. */
+.teams-self-bubble a {
+  color: var(--primary-foreground);
+}
+.dark .teams-self-bubble a {
+  color: inherit;
 }
 /* Soft highlight while the cursor is over a link (PSN-99) — same muted tint as a mention pill, so the
    floating copy button at the link's end reads as part of one highlighted element. Pure CSS :hover
@@ -612,16 +623,21 @@
 .teams-message-body blockquote[data-reply-id] {
   cursor: pointer;
 }
-/* Jump-landing flash (PSN-92 B5): a brief coral ring on the row the jump landed on. */
+/* Jump-landing flash (PSN-92 B5): highlight the bubble, not the row wrapper. The class now sits on
+   the bubble itself (PSN-105 L moved it in message-row.tsx), so this is a plain rule — the
+   descendant form it briefly had is gone. `outline` sits outside the element and never clips, and
+   it follows the bubble's own border-radius (data-pos/data-side rules below), so the ring traces
+   the exact bubble shape including a grouped run's asymmetric corners. A message with no bubble
+   (chips only) keeps the class on its row wrapper, which the same rule covers. */
 @keyframes msg-jump-flash {
   0%,
   60% {
-    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 70%, transparent);
-    border-radius: 1rem;
+    outline: 2px solid color-mix(in oklab, var(--ring) 70%, transparent);
+    outline-offset: 2px;
   }
   100% {
-    box-shadow: 0 0 0 2px transparent;
-    border-radius: 1rem;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
   }
 }
 .msg-jump-flash {

@@ -14,6 +14,12 @@ type Db = BetterSqlite3.Database
 
 import { migrateAssistant } from "./assistant/session-store.ts"
 import type { ChatConversation, ChatPrefs } from "./contract.ts"
+import {
+  MAX_VERSIONS_PER_MESSAGE,
+  type PrevBody,
+  planSnapshot,
+  resolveBody,
+} from "./edit-history.ts"
 import { extractImages } from "./media-images.ts"
 import { captionsForMessage, migrateMedia, recordMessageImages } from "./media-store.ts"
 import { backfillSearchIndex, migrateSearch, syncMessageFts } from "./search.ts"
@@ -25,6 +31,8 @@ const SCHEMA = [
     kind                 TEXT,
     topic                TEXT,
     title                TEXT,
+    avatar_user_id       TEXT,
+    member_ids           TEXT,
     last_message_id      TEXT,
     last_message_version INTEGER,
     last_message_ts      INTEGER,
@@ -51,6 +59,19 @@ const SCHEMA = [
     mentions_me INTEGER DEFAULT 0,
     PRIMARY KEY (service, conv_id, id)
   )`,
+  // Superseded message bodies (PSN-105 C). Teams keeps no previous version, so this is the ONLY
+  // copy — appended in `upsertMessages` the moment before the row's body is overwritten. Not keyed
+  // by a primary key: a message has many versions, ordered by rowid (append order).
+  `CREATE TABLE IF NOT EXISTS message_edits (
+    service     TEXT NOT NULL,
+    conv_id     TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    body        TEXT,
+    edit_ts     INTEGER,
+    captured_at INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS message_edits_msg
+     ON message_edits (service, conv_id, msg_id)`,
   `CREATE TABLE IF NOT EXISTS read_state (
     service            TEXT NOT NULL,
     conv_id            TEXT NOT NULL,
@@ -83,6 +104,22 @@ const SCHEMA = [
     value   TEXT,
     PRIMARY KEY (service, key)
   )`,
+  // Backfill run history (PSN-105 N). The engine's status is in-memory and dies with the process,
+  // so "did last night's deep fetch finish, and what did it cost?" was unanswerable after a
+  // restart. One row per run, inserted when it starts and completed when it ends — a row left
+  // unfinished by a crash keeps its `aborted` default, which is the honest reading.
+  `CREATE TABLE IF NOT EXISTS backfill_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    service       TEXT NOT NULL,
+    started_at    INTEGER,
+    finished_at   INTEGER,
+    days          INTEGER,
+    conversations INTEGER DEFAULT 0,
+    messages      INTEGER DEFAULT 0,
+    status        TEXT DEFAULT 'aborted',
+    error         TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS backfill_runs_service ON backfill_runs (service, id)`,
   `CREATE TABLE IF NOT EXISTS push_subs (
     service     TEXT NOT NULL,
     endpoint    TEXT NOT NULL,
@@ -97,7 +134,10 @@ const SCHEMA = [
  *  tried and a duplicate-column error swallowed — that is the "already migrated" case. */
 const ADDED_COLUMNS: [table: string, column: string, decl: string][] = [
   ["conversations", "title", "TEXT"],
+  ["conversations", "avatar_user_id", "TEXT"],
+  ["conversations", "member_ids", "TEXT"],
   ["read_state", "unread_bookmark_ts", "INTEGER"],
+  ["messages", "edit_ts", "INTEGER"],
 ]
 
 /** Idempotent — safe on every boot (`CREATE … IF NOT EXISTS` + the column adds above). */
@@ -136,6 +176,11 @@ export interface ConversationInput {
   /** Resolved display title (member names for a topic-less DM/group). Best-effort — absent means
    *  unresolved, never "renamed to nothing". Empty/absent never clears a previously stored title. */
   title?: string | null
+  /** Resolved identity, same contract as `title`: absent = unresolved, never "has no avatar". The
+   *  1:1's other member / the self chat's viewer; absent for a group (its facepile uses memberIds). */
+  avatarUserId?: string | null
+  /** A group's first few non-self member ids (facepile). Absent/empty = unresolved, never cleared. */
+  memberIds?: string[] | null
   lastMessageId?: string | null
   lastMessageVersion?: number
   lastMessageTs?: number | null
@@ -161,10 +206,12 @@ export function upsertConversations(
 ): ConversationInput[] {
   const stmt = db.prepare(`
     INSERT INTO conversations
-      (service, id, kind, topic, title, last_message_id, last_message_version, last_message_ts,
+      (service, id, kind, topic, title, avatar_user_id, member_ids, last_message_id,
+       last_message_version, last_message_ts,
        last_message_preview, last_message_from_me, newest_synced_ts, oldest_synced_ts, muted, updated_at)
     VALUES
-      (@service, @id, @kind, @topic, @title, @last_message_id, @last_message_version, @last_message_ts,
+      (@service, @id, @kind, @topic, @title, @avatar_user_id, @member_ids, @last_message_id,
+       @last_message_version, @last_message_ts,
        @last_message_preview, @last_message_from_me, @last_message_ts, @last_message_ts, 0, @updated_at)
     ON CONFLICT(service, id) DO UPDATE SET
       kind = excluded.kind,
@@ -177,10 +224,14 @@ export function upsertConversations(
       updated_at = excluded.updated_at
     WHERE excluded.last_message_version > conversations.last_message_version
   `)
-  // Ungated title update: lands whenever a non-empty title arrives, independent of version.
-  // Never clears a stored title — an empty/absent incoming title means "still unresolved".
-  const titleStmt = db.prepare(`
-    UPDATE conversations SET title = @title
+  // Ungated identity update: title + avatar fields land whenever a resolved value arrives,
+  // independent of version (a name/roster resolves on its own schedule). `COALESCE` is the
+  // never-clear rule — a null (empty/absent) incoming value means "still unresolved", not "cleared".
+  const identityStmt = db.prepare(`
+    UPDATE conversations SET
+      title = COALESCE(@title, title),
+      avatar_user_id = COALESCE(@avatar_user_id, avatar_user_id),
+      member_ids = COALESCE(@member_ids, member_ids)
     WHERE service = @service AND id = @id
   `)
   const processed: ConversationInput[] = []
@@ -189,12 +240,17 @@ export function upsertConversations(
       if (!conv?.id || isReservedConversation(conv.id)) continue
       const preview = conv.lastMessagePreview ?? ""
       const title = typeof conv.title === "string" ? conv.title.trim() : null
-      stmt.run({
+      const identity = {
         service,
         id: conv.id,
+        title: title || null,
+        avatar_user_id: conv.avatarUserId || null,
+        member_ids: conv.memberIds?.length ? JSON.stringify(conv.memberIds) : null,
+      }
+      stmt.run({
+        ...identity,
         kind: conv.kind ?? null,
         topic: conv.topic ?? null,
-        title: title || null,
         last_message_id: conv.lastMessageId ?? null,
         last_message_version: Number(conv.lastMessageVersion) || 0,
         last_message_ts: conv.lastMessageTs ?? null,
@@ -203,8 +259,8 @@ export function upsertConversations(
         last_message_from_me: conv.lastMessageFromMe ? 1 : 0,
         updated_at: now,
       })
-      // Apply a resolved title regardless of whether the version-gated update ran.
-      if (title) titleStmt.run({ service, id: conv.id, title })
+      // Apply resolved identity regardless of whether the version-gated update ran.
+      identityStmt.run(identity)
       if (conv.readHorizonTs != null) setReadHorizon(db, service, conv.id, conv.readHorizonTs)
       if (conv.unreadBookmarkTs != null)
         setUnreadBookmark(db, service, conv.id, conv.unreadBookmarkTs)
@@ -215,11 +271,23 @@ export function upsertConversations(
   return processed
 }
 
+// Stored as a JSON array; a corrupt/legacy value degrades to "unresolved" rather than throwing.
+function parseMemberIds(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x) : []
+  } catch {
+    return []
+  }
+}
+
 // The conversation list for a service, newest-first — the /api/chat/conversations read model.
 export function listConversations(db: Db, service: string): ChatConversation[] {
   const rows = db
     .prepare(`
-      SELECT c.id, c.kind, c.topic, c.title, c.last_message_id, c.last_message_version, c.last_message_ts,
+      SELECT c.id, c.kind, c.topic, c.title, c.avatar_user_id, c.member_ids,
+             c.last_message_id, c.last_message_version, c.last_message_ts,
              c.last_message_preview, c.last_message_from_me, c.muted,
              r.read_horizon_ts, r.local_read_ts, r.unread_bookmark_ts
       FROM conversations c
@@ -236,6 +304,7 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
     const sticky = (r.unread_bookmark_ts || 0) > 0
     const readTs = effectiveReadTs(r)
     const n = (mentionCount.get(service, r.id, readTs) as { n: number } | undefined)?.n || 0
+    const memberIds = parseMemberIds(r.member_ids)
     return {
       service,
       id: r.id,
@@ -243,6 +312,10 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
       topic: r.topic,
       // Omit rather than emit null — `title` is optional in ChatConversation; undefined = unresolved.
       ...(r.title ? { title: r.title } : {}),
+      // Same omit-don't-null rule as `title`: absent means unresolved, so a delta can't stomp a
+      // resolved avatar back to the initials tile (the WS conversation-upsert ships these rows).
+      ...(r.avatar_user_id ? { avatarUserId: r.avatar_user_id } : {}),
+      ...(memberIds.length ? { memberIds } : {}),
       lastMessageId: r.last_message_id,
       lastMessageVersion: r.last_message_version,
       lastMessageTs: r.last_message_ts,
@@ -261,6 +334,8 @@ interface ReadRow {
   kind: string | null
   topic: string | null
   title: string | null
+  avatar_user_id: string | null
+  member_ids: string | null
   last_message_id: string | null
   last_message_version: number
   last_message_ts: number | null
@@ -302,6 +377,8 @@ export interface MessageInput {
   raw?: unknown
   deleted?: boolean
   edited?: boolean
+  /** When the provider says the last edit landed (epoch ms) — stamps the snapshot it supersedes. */
+  editTs?: number
   mentionsMe?: boolean
 }
 
@@ -318,9 +395,9 @@ export function upsertMessages(
   if (list.length === 0) return
   const stmt = db.prepare(`
     INSERT INTO messages
-      (service, conv_id, id, version, sender_id, sender_name, ts, body, raw, deleted, edited, mentions_me)
+      (service, conv_id, id, version, sender_id, sender_name, ts, body, raw, deleted, edited, edit_ts, mentions_me)
     VALUES
-      (@service, @conv_id, @id, @version, @sender_id, @sender_name, @ts, @body, @raw, @deleted, @edited, @mentions_me)
+      (@service, @conv_id, @id, @version, @sender_id, @sender_name, @ts, @body, @raw, @deleted, @edited, @edit_ts, @mentions_me)
     ON CONFLICT(service, conv_id, id) DO UPDATE SET
       version = excluded.version,
       sender_id = excluded.sender_id,
@@ -330,7 +407,32 @@ export function upsertMessages(
       raw = excluded.raw,
       deleted = excluded.deleted,
       edited = excluded.edited,
+      edit_ts = excluded.edit_ts,
       mentions_me = excluded.mentions_me
+  `)
+  // Edit history (PSN-105 C): the bodies about to be overwritten. Read in ONE batched statement —
+  // this runs on the 4s/12s sweep path, so a per-message SELECT would be a round-trip tax.
+  const prevBodies = readBodies(
+    db,
+    service,
+    convId,
+    list.map((m) => String(m.id)),
+  )
+  const snapStmt = db.prepare(`
+    INSERT INTO message_edits (service, conv_id, msg_id, body, edit_ts, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  // Keep the newest MAX_VERSIONS_PER_MESSAGE (R3) — append order is rowid order — PLUS one. The
+  // spare row is what makes "older versions were dropped" a fact instead of a guess: the reader
+  // returns the cap and reports truncation only when that extra row exists (PSN-105 QE DEF-5;
+  // `length >= cap` called exactly-20 truncated when nothing had been dropped).
+  const trimStmt = db.prepare(`
+    DELETE FROM message_edits
+    WHERE service = ? AND conv_id = ? AND msg_id = ? AND rowid NOT IN (
+      SELECT rowid FROM message_edits
+      WHERE service = ? AND conv_id = ? AND msg_id = ?
+      ORDER BY rowid DESC LIMIT ${MAX_VERSIONS_PER_MESSAGE + 1}
+    )
   `)
   const advance = db.prepare(`
     UPDATE conversations SET
@@ -347,6 +449,18 @@ export function upsertMessages(
     let newest = Number.NEGATIVE_INFINITY
     for (const m of rows) {
       const ts = Number(m.ts) || 0
+      const msgId = String(m.id)
+      const prev = prevBodies.get(msgId)
+      const snapshot = planSnapshot(prev, m, now)
+      if (snapshot) {
+        snapStmt.run(service, convId, msgId, snapshot.body, snapshot.editTs, now)
+        trimStmt.run(service, convId, msgId, service, convId, msgId)
+      }
+      // The ONE place the persisted body is decided (DEF-1). Everything downstream — `raw`, the
+      // media extraction, the FTS shadow — reads this value, so a rejected blank payload can't leak
+      // back in through a side channel.
+      const body = resolveBody(prev, m)
+      const raw = rawWithBody(m.raw, m.body ?? "", body)
       stmt.run({
         service,
         conv_id: convId,
@@ -355,22 +469,23 @@ export function upsertMessages(
         sender_id: m.senderId || null,
         sender_name: m.senderName || null,
         ts,
-        body: m.body || "",
-        raw: m.raw === undefined ? null : JSON.stringify(m.raw),
+        body,
+        raw: raw === undefined ? null : JSON.stringify(raw),
         deleted: m.deleted ? 1 : 0,
         edited: m.edited ? 1 : 0,
+        edit_ts: Number.isFinite(m.editTs) ? m.editTs : null,
         mentions_me: m.mentionsMe ? 1 : 0,
       })
       // Inline images are registered here (PSN-104) so the caption worker — which drains
       // `message_media` rows, needing no hook back into this write path — has something to pick up,
       // and so an already-transcribed image is searchable the moment its message lands.
-      const images = m.deleted ? [] : extractImages(m.body || "")
+      const images = m.deleted ? [] : extractImages(body)
       if (images.length) recordMessageImages(db, service, convId, String(m.id), images, now)
       // Keep the FTS shadow in lockstep — the single write funnel (ADR-0021).
       const row = rowidStmt.get(service, convId, String(m.id)) as { rowid: number } | undefined
       if (row) {
         const captions = images.length ? captionsForMessage(db, service, convId, String(m.id)) : []
-        syncMessageFts(db, row.rowid, m.body || "", !!m.deleted, captions)
+        syncMessageFts(db, row.rowid, body, !!m.deleted, captions)
       }
       if (ts > 0) {
         if (ts < oldest) oldest = ts
@@ -382,6 +497,61 @@ export function upsertMessages(
     }
   })
   run(list)
+}
+
+/** Keep `raw` in step when the write path rejected the incoming body (DEF-1). `raw` is replayed
+ *  verbatim by the history routes, so leaving the blank in there would render the loss anyway. */
+function rawWithBody(raw: unknown, incoming: string, persisted: string): unknown {
+  if (raw === undefined || persisted === incoming) return raw
+  if (!raw || typeof raw !== "object") return raw
+  return { ...(raw as Record<string, unknown>), body: persisted }
+}
+
+/** The stored bodies for a page of ids, in ONE statement (the upsert path is the hot sweep lane).
+ *  SQLite's parameter ceiling is ~32k and a page is ~30 rows, so a single `IN (…)` is safe. */
+function readBodies(db: Db, service: string, convId: string, ids: string[]): Map<string, PrevBody> {
+  const out = new Map<string, PrevBody>()
+  if (ids.length === 0) return out
+  const rows = db
+    .prepare(
+      `SELECT id, body, deleted FROM messages
+       WHERE service = ? AND conv_id = ? AND id IN (${ids.map(() => "?").join(",")})`,
+    )
+    .all(service, convId, ...ids) as { id: string; body: string; deleted: number }[]
+  for (const r of rows) out.set(r.id, { body: r.body || "", deleted: !!r.deleted })
+  return out
+}
+
+/** One superseded body as `listMessageEdits` returns it. */
+export interface MessageEdit {
+  body: string
+  editTs: number | null
+  capturedAt: number | null
+}
+
+/** A message's superseded bodies, NEWEST first (PSN-105 C), capped at MAX_VERSIONS_PER_MESSAGE.
+ *  `truncated` is observed, not inferred: the write path keeps one row beyond the cap, so its
+ *  presence PROVES an older version was dropped (a full-but-not-over list is not truncation). */
+export function listMessageEdits(
+  db: Db,
+  service: string,
+  convId: string,
+  msgId: string,
+): { versions: MessageEdit[]; truncated: boolean } {
+  const rows = db
+    .prepare(
+      `SELECT body, edit_ts, captured_at FROM message_edits
+       WHERE service = ? AND conv_id = ? AND msg_id = ? ORDER BY rowid DESC`,
+    )
+    .all(service, convId, msgId) as { body: string; edit_ts: number; captured_at: number }[]
+  return {
+    versions: rows.slice(0, MAX_VERSIONS_PER_MESSAGE).map((r) => ({
+      body: r.body || "",
+      editTs: r.edit_ts ?? null,
+      capturedAt: r.captured_at ?? null,
+    })),
+    truncated: rows.length > MAX_VERSIONS_PER_MESSAGE,
+  }
 }
 
 /** Register one stored message's inline images (PSN-104) — the lazy path for a message that landed
@@ -715,6 +885,76 @@ export function getBackfillCursor(db: Db, service: string, convId: string): stri
     .prepare("SELECT value FROM settings WHERE service = ? AND key = ?")
     .get(service, `backfill.cursor.${convId}`) as { value: string } | undefined
   return r?.value ?? null
+}
+
+// ---- backfill run history (PSN-105 N) --------------------------------------
+
+/** Runs kept per service. A deep fetch is a manual, rare action — 20 is months of history and
+ *  keeps the table a diagnostics log rather than a growing dataset. */
+export const MAX_BACKFILL_RUNS = 20
+
+/** Open a run row and return its id. Status starts at `aborted`: a process that dies mid-run never
+ *  gets to write an outcome, and "aborted" is exactly what happened. */
+export function startBackfillRun(db: Db, service: string, days: number, now = Date.now()): number {
+  const info = db
+    .prepare(
+      `INSERT INTO backfill_runs (service, started_at, days, status) VALUES (?, ?, ?, 'aborted')`,
+    )
+    .run(service, now, days)
+  db.prepare(
+    `DELETE FROM backfill_runs WHERE service = ? AND id NOT IN (
+       SELECT id FROM backfill_runs WHERE service = ? ORDER BY id DESC LIMIT ${MAX_BACKFILL_RUNS}
+     )`,
+  ).run(service, service)
+  return Number(info.lastInsertRowid)
+}
+
+/** Close a run with its outcome + totals. */
+export function finishBackfillRun(
+  db: Db,
+  id: number,
+  outcome: {
+    conversations: number
+    messages: number
+    status: "ok" | "error" | "aborted"
+    error?: string
+  },
+  now = Date.now(),
+): void {
+  db.prepare(
+    `UPDATE backfill_runs SET finished_at = ?, conversations = ?, messages = ?, status = ?, error = ?
+     WHERE id = ?`,
+  ).run(now, outcome.conversations, outcome.messages, outcome.status, outcome.error ?? null, id)
+}
+
+/** Past runs, NEWEST first. A row with `finishedAt: null` is either in flight or died with its
+ *  process — the live `running` flag on the status is what tells the two apart. */
+export function listBackfillRuns(db: Db, service: string): import("./contract.ts").BackfillRun[] {
+  const rows = db
+    .prepare(
+      `SELECT id, started_at, finished_at, days, conversations, messages, status, error
+       FROM backfill_runs WHERE service = ? ORDER BY id DESC LIMIT ${MAX_BACKFILL_RUNS}`,
+    )
+    .all(service) as {
+    id: number
+    started_at: number
+    finished_at: number | null
+    days: number
+    conversations: number
+    messages: number
+    status: string
+    error: string | null
+  }[]
+  return rows.map((r) => ({
+    id: r.id,
+    startedAt: r.started_at ?? 0,
+    finishedAt: r.finished_at ?? null,
+    days: r.days ?? 0,
+    conversations: r.conversations ?? 0,
+    messages: r.messages ?? 0,
+    status: r.status === "ok" || r.status === "error" ? r.status : "aborted",
+    ...(r.error ? { error: r.error } : {}),
+  }))
 }
 
 // ---- users (display-name cache) -------------------------------------------

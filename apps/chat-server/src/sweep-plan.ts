@@ -83,6 +83,26 @@ export function planConversationSweep(
   return { changedConversations, readStateChanges }
 }
 
+/** How many changed conversations one list tick may fetch history for. Every Teams call funnels
+ *  through ONE in-page CDP keeper tab shared with mark-read and the 4s focus lane, so an unbounded
+ *  fan-out would starve them. In practice a tick changes 0–2 rows; the cap only bites on a burst. */
+export const MAX_DELTA_FETCH = 5
+
+/** Decide which changed conversations get a history fetch this tick (PSN-106). The focused ones
+ *  already have their own faster lane, so they are excluded here. Anything past the cap comes back
+ *  as `skipped`; the CALLER must carry those ids into the next tick's input (sweep.ts keeps a
+ *  `pendingDelta` queue). They cannot re-surface on their own — the list upsert has already
+ *  advanced their stored version, so the change gate never fires for them again (QE DEF-4). */
+export function planDeltaFetch(
+  changedConvIds: string[],
+  focusedConvIds: string[],
+  cap: number = MAX_DELTA_FETCH,
+): { convIds: string[]; skipped: string[] } {
+  const focused = new Set(focusedConvIds)
+  const eligible = [...new Set(changedConvIds)].filter((id) => !focused.has(id))
+  return { convIds: eligible.slice(0, cap), skipped: eligible.slice(cap) }
+}
+
 /** Diff a freshly-fetched history page against the prior stored messages for one conversation.
  *  Returns only the new/materially-changed messages (in fetch order). Empty when nothing moved. */
 export function planMessageSweep(

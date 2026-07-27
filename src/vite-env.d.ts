@@ -4,6 +4,7 @@
 // and the short git SHA at build time. __GIT_SHA__ is "unknown" outside a checkout.
 declare const __APP_VERSION__: string
 declare const __GIT_SHA__: string
+declare const __BUILT_AT__: string
 
 interface Pin {
   id: string

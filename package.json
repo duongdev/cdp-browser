@@ -8,7 +8,7 @@
   "main": "main.js",
   "packageManager": "pnpm@11.2.2",
   "engines": {
-    "node": ">=22.14"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "concurrently -k \"vite\" \"sleep 2 && ELECTRON_DEV=1 electron .\"",
@@ -20,6 +20,9 @@
     "chat:build": "vite build --config vite.config.chat.ts",
     "chat:web": "vite build && vite build --config vite.config.chat.ts && node web/server.mjs",
     "chat:bff": "concurrently -k -n bff,web \"pnpm --filter @cdp/chat-server start\" \"node web/server.mjs\"",
+    "chat:mock": "rm -rf ${MOCK_DIR:-.mock-data} && mkdir -p ${MOCK_DIR:-.mock-data} && vite build && vite build --config vite.config.chat.ts && concurrently -k -n bff,web \"CHAT_PROVIDER=mock CHAT_MOCK_SERVICE=teams CHAT_MOCK_PAGE=20 CHAT_SERVER_PORT=${BFF_PORT:-7910} CHAT_DB_PATH=$PWD/${MOCK_DIR:-.mock-data}/chat.db pnpm --filter @cdp/chat-server start\" \"PORT=${WEB_PORT:-7900} DATA_DIR=$PWD/${MOCK_DIR:-.mock-data} CHAT_SERVER_URL=http://localhost:${BFF_PORT:-7910} node web/server.mjs\"",
+    "chat:mock:electron": "CHAT_SERVER_URL=http://localhost:${WEB_PORT:-7900} electron --user-data-dir=$PWD/${MOCK_DIR:-.mock-data}/electron chat-main.js",
+    "chat:mock:say": "curl -sS -X POST localhost:${WEB_PORT:-7900}/api/chat/mock/say -H content-type:application/json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",

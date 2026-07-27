@@ -1,4 +1,13 @@
-import { Cancel01Icon, ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
+import {
+  Alert02Icon,
+  Cancel01Icon,
+  CheckmarkCircle01Icon,
+  ComputerIcon,
+  Copy01Icon,
+  Moon02Icon,
+  RefreshIcon,
+  Sun03Icon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
@@ -22,7 +31,16 @@ import { shouldArmLeaveTimer } from "@/lib/settings-dismiss"
 import { cn } from "@/lib/utils"
 import type { BackfillStatus } from "../../../apps/chat-server/src/contract"
 import { progressLabel, progressPercent } from "../lib/backfill-progress"
-import { fetchConversations, getBackfillStatus, startBackfill } from "../lib/chat-client"
+import {
+  type BackfillRun,
+  fetchConversations,
+  getBackfillStatus,
+  getBffVersion,
+  getServerVersion,
+  getSyncLog,
+  startBackfill,
+  type VersionInfo,
+} from "../lib/chat-client"
 import type {
   ChatDensity,
   ChatFont,
@@ -36,6 +54,13 @@ import { chatShell } from "../lib/chat-shell"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { formatName } from "../lib/display-name"
 import { playNotifySound } from "../lib/notify-sound"
+import {
+  formatBackfillRun,
+  formatRelativeTime,
+  type SyncEvent,
+  type SyncLogData,
+  syncEventLabel,
+} from "../lib/sync-log"
 import { NotifyControl } from "./notify-toggle"
 
 const THEME_OPTIONS: { id: ChatTheme; label: string; icon: IconSvgElement }[] = [
@@ -168,16 +193,68 @@ const DAYS_OPTIONS = [
 
 const POLL_MS = 3_000
 
+function BackfillHistoryList({ history, now }: { history: BackfillRun[]; now: number }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="pt-1">
+      <button
+        className="text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen((v) => !v)}
+        type="button"
+      >
+        {open ? "Hide" : `Show ${history.slice(0, 5).length} entries`}
+      </button>
+      {open && (
+        <div className="mt-1.5 max-h-28 space-y-0.5 overflow-y-auto">
+          {history.slice(0, 5).map((run) => (
+            <div className="flex items-center gap-2 py-0.5" key={run.id}>
+              <HugeiconsIcon
+                className={cn(
+                  "size-3 shrink-0",
+                  run.status === "ok"
+                    ? "text-green-500"
+                    : run.status === "aborted"
+                      ? "text-amber-500"
+                      : "text-destructive",
+                )}
+                icon={run.status === "ok" ? CheckmarkCircle01Icon : Alert02Icon}
+                strokeWidth={2}
+              />
+              <span className="truncate text-[10px] text-muted-foreground">
+                {formatBackfillRun(run, now)}
+              </span>
+              <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                {formatRelativeTime(run.startedAt, now)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Data card: fetch-last-X-days backfill UI. */
 function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void }) {
   const [days, setDays] = useState<string>("30")
   const [status, setStatus] = useState<BackfillStatus | null>(null)
+  const [history, setHistory] = useState<BackfillRun[]>([])
+  const [now, setNow] = useState(() => Date.now())
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+
+  // Live relative-time ticker.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), SYNC_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
 
   // Init: GET status so a mid-run progress survives a page reload.
   useEffect(() => {
     getBackfillStatus().then((s) => {
-      if (s) setStatus(s)
+      if (s) {
+        setStatus(s)
+        if (s.history) setHistory(s.history)
+      }
     })
   }, [])
 
@@ -284,6 +361,339 @@ function BackfillCard({ onSelectOpen }: { onSelectOpen: (open: boolean) => void 
             )}
           </p>
         </div>
+      )}
+
+      {history.length > 0 && <BackfillHistoryList history={history} now={now} />}
+    </div>
+  )
+}
+
+// ---- About card ----------------------------------------------------------------
+
+function DeviceIdRow({ deviceId }: { deviceId: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const copy = useCallback(() => {
+    if (deviceId === "—") return
+    navigator.clipboard.writeText(deviceId).then(() => {
+      setCopied(true)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 2000)
+    })
+  }, [deviceId])
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  return (
+    <div className="flex items-start gap-2">
+      <span className="min-w-[72px] shrink-0 text-[11px] text-muted-foreground">Device ID</span>
+      <button
+        aria-label="Copy device ID"
+        className="group flex items-center gap-1 rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[10px] transition-colors hover:bg-foreground/[0.10] active:bg-foreground/[0.14] disabled:cursor-default"
+        disabled={deviceId === "—"}
+        onClick={copy}
+        title={deviceId === "—" ? undefined : deviceId}
+        type="button"
+      >
+        <span className="select-all break-all text-left">{deviceId}</span>
+        <HugeiconsIcon
+          className={cn(
+            "size-3 shrink-0 transition-colors",
+            copied
+              ? "text-green-500"
+              : "text-muted-foreground/60 group-hover:text-muted-foreground",
+          )}
+          icon={copied ? CheckmarkCircle01Icon : Copy01Icon}
+        />
+      </button>
+    </div>
+  )
+}
+
+type LoadState<T> = { phase: "loading" } | { phase: "ok"; data: T } | { phase: "error" }
+
+function ReachabilityDot({ ok }: { ok: boolean }) {
+  return (
+    <span
+      className={cn("inline-block size-2 rounded-full", ok ? "bg-green-500" : "bg-destructive")}
+    />
+  )
+}
+
+function VersionRow({ label, info }: { label: string; info: LoadState<VersionInfo | null> }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="min-w-[72px] shrink-0 text-[11px] text-muted-foreground">{label}</span>
+      {info.phase === "loading" && (
+        <span className="h-3 w-24 animate-pulse rounded bg-foreground/10" />
+      )}
+      {info.phase === "error" && <span className="text-[11px] text-destructive">unavailable</span>}
+      {info.phase === "ok" && !info.data && (
+        <span className="text-[11px] text-destructive">unavailable</span>
+      )}
+      {info.phase === "ok" && info.data && (
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
+          <ReachabilityDot ok={true} />
+          <span className="font-mono">{info.data.version}</span>
+          {info.data.sha && (
+            <span className="font-mono text-muted-foreground">{info.data.sha.slice(0, 7)}</span>
+          )}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** About card: app version + SHA + built-at, Electron app info, server + BFF reachability, device id. */
+function AboutCard() {
+  const shell = chatShell()
+  const [electronInfo, setElectronInfo] = useState<
+    LoadState<{ version: string; builtAt: string | null }>
+  >({ phase: "loading" })
+  const [serverInfo, setServerInfo] = useState<LoadState<VersionInfo | null>>({ phase: "loading" })
+  const [bffInfo, setBffInfo] = useState<LoadState<VersionInfo | null>>({ phase: "loading" })
+
+  useEffect(() => {
+    if (shell) {
+      shell
+        .getAppInfo()
+        .then((d) => setElectronInfo({ phase: "ok", data: d }))
+        .catch(() => setElectronInfo({ phase: "error" }))
+    } else {
+      setElectronInfo({ phase: "ok", data: { version: __APP_VERSION__, builtAt: __BUILT_AT__ } })
+    }
+    getServerVersion()
+      .then((d) => setServerInfo({ phase: "ok", data: d }))
+      .catch(() => setServerInfo({ phase: "error" }))
+    getBffVersion()
+      .then((d) => setBffInfo({ phase: "ok", data: d }))
+      .catch(() => setBffInfo({ phase: "error" }))
+  }, [shell])
+
+  const deviceId =
+    typeof localStorage !== "undefined" ? (localStorage.getItem("cdp_device_id") ?? "—") : "—"
+
+  return (
+    <div className="space-y-3 border-border/60 border-t pt-3">
+      <Label className="text-[13px]">About</Label>
+      <div className="space-y-2">
+        {/* App build */}
+        <div className="flex items-start gap-2">
+          <span className="min-w-[72px] shrink-0 text-[11px] text-muted-foreground">App</span>
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
+            <span className="font-mono">{__APP_VERSION__}</span>
+            <span className="font-mono text-muted-foreground">{__GIT_SHA__.slice(0, 7)}</span>
+            {__BUILT_AT__ && (
+              <span className="text-muted-foreground">
+                {new Date(__BUILT_AT__).toLocaleDateString()}
+              </span>
+            )}
+          </span>
+        </div>
+
+        {/* Electron app info (shell only) */}
+        {shell && (
+          <div className="flex items-start gap-2">
+            <span className="min-w-[72px] shrink-0 text-[11px] text-muted-foreground">
+              Electron
+            </span>
+            {electronInfo.phase === "loading" && (
+              <span className="h-3 w-24 animate-pulse rounded bg-foreground/10" />
+            )}
+            {electronInfo.phase === "error" && (
+              <span className="text-[11px] text-destructive">unavailable</span>
+            )}
+            {electronInfo.phase === "ok" && (
+              <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
+                <span className="font-mono">{electronInfo.data.version}</span>
+                {electronInfo.data.builtAt && (
+                  <span className="text-muted-foreground">
+                    {new Date(electronInfo.data.builtAt).toLocaleDateString()}
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Server + BFF reachability */}
+        <VersionRow info={serverInfo} label="Server" />
+        <VersionRow info={bffInfo} label="Chat BFF" />
+
+        {/* Device ID — click-to-copy so the diagnostic value is actually usable. */}
+        <DeviceIdRow deviceId={deviceId} />
+      </div>
+    </div>
+  )
+}
+
+// ---- Sync card -----------------------------------------------------------------
+
+const SYNC_TICK_MS = 1_000
+
+function SyncEventRow({ event, now }: { event: SyncEvent; now: number }) {
+  const isOk = event.ok
+  return (
+    <div className="flex items-center gap-2 py-0.5">
+      <HugeiconsIcon
+        className={cn("size-3 shrink-0", isOk ? "text-green-500" : "text-destructive")}
+        icon={isOk ? CheckmarkCircle01Icon : Alert02Icon}
+        strokeWidth={2}
+      />
+      <span
+        className="truncate text-[10px] text-muted-foreground"
+        title={event.convId ?? undefined}
+      >
+        {syncEventLabel(event)}
+        {event.code && <span className="ml-1 text-destructive">{event.code}</span>}
+      </span>
+      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
+        {formatRelativeTime(event.ts, now)}
+      </span>
+    </div>
+  )
+}
+
+/** Sync card: last sweep time, last error, and a live scrollable event log. */
+function SyncCard() {
+  const [log, setLog] = useState<SyncLogData | null>(null)
+  const [phase, setPhase] = useState<"loading" | "ok" | "error">("loading")
+  const [now, setNow] = useState(() => Date.now())
+  const [logOpen, setLogOpen] = useState(false)
+
+  // Initial HTTP fetch.
+  useEffect(() => {
+    let alive = true
+    getSyncLog()
+      .then((d) => {
+        if (!alive) return
+        setLog(d ?? null)
+        setPhase("ok")
+      })
+      .catch(() => {
+        if (alive) setPhase("error")
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Live relative-time ticker.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), SYNC_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
+
+  // WS push — update the log whenever the server broadcasts a sync-log frame.
+  useChatWsFrames(
+    useCallback((frame) => {
+      if (frame.type === "sync-log")
+        setLog({
+          lastSyncAt: frame.lastSyncAt,
+          lastError: frame.lastError,
+          lastErrorCode: frame.lastErrorCode,
+          events: frame.events,
+        })
+    }, []),
+  )
+
+  function retry() {
+    setPhase("loading")
+    getSyncLog()
+      .then((d) => {
+        setLog(d ?? null)
+        setPhase("ok")
+      })
+      .catch(() => setPhase("error"))
+  }
+
+  return (
+    <div className="space-y-3 border-border/60 border-t pt-3">
+      <div className="flex items-center justify-between">
+        <Label className="text-[13px]">Sync</Label>
+        {phase === "ok" && (
+          <button
+            className="text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={retry}
+            type="button"
+          >
+            <HugeiconsIcon className="size-3" icon={RefreshIcon} strokeWidth={2} />
+          </button>
+        )}
+      </div>
+
+      {phase === "loading" && (
+        <div className="space-y-1.5">
+          <div className="h-3 w-32 animate-pulse rounded bg-foreground/10" />
+          <div className="h-3 w-24 animate-pulse rounded bg-foreground/10" />
+        </div>
+      )}
+
+      {phase === "error" && (
+        <div className="flex items-center gap-2">
+          <p className="text-[11px] text-destructive">Failed to load</p>
+          <Button className="h-6 text-[11px]" onClick={retry} size="default" variant="secondary">
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {phase === "ok" && log && (
+        <div className="space-y-2">
+          {/* Summary row */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-muted-foreground">Last sync:</span>
+              {log.lastSyncAt ? (
+                <span className="font-medium">{formatRelativeTime(log.lastSyncAt, now)}</span>
+              ) : (
+                <span className="text-muted-foreground">never</span>
+              )}
+            </div>
+            {log.lastError && (
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <span className="text-muted-foreground">Last error:</span>
+                <span className="text-destructive">
+                  {formatRelativeTime(log.lastError, now)}
+                  {log.lastErrorCode && <span className="ml-1">({log.lastErrorCode})</span>}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Event log — collapsed by default */}
+          {log.events.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">No events yet.</p>
+          ) : (
+            <div>
+              <button
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+                onClick={() => setLogOpen((v) => !v)}
+                type="button"
+              >
+                {logOpen ? "Hide" : `Show ${log.events.length} entries`}
+              </button>
+              {logOpen && (
+                <div className="mt-1.5 max-h-36 space-y-0.5 overflow-y-auto">
+                  {[...log.events].reverse().map((e, i) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: stable list, index is fine
+                    <SyncEventRow event={e} key={i} now={now} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {phase === "ok" && !log && (
+        <p className="text-[11px] text-muted-foreground">No sync data available.</p>
       )}
     </div>
   )
@@ -512,6 +922,12 @@ export function SettingsSheet({
 
           {/* Data — backfill last X days. */}
           <BackfillCard onSelectOpen={setSelectOpen} />
+
+          {/* About — build identity, server reachability, device id. */}
+          <AboutCard />
+
+          {/* Sync — last sweep time, last error, event log. */}
+          <SyncCard />
 
           {/* Server URL — Electron shell only (the web build is served by its own origin). */}
           {shell && (

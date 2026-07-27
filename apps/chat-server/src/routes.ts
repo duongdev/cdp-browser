@@ -6,15 +6,30 @@
 // The sweep (WS-D) drives background refresh + WS deltas — this workstream just makes the contract
 // serve correctly, provider-first.
 
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
 import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
+import { MAX_VERSIONS_PER_MESSAGE } from "./edit-history.ts"
 import { amsObjectId, amsUrlFromSrc } from "./media-images.ts"
 import { findByObjectId } from "./media-store.ts"
 import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
 import * as store from "./store.ts"
 import { toConversationInput, toMessageInput } from "./upsert-map.ts"
+
+// Read version from the monorepo root package.json so the BFF reports the same
+// version as the web build — not a stale "0.0.0" from its own private package.json.
+// ponytail: read-once at startup, no watch; restart picks up a version bump.
+const _rootPkg = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json"),
+    "utf8",
+  ),
+) as { version: string }
+const ROOT_VERSION = _rootPkg.version
 
 type Db = BetterSqlite3.Database
 
@@ -37,6 +52,9 @@ export interface RoutesDeps {
   /** service id → image transcription worker (PSN-104). Absent → `/media/caption` reports whatever
    *  is stored and never transcribes on demand. */
   captioners?: Map<ChatService, { captionObject(objectId: string): Promise<string | null> }>
+  /** Sync log accessor — wired by index.ts when a sweep engine exists. `null` means no engine is
+   *  running, which the route reports as a real failure, not an empty log. */
+  getSyncLog?: () => import("./sweep.ts").SyncLogData | null
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -193,6 +211,24 @@ export function createRoutes(deps: RoutesDeps) {
     return c.json(r)
   })
 
+  // A message's local version history (PSN-105 C). Teams keeps no previous version, so this reads
+  // ONLY what our sweep observed and snapshotted — nothing is fetched from the provider. `truncated`
+  // means the per-message cap was hit and older versions were dropped; the UI says so out loud.
+  app.get("/message-history", (c) => {
+    const { service } = pick(deps, c.req.query("service"))
+    const convId = c.req.query("convId")
+    const msgId = c.req.query("msgId")
+    if (!convId || !msgId) throw new ProviderError("missing_message", 400)
+    const { versions, truncated } = store.listMessageEdits(deps.db, service, convId, msgId)
+    const row = store.getMessage(deps.db, service, convId, msgId)
+    return c.json({
+      versions,
+      current: row ? { body: row.body, deleted: row.deleted, ts: row.ts ?? null } : null,
+      truncated,
+      cap: MAX_VERSIONS_PER_MESSAGE,
+    })
+  })
+
   // ---- profile / bytes (stream provider bytes back) -----------------------
 
   app.get("/profile", async (c) => {
@@ -342,10 +378,15 @@ export function createRoutes(deps: RoutesDeps) {
 
   // ---- backfill (WS-D engine; idle status when no engine is wired) --------
 
+  // The live status PLUS the persisted run history (PSN-105 N) — the in-memory status dies with
+  // the process, so past runs are only knowable from the store.
   app.get("/backfill", (c) => {
     const service = c.req.query("service") || DEFAULT_SERVICE
     const engine = deps.backfills?.get(service)
-    return c.json(engine ? engine.getBackfillStatus() : idleBackfill(service))
+    return c.json({
+      ...(engine ? engine.getBackfillStatus() : idleBackfill(service)),
+      history: store.listBackfillRuns(deps.db, service),
+    })
   })
 
   app.post("/backfill", async (c) => {
@@ -384,11 +425,33 @@ export function createRoutes(deps: RoutesDeps) {
     return c.json({ ok: true })
   })
 
+  // ---- build identity + sync diagnostics ----------------------------------
+
+  app.get("/version", (c) =>
+    c.json({
+      version: ROOT_VERSION,
+      // GIT_SHA is baked by the Docker builder; "unknown" in local dev is honest.
+      sha: process.env.GIT_SHA || null,
+      builtAt: process.env.BUILT_AT || new Date().toISOString(),
+    }),
+  )
+
+  // No sweep engine wired = the server genuinely cannot answer, which is NOT the same thing as "no
+  // events yet" (QE DEF-6: both rendered as an empty card, so the client's error state was dead
+  // code and a broken server looked idle). A real status lets the client show its error branch.
+  app.get("/sync-log", (c) => {
+    const log = deps.getSyncLog?.()
+    if (!log) throw new ProviderError("sync_unavailable", 502)
+    return c.json(log)
+  })
+
   return app
 }
 
 // Hono maps our numeric status onto its ContentfulStatusCode union; clamp to a safe error range.
-function statusOf(n: number): 400 | 403 | 404 | 429 | 500 | 502 {
+// Exported so routes mounted OUTSIDE this router (the mock harness) map a ProviderError the same
+// way instead of falling through to a bare 500 (QE DEF-8).
+export function statusOf(n: number): 400 | 403 | 404 | 429 | 500 | 502 {
   if (n === 400 || n === 403 || n === 404 || n === 429 || n === 500 || n === 502) return n
   return n >= 400 && n < 500 ? 400 : 502
 }

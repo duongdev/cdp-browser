@@ -47,7 +47,10 @@ describe("TeamsProvider over HTTP (mock upstream)", () => {
   test("avatar + media decode base64 to bytes; avatar miss passes through", async () => {
     const a = await provider.avatar("other-oid")
     expect("body" in a && a.contentType).toBe("image/png")
-    expect("body" in a && Array.from(a.body)).toEqual([137, 80, 78, 71])
+    // Assert the PNG signature rather than the whole fixture — the upstream mock serves a real
+    // decodable image (the profile dialog needs one to enable its avatar button), so pinning the
+    // exact byte length would just re-break whenever that placeholder changes.
+    expect("body" in a && Array.from(a.body.slice(0, 4))).toEqual([137, 80, 78, 71])
     expect(await provider.avatar("no-photo-oid")).toEqual({ miss: true })
 
     const m = await provider.media("https://ams.example/obj")
