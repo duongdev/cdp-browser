@@ -14,7 +14,6 @@ import {
   readLlmConfig,
   resolveModel,
 } from "../llm.ts"
-import { getContextWindow } from "../search.ts"
 import {
   citationKey,
   stripReasoningRemnants,
@@ -24,12 +23,15 @@ import {
 import { planCompaction, transcriptForSummary } from "./compact.ts"
 import { buildSystemPrompt, createAssistantTools, runAgentTurn } from "./loop.ts"
 import {
+  addRef,
   appendMessage,
+  type ContextRef,
   createSession,
   deleteSession,
   getSession,
   listSessions,
   loadMessages,
+  removeRef,
   type StoredUIMessage,
   sanitizePartsForModel,
   updateSession,
@@ -130,45 +132,43 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     return c.json({ session, messages: loadMessages(db, session.id) })
   })
 
-  // ---- context refs ("ask AI about this") ---------------------------------
-  // Appends the descriptor to context_refs (pinned one-line into every later system prompt) and
-  // injects the referenced content ONCE as a user message part (re-fetchable via tools after
-  // compaction).
+  // ---- context refs (the attach tray) -------------------------------------
+  // A ref is PURE: nothing is copied into the transcript (grilled). The system prompt lists what's
+  // attached and the model reads the live content with get_context/search — so a ref stays current
+  // as new messages land, and removing one genuinely removes that context. Injecting an excerpt
+  // (the old behaviour) baked a stale copy into history that un-attaching could never retract.
 
   app.post("/sessions/:id/context", async (c) => {
     const b = await body(c)
     const session = getSession(db, c.req.param("id"))
     if (!session) return c.json({ error: "not_found" }, 404)
     if (!b.convId || !b.title) return c.json({ error: "missing_ref" }, 400)
-    const service = b.service || DEFAULT_SERVICE
-    const ref = {
-      service,
+    const msgId = b.msgId ? String(b.msgId) : undefined
+    const ref: ContextRef = {
+      service: b.service || DEFAULT_SERVICE,
+      kind: msgId ? "message" : "chat",
       convId: String(b.convId),
-      msgId: b.msgId ? String(b.msgId) : undefined,
+      msgId,
       title: String(b.title),
-      deepLink: String(b.deepLink || `/chat/c/${b.convId}${b.msgId ? `?msg=${b.msgId}` : ""}`),
+      sender: b.sender ? String(b.sender).slice(0, 80) : undefined,
+      preview: b.preview ? String(b.preview).slice(0, 140) : undefined,
+      deepLink: String(b.deepLink || `/chat/c/${b.convId}${msgId ? `?msg=${msgId}` : ""}`),
     }
-    const window = getContextWindow(db, service, {
-      convId: ref.convId,
-      aroundMsgId: ref.msgId,
-      limit: ref.msgId ? 10 : 6,
-    })
-    const excerpt = window
-      .map((m) => `${m.senderName || "?"}: ${m.deleted ? "[deleted]" : m.text}`)
-      .join("\n")
-    appendMessage(db, session.id, {
-      id: `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      role: "user",
-      parts: [
-        {
-          type: "text",
-          text: `[Attached context: ${ref.title} (convId ${ref.convId}${ref.msgId ? `, msgId ${ref.msgId}` : ""})]\n${excerpt || "(no synced messages)"}`,
-        },
-      ],
-      metadata: { contextRef: ref },
-    })
     const updated = updateSession(db, session.id, {
-      contextRefs: [...session.contextRefs, ref],
+      contextRefs: addRef(session.contextRefs, ref),
+    })
+    return c.json({ session: updated })
+  })
+
+  app.delete("/sessions/:id/context", async (c) => {
+    const session = getSession(db, c.req.param("id"))
+    if (!session) return c.json({ error: "not_found" }, 404)
+    // Accept the target on the query string (a DELETE body isn't reliably forwarded by proxies).
+    const convId = c.req.query("convId")
+    const msgId = c.req.query("msgId") || undefined
+    if (!convId) return c.json({ error: "missing_ref" }, 400)
+    const updated = updateSession(db, session.id, {
+      contextRefs: removeRef(session.contextRefs, { convId, msgId }),
     })
     return c.json({ session: updated })
   })
@@ -225,21 +225,12 @@ export function createAssistantRoutes(deps: AssistantDeps) {
       { tools, ignoreIncompleteToolCalls: true },
     )
 
-    // Default scope = the conversation the user is viewing (steering); the FE sends it per turn.
-    const focusConv =
-      b.focusConv && typeof b.focusConv.convId === "string"
-        ? { convId: b.focusConv.convId, title: b.focusConv.title }
-        : null
     const result = runAgentTurn({
       // A provider that stops producing must not hang the panel forever — the stream aborts and
       // surfaces as a typed error the client can retry (steering: "freezes forever").
       abortSignal: AbortSignal.timeout(TURN_TIMEOUT_MS),
       model,
-      system: buildSystemPrompt({
-        summary: session.summary,
-        contextRefs: session.contextRefs,
-        focusConv,
-      }),
+      system: buildSystemPrompt({ summary: session.summary, contextRefs: session.contextRefs }),
       messages: modelMessages,
       tools,
       onFinish: ({ totalUsage }) => {

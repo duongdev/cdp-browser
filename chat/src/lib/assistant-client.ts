@@ -4,9 +4,15 @@
 
 export interface AssistantContextRef {
   service: string
+  /** "chat" = whole conversation, "message" = one message (+ its window). */
+  kind: "chat" | "message"
   convId: string
   msgId?: string
+  /** Conversation title. */
   title: string
+  /** Message refs only — who said it + a short excerpt, so chips from one chat differ. */
+  sender?: string
+  preview?: string
   deepLink: string
 }
 
@@ -67,13 +73,34 @@ export async function loadSessionMessages(id: string) {
 
 export async function attachContext(
   id: string,
-  ref: { service?: string; convId: string; msgId?: string; title: string; deepLink?: string },
+  ref: {
+    service?: string
+    convId: string
+    msgId?: string
+    title: string
+    sender?: string
+    preview?: string
+    deepLink?: string
+  },
 ) {
   return (
     await req<{ session: AssistantSession }>(`/sessions/${id}/context`, {
       method: "POST",
       body: JSON.stringify(ref),
     })
+  ).session
+}
+
+/** Detach a ref by (convId, msgId). The target rides the query string — a DELETE body isn't
+ *  reliably forwarded through proxies. */
+export async function detachContext(
+  id: string,
+  target: { convId: string; msgId?: string },
+): Promise<AssistantSession> {
+  const q = new URLSearchParams({ convId: target.convId })
+  if (target.msgId) q.set("msgId", target.msgId)
+  return (
+    await req<{ session: AssistantSession }>(`/sessions/${id}/context?${q}`, { method: "DELETE" })
   ).session
 }
 

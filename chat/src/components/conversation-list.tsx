@@ -130,6 +130,8 @@ interface ConversationListProps {
   /** Toggle read ↔ unread from the row context menu (C4). Routes to the same patchConvRead path as
    *  the `u` key; the conversation's current unread state gates the label. */
   onToggleRead?: (convId: string) => void
+  /** "Attach to AI" in a row's context menu (PSN-104 grill) — attaches without opening the chat. */
+  onAttachToAi?: (convId: string) => void
   /** Controlled list filter (PSN-99): when provided the filter lives in the parent so the pills can
    *  render in the top bar (web/PWA). Omitted → internal state (Electron keeps the in-list bar). */
   filter?: ListFilter
@@ -187,6 +189,7 @@ export function ConversationList({
   namePref,
   onConnectionChange,
   onToggleRead,
+  onAttachToAi,
   filter: filterProp,
   onFilterChange,
   showFilterBar = true,
@@ -469,6 +472,7 @@ export function ConversationList({
         allPrefs={prefs ?? {}}
         convId={c.id}
         key={c.id}
+        onAttachToAi={onAttachToAi}
         onPatch={onPatchPrefs}
         onToggleRead={onToggleRead ?? (() => {})}
         prefs={prefs?.[c.id] ?? { labels: [], folder: null, muted: false }}

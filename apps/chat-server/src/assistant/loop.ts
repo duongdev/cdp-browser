@@ -105,9 +105,6 @@ export function buildSystemPrompt(opts: {
   summary?: string | null
   contextRefs?: ContextRef[]
   now?: number
-  /** The conversation the user is currently viewing — the DEFAULT scope for questions unless the
-   *  prompt asks to go wider (steering). */
-  focusConv?: { convId: string; title?: string } | null
 }): string {
   const lines = [
     "You are the assistant inside CDP Chats, answering questions over the user's own synced chat history (Microsoft Teams).",
@@ -116,20 +113,22 @@ export function buildSystemPrompt(opts: {
     "Answer in the user's language (mirror Vietnamese with Vietnamese). Be concise.",
     `Current time: ${new Date(opts.now ?? Date.now()).toISOString()}`,
   ]
-  if (opts.focusConv?.convId) {
-    lines.push(
-      `The user is currently viewing the conversation "${opts.focusConv.title || opts.focusConv.convId}" (convId ${opts.focusConv.convId}). Default to THIS conversation — pass its convId to search_messages/get_context — unless the question clearly asks about other conversations or everything.`,
-    )
-  }
   if (opts.summary) {
     lines.push("", "Summary of the earlier part of this session:", opts.summary)
   }
   const refs = opts.contextRefs || []
   if (refs.length) {
+    // Soft bias (grilled): attached items are the priority, not a hard filter — "did anyone ELSE
+    // mention this?" must stay answerable. Nothing is injected into the transcript, so the model
+    // MUST read them with a tool before leaning on them.
     lines.push(
       "",
-      "The user attached these as context (re-read via get_context when needed):",
-      ...refs.map((r) => `- ${r.title} (convId ${r.convId}${r.msgId ? `, msgId ${r.msgId}` : ""})`),
+      "The user attached these for this question. Read them first with get_context (they are references, not quoted here), prefer them over anything else, and only search wider when the question clearly calls for it:",
+      ...refs.map((r) =>
+        r.msgId
+          ? `- message from ${r.sender || "someone"} in "${r.title}" (convId ${r.convId}, msgId ${r.msgId})`
+          : `- the whole conversation "${r.title}" (convId ${r.convId})`,
+      ),
     )
   }
   return lines.join("\n")

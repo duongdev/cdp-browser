@@ -39,13 +39,42 @@ export function migrateAssistant(db: Db): void {
   for (const stmt of SCHEMA) db.exec(stmt)
 }
 
-/** A referenced chat/message pinned to the session ("ask AI about this"). */
+/** A chat or message the user attached to the session. Pure reference — nothing is copied into
+ *  the transcript, so removing one genuinely removes that context (the model re-reads live via
+ *  get_context/search when it needs the content). */
 export interface ContextRef {
   service: string
+  /** "chat" = the whole conversation; "message" = one message (+ its surrounding window). */
+  kind: "chat" | "message"
   convId: string
   msgId?: string
+  /** Conversation title — the chat chip's label, and a message chip's tooltip. */
   title: string
+  /** Message chips only: the sender + a short excerpt, so two messages from one chat differ. */
+  sender?: string
+  preview?: string
   deepLink: string
+}
+
+/** Two refs are the same attachment when they point at the same (convId, msgId). */
+export function sameRef(a: ContextRef, b: ContextRef): boolean {
+  return a.convId === b.convId && (a.msgId ?? null) === (b.msgId ?? null)
+}
+
+/** Add a ref, ignoring a duplicate. Returns the same array reference when nothing changed. */
+export function addRef(refs: ContextRef[], ref: ContextRef): ContextRef[] {
+  return refs.some((r) => sameRef(r, ref)) ? refs : [...refs, ref]
+}
+
+/** Drop the ref pointing at (convId, msgId). Same array reference when nothing matched. */
+export function removeRef(
+  refs: ContextRef[],
+  target: { convId: string; msgId?: string },
+): ContextRef[] {
+  const next = refs.filter(
+    (r) => !(r.convId === target.convId && (r.msgId ?? null) === (target.msgId ?? null)),
+  )
+  return next.length === refs.length ? refs : next
 }
 
 export interface AiSession {
@@ -84,7 +113,12 @@ function shapeSession(r: SessionRow): AiSession {
   let refs: ContextRef[] = []
   try {
     const v = JSON.parse(r.context_refs || "[]")
-    if (Array.isArray(v)) refs = v.filter((x) => x?.convId)
+    if (Array.isArray(v)) {
+      // Rows written before refs were typed have no `kind` — infer it from msgId.
+      refs = v
+        .filter((x) => x?.convId)
+        .map((x) => ({ ...x, kind: x.kind === "message" || x.msgId ? "message" : "chat" }))
+    }
   } catch {
     // poisoned refs degrade to none
   }

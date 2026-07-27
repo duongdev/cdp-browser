@@ -26,7 +26,13 @@ import {
   draftReplyPrompt,
   summarizePrompt,
 } from "./lib/assistant-actions"
-import { attachContext, createSession, getAssistantVoice } from "./lib/assistant-client"
+import {
+  type AssistantContextRef,
+  attachContext,
+  createSession,
+  detachContext,
+  getAssistantVoice,
+} from "./lib/assistant-client"
 import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
@@ -47,6 +53,7 @@ import {
   toggleLabel,
 } from "./lib/conversation-view"
 import type { NamePref } from "./lib/display-name"
+import { htmlToPlain } from "./lib/html-to-plain"
 import { newlyArrived, shouldNotifyConv } from "./lib/notify-new"
 import { type NotifySound, playNotifySound } from "./lib/notify-sound"
 import type { TeamsConversation, TeamsMessage } from "./lib/teams-client"
@@ -591,6 +598,10 @@ export function ChatApp() {
   // right of the thread; narrow → full-screen stacked view. `aiRefreshNonce` remounts the active
   // session's chat after "Ask AI about this" appends a context excerpt server-side.
   const [aiRefreshNonce, setAiRefreshNonce] = useState(0)
+  // The attach tray's live contents for the active session (grilled: one visible context concept).
+  // `null` = no local override yet, so the panel renders the session's stored refs; an array is set
+  // only after an attach/detach so the chip appears/disappears instantly.
+  const [aiRefs, setAiRefs] = useState<AssistantContextRef[] | null>(null)
   // Jump-to-message target (t175): set by a citation chip or the ?msg deep link; the matching
   // thread pane consumes it (DB window fetch + scroll + highlight).
   const [jumpTarget, setJumpTarget] = useState<{
@@ -626,7 +637,12 @@ export function ChatApp() {
   }, [settings.aiPanelOpen, updateSettings])
 
   const setAiSession = useCallback(
-    (id: string | null) => updateSettings({ aiSessionId: id }),
+    (id: string | null) => {
+      // The tray belongs to the session — clear it on a switch so the new session's stored refs
+      // (loaded by the panel) show instead of the previous one's.
+      setAiRefs(null)
+      updateSettings({ aiSessionId: id })
+    },
     [updateSettings],
   )
 
@@ -659,17 +675,22 @@ export function ChatApp() {
   // optionally attach a context ref, open the panel, and optionally auto-send a canned prompt.
   const [aiPrompt, setAiPrompt] = useState<{ text: string; nonce: number } | null>(null)
   const runAiAction = useCallback(
-    async (promptText: string | null, ref?: { convId: string; msgId?: string }) => {
+    async (
+      promptText: string | null,
+      ref?: { convId: string; msgId?: string; sender?: string; preview?: string },
+    ) => {
       try {
         let sessionId = settings.aiSessionId
         if (!sessionId) sessionId = (await createSession()).id
         if (ref) {
-          await attachContext(sessionId, {
+          const session = await attachContext(sessionId, {
             convId: ref.convId,
             msgId: ref.msgId,
             title: labelForConv(ref.convId),
+            sender: ref.sender,
+            preview: ref.preview,
           })
-          setAiRefreshNonce((n) => n + 1)
+          setAiRefs(session.contextRefs)
         }
         updateSettings({ aiPanelOpen: true, aiSessionId: sessionId })
         if (promptText) setAiPrompt({ text: promptText, nonce: Date.now() })
@@ -680,10 +701,64 @@ export function ChatApp() {
     [settings.aiSessionId, labelForConv, updateSettings],
   )
 
-  const askAiAboutMessage = useCallback(
+  // Attach the conversation the user is viewing — the "+" menu's only item (grilled).
+  const attachCurrentConv = useCallback(() => {
+    const convId = activeConvRef.current
+    if (convId) runAiAction(null, { convId })
+  }, [runAiAction])
+
+  // Attach any conversation without opening it — the sidebar row's context menu (grilled).
+  const attachConvById = useCallback(
+    (convId: string) => runAiAction(null, { convId }),
+    [runAiAction],
+  )
+
+  const detachRef = useCallback(
+    async (ref: AssistantContextRef) => {
+      const sessionId = settings.aiSessionId
+      if (!sessionId) return
+      // Optimistic: the chip disappears on click, and a failed write restores it.
+      setAiRefs((refs) =>
+        (refs ?? []).filter(
+          (r) => !(r.convId === ref.convId && (r.msgId ?? null) === (ref.msgId ?? null)),
+        ),
+      )
+      try {
+        const session = await detachContext(sessionId, { convId: ref.convId, msgId: ref.msgId })
+        setAiRefs(session.contextRefs)
+      } catch {
+        toast.error("Could not detach that")
+        setAiRefs((refs) => {
+          const cur = refs ?? []
+          return cur.some((r) => r.convId === ref.convId && r.msgId === ref.msgId)
+            ? cur
+            : [...cur, ref]
+        })
+      }
+    },
+    [settings.aiSessionId],
+  )
+
+  const openRef = useCallback(
+    (ref: AssistantContextRef) => {
+      if (ref.msgId) openCitation(ref.convId, ref.msgId)
+      else openConversationById(ref.convId)
+    },
+    [openCitation, openConversationById],
+  )
+
+  // "Attach to AI" on a message: attaches, opens the panel, focuses the composer — never sends a
+  // canned question (grilled). You write the actual question yourself.
+  const attachMessage = useCallback(
     (msg: TeamsMessage) => {
       const convId = activeConvRef.current
-      if (convId) runAiAction(null, { convId, msgId: msg.id })
+      if (!convId) return
+      runAiAction(null, {
+        convId,
+        msgId: msg.id,
+        sender: msg.senderName ?? undefined,
+        preview: htmlToPlain(msg.body).slice(0, 80),
+      })
     },
     [runAiAction],
   )
@@ -695,7 +770,12 @@ export function ChatApp() {
       const convId = activeConvRef.current
       if (!convId) return
       const voice = await getAssistantVoice()
-      runAiAction(draftReplyPrompt(voice), { convId, msgId: msg.id })
+      runAiAction(draftReplyPrompt(voice), {
+        convId,
+        msgId: msg.id,
+        sender: msg.senderName ?? undefined,
+        preview: htmlToPlain(msg.body).slice(0, 80),
+      })
     },
     [runAiAction],
   )
@@ -709,19 +789,23 @@ export function ChatApp() {
     activeThreadRef.current?.insertDraft(text)
   }, [])
 
-  // The conversation the user is viewing = the assistant's default scope (steering).
-  const focusConv = keepAlive.active
+  // Offered by the panel's "+" menu as "Attach current chat" — never auto-attached (grilled).
+  const currentConv = keepAlive.active
     ? { convId: keepAlive.active, title: labelForConv(keepAlive.active) }
     : null
 
   const aiPanel = aiOpen ? (
     <AssistantPanel
-      focusConv={focusConv}
+      contextRefs={aiRefs}
+      currentConv={currentConv}
       labelForConv={labelForConv}
       narrow={!isWide}
+      onAttachCurrent={attachCurrentConv}
       onClose={() => updateSettings({ aiPanelOpen: false })}
+      onDetach={detachRef}
       onInsertToComposer={insertDraftToComposer}
       onOpenCitation={openCitation}
+      onOpenRef={openRef}
       onSessionChange={setAiSession}
       pendingPrompt={aiPrompt}
       refreshNonce={aiRefreshNonce}
@@ -1317,7 +1401,7 @@ export function ChatApp() {
         jumpTarget={jumpTarget && jumpTarget.convId === id ? jumpTarget : undefined}
         key={id}
         namePref={namePref}
-        onAskAi={askAiAboutMessage}
+        onAskAi={attachMessage}
         onBack={isWide ? undefined : backToList}
         onDraftReply={draftReplyAction}
         onFocusChange={isActive ? setThreadFocus : undefined}
@@ -1377,6 +1461,7 @@ export function ChatApp() {
               focusedId={view === "list" ? focusedConvId : null}
               folderOrder={folderOrder}
               namePref={namePref}
+              onAttachToAi={attachConvById}
               onConnectionChange={setOnline}
               onConversations={onConversations}
               onFilterChange={setListFilter}
@@ -1440,6 +1525,7 @@ export function ChatApp() {
             focusedId={focusedConvId}
             folderOrder={folderOrder}
             namePref={namePref}
+            onAttachToAi={attachConvById}
             onConnectionChange={setOnline}
             onConversations={onConversations}
             onOpenConversation={openConversation}

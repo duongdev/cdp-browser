@@ -12,8 +12,10 @@ import {
   ArrowDown01Icon,
   ArrowLeft01Icon,
   ArrowUp02Icon,
+  Attachment01Icon,
   Cancel01Icon,
   Delete02Icon,
+  MessageMultiple01Icon,
   PencilEdit02Icon,
   PlusSignIcon,
   StopIcon,
@@ -40,6 +42,7 @@ import { actionItemsPrompt, catchUpPrompt } from "../../lib/assistant-actions"
 import { extractCitations } from "../../lib/assistant-citations"
 import {
   ASSISTANT_BASE,
+  type AssistantContextRef,
   type AssistantModel,
   type AssistantSession,
   assistantErrorCode,
@@ -54,6 +57,7 @@ import {
 import { COMPOSER_FOOTER, ComposerShell } from "../composer-shell"
 import { prompt } from "../prompt-dialog"
 import { ContextMeter } from "./context-meter"
+import { ContextTray } from "./context-tray"
 import { ModelSelector } from "./model-selector"
 import { ShimmerText } from "./shimmer-text"
 import { ToolCalls, type ToolPart } from "./tool-calls"
@@ -76,8 +80,19 @@ export interface AssistantPanelProps {
   pendingPrompt?: { text: string; nonce: number } | null
   /** Insert assistant-drafted text into the active thread's composer — never auto-sent (t176). */
   onInsertToComposer?: (text: string) => void
-  /** The conversation the user is viewing — the assistant's DEFAULT scope (steering). */
-  focusConv?: { convId: string; title: string } | null
+  /** The conversation the user is viewing — offered by the "+" menu as "Attach current chat".
+   *  It is NOT auto-attached and never silently scopes a turn (grilled): an empty tray means the
+   *  assistant searches everything. */
+  currentConv?: { convId: string; title: string } | null
+  /** Attach the current conversation to the active session. */
+  onAttachCurrent?: () => void
+  /** Detach a ref from the active session. */
+  onDetach?: (ref: AssistantContextRef) => void
+  /** Jump to a ref in the main pane. */
+  onOpenRef?: (ref: AssistantContextRef) => void
+  /** The live tray contents, owned by chat-app so add/remove render instantly. Null = fall back to
+   *  the session's stored refs (e.g. right after switching sessions). */
+  contextRefs?: AssistantContextRef[] | null
 }
 
 const SUGGESTED_PROMPTS: { label: string; text: string }[] = [
@@ -367,12 +382,19 @@ export function AssistantPanel(props: AssistantPanelProps) {
             key={id}
           >
             <SessionChat
-              contextRefs={(sessions?.find((s) => s.id === id) ?? null)?.contextRefs ?? []}
-              focusConv={props.focusConv}
+              contextRefs={
+                (id === sessionId ? props.contextRefs : null) ??
+                (sessions?.find((s) => s.id === id) ?? null)?.contextRefs ??
+                []
+              }
+              currentConv={props.currentConv}
               labelForConv={props.labelForConv}
               models={models}
+              onAttachCurrent={props.onAttachCurrent}
+              onDetach={props.onDetach}
               onInsertToComposer={props.onInsertToComposer}
               onOpenCitation={props.onOpenCitation}
+              onOpenRef={props.onOpenRef}
               onPickModel={(modelId) => pickModel(id, modelId)}
               pendingPrompt={id === sessionId ? props.pendingPrompt : undefined}
               refreshNonce={props.refreshNonce}
@@ -430,7 +452,10 @@ function SessionChat({
   models,
   sessionModel,
   onPickModel,
-  focusConv,
+  currentConv,
+  onAttachCurrent,
+  onDetach,
+  onOpenRef,
   refreshNonce,
 }: {
   sessionId: string
@@ -442,7 +467,10 @@ function SessionChat({
   models: AssistantModel[] | null
   sessionModel: string | null
   onPickModel: (modelId: string) => void
-  focusConv?: { convId: string; title: string } | null
+  currentConv?: { convId: string; title: string } | null
+  onAttachCurrent?: () => void
+  onDetach?: (ref: AssistantContextRef) => void
+  onOpenRef?: (ref: AssistantContextRef) => void
   refreshNonce?: number
 }) {
   const [initial, setInitial] = useState<UIMessage[] | null>(null)
@@ -473,12 +501,15 @@ function SessionChat({
   return (
     <SessionChatReady
       contextRefs={contextRefs}
-      focusConv={focusConv}
+      currentConv={currentConv}
       initial={initial}
       labelForConv={labelForConv}
       models={models}
+      onAttachCurrent={onAttachCurrent}
+      onDetach={onDetach}
       onInsertToComposer={onInsertToComposer}
       onOpenCitation={onOpenCitation}
+      onOpenRef={onOpenRef}
       onPickModel={onPickModel}
       pendingPrompt={pendingPrompt}
       refreshNonce={refreshNonce}
@@ -523,7 +554,10 @@ function SessionChatReady({
   models,
   sessionModel,
   onPickModel,
-  focusConv,
+  currentConv,
+  onAttachCurrent,
+  onDetach,
+  onOpenRef,
   refreshNonce,
 }: {
   sessionId: string
@@ -536,21 +570,14 @@ function SessionChatReady({
   models: AssistantModel[] | null
   sessionModel: string | null
   onPickModel: (modelId: string) => void
-  focusConv?: { convId: string; title: string } | null
+  currentConv?: { convId: string; title: string } | null
+  onAttachCurrent?: () => void
+  onDetach?: (ref: AssistantContextRef) => void
+  onOpenRef?: (ref: AssistantContextRef) => void
   refreshNonce?: number
 }) {
-  // The viewing conversation rides every turn as the assistant's default scope (steering). A ref
-  // keeps the transport stable while still sending the CURRENT conversation.
-  const focusRef = useRef(focusConv)
-  focusRef.current = focusConv
   const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: `${ASSISTANT_BASE}/${sessionId}`,
-        prepareSendMessagesRequest: ({ messages, body }) => ({
-          body: { ...body, messages, focusConv: focusRef.current ?? null },
-        }),
-      }),
+    () => new DefaultChatTransport({ api: `${ASSISTANT_BASE}/${sessionId}` }),
     [sessionId],
   )
   const { messages, setMessages, sendMessage, status, error, stop, regenerate, clearError } =
@@ -709,22 +736,12 @@ function SessionChatReady({
         </div>
       )}
 
-      {contextRefs.length > 0 && (
-        <div className="flex flex-wrap gap-1 px-3 pb-1">
-          {contextRefs.map((r) => (
-            <span
-              className="rounded-full bg-accent px-2.5 py-1 text-muted-foreground text-xs"
-              key={`${r.convId}:${r.msgId ?? ""}`}
-              title={r.title}
-            >
-              ⤷ {r.title}
-            </span>
-          ))}
-        </div>
-      )}
+      <ContextTray
+        onOpen={(r) => onOpenRef?.(r)}
+        onRemove={(r) => onDetach?.(r)}
+        refs={contextRefs}
+      />
 
-      {/* One composer card (steering): the multi-line input, model picker, context ring and the
-          send/stop button all live inside a single bordered card, mirroring the thread composer. */}
       <ComposerShell>
         <>
           <textarea
@@ -748,6 +765,14 @@ function SessionChatReady({
             value={input}
           />
           <div className={COMPOSER_FOOTER}>
+            <AttachMenu
+              alreadyAttached={
+                !!currentConv &&
+                contextRefs.some((r) => r.convId === currentConv.convId && !r.msgId)
+              }
+              currentConv={currentConv}
+              onAttachCurrent={onAttachCurrent}
+            />
             <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
             <ContextMeter budgetTokens={contextBudget} pct={contextPct} />
             <div className="flex-1" />
@@ -786,6 +811,59 @@ function SessionChatReady({
         </>
       </ComposerShell>
     </>
+  )
+}
+
+/** The "+" attach menu (grilled): the only way a whole chat enters the tray from the panel.
+ *  Messages are attached from the thread's ⋯ menu, and other conversations by navigating to them
+ *  first — deliberately no picker here. */
+function AttachMenu({
+  currentConv,
+  alreadyAttached,
+  onAttachCurrent,
+}: {
+  currentConv?: { convId: string; title: string } | null
+  alreadyAttached: boolean
+  onAttachCurrent?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const disabled = !currentConv || alreadyAttached
+  return (
+    <Popover onOpenChange={setOpen} open={open}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button aria-label="Attach context" size="icon-sm" variant="ghost">
+              <HugeiconsIcon className="size-4" icon={Attachment01Icon} />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Attach context</TooltipContent>
+      </Tooltip>
+      <PopoverContent align="start" className="w-64 p-1" side="top">
+        <button
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50 disabled:hover:bg-transparent"
+          disabled={disabled}
+          onClick={() => {
+            setOpen(false)
+            onAttachCurrent?.()
+          }}
+          type="button"
+        >
+          <HugeiconsIcon className="size-4 shrink-0" icon={MessageMultiple01Icon} />
+          <span className="min-w-0 flex-1 truncate">
+            {currentConv ? `Attach "${currentConv.title}"` : "Attach current chat"}
+          </span>
+        </button>
+        <p className="px-2 py-1.5 text-muted-foreground text-xs">
+          {alreadyAttached
+            ? "Already attached."
+            : currentConv
+              ? "Attach a single message from its ⋯ menu, or another chat from the sidebar's right-click menu."
+              : "Open a conversation to attach it."}
+        </p>
+      </PopoverContent>
+    </Popover>
   )
 }
 

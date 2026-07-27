@@ -311,7 +311,7 @@ describe("chat route (mock model)", () => {
     expect(after.sessions).toHaveLength(0)
   })
 
-  test("context attach injects excerpt + pins ref", async () => {
+  test("context attach pins a ref and writes NOTHING to the transcript (grill)", async () => {
     const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
     const s = createSession(db)
     const r = await app.request(`/sessions/${s.id}/context`, {
@@ -322,10 +322,10 @@ describe("chat route (mock model)", () => {
     expect(r.status).toBe(200)
     const session = getSession(db, s.id)
     expect(session?.contextRefs).toHaveLength(1)
+    expect(session?.contextRefs[0]).toMatchObject({ kind: "message", msgId: "m2" })
     expect(session?.contextRefs[0].deepLink).toBe("/chat/c/c1?msg=m2")
-    const msgs = loadMessages(db, s.id)
-    expect(msgs).toHaveLength(1)
-    expect((msgs[0].parts[0] as { text: string }).text).toContain("deploy is done")
+    // The old build injected an excerpt message here; a ref is now pure.
+    expect(loadMessages(db, s.id)).toHaveLength(0)
   })
 })
 
@@ -337,15 +337,11 @@ describe("stripReasoningRemnants", () => {
   })
 })
 
-describe("buildSystemPrompt scope (steering)", () => {
-  test("pins the viewed conversation as the default scope", () => {
-    const p = buildSystemPrompt({ focusConv: { convId: "19:x@thread", title: "Deploy crew" } })
-    expect(p).toContain("Deploy crew")
-    expect(p).toContain("19:x@thread")
-    expect(p).toMatch(/unless the question clearly asks/i)
-  })
-  test("no focus conversation → no scope line", () => {
-    expect(buildSystemPrompt({})).not.toMatch(/currently viewing/i)
+describe("buildSystemPrompt scope", () => {
+  test("no attachments → no scope line at all (grill: empty tray searches everything)", () => {
+    const p = buildSystemPrompt({})
+    expect(p).not.toMatch(/currently viewing/i)
+    expect(p).not.toMatch(/attached/i)
   })
 })
 
@@ -378,5 +374,139 @@ describe("multi-turn persistence (steering: wrong order / lost replies)", () => 
       .filter((m) => m.role === "assistant")
       .map((m) => m.id)
     expect(new Set(ids).size).toBe(3)
+  })
+})
+
+describe("context refs (grill: the attach tray)", () => {
+  let db: Database.Database
+  let app: ReturnType<typeof createAssistantRoutes>
+  beforeEach(() => {
+    db = freshDb()
+    upsertMessages(db, "teams", "c1", [{ id: "m1", ts: 1000, senderName: "Bob", body: "hello" }])
+    app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+  })
+
+  const attach = (id: string, b: object) =>
+    app.request(`/sessions/${id}/context`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(b),
+    })
+
+  test("attaching writes NO transcript message — the tray is the only record", async () => {
+    const s = createSession(db)
+    await attach(s.id, { convId: "c1", title: "Deploy crew" })
+    expect(loadMessages(db, s.id)).toHaveLength(0)
+    expect(getSession(db, s.id)?.contextRefs).toEqual([
+      expect.objectContaining({ kind: "chat", convId: "c1", title: "Deploy crew" }),
+    ])
+  })
+
+  test("chat vs message refs coexist; the same target can't be attached twice", async () => {
+    const s = createSession(db)
+    await attach(s.id, { convId: "c1", title: "Deploy crew" })
+    await attach(s.id, { convId: "c1", title: "Deploy crew" })
+    await attach(s.id, {
+      convId: "c1",
+      msgId: "m1",
+      title: "Deploy crew",
+      sender: "Bob",
+      preview: "hello",
+    })
+    const refs = getSession(db, s.id)?.contextRefs ?? []
+    expect(refs).toHaveLength(2)
+    expect(refs.map((r) => r.kind)).toEqual(["chat", "message"])
+    expect(refs[1]).toMatchObject({ sender: "Bob", preview: "hello" })
+  })
+
+  test("detach removes exactly one target", async () => {
+    const s = createSession(db)
+    await attach(s.id, { convId: "c1", title: "Deploy crew" })
+    await attach(s.id, { convId: "c1", msgId: "m1", title: "Deploy crew" })
+    const res = await app.request(`/sessions/${s.id}/context?convId=c1&msgId=m1`, {
+      method: "DELETE",
+    })
+    expect(res.status).toBe(200)
+    const refs = getSession(db, s.id)?.contextRefs ?? []
+    expect(refs).toHaveLength(1)
+    expect(refs[0].kind).toBe("chat")
+    expect(refs[0].msgId).toBeUndefined()
+  })
+
+  test("system prompt lists refs as read-first, soft-bias — no hidden scope line", () => {
+    const p = buildSystemPrompt({
+      contextRefs: [
+        { service: "teams", kind: "chat", convId: "c1", title: "Deploy crew", deepLink: "/x" },
+        {
+          service: "teams",
+          kind: "message",
+          convId: "c1",
+          msgId: "m1",
+          title: "Deploy crew",
+          sender: "Bob",
+          deepLink: "/x",
+        },
+      ],
+    })
+    expect(p).toMatch(/Read them first with get_context/)
+    expect(p).toMatch(/only search wider when the question clearly calls for it/)
+    expect(p).toContain('the whole conversation "Deploy crew" (convId c1)')
+    expect(p).toContain('message from Bob in "Deploy crew" (convId c1, msgId m1)')
+    expect(p).not.toMatch(/currently viewing/i)
+  })
+})
+
+describe("load order (steering: order wrong on refresh / session load)", () => {
+  test("idx ordering survives out-of-order ids, gaps and a reload", () => {
+    const db = freshDb()
+    const s = createSession(db)
+    // ids that sort differently as STRINGS than they do chronologically — if anything ever ordered
+    // by id (or by created_at, which collides at ms resolution), this is what breaks.
+    appendMessage(db, s.id, { id: "z-user-1", role: "user", parts: [{ type: "text", text: "1" }] })
+    appendMessage(db, s.id, {
+      id: "a-ai-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "2" }],
+    })
+    appendMessage(db, s.id, { id: "y-user-2", role: "user", parts: [{ type: "text", text: "3" }] })
+    appendMessage(db, s.id, {
+      id: "b-ai-2",
+      role: "assistant",
+      parts: [{ type: "text", text: "4" }],
+    })
+    const texts = () => loadMessages(db, s.id).map((m) => (m.parts[0] as { text: string }).text)
+    expect(texts()).toEqual(["1", "2", "3", "4"])
+
+    // A dropped row (tolerant load) leaves an idx gap — order of the survivors must hold.
+    db.prepare("DELETE FROM ai_messages WHERE session_id = ? AND idx = 1").run(s.id)
+    expect(texts()).toEqual(["1", "3", "4"])
+
+    // A later append must land after the highest idx, never re-use the freed one.
+    appendMessage(db, s.id, {
+      id: "c-ai-3",
+      role: "assistant",
+      parts: [{ type: "text", text: "5" }],
+    })
+    expect(texts()).toEqual(["1", "3", "4", "5"])
+  })
+
+  test("same-millisecond appends keep insertion order", () => {
+    const db = freshDb()
+    const s = createSession(db)
+    const now = 1_700_000_000_000
+    for (const [i, t] of ["a", "b", "c", "d"].entries()) {
+      appendMessage(
+        db,
+        s.id,
+        { id: `m${i}`, role: "user", parts: [{ type: "text", text: t }] },
+        now,
+      )
+    }
+    expect(loadMessages(db, s.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+    ])
   })
 })

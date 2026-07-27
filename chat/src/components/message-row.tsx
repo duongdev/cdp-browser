@@ -138,8 +138,8 @@ interface MessageRowProps {
   onOpenProfile?: (target: { userId: string; name: string }) => void
   /** Position in the same-sender run (t169) — tightens the corners facing group neighbours. */
   groupPos?: "solo" | "first" | "middle" | "last"
-  /** "Ask AI about this" (t174, PSN-104): attach this message as assistant context. Passed for any
-   *  confirmed, non-deleted message when the assistant is available. */
+  /** "Attach to AI" (t174 + grill): attach this message to the assistant's context tray. Attaches
+   *  only — it never asks a canned question; you write the prompt yourself. */
   onAskAi?: (msg: TeamsMessage) => void
   /** "Draft reply with AI" (t176): assistant drafts a reply into the panel; insert is manual. */
   onDraftReply?: (msg: TeamsMessage) => void
@@ -907,9 +907,7 @@ function MessageActions({
         side="top"
       >
         {onReact && <MenuItem icon={Add01Icon} label="React" onRun={() => run(onReact)} />}
-        {onAskAi && (
-          <MenuItem icon={AiChipIcon} label="Ask AI about this" onRun={() => run(onAskAi)} />
-        )}
+        {onAskAi && <MenuItem icon={AiChipIcon} label="Attach to AI" onRun={() => run(onAskAi)} />}
         {onDraftReply && (
           <MenuItem
             icon={AiEditingIcon}
