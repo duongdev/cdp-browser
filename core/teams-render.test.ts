@@ -179,6 +179,17 @@ describe("renderBody — mention run merging (t140)", () => {
     )
   })
 
+  it("merges a run whose properties.mentions carry an EMPTY mri (our historical buggy sends, PSN-94)", () => {
+    // Before the fetchRoster id→mri fix, our own sends stamped every per-token span with mri:"".
+    // mentionMriMap skipped those, so each word rendered as its own pill. They now share one NO_MRI
+    // key and collapse on re-render — while genuinely distinct people (real mri) still stay separate.
+    const content = `<p>${[span(0, "Ethan"), span(1, "Nguyen"), span(2, "-"), span(3, "Group"), span(4, "Office"), span(5, "[C]")].join("&nbsp;")}</p>`
+    const mentions = JSON.stringify([0, 1, 2, 3, 4, 5].map((itemid) => ({ itemid, mri: "" })))
+    expect(renderBody(msg({ content, properties: { mentions } }))).toBe(
+      '<p><span class="mention">@Ethan Nguyen - Group Office [C]</span></p>',
+    )
+  })
+
   it("still resolves legacy <at> mentions one pill each (no run split there)", () => {
     const content = '<at id="8:orgid:AAA">Alice</at> <at id="8:orgid:BBB">Bob</at>'
     expect(renderBody(msg({ content }))).toBe(

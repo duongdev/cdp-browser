@@ -243,6 +243,8 @@ function parseEmotions(message, selfId) {
   return out
 }
 
+// Shared key for mentions whose properties.mentions entry carried no mri (see mentionMriMap).
+const NO_MRI = " nomri"
 // itemid→mri map from properties.mentions ({ itemid, mri, displayName }[]); itemids normalize to
 // string keys. Drives the same-person run merge in resolveMentions (t140).
 function mentionMriMap(message) {
@@ -260,7 +262,12 @@ function mentionMriMap(message) {
   const map = {}
   if (Array.isArray(list)) {
     for (const m of list) {
-      if (m && m.itemid != null && m.mri) map[String(m.itemid)] = String(m.mri)
+      if (!m || m.itemid == null) continue
+      // Real mri → group by person. An empty/missing mri only happens on our own historical buggy
+      // sends (native Teams always stamps a real mri); map those to ONE shared NO_MRI key so an
+      // adjacent run of the same broken mention still collapses to a single pill on re-render, instead
+      // of a pill per word (t140 assumed every mention carried a real mri).
+      map[String(m.itemid)] = m.mri ? String(m.mri) : NO_MRI
     }
   }
   return map
