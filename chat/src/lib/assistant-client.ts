@@ -77,6 +77,17 @@ export async function attachContext(
   ).session
 }
 
+/** A curated model row (t177) — from LLM_MODELS, never the raw router dump. */
+export interface AssistantModel {
+  id: string
+  label: string
+  default: boolean
+}
+
+export async function listModels(): Promise<AssistantModel[]> {
+  return (await req<{ models: AssistantModel[] }>("/models")).models
+}
+
 /** The draft-reply tone guidance blob (t176) — DB-stored, user-editable, empty = none. */
 export async function getAssistantVoice(): Promise<string> {
   try {

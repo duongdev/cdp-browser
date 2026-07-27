@@ -5,7 +5,7 @@
 import { convertToModelMessages, generateText, type UIMessage } from "ai"
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
-import { LlmUnconfiguredError, readLlmConfig, resolveModel } from "../llm.ts"
+import { LlmUnconfiguredError, parseModelList, readLlmConfig, resolveModel } from "../llm.ts"
 import { getContextWindow } from "../search.ts"
 import { citationKey, surfacedIdsFromMessages, validateCitations } from "./citations.ts"
 import { planCompaction, transcriptForSummary } from "./compact.ts"
@@ -71,6 +71,11 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     ).run(voice)
     return c.json({ voice })
   })
+
+  // ---- models (t177) -------------------------------------------------------
+  // The curated LLM_MODELS list (id[:label] pairs), never the raw router dump.
+
+  app.get("/models", (c) => c.json({ models: parseModelList() }))
 
   // ---- session CRUD --------------------------------------------------------
 
@@ -151,8 +156,15 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     const b = await body(c)
     const service = b.service || DEFAULT_SERVICE
 
-    // Resolving the model can throw typed (llm-unconfigured) BEFORE any stream starts.
-    const model = getModel(session.model)
+    // Resolving the model can throw typed (llm-unconfigured) BEFORE any stream starts. A stored
+    // model id that's no longer in the curated list falls back to the env default (t177) — the FE
+    // shows the non-blocking notice; no mid-stream switch (a turn finishes on the model it started).
+    const curated = parseModelList()
+    const sessionModel =
+      session.model && (curated.length === 0 || curated.some((m) => m.id === session.model))
+        ? session.model
+        : null
+    const model = getModel(sessionModel)
 
     // Persist the incoming user message (id-dedup makes a retry idempotent).
     const incoming: UIMessage[] = Array.isArray(b.messages)

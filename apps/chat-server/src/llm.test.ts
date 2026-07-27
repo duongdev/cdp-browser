@@ -2,7 +2,7 @@ import { generateText, tool } from "ai"
 import { MockLanguageModelV3 } from "ai/test"
 import { describe, expect, test } from "vitest"
 import { z } from "zod"
-import { type LlmUnconfiguredError, readLlmConfig, resolveModel } from "./llm.ts"
+import { type LlmUnconfiguredError, parseModelList, readLlmConfig, resolveModel } from "./llm.ts"
 
 describe("readLlmConfig", () => {
   test("parses env", () => {
@@ -79,5 +79,29 @@ describe("mock LanguageModel round-trip (the t173+ test pattern)", () => {
       },
     })
     expect(calls).toEqual(["xin chào"])
+  })
+})
+
+describe("parseModelList (t177)", () => {
+  test("id and id:label pairs, whitespace tolerated, default flagged", () => {
+    const models = parseModelList({
+      LLM_MODELS: " glm/glm-4.7 : GLM 4.7 , glm/glm-5.1,  ",
+      LLM_MODEL: "glm/glm-5.1",
+    })
+    expect(models).toEqual([
+      { id: "glm/glm-4.7", label: "GLM 4.7", default: false },
+      { id: "glm/glm-5.1", label: "glm/glm-5.1", default: true },
+    ])
+  })
+
+  test("empty LLM_MODELS falls back to LLM_MODEL; env default absent from list marks first", () => {
+    expect(parseModelList({ LLM_MODEL: "m1" })).toEqual([{ id: "m1", label: "m1", default: true }])
+    const models = parseModelList({ LLM_MODELS: "a,b", LLM_MODEL: "zz" })
+    expect(models[0]).toEqual({ id: "a", label: "a", default: true })
+  })
+
+  test("nothing configured → empty; dupes collapse", () => {
+    expect(parseModelList({})).toEqual([])
+    expect(parseModelList({ LLM_MODELS: "a,a:Label A" })).toHaveLength(1)
   })
 })

@@ -1,6 +1,6 @@
 # 177 — assistant model selector: per-session picker in the composer
 
-- **Status:** ready
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 0.5d
 - **Depends on:** t174
@@ -59,3 +59,12 @@ Keep the switch honest: no mid-stream model change (an in-flight turn finishes o
 - [ ] `pnpm check:changed` clean, `pnpm typecheck` clean, `pnpm test` green, `pnpm chat:build` succeeds
 - [ ] CLAUDE.md updated (chat app section)
 - [ ] Task closed: status → done, file moved to `docs/tasks/done/`, tNNN in commit
+
+## Notes (build)
+
+- Verified in the mock harness (LLM_MODELS="fake:GLM 4.7 (fast),fake2:GLM 5.1 (smart)"): selector
+  renders in the prompt-input footer, dropdown lists curated models with default tag + active
+  check, a pick persists to ai_sessions.model and the label updates; deviating sessions show a
+  model tag in the quick-switch dropdown. Live served-model verification vs 9router = HITL.
+- Stale stored id → server falls back to env default (validated against the curated list in the
+  chat route); the selector shows a non-blocking "using the default" note.

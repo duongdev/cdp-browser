@@ -39,16 +39,19 @@ import { cn } from "@/lib/utils"
 import { extractCitations } from "../../lib/assistant-citations"
 import {
   ASSISTANT_BASE,
+  type AssistantModel,
   type AssistantSession,
   assistantErrorCode,
   assistantErrorCopy,
   createSession,
   deleteSession,
+  listModels,
   listSessions,
   loadSessionMessages,
   patchSession,
 } from "../../lib/assistant-client"
 import { prompt } from "../prompt-dialog"
+import { ModelSelector } from "./model-selector"
 
 export interface AssistantPanelProps {
   /** Active session id (persisted in chat settings); null = show the session list. */
@@ -125,6 +128,9 @@ export function AssistantPanel(props: AssistantPanelProps) {
   // Two pages: the session list and the session view (steering). Booting with a persisted active
   // session lands directly in its view.
   const [page, setPage] = useState<"list" | "session">(sessionId ? "session" : "list")
+  // Curated model list (t177): null = loading, [] = hidden (error/unconfigured/single handled in
+  // the selector). Fetched once per panel mount.
+  const [models, setModels] = useState<AssistantModel[] | null>(null)
   // Opened sessions stay mounted (visible-hidden) so a switch preserves state — MRU, capped.
   const [mounted, setMounted] = useState<string[]>(sessionId ? [sessionId] : [])
 
@@ -142,6 +148,9 @@ export function AssistantPanel(props: AssistantPanelProps) {
 
   useEffect(() => {
     refreshSessions()
+    listModels()
+      .then(setModels)
+      .catch(() => setModels([]))
   }, [refreshSessions])
 
   const active = sessions?.find((s) => s.id === sessionId) ?? null
@@ -195,6 +204,14 @@ export function AssistantPanel(props: AssistantPanelProps) {
     },
     [sessions, sessionId, onSessionChange],
   )
+
+  // Per-session model pick (t177): persists on the session row, applies from the next turn.
+  const pickModel = useCallback(async (id: string, modelId: string) => {
+    const updated = await patchSession(id, { model: modelId }).catch(() => null)
+    if (updated) setSessions((l) => (l ?? []).map((s) => (s.id === updated.id ? updated : s)))
+  }, [])
+
+  const defaultModelId = models?.find((m) => m.default)?.id
 
   const inSession = page === "session" && !!sessionId
 
@@ -254,6 +271,11 @@ export function AssistantPanel(props: AssistantPanelProps) {
                       type="button"
                     >
                       <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
+                      {s.model && s.model !== defaultModelId && (
+                        <span className="ml-2 max-w-24 shrink-0 truncate rounded bg-accent px-1 text-[9px] text-muted-foreground">
+                          {s.model}
+                        </span>
+                      )}
                       <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">
                         {new Date(s.updatedAt).toLocaleDateString()}
                       </span>
@@ -342,10 +364,13 @@ export function AssistantPanel(props: AssistantPanelProps) {
             <SessionChat
               contextRefs={(sessions?.find((s) => s.id === id) ?? null)?.contextRefs ?? []}
               labelForConv={props.labelForConv}
+              models={models}
               onInsertToComposer={props.onInsertToComposer}
               onOpenCitation={props.onOpenCitation}
+              onPickModel={(modelId) => pickModel(id, modelId)}
               pendingPrompt={id === sessionId ? props.pendingPrompt : undefined}
               sessionId={id}
+              sessionModel={(sessions?.find((s) => s.id === id) ?? null)?.model ?? null}
             />
           </div>
         ))}
@@ -395,6 +420,9 @@ function SessionChat({
   onOpenCitation,
   pendingPrompt,
   onInsertToComposer,
+  models,
+  sessionModel,
+  onPickModel,
 }: {
   sessionId: string
   contextRefs: AssistantSession["contextRefs"]
@@ -402,6 +430,9 @@ function SessionChat({
   onOpenCitation: (convId: string, msgId: string) => void
   pendingPrompt?: { text: string; nonce: number } | null
   onInsertToComposer?: (text: string) => void
+  models: AssistantModel[] | null
+  sessionModel: string | null
+  onPickModel: (modelId: string) => void
 }) {
   const [initial, setInitial] = useState<UIMessage[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -433,10 +464,13 @@ function SessionChat({
       contextRefs={contextRefs}
       initial={initial}
       labelForConv={labelForConv}
+      models={models}
       onInsertToComposer={onInsertToComposer}
       onOpenCitation={onOpenCitation}
+      onPickModel={onPickModel}
       pendingPrompt={pendingPrompt}
       sessionId={sessionId}
+      sessionModel={sessionModel}
     />
   )
 }
@@ -464,6 +498,9 @@ function SessionChatReady({
   onOpenCitation,
   pendingPrompt,
   onInsertToComposer,
+  models,
+  sessionModel,
+  onPickModel,
 }: {
   sessionId: string
   initial: UIMessage[]
@@ -472,6 +509,9 @@ function SessionChatReady({
   onOpenCitation: (convId: string, msgId: string) => void
   pendingPrompt?: { text: string; nonce: number } | null
   onInsertToComposer?: (text: string) => void
+  models: AssistantModel[] | null
+  sessionModel: string | null
+  onPickModel: (modelId: string) => void
 }) {
   const transport = useMemo(
     () => new DefaultChatTransport({ api: `${ASSISTANT_BASE}/${sessionId}` }),
@@ -629,8 +669,10 @@ function SessionChatReady({
             </Tooltip>
           )}
         </div>
-        {/* Context-window usage (steering): the same chars/4 estimate the server compacts on. */}
+        {/* Footer: model picker (t177, Copilot placement) + context-window usage (steering). */}
         <div className="mt-1 flex items-center gap-1.5 px-1">
+          <ModelSelector models={models} onPick={onPickModel} sessionModel={sessionModel} />
+          <div className="flex-1" />
           <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
             <div
               className={cn("h-full rounded-full", contextPct >= 80 ? "bg-destructive" : "bg-ring")}

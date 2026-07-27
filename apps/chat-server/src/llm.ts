@@ -35,6 +35,35 @@ export function readLlmConfig(
   return { baseURL, apiKey: (env.LLM_API_KEY || "").trim() || undefined, model }
 }
 
+export interface ModelOption {
+  id: string
+  label: string
+  default: boolean
+}
+
+/** Curated model list (t177) from `LLM_MODELS` — comma-separated `id[:label]` pairs (a model id
+ *  never contains ':'; everything after the first colon is the label). Falls back to the single
+ *  `LLM_MODEL`. NEVER the raw router /v1/models dump. Empty when nothing is configured. */
+export function parseModelList(
+  env: Record<string, string | undefined> = process.env,
+): ModelOption[] {
+  const def = (env.LLM_MODEL || "").trim()
+  const out: ModelOption[] = []
+  for (const part of (env.LLM_MODELS || "").split(",")) {
+    const t = part.trim()
+    if (!t) continue
+    const i = t.indexOf(":")
+    const id = (i === -1 ? t : t.slice(0, i)).trim()
+    const label = i === -1 ? id : t.slice(i + 1).trim() || id
+    if (id && !out.some((m) => m.id === id)) out.push({ id, label, default: false })
+  }
+  if (out.length === 0 && def) out.push({ id: def, label: def, default: false })
+  const defIdx = out.findIndex((m) => m.id === def)
+  const mark = defIdx === -1 ? 0 : defIdx
+  if (out[mark]) out[mark] = { ...out[mark], default: true }
+  return out
+}
+
 /** Config → LanguageModel. `modelId` overrides the config's model (per-session pick, t177). */
 export function resolveModel(config: LlmConfig | null, modelId?: string): LanguageModel {
   if (!config) throw new LlmUnconfiguredError()
