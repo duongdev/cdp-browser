@@ -1087,7 +1087,7 @@ function AssistantMessage({
             {sourcesLabel}
           </button>
           {sourcesOpen && (
-            <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex max-h-48 min-w-0 flex-col gap-1 overflow-y-auto">
               {citations.map((c) => {
                 const meta = citeMeta.get(citationKey(c))
                 return (
