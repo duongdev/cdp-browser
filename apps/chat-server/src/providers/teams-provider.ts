@@ -141,6 +141,10 @@ export class TeamsProvider implements ChatProvider {
     await this.call("mark-read", { convId, msgId, ts })
   }
 
+  async markUnread(convId: string, ts: number): Promise<void> {
+    await this.call("mark-unread", { convId, ts })
+  }
+
   async roster(convId: string): Promise<RosterMember[]> {
     const out = await this.call<{ members?: { mri: string; name: string; self?: boolean }[] }>(
       "roster",

@@ -323,24 +323,16 @@ export async function setFolderOrder(order: string[]): Promise<string[] | null> 
   }
 }
 
+/** Mark a conversation read (PSN-102). Writes Teams consumptionhorizon + clears the bookmark.
+ *  Throws ChatApiError on failure — the caller owns the revert. */
 export async function markRead(convId: string, msgId: string, ts: string): Promise<void> {
-  try {
-    await post("mark-read", { convId, msgId, ts })
-  } catch {
-    // best-effort: the desktop unread just survives as a to-do trail
-  }
+  await post("mark-read", { convId, msgId, ts })
 }
 
-export async function markReadLocal(
-  convId: string,
-  action: "read" | "unread",
-  ts = 0,
-): Promise<void> {
-  try {
-    await post("read-local", { convId, action, ts })
-  } catch {
-    // best-effort: the sweep reconciles
-  }
+/** Mark a conversation unread (PSN-102). Writes Teams consumptionHorizonBookmark.
+ *  Throws ChatApiError on failure — the caller owns the revert. */
+export async function markUnread(convId: string, ts: number): Promise<void> {
+  await post("mark-unread", { convId, ts })
 }
 
 // ---- backfill (PSN-93 WS-H) ------------------------------------------------

@@ -60,11 +60,10 @@ import {
   toReaderMessages as teamsToReaderMessages,
 } from "../core/teams-render.js"
 import {
-  getReadState as teamsGetReadState,
+  CLEARED_UNREAD_BOOKMARK,
   getUsers as teamsGetUsers,
   listConversations as teamsListConversations,
   migrate as teamsMigrate,
-  setLocalRead as teamsSetLocalRead,
   setReadHorizon as teamsSetReadHorizon,
   upsertAccount as teamsUpsertAccount,
   upsertConversations as teamsUpsertConversations,
@@ -1086,8 +1085,12 @@ async function teamsConversations(cursor) {
     Date.now(),
     cred.userId,
   )
-  const pageIds = new Set(rows.map((r) => r.id))
-  const convs = teamsListConversations(teamsDb, cred.tenant).filter((c) => pageIds.has(c.id))
+  // The mark-unread bookmark (PSN-102) has no column in this DB — it rides the shaped rows this
+  // page just produced, so merge it onto the DB view by id before handing the page to the BFF.
+  const bookmarks = new Map(rows.map((r) => [r.id, r.unread_bookmark_ts]))
+  const convs = teamsListConversations(teamsDb, cred.tenant)
+    .filter((c) => bookmarks.has(c.id))
+    .map((c) => ({ ...c, unreadBookmarkTs: bookmarks.get(c.id) || 0 }))
   return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
 }
 
@@ -1453,7 +1456,7 @@ async function fetchTeamsHistoryInPage(cred, convId, cursor) {
 
 // Mint/reuse creds → in-page history fetch → render → upsert → return { messages, cursor }. A 401
 // drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsConversations).
-async function teamsHistory(convId, cursor, poll) {
+async function teamsHistory(convId, cursor) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -1474,15 +1477,10 @@ async function teamsHistory(convId, cursor, poll) {
   teamsUpsertMessages(teamsDb, cred.tenant, convId, messages) // persist + advance sync cursors
   await attachTeamsReactorNames(cred, messages) // resolve reaction hover names (t143); strips userMris
   await attachTeamsQuoteNames(cred, messages) // repair "Display Name" reply quotes (PSN-92 A)
-  // Q9 hybrid: opening a conversation (first page, no cursor) is a LOCAL read — advance
-  // local_read_ts to the newest message, but never write the consumptionHorizon to Teams.
-  // A background `poll` of the open thread also advances it (live-viewing = reading) EXCEPT when a
-  // mark-unread sentinel (local_read_ts = -1, t155) is armed — only a real open/explicit action
-  // clears the sentinel, so "mark unread while the thread is open" survives the 4s poll + a refresh.
-  if (cursor == null && messages.length > 0) {
-    const sentinel = poll && teamsGetReadState(teamsDb, convId)?.localReadTs === -1
-    if (!sentinel) teamsSetLocalRead(teamsDb, cred.tenant, convId, messages[messages.length - 1].ts)
-  }
+  // PSN-102: fetching history never marks anything read. Read state is owned by the chat BFF and
+  // written through to Teams by an explicit mark-read — a background poll of an open thread used
+  // to advance a local watermark here, which silently re-read a conversation the user had just
+  // marked unread.
   return { messages, cursor: out.cursor }
 }
 
@@ -1821,14 +1819,12 @@ async function teamsReply(convId, text, html, quoteRefs = [], mentions = []) {
   return { ok: true, ts, clientmessageid: out.clientmessageid }
 }
 
-// Best-effort write-through mark-read (Q9 hybrid): push the consumptionHorizon to Teams IN-PAGE
-// and advance the stored read_horizon_ts. NEVER throws / fails a caller — the reply already
-// succeeded; a failed horizon write just leaves the desktop unread as a to-do trail. The exact
-// PUT verb/path/body is confirmed live by the keeper tab (see task t130 return notes).
-async function markTeamsReadInPage(cred, convId, msgId, ts) {
+// PUT one conversation property IN-PAGE (the verb/path/body are confirmed live against the keeper
+// tab). Read state lives in two of them (PSN-102): `consumptionhorizon`, the read watermark, and
+// `consumptionHorizonBookmark`, the native mark-unread flag.
+async function putTeamsConvProperty(cred, convId, name, value) {
   if (!cred.chatServiceBase) return { error: "no_base" }
-  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/properties?name=consumptionhorizon`
-  const horizon = `${msgId};${ts};0`
+  const url = `${cred.chatServiceBase}/v1/users/ME/conversations/${encodeURIComponent(convId)}/properties?name=${name}`
   const script = `(async () => {
     try {
       const r = await fetch(${JSON.stringify(url)}, {
@@ -1837,25 +1833,58 @@ async function markTeamsReadInPage(cred, convId, msgId, ts) {
           Authentication: "skypetoken=" + ${JSON.stringify(cred.skypeToken)},
           "Content-Type": "application/json",
         },
-        body: ${JSON.stringify(JSON.stringify({ consumptionhorizon: horizon }))},
+        body: ${JSON.stringify(JSON.stringify({ [name]: value }))},
       })
-      return { status: r.status, ok: r.ok }
+      if (r.status === 401) return { error: "invalid_auth" }
+      if (!r.ok) return { error: "http_" + r.status }
+      return { ok: true }
     } catch (e) { return { error: "fetch_failed" } }
   })()`
   return (await notificationCenter.runInTeamsPage(script)) || { error: "no_teams_tab" }
 }
 
+// Mark read in Teams: advance the consumptionHorizon AND clear any mark-unread bookmark. Clearing
+// is load-bearing — the horizon alone can't un-flag a conversation someone marked unread, so a
+// stale bookmark would keep the row unread forever.
 async function teamsMarkRead(convId, msgId, ts) {
   const cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
-  if (cred) {
-    try {
-      await markTeamsReadInPage(cred, convId, msgId, ts)
-      teamsSetReadHorizon(teamsDb, cred.tenant, convId, ts)
-    } catch (e) {
-      console.error("[web] teams mark-read failed:", e.message)
-    }
-  }
+  if (!cred) return { error: "invalid_auth" }
+  // Teams 400s on a horizon whose message id isn't a bare integer, and its own
+  // `lastUpdatedMessageId` sometimes carries a ".0" suffix ("1785036631311.0") — so normalize here,
+  // the one place the horizon string is built. A Teams message id IS its arrival ms, so `ts` is a
+  // correct fallback when the id is missing or unusable.
+  const id = String(msgId ?? "").split(".")[0]
+  const horizon = await putTeamsConvProperty(
+    cred,
+    convId,
+    "consumptionhorizon",
+    `${/^\d+$/.test(id) ? id : ts};${ts};0`,
+  )
+  if (horizon.error) return { error: horizon.error }
+  const cleared = await putTeamsConvProperty(
+    cred,
+    convId,
+    "consumptionHorizonBookmark",
+    CLEARED_UNREAD_BOOKMARK,
+  )
+  if (cleared.error) return { error: cleared.error }
+  teamsSetReadHorizon(teamsDb, cred.tenant, convId, ts)
   return { ok: true }
+}
+
+// Mark unread in Teams: set the bookmark at `ts` so every message from there on reads unread.
+// The horizon is deliberately left alone — it is server-side monotonic and a rewind is silently
+// clamped (verified live), so the bookmark is the only reversible lever.
+async function teamsMarkUnread(convId, ts) {
+  const cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
+  if (!cred) return { error: "invalid_auth" }
+  const out = await putTeamsConvProperty(
+    cred,
+    convId,
+    "consumptionHorizonBookmark",
+    `0;${Number(ts) || 0};0`,
+  )
+  return out.error ? { error: out.error } : { ok: true }
 }
 
 // ---- Teams reactions (t142, ADR-0019) -------------------------------------
@@ -2723,7 +2752,7 @@ const server = http.createServer(async (req, res) => {
     // is a thin exposure of the SAME executor the matching `/api/teams/*` route already calls — no
     // in-page logic is duplicated. Guarded by `internalOk` (shared-secret header) so it is never
     // reachable from the public origin. Byte routes (media/avatar) return base64 in JSON so the
-    // HTTP-client provider gets a typed response. read-local/prefs are LOCAL to the BFF store and
+    // HTTP-client provider gets a typed response. Prefs are LOCAL to the BFF store and
     // deliberately have no internal route.
     if (p.startsWith("/internal/teams/")) {
       if (!internalOk(req, res)) return
@@ -2733,8 +2762,8 @@ const server = http.createServer(async (req, res) => {
         return ijson(res, await teamsConversations(cursor))
       }
       if (iop === "history" && POST) {
-        const { convId, cursor, poll } = await ibody(req)
-        return ijson(res, await teamsHistory(convId, cursor, !!poll))
+        const { convId, cursor } = await ibody(req)
+        return ijson(res, await teamsHistory(convId, cursor))
       }
       if (iop === "reply" && POST) {
         const { convId, text, html, quotes, mentions } = await ibody(req)
@@ -2762,6 +2791,10 @@ const server = http.createServer(async (req, res) => {
       if (iop === "mark-read" && POST) {
         const { convId, msgId, ts } = await ibody(req)
         return ijson(res, await teamsMarkRead(convId, msgId, ts))
+      }
+      if (iop === "mark-unread" && POST) {
+        const { convId, ts } = await ibody(req)
+        return ijson(res, await teamsMarkUnread(convId, ts))
       }
       if (iop === "upload-image" && POST) {
         return ijson(res, await teamsUploadImage(await ibody(req)))

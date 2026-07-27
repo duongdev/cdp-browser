@@ -128,6 +128,15 @@ const PREVIEW_CAP = 500
 // — the middle field is the epoch-ms up to which the user has read ANYWHERE. Ingesting it keeps
 // the chat app's unread honest when a message is read on another device. Returns null on any
 // unparseable shape (never rewinds the horizon on garbage).
+//
+// `properties.consumptionHorizonBookmark` (PSN-102) uses the SAME "{a};{ts};{b}" shape and is the
+// native "Mark as unread" lever — Teams writes "0;{ts};0" to flag a chat unread and "0;0;0" to
+// clear it. It needs its own property because `consumptionhorizon` is server-side MONOTONIC: a
+// rewind PUT returns 200 and is silently clamped (verified live), so unread can never be a
+// horizon rewind. `0;0;0` parses to null here, which the caller reads as "not marked unread".
+// The wire value that clears the unread bookmark (Teams' own "not marked unread").
+const CLEARED_UNREAD_BOOKMARK = "0;0;0"
+
 function parseConsumptionHorizonTs(raw) {
   if (typeof raw !== "string") return null
   const parts = raw.split(";")
@@ -154,6 +163,9 @@ function shapeConversation(conv, tenant, selfId) {
     last_message_preview: content.length > PREVIEW_CAP ? content.slice(0, PREVIEW_CAP) : content,
     last_message_from_me: isSelfLastMessage(last.from, selfId) ? 1 : 0,
     read_horizon_ts: parseConsumptionHorizonTs(conv.properties?.consumptionhorizon),
+    // 0 = not marked unread (property absent, or cleared to "0;0;0"). Carried on the shaped row
+    // only — the chat BFF owns read state, so this never needs a column in the server's own DB.
+    unread_bookmark_ts: parseConsumptionHorizonTs(conv.properties?.consumptionHorizonBookmark) ?? 0,
     muted: 0,
   }
 }
@@ -196,9 +208,12 @@ function upsertConversations(db, tenant, list, now = Date.now(), selfId = null) 
     for (const conv of convs) {
       if (!conv?.id || isReservedConversation(conv.id)) continue
       const row = shapeConversation(conv, tenant, selfId)
-      stmt.run({ ...row, updated_at: now })
+      // `unread_bookmark_ts` is a pass-through for the caller, not a column here.
+      const { unread_bookmark_ts, ...cols } = row
+      stmt.run({ ...cols, updated_at: now })
       // Ingest the Teams server-side read horizon (read-elsewhere) into read_state. Monotonic
-      // (setReadHorizon MAXes), so it only ever advances — a mark-unread's local sentinel still wins.
+      // (setReadHorizon MAXes), so it only ever advances — the unread bookmark, not a rewind, is
+      // what makes a conversation unread again.
       if (row.read_horizon_ts != null) setReadHorizon(db, tenant, conv.id, row.read_horizon_ts)
       rows.push(row)
     }
@@ -234,7 +249,7 @@ function listConversations(db, tenant) {
     .prepare(`
       SELECT c.id, c.kind, c.topic, c.last_message_id, c.last_message_version, c.last_message_ts,
              c.last_message_preview, c.last_message_from_me, c.muted,
-             r.read_horizon_ts, r.local_read_ts
+             r.read_horizon_ts
       FROM conversations c
       LEFT JOIN read_state r ON r.conv_id = c.id
       WHERE c.tenant = ?
@@ -249,13 +264,10 @@ function listConversations(db, tenant) {
     WHERE conv_id = ? AND tenant = ? AND mentions_me = 1 AND deleted = 0 AND ts > ?
   `)
   return rows.map((r) => {
-    // `local_read_ts === -1` is the sticky mark-unread sentinel (t155): the row stays unread even
-    // if the Teams horizon covers the last message. `readTs` is the effective read watermark the
-    // client derives unread against; the sentinel forces it to 0. Otherwise the higher of the two.
-    const sticky = r.local_read_ts === -1
-    const readTs = sticky
-      ? 0
-      : Math.max(r.read_horizon_ts || 0, r.local_read_ts > 0 ? r.local_read_ts : 0)
+    // The Teams-side read watermark, verbatim (PSN-102): this DB mirrors Teams and nothing else,
+    // so no local override is folded in here. The chat BFF layers its own optimistic local read
+    // and the unread bookmark on top of this value.
+    const readTs = r.read_horizon_ts || 0
     return {
       id: r.id,
       kind: r.kind,
@@ -266,7 +278,8 @@ function listConversations(db, tenant) {
       lastMessagePreview: r.last_message_preview,
       lastMessageFromMe: !!r.last_message_from_me,
       readTs,
-      unreadSticky: sticky,
+      // Merged in by the caller from the same page's shaped rows (the bookmark has no column here).
+      unreadBookmarkTs: 0,
       muted: !!r.muted,
       mentionCount: mentionCount.get(r.id, tenant, readTs)?.n || 0,
     }
@@ -363,12 +376,10 @@ function listMessages(db, tenant, convId, opts = {}) {
   }))
 }
 
-// ---- read state (t130, ADR-0019) ------------------------------------------
-// Q9 hybrid: `local_read_ts` advances when a conversation is OPENED (a local read — no Teams
-// write), `read_horizon_ts` advances on a write-through mark-read (a reply or explicit action
-// that also pushed the consumptionHorizon to Teams). Both are monotonic (MAX guard) so a
-// stale/older ts never rewinds the horizon. Written independently — one call never clobbers the
-// other's column.
+// ---- read state (t130, ADR-0019; PSN-102) ---------------------------------
+// This DB is a pure mirror of Teams' own read watermark. Local/optimistic read state and the
+// mark-unread bookmark live in the chat BFF's store, which is the single owner of what the user
+// sees. Monotonic (MAX guard) to match Teams: the horizon only ever advances.
 
 function setReadHorizon(db, tenant, convId, ts) {
   db.prepare(`
@@ -378,46 +389,6 @@ function setReadHorizon(db, tenant, convId, ts) {
       tenant = excluded.tenant,
       read_horizon_ts = MAX(COALESCE(read_state.read_horizon_ts, 0), excluded.read_horizon_ts)
   `).run({ convId, tenant, ts: Number(ts) || 0 })
-}
-
-function setLocalRead(db, tenant, convId, ts) {
-  db.prepare(`
-    INSERT INTO read_state (conv_id, tenant, local_read_ts)
-    VALUES (@convId, @tenant, @ts)
-    ON CONFLICT(conv_id) DO UPDATE SET
-      tenant = excluded.tenant,
-      local_read_ts = MAX(COALESCE(read_state.local_read_ts, 0), excluded.local_read_ts)
-  `).run({ convId, tenant, ts: Number(ts) || 0 })
-}
-
-// Explicit mark-read (t155): force local_read_ts to `ts` (the last-message ts), clearing any
-// mark-unread sentinel. Unlike setLocalRead this is NOT monotonic — an explicit action overrides,
-// so it can drop a -1 sentinel back to a real read ts. Idempotent.
-function markConversationRead(db, tenant, convId, ts) {
-  db.prepare(`
-    INSERT INTO read_state (conv_id, tenant, local_read_ts)
-    VALUES (@convId, @tenant, @ts)
-    ON CONFLICT(conv_id) DO UPDATE SET tenant = excluded.tenant, local_read_ts = excluded.local_read_ts
-  `).run({ convId, tenant, ts: Number(ts) || 0 })
-}
-
-// Explicit mark-unread (t155): set the sticky sentinel local_read_ts = -1. The row then reads
-// unread regardless of the Teams horizon (which keeps advancing in read_state but is masked by the
-// sentinel in listConversations) until a real read (open/mark-read) overwrites it. Re-arms the to-do dot.
-function markConversationUnread(db, tenant, convId) {
-  db.prepare(`
-    INSERT INTO read_state (conv_id, tenant, local_read_ts)
-    VALUES (@convId, @tenant, -1)
-    ON CONFLICT(conv_id) DO UPDATE SET tenant = excluded.tenant, local_read_ts = -1
-  `).run({ convId, tenant })
-}
-
-function getReadState(db, convId) {
-  const r = db
-    .prepare("SELECT tenant, read_horizon_ts, local_read_ts FROM read_state WHERE conv_id = ?")
-    .get(convId)
-  if (!r) return null
-  return { tenant: r.tenant, readHorizonTs: r.read_horizon_ts, localReadTs: r.local_read_ts }
 }
 
 // ---- user display-name cache (t131, ADR-0019) -----------------------------
@@ -637,11 +608,8 @@ module.exports = {
   upsertMessages,
   listMessages,
   setReadHorizon,
-  setLocalRead,
-  markConversationRead,
-  markConversationUnread,
   parseConsumptionHorizonTs,
-  getReadState,
+  CLEARED_UNREAD_BOOKMARK,
   upsertUsers,
   getUsers,
   getFolderOrder,

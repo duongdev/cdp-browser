@@ -5,17 +5,13 @@ import {
   conversationKind,
   getAllPrefs,
   getPrefs,
-  getReadState,
   getUsers,
   isMutedNow,
   isReservedConversation,
   listConversations,
   listMessages,
-  markConversationRead,
-  markConversationUnread,
   migrate,
   parseConsumptionHorizonTs,
-  setLocalRead,
   setPrefs,
   setReadHorizon,
   shapeConversation,
@@ -310,41 +306,6 @@ describe("users — display-name cache (t131)", () => {
   })
 })
 
-describe("read_state — local read on open, write-through horizon on reply (t130)", () => {
-  const CONV = "19:conv@unq.gbl.spaces"
-
-  it("no row until a read is recorded", () => {
-    expect(getReadState(db, CONV)).toBeNull()
-  })
-
-  it("setLocalRead and setReadHorizon write independent columns without clobbering", () => {
-    setLocalRead(db, TENANT, CONV, 100)
-    expect(getReadState(db, CONV)).toEqual({
-      tenant: TENANT,
-      localReadTs: 100,
-      readHorizonTs: null,
-    })
-    setReadHorizon(db, TENANT, CONV, 200)
-    expect(getReadState(db, CONV)).toEqual({
-      tenant: TENANT,
-      localReadTs: 100,
-      readHorizonTs: 200,
-    })
-  })
-
-  it("both are monotonic — an older ts never rewinds the stored value", () => {
-    setReadHorizon(db, TENANT, CONV, 500)
-    setReadHorizon(db, TENANT, CONV, 300)
-    setLocalRead(db, TENANT, CONV, 500)
-    setLocalRead(db, TENANT, CONV, 300)
-    expect(getReadState(db, CONV)).toEqual({
-      tenant: TENANT,
-      localReadTs: 500,
-      readHorizonTs: 500,
-    })
-  })
-})
-
 describe("unread derivation over read_state (t155)", () => {
   const CONV = "19:aaa@thread.v2"
   const at = (isoTs: number) => new Date(isoTs).toISOString()
@@ -396,30 +357,23 @@ describe("unread derivation over read_state (t155)", () => {
     expect(row().lastMessageFromMe).toBe(true)
   })
 
-  it("mark-read forces readTs to the last ts; open (setLocalRead) also clears", () => {
+  it("the stored horizon is monotonic — an older ts never rewinds it", () => {
     upsertConversations(db, TENANT, [
-      conv({ lastMessage: { id: "m1", content: "hi", originalarrivaltime: at(5000) } }),
+      conv({
+        lastMessage: { id: "m1", content: "hi", originalarrivaltime: at(1000) },
+        properties: { consumptionhorizon: "m1;500;0" },
+      }),
     ])
-    markConversationRead(db, TENANT, CONV, 5000)
-    expect(row().readTs).toBe(5000)
-    expect(row().unreadSticky).toBe(false)
+    setReadHorizon(db, TENANT, CONV, 300)
+    expect(row().readTs).toBe(500)
   })
 
-  it("mark-unread sets a sticky sentinel that survives an advancing Teams horizon", () => {
-    upsertConversations(db, TENANT, [
-      conv({ lastMessage: { id: "m1", content: "hi", originalarrivaltime: at(5000) } }),
-    ])
-    markConversationUnread(db, TENANT, CONV)
-    expect(row().unreadSticky).toBe(true)
-    expect(row().readTs).toBe(0)
-    // A poll ingests a fresh Teams horizon past the last message — the sentinel still wins.
-    setReadHorizon(db, TENANT, CONV, 9000)
-    expect(row().unreadSticky).toBe(true)
-    expect(row().readTs).toBe(0)
-    // Opening the thread (setLocalRead) overwrites the sentinel → read again.
-    setLocalRead(db, TENANT, CONV, 5000)
-    expect(row().unreadSticky).toBe(false)
-    expect(row().readTs).toBe(9000)
+  it("shapeConversation carries the mark-unread bookmark; a cleared one reads 0", () => {
+    const shaped = (properties: Record<string, string>) =>
+      shapeConversation({ id: CONV, properties, lastMessage: {} }, TENANT, null).unread_bookmark_ts
+    expect(shaped({ consumptionHorizonBookmark: "0;1785002895967;0" })).toBe(1785002895967)
+    expect(shaped({ consumptionHorizonBookmark: "0;0;0" })).toBe(0) // Teams' "cleared" value
+    expect(shaped({})).toBe(0) // never marked unread
   })
 })
 

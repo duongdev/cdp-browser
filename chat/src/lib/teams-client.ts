@@ -38,6 +38,10 @@ export interface TeamsConversation {
   memberIds?: string[]
   /** Unread @me count (t168) — a floor from locally-synced pages, not Teams' number. Server-set. */
   mentionCount?: number
+  /** Teams `consumptionHorizonBookmark` ts (PSN-102): non-zero when the conversation is explicitly
+   *  marked unread in Teams. The effective readTs is `bookmarkTs - 1` when this is set, so the row
+   *  stays unread past the consumptionhorizon. Zero or absent = no bookmark. */
+  unreadBookmarkTs?: number
   /** Local rename (t168): set by applyPrefs from the prefs map; the original title stays visible
    *  as a muted subtitle. Never from the server conversation payload. */
   customTitle?: string

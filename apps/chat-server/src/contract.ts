@@ -28,12 +28,16 @@ export interface ChatConversation {
   lastMessageVersion: number
   lastMessageTs: number | null
   lastMessagePreview: string
-  /** Effective read watermark: max(provider read horizon, local read), or 0 when a mark-unread
-   *  sentinel is set. A conversation is unread when `lastMessageTs > readTs`. */
+  /** Effective read watermark: max(provider read horizon, local read), or just below the
+   *  mark-unread bookmark when one is set. A conversation is unread when `lastMessageTs > readTs`. */
   readTs: number
+  /** The provider's mark-unread bookmark ts; 0 = not marked unread. Read state is shared with the
+   *  service (PSN-102), and a read watermark can only move forward — so "unread again" needs this
+   *  separate, freely-rewritable marker. */
+  unreadBookmarkTs?: number
   /** True when the last message is the viewer's own send — never badges unread. */
   lastMessageFromMe: boolean
-  /** True while an explicit mark-unread sentinel forces the row unread past the read horizon. */
+  /** True while an explicit mark-unread bookmark forces the row unread past the read watermark. */
   unreadSticky: boolean
   muted: boolean
   /** Local labels applied to this row (from prefs, not the provider payload). */
@@ -199,7 +203,7 @@ export interface PrefsResponse {
  *   GET  /api/chat/prefs           ?service                           → PrefsResponse
  *   POST /api/chat/prefs           { service, convId?, ...patch | folderOrder } → { prefs?, folderOrder? }
  *   POST /api/chat/mark-read       { service, convId, msgId, ts }     → { ok } (write-through to provider)
- *   POST /api/chat/read-local      { service, convId, action, ts? }   → { ok } (local read state only)
+ *   POST /api/chat/mark-unread     { service, convId, ts }            → { ok } (write-through to provider)
  *   POST /api/chat/backfill        { service, action: "start", days } → { ok } (start a run)
  *   GET  /api/chat/backfill        ?service                           → BackfillStatus (poll fallback; live over WS)
  *

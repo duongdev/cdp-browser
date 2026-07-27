@@ -86,10 +86,33 @@ describe("local-only + errors", () => {
     expect(out.prefs[GROUP].folder).toBe("Work")
   })
 
-  test("read-local mark-unread ok without a provider call", async () => {
+  // Read state is written THROUGH to the provider, then mirrored locally — so a round-trip of
+  // mark-unread → mark-read must land on the provider AND leave the row read.
+  test("mark-unread then mark-read write through to the provider", async () => {
+    const { app, db } = makeApp()
+    await post(app, "conversations", { service: SERVICE })
+    const lastTs = listConversations(db, SERVICE).find((c) => c.id === GROUP)
+      ?.lastMessageTs as number
+
+    expect(
+      (await post(app, "mark-unread", { service: SERVICE, convId: GROUP, ts: lastTs })).status,
+    ).toBe(200)
+    await post(app, "conversations", { service: SERVICE }) // re-sync from the provider
+    expect(listConversations(db, SERVICE).find((c) => c.id === GROUP)?.unreadSticky).toBe(true)
+
+    expect(
+      (await post(app, "mark-read", { service: SERVICE, convId: GROUP, msgId: "m", ts: lastTs }))
+        .status,
+    ).toBe(200)
+    await post(app, "conversations", { service: SERVICE })
+    const row = listConversations(db, SERVICE).find((c) => c.id === GROUP)
+    expect(row?.unreadSticky).toBe(false)
+    expect(row?.readTs).toBe(lastTs)
+  })
+
+  test("mark-unread without a convId → typed 400", async () => {
     const { app } = makeApp()
-    const res = await post(app, "read-local", { service: SERVICE, convId: GROUP, action: "unread" })
-    expect(res.status).toBe(200)
+    expect((await post(app, "mark-unread", { service: SERVICE })).status).toBe(400)
   })
 
   test("unknown service → typed 400", async () => {

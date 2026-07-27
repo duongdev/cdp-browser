@@ -222,9 +222,16 @@ export class MockProvider implements ChatProvider {
     m.body = ""
   }
 
+  // Mirrors the real service: the read watermark only moves forward, and a read clears any
+  // mark-unread bookmark.
   async markRead(convId: string, _msgId: string, ts: number): Promise<void> {
     const f = this.find(convId)
-    f.conv = { ...f.conv, readTs: Math.max(f.conv.readTs, ts) }
+    f.conv = { ...f.conv, readTs: Math.max(f.conv.readTs, ts), unreadBookmarkTs: 0 }
+  }
+
+  async markUnread(convId: string, ts: number): Promise<void> {
+    const f = this.find(convId)
+    f.conv = { ...f.conv, unreadBookmarkTs: Math.max(1, ts) }
   }
 
   async roster(convId: string): Promise<RosterMember[]> {

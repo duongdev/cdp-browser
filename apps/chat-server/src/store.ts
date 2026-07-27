@@ -48,10 +48,11 @@ const SCHEMA = [
     PRIMARY KEY (service, conv_id, id)
   )`,
   `CREATE TABLE IF NOT EXISTS read_state (
-    service         TEXT NOT NULL,
-    conv_id         TEXT NOT NULL,
-    read_horizon_ts INTEGER,
-    local_read_ts   INTEGER,
+    service            TEXT NOT NULL,
+    conv_id            TEXT NOT NULL,
+    read_horizon_ts    INTEGER,
+    local_read_ts      INTEGER,
+    unread_bookmark_ts INTEGER,
     PRIMARY KEY (service, conv_id)
   )`,
   `CREATE TABLE IF NOT EXISTS users (
@@ -88,15 +89,22 @@ const SCHEMA = [
   )`,
 ]
 
-/** Idempotent — safe on every boot (`CREATE … IF NOT EXISTS`). */
+/** Columns added to a table that already shipped. `ADD COLUMN` has no `IF NOT EXISTS`, so each is
+ *  tried and a duplicate-column error swallowed — that is the "already migrated" case. */
+const ADDED_COLUMNS: [table: string, column: string, decl: string][] = [
+  ["conversations", "title", "TEXT"],
+  ["read_state", "unread_bookmark_ts", "INTEGER"],
+]
+
+/** Idempotent — safe on every boot (`CREATE … IF NOT EXISTS` + the column adds above). */
 export function migrate(db: Db): Db {
   for (const stmt of SCHEMA) db.exec(stmt)
-  // In-place column additions for existing DBs (CREATE TABLE IF NOT EXISTS won't add new columns).
-  const convCols = (db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[]).map(
-    (r) => r.name,
-  )
-  if (!convCols.includes("title")) {
-    db.exec("ALTER TABLE conversations ADD COLUMN title TEXT")
+  for (const [table, column, decl] of ADDED_COLUMNS) {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`)
+    } catch {
+      // already present
+    }
   }
   return db
 }
@@ -126,6 +134,8 @@ export interface ConversationInput {
   lastMessagePreview?: string
   lastMessageFromMe?: boolean
   readHorizonTs?: number | null
+  /** The provider's mark-unread bookmark; 0 clears it. Absent = leave the stored one alone. */
+  unreadBookmarkTs?: number | null
 }
 
 // Insert new, update only when `lastMessageVersion` rises (WHERE gate), skip reserved. Sync cursors
@@ -188,6 +198,8 @@ export function upsertConversations(
       // Apply a resolved title regardless of whether the version-gated update ran.
       if (title) titleStmt.run({ service, id: conv.id, title })
       if (conv.readHorizonTs != null) setReadHorizon(db, service, conv.id, conv.readHorizonTs)
+      if (conv.unreadBookmarkTs != null)
+        setUnreadBookmark(db, service, conv.id, conv.unreadBookmarkTs)
       processed.push(conv)
     }
   })
@@ -201,7 +213,7 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
     .prepare(`
       SELECT c.id, c.kind, c.topic, c.title, c.last_message_id, c.last_message_version, c.last_message_ts,
              c.last_message_preview, c.last_message_from_me, c.muted,
-             r.read_horizon_ts, r.local_read_ts
+             r.read_horizon_ts, r.local_read_ts, r.unread_bookmark_ts
       FROM conversations c
       LEFT JOIN read_state r ON r.service = c.service AND r.conv_id = c.id
       WHERE c.service = ?
@@ -213,15 +225,8 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
     WHERE service = ? AND conv_id = ? AND mentions_me = 1 AND deleted = 0 AND ts > ?
   `)
   return rows.map((r) => {
-    // `local_read_ts === -1` is the sticky mark-unread sentinel: the row stays unread even if the
-    // read horizon covers the last message. `readTs` forces to 0 then; else the higher of the two.
-    const sticky = r.local_read_ts === -1
-    const readTs = sticky
-      ? 0
-      : Math.max(
-          r.read_horizon_ts || 0,
-          r.local_read_ts && r.local_read_ts > 0 ? r.local_read_ts : 0,
-        )
+    const sticky = (r.unread_bookmark_ts || 0) > 0
+    const readTs = effectiveReadTs(r)
     const n = (mentionCount.get(service, r.id, readTs) as { n: number } | undefined)?.n || 0
     return {
       service,
@@ -256,6 +261,23 @@ interface ReadRow {
   muted: number
   read_horizon_ts: number | null
   local_read_ts: number | null
+  unread_bookmark_ts: number | null
+}
+
+/** The watermark a row's unread is measured against: `lastMessageTs > readTs` means unread.
+ *  A mark-unread bookmark wins — it sits one tick below the message it flagged, so that message
+ *  and everything after it read unread even though the read watermark has moved past them. */
+export function effectiveReadTs(r: {
+  read_horizon_ts: number | null
+  local_read_ts: number | null
+  unread_bookmark_ts: number | null
+}): number {
+  const bookmark = r.unread_bookmark_ts || 0
+  if (bookmark > 0) return bookmark - 1
+  return Math.max(
+    r.read_horizon_ts || 0,
+    r.local_read_ts && r.local_read_ts > 0 ? r.local_read_ts : 0,
+  )
 }
 
 // ---- messages -------------------------------------------------------------
@@ -587,9 +609,13 @@ export function getUsers(db: Db, service: string, ids: string[]): Map<string, st
 }
 
 // ---- read state -----------------------------------------------------------
-// `local_read_ts` advances when a conversation is OPENED (local read); `read_horizon_ts` on a
-// write-through mark-read (also pushed to the provider). Both monotonic (MAX) except the explicit
-// mark-read/unread overrides.
+// Read state is shared with the provider (PSN-102): every local read/unread is written through to
+// the service, and the sweep ingests the service's own state back. Three columns:
+//   `read_horizon_ts`    the service's read watermark (monotonic — it never rewinds)
+//   `local_read_ts`      the same watermark applied optimistically, before the sweep confirms it
+//   `unread_bookmark_ts` an explicit mark-unread at that ts; 0/absent = not marked unread
+// The bookmark exists because a read watermark can only move forward, so it can never express
+// "unread again". When set, it wins over both watermarks — see `effectiveReadTs`.
 
 export function setReadHorizon(db: Db, service: string, convId: string, ts: number): void {
   db.prepare(`
@@ -600,48 +626,55 @@ export function setReadHorizon(db: Db, service: string, convId: string, ts: numb
   `).run({ service, convId, ts: Number(ts) || 0 })
 }
 
-export function setLocalRead(db: Db, service: string, convId: string, ts: number): void {
+// Ingest the service's mark-unread bookmark. NOT monotonic — 0 is how a read elsewhere clears it.
+export function setUnreadBookmark(db: Db, service: string, convId: string, ts: number): void {
   db.prepare(`
-    INSERT INTO read_state (service, conv_id, local_read_ts)
+    INSERT INTO read_state (service, conv_id, unread_bookmark_ts)
     VALUES (@service, @convId, @ts)
-    ON CONFLICT(service, conv_id) DO UPDATE SET
-      local_read_ts = MAX(COALESCE(read_state.local_read_ts, 0), excluded.local_read_ts)
-  `).run({ service, convId, ts: Number(ts) || 0 })
+    ON CONFLICT(service, conv_id) DO UPDATE SET unread_bookmark_ts = excluded.unread_bookmark_ts
+  `).run({ service, convId, ts: Math.max(0, Number(ts) || 0) })
 }
 
-// Explicit mark-read: force local_read_ts to `ts`, clearing any -1 sentinel. NOT monotonic.
+// Explicit mark-read: force local_read_ts to `ts` and drop any mark-unread bookmark. NOT monotonic
+// — clearing the bookmark is the whole point, and the caller pairs this with the provider write.
 export function markConversationRead(db: Db, service: string, convId: string, ts: number): void {
   db.prepare(`
-    INSERT INTO read_state (service, conv_id, local_read_ts)
-    VALUES (@service, @convId, @ts)
-    ON CONFLICT(service, conv_id) DO UPDATE SET local_read_ts = excluded.local_read_ts
+    INSERT INTO read_state (service, conv_id, local_read_ts, unread_bookmark_ts)
+    VALUES (@service, @convId, @ts, 0)
+    ON CONFLICT(service, conv_id) DO UPDATE SET
+      local_read_ts = excluded.local_read_ts,
+      unread_bookmark_ts = 0
   `).run({ service, convId, ts: Number(ts) || 0 })
 }
 
-// Explicit mark-unread: set the sticky sentinel local_read_ts = -1. The row reads unread regardless
-// of the (still-advancing) read horizon until a real read overwrites it.
-export function markConversationUnread(db: Db, service: string, convId: string): void {
-  db.prepare(`
-    INSERT INTO read_state (service, conv_id, local_read_ts)
-    VALUES (@service, @convId, -1)
-    ON CONFLICT(service, conv_id) DO UPDATE SET local_read_ts = -1
-  `).run({ service, convId })
+// Explicit mark-unread: set the bookmark at `ts`, mirroring what the provider was just told. The
+// row reads unread past the (still-advancing) read watermark until a read clears the bookmark.
+export function markConversationUnread(db: Db, service: string, convId: string, ts: number): void {
+  setUnreadBookmark(db, service, convId, Math.max(1, Number(ts) || 1))
 }
 
 export function getReadState(
   db: Db,
   service: string,
   convId: string,
-): { readHorizonTs: number | null; localReadTs: number | null } | null {
+): { readHorizonTs: number | null; localReadTs: number | null; readTs: number } | null {
   const r = db
     .prepare(
-      "SELECT read_horizon_ts, local_read_ts FROM read_state WHERE service = ? AND conv_id = ?",
+      "SELECT read_horizon_ts, local_read_ts, unread_bookmark_ts FROM read_state WHERE service = ? AND conv_id = ?",
     )
-    .get(service, convId) as
-    | { read_horizon_ts: number | null; local_read_ts: number | null }
-    | undefined
+    .get(service, convId) as ReadStateRow | undefined
   if (!r) return null
-  return { readHorizonTs: r.read_horizon_ts, localReadTs: r.local_read_ts }
+  return {
+    readHorizonTs: r.read_horizon_ts,
+    localReadTs: r.local_read_ts,
+    readTs: effectiveReadTs(r),
+  }
+}
+
+interface ReadStateRow {
+  read_horizon_ts: number | null
+  local_read_ts: number | null
+  unread_bookmark_ts: number | null
 }
 
 // ---- conversation prefs ---------------------------------------------------
