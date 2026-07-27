@@ -2,10 +2,12 @@ import Database from "better-sqlite3"
 import { beforeEach, describe, expect, test } from "vitest"
 import {
   deletePushSub,
+  finishBackfillRun,
   getAllPrefs,
   getFolderOrder,
   getReadState,
   getUsers,
+  listBackfillRuns,
   listConversations,
   listMessageEdits,
   listMessages,
@@ -13,6 +15,7 @@ import {
   listMessagesAround,
   listMessagesBefore,
   listPushSubs,
+  MAX_BACKFILL_RUNS,
   markConversationRead,
   markConversationUnread,
   migrate,
@@ -20,6 +23,7 @@ import {
   setFolderOrder,
   setPrefs,
   setReadHorizon,
+  startBackfillRun,
   upsertConversations,
   upsertMessages,
   upsertUsers,
@@ -408,7 +412,7 @@ describe("edit history (PSN-105 C)", () => {
     upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v1" }])
     upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v2", edited: true, editTs: 111 }])
     upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v3", edited: true, editTs: 222 }])
-    const versions = listMessageEdits(db, "teams", "c", "a")
+    const { versions } = listMessageEdits(db, "teams", "c", "a")
     expect(versions.map((v) => v.body)).toEqual(["v2", "v1"])
     expect(versions[0].editTs).toBe(222)
     expect(listMessages(db, "teams", "c")[0].body).toBe("v3")
@@ -418,7 +422,38 @@ describe("edit history (PSN-105 C)", () => {
     upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "secret" }])
     upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "message deleted", deleted: true }])
     upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "message deleted", deleted: true }])
-    expect(listMessageEdits(db, "teams", "c", "a").map((v) => v.body)).toEqual(["secret"])
+    expect(listMessageEdits(db, "teams", "c", "a").versions.map((v) => v.body)).toEqual(["secret"])
+  })
+
+  // QE DEF-1 (data loss): a blank incoming body used to overwrite the row AND skip the snapshot,
+  // so the original text was gone from both places. It must survive in the row.
+  test("a blank incoming body never erases a live message", () => {
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "hi there" }])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "", edited: true }])
+    expect(listMessages(db, "teams", "c")[0].body).toBe("hi there")
+    expect(listMessageEdits(db, "teams", "c", "a").versions).toHaveLength(0)
+    // …and a later real edit still records the untouched original.
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v2", edited: true }])
+    expect(listMessageEdits(db, "teams", "c", "a").versions.map((v) => v.body)).toEqual([
+      "hi there",
+    ])
+  })
+
+  test("a delete still blanks the body, whatever tombstone the provider sends", () => {
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "mock style" }])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "", deleted: true }])
+    expect(listMessages(db, "teams", "c")[0].body).toBe("")
+    expect(listMessageEdits(db, "teams", "c", "a").versions.map((v) => v.body)).toEqual([
+      "mock style",
+    ])
+  })
+
+  test("the raw payload follows the persisted body, so a rejected blank can't leak back", () => {
+    upsertMessages(db, "teams", "c", [
+      { id: "a", ts: 100, body: "hi there", raw: { body: "hi there" } },
+    ])
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "", raw: { body: "" } }])
+    expect((listMessages(db, "teams", "c")[0].raw as { body: string }).body).toBe("hi there")
   })
 
   test("caps the stored versions per message", () => {
@@ -426,8 +461,73 @@ describe("edit history (PSN-105 C)", () => {
     for (let i = 1; i <= 25; i++) {
       upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: `v${i}`, edited: true }])
     }
-    const versions = listMessageEdits(db, "teams", "c", "a")
+    const { versions, truncated } = listMessageEdits(db, "teams", "c", "a")
     expect(versions).toHaveLength(20)
     expect(versions[0].body).toBe("v24")
+    expect(truncated).toBe(true)
+  })
+
+  // QE DEF-5: exactly-at-the-cap claimed older versions were dropped when none were.
+  test("reports truncation only once a version was actually dropped", () => {
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v0" }])
+    for (let i = 1; i <= 20; i++) {
+      upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: `v${i}`, edited: true }])
+    }
+    const at = listMessageEdits(db, "teams", "c", "a")
+    expect(at.versions).toHaveLength(20)
+    expect(at.versions[19].body).toBe("v0") // the oldest kept IS the original
+    expect(at.truncated).toBe(false)
+
+    upsertMessages(db, "teams", "c", [{ id: "a", ts: 100, body: "v21", edited: true }])
+    const over = listMessageEdits(db, "teams", "c", "a")
+    expect(over.versions).toHaveLength(20)
+    expect(over.truncated).toBe(true)
+  })
+})
+
+describe("backfill run history (PSN-105 N)", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+  })
+
+  test("an unfinished run reads as aborted until an outcome is written", () => {
+    const id = startBackfillRun(db, "teams", 30, 1000)
+    expect(listBackfillRuns(db, "teams")).toEqual([
+      {
+        id,
+        startedAt: 1000,
+        finishedAt: null,
+        days: 30,
+        conversations: 0,
+        messages: 0,
+        status: "aborted",
+      },
+    ])
+    finishBackfillRun(db, id, { conversations: 3, messages: 40, status: "ok" }, 2000)
+    expect(listBackfillRuns(db, "teams")[0]).toMatchObject({
+      finishedAt: 2000,
+      conversations: 3,
+      messages: 40,
+      status: "ok",
+    })
+  })
+
+  test("keeps an error code, newest first, capped per service", () => {
+    const bad = startBackfillRun(db, "teams", 7, 10)
+    finishBackfillRun(
+      db,
+      bad,
+      { conversations: 1, messages: 2, status: "error", error: "rate_limited" },
+      20,
+    )
+    for (let i = 0; i < MAX_BACKFILL_RUNS + 5; i++) startBackfillRun(db, "teams", 1, 100 + i)
+    startBackfillRun(db, "other", 1, 999)
+
+    const runs = listBackfillRuns(db, "teams")
+    expect(runs).toHaveLength(MAX_BACKFILL_RUNS)
+    expect(runs[0].startedAt).toBeGreaterThan(runs[1].startedAt) // newest first
+    expect(runs.some((r) => r.id === bad)).toBe(false) // the oldest fell off the cap
+    expect(listBackfillRuns(db, "other")).toHaveLength(1) // another service is untouched
   })
 })

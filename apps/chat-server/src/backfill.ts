@@ -69,6 +69,9 @@ export function createBackfillEngine(deps: BackfillDeps): BackfillEngine {
       messagesFetched: 0,
       error: undefined,
     }
+    // Open the history row now, not at the end: a run killed mid-flight leaves its `aborted`
+    // default behind, which is the only way a crash can ever be reported.
+    const runId = store.startBackfillRun(db, service, days, now())
     emit()
 
     try {
@@ -78,14 +81,30 @@ export function createBackfillEngine(deps: BackfillDeps): BackfillEngine {
         emit()
       }
       status = { ...status, running: false }
+      finish(runId, "ok")
       emit()
     } catch (err) {
       // A 429 storm (or any provider failure) aborts cleanly: honest error, running:false, health.
       const code = err instanceof ProviderError ? err.code : "backfill_error"
       status = { ...status, running: false, error: code }
+      finish(runId, "error", code)
       broadcast({ type: "health", service, ok: false, code })
       emit()
     }
+  }
+
+  function finish(runId: number, outcome: "ok" | "error", error?: string): void {
+    store.finishBackfillRun(
+      db,
+      runId,
+      {
+        conversations: status.conversationsDone,
+        messages: status.messagesFetched,
+        status: outcome,
+        error,
+      },
+      now(),
+    )
   }
 
   async function backfillConversation(convId: string, cutoff: number): Promise<void> {

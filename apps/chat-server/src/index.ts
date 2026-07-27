@@ -21,9 +21,10 @@ import { resolveCaptionModel } from "./llm.ts"
 import { findByObjectId } from "./media-store.ts"
 import { MOCK_PREFS, MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
+import { ProviderError } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
 import { createPushSender } from "./push.ts"
-import { type BackfillAccessor, createRoutes } from "./routes.ts"
+import { type BackfillAccessor, createRoutes, statusOf } from "./routes.ts"
 import { migrate, setPrefs } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
 import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
@@ -87,6 +88,12 @@ const [assistantService, assistantProvider] = providers.entries().next().value ?
 const assistantCaptioner = assistantService ? captioners.get(assistantService) : undefined
 
 const app = new Hono()
+// Routes mounted directly on the root app (the mock harness) get the same typed error mapping as
+// /api/chat — a ProviderError("not_found", 404) must read as 404, not as a bare 500 (QE DEF-8).
+app.onError((err, c) => {
+  if (err instanceof ProviderError) return c.json({ error: err.code }, statusOf(err.status))
+  return c.json({ error: (err as Error)?.message || "internal_error" }, 500)
+})
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
 app.route(
   "/api/chat/assistant",
@@ -140,10 +147,9 @@ app.route(
     backfills,
     captioners,
     vapidPublicKey: VAPID_PUBLIC_KEY,
-    getSyncLog: () => {
-      const engine = sweepEngines.values().next().value
-      return engine?.getSyncLog() ?? { lastHealthOk: null, lastError: null, events: [] }
-    },
+    // null when no sweep engine is running — the route turns that into a real error status so the
+    // client can say "unreachable" instead of rendering it as an empty log (QE DEF-6).
+    getSyncLog: () => sweepEngines.values().next().value?.getSyncLog() ?? null,
   }),
 )
 

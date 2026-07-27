@@ -28,6 +28,10 @@ export const FOCUS_SWEEP_MS = 4_000
 
 const SYNC_LOG_CAP = 20
 
+/** Floor between pushed `sync-log` frames. The list lane always forces one (that IS the "last sync"
+ *  moment); a failing focus lane would otherwise emit per conversation every 4s. */
+export const SYNC_LOG_EMIT_MS = 5_000
+
 /** One sweep outcome in the diagnostics log.
  *  - `list`  — the service-level lane. Its failure IS a service failure (auth, transport, the
  *              conversation-list fetch itself) and flips health.
@@ -45,7 +49,8 @@ export interface SyncEvent {
 }
 
 export interface SyncLogData {
-  lastHealthOk: number | null
+  /** When a sweep last succeeded — the Settings card's "Last sync". */
+  lastSyncAt: number | null
   lastError: number | null
   lastErrorCode?: string
   events: SyncEvent[]
@@ -102,10 +107,34 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
   const syncEvents: SyncEvent[] = []
   let listTimer: { unref?: () => void } | null = null
   let focusTimer: { unref?: () => void } | null = null
+  let lastSyncLogEmit = 0
+  // Conversations the delta cap deferred last tick (PSN-105 QE DEF-4). The list upsert has ALREADY
+  // advanced their stored version by the time the cap bites, so `planConversationSweep` will never
+  // report them changed again — without carrying them here their messages are lost until someone
+  // opens the thread by hand. Insertion order = oldest deferral first, so a burst drains FIFO.
+  const pendingDelta = new Set<string>()
 
   function pushSyncEvent(event: SyncEvent): void {
     syncEvents.push(event)
     if (syncEvents.length > SYNC_LOG_CAP) syncEvents.splice(0, syncEvents.length - SYNC_LOG_CAP)
+  }
+
+  function syncLog(): SyncLogData {
+    return {
+      lastSyncAt: lastHealthOkAt,
+      lastError: lastErrorAt,
+      lastErrorCode,
+      events: [...syncEvents],
+    }
+  }
+
+  /** Push the diagnostics log to every client so "Last sync" advances live. `force` is the list
+   *  lane's own tick; anything else is rate-limited (a failing focus lane fires per conversation). */
+  function emitSyncLog(force: boolean): void {
+    const t = Date.now()
+    if (!force && t - lastSyncLogEmit < SYNC_LOG_EMIT_MS) return
+    lastSyncLogEmit = t
+    broadcast({ type: "sync-log", service, ...syncLog() })
   }
 
   // Broadcast a health flip only when it changes (no chatty repeats). A clean sweep recovers —
@@ -137,6 +166,7 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     pushSyncEvent({ kind: "focus", ts, ok: false, code, convId })
     lastErrorAt = ts
     lastErrorCode = code
+    emitSyncLog(false)
   }
 
   // A provider failure → a typed health code; anything else → "sweep_error". Never rethrows.
@@ -158,10 +188,6 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
       )
       const rows = changedConversations.map((c) => after.get(c.id) ?? c)
       if (rows.length) broadcast({ type: "conversation-upsert", service, conversations: rows })
-      // The BFF is the sole Teams push sender (WS-G): a genuinely new inbound last message pushes to
-      // every stored sub with zero FE clients open. Use the post-upsert row (resolved readTs) and gate
-      // per-conversation prefs; a cold-start conv (no prior) seeds silently.
-      if (pushSender) await maybePush(rows, prior)
       for (const rs of readStateChanges) {
         // Use the post-upsert store row (bookmark-derived readTs + unreadSticky) — the provider row
         // has the raw Teams horizon and never sets unreadSticky, so it would clear the dot.
@@ -180,18 +206,28 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
       // version bump, so its thread stayed stale until a manual refetch. The focused convs keep their
       // own faster lane and are excluded. runFocusOnce swallows its own per-conv errors, so one bad
       // conversation can't take the list lane down with it.
+      // Deferrals from earlier ticks go FIRST — they are the oldest unfetched work, and the store's
+      // version gate has already forgotten them, so this queue is their only route in.
       const { convIds, skipped } = planDeltaFetch(
-        changedConversations.map((c) => c.id),
+        [...pendingDelta, ...changedConversations.map((c) => c.id)],
         getFocusedConvIds(),
       )
+      pendingDelta.clear()
+      for (const id of skipped) pendingDelta.add(id)
       if (skipped.length)
         console.warn(
-          `[sweep] delta fan-out capped: fetched ${convIds.length}, deferred ${skipped.length} (${skipped.join(", ")})`,
+          `[sweep] delta fan-out capped: fetched ${convIds.length}, deferred ${skipped.length} to the next tick (${skipped.join(", ")})`,
         )
       if (convIds.length) await runFocusOnce(convIds)
+      // Push LAST (PSN-105 QE DEF-4): firing before the fan-out notified the user of a message the
+      // app could not yet show. The BFF is the sole Teams push sender (WS-G) — with zero FE clients
+      // open this is the delivery path. Post-upsert rows (resolved readTs), prefs-gated; a
+      // cold-start conv (no prior) seeds silently.
+      if (pushSender) await maybePush(rows, prior)
     } catch (err) {
       markUnhealthy(healthCodeOf(err))
     }
+    emitSyncLog(true)
   }
 
   // Fire a web push for each changed conversation whose new last message is genuinely inbound. The
@@ -258,12 +294,7 @@ export function createSweepEngine(deps: SweepDeps): SweepEngine {
     runListOnce,
     runFocusOnce,
     health: () => (lastHealthOk == null ? null : { ok: lastHealthOk }),
-    getSyncLog: (): SyncLogData => ({
-      lastHealthOk: lastHealthOkAt,
-      lastError: lastErrorAt,
-      lastErrorCode,
-      events: [...syncEvents],
-    }),
+    getSyncLog: syncLog,
   }
 }
 

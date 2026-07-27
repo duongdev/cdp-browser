@@ -89,9 +89,10 @@ export function planConversationSweep(
 export const MAX_DELTA_FETCH = 5
 
 /** Decide which changed conversations get a history fetch this tick (PSN-106). The focused ones
- *  already have their own faster lane, so they are excluded here. Anything past the cap is reported
- *  as `skipped` rather than dropped silently — the caller logs it, and the next tick picks it up
- *  (its version stays ahead of the store until its messages are actually fetched). */
+ *  already have their own faster lane, so they are excluded here. Anything past the cap comes back
+ *  as `skipped`; the CALLER must carry those ids into the next tick's input (sweep.ts keeps a
+ *  `pendingDelta` queue). They cannot re-surface on their own — the list upsert has already
+ *  advanced their stored version, so the change gate never fires for them again (QE DEF-4). */
 export function planDeltaFetch(
   changedConvIds: string[],
   focusedConvIds: string[],

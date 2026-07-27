@@ -38,8 +38,9 @@ export interface RoutesDeps {
   /** service id → image transcription worker (PSN-104). Absent → `/media/caption` reports whatever
    *  is stored and never transcribes on demand. */
   captioners?: Map<ChatService, { captionObject(objectId: string): Promise<string | null> }>
-  /** Sync log accessor — wired by index.ts when a sweep engine exists. */
-  getSyncLog?: () => import("./sweep.ts").SyncLogData
+  /** Sync log accessor — wired by index.ts when a sweep engine exists. `null` means no engine is
+   *  running, which the route reports as a real failure, not an empty log. */
+  getSyncLog?: () => import("./sweep.ts").SyncLogData | null
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -204,12 +205,12 @@ export function createRoutes(deps: RoutesDeps) {
     const convId = c.req.query("convId")
     const msgId = c.req.query("msgId")
     if (!convId || !msgId) throw new ProviderError("missing_message", 400)
-    const versions = store.listMessageEdits(deps.db, service, convId, msgId)
+    const { versions, truncated } = store.listMessageEdits(deps.db, service, convId, msgId)
     const row = store.getMessage(deps.db, service, convId, msgId)
     return c.json({
       versions,
       current: row ? { body: row.body, deleted: row.deleted, ts: row.ts ?? null } : null,
-      truncated: versions.length >= MAX_VERSIONS_PER_MESSAGE,
+      truncated,
       cap: MAX_VERSIONS_PER_MESSAGE,
     })
   })
@@ -363,10 +364,15 @@ export function createRoutes(deps: RoutesDeps) {
 
   // ---- backfill (WS-D engine; idle status when no engine is wired) --------
 
+  // The live status PLUS the persisted run history (PSN-105 N) — the in-memory status dies with
+  // the process, so past runs are only knowable from the store.
   app.get("/backfill", (c) => {
     const service = c.req.query("service") || DEFAULT_SERVICE
     const engine = deps.backfills?.get(service)
-    return c.json(engine ? engine.getBackfillStatus() : idleBackfill(service))
+    return c.json({
+      ...(engine ? engine.getBackfillStatus() : idleBackfill(service)),
+      history: store.listBackfillRuns(deps.db, service),
+    })
   })
 
   app.post("/backfill", async (c) => {
@@ -415,16 +421,22 @@ export function createRoutes(deps: RoutesDeps) {
     }),
   )
 
+  // No sweep engine wired = the server genuinely cannot answer, which is NOT the same thing as "no
+  // events yet" (QE DEF-6: both rendered as an empty card, so the client's error state was dead
+  // code and a broken server looked idle). A real status lets the client show its error branch.
   app.get("/sync-log", (c) => {
-    if (!deps.getSyncLog) return c.json({ lastHealthOk: null, lastError: null, events: [] })
-    return c.json(deps.getSyncLog())
+    const log = deps.getSyncLog?.()
+    if (!log) throw new ProviderError("sync_unavailable", 502)
+    return c.json(log)
   })
 
   return app
 }
 
 // Hono maps our numeric status onto its ContentfulStatusCode union; clamp to a safe error range.
-function statusOf(n: number): 400 | 403 | 404 | 429 | 500 | 502 {
+// Exported so routes mounted OUTSIDE this router (the mock harness) map a ProviderError the same
+// way instead of falling through to a bare 500 (QE DEF-8).
+export function statusOf(n: number): 400 | 403 | 404 | 429 | 500 | 502 {
   if (n === 400 || n === 403 || n === 404 || n === 429 || n === 500 || n === 502) return n
   return n >= 400 && n < 500 ? 400 : 502
 }

@@ -36,6 +36,16 @@ const T0 = Date.now()
 /** `n` minutes before boot, in epoch ms. */
 const ago = (min: number): number => T0 - min * 60_000
 
+/** A real, decodable 96×96 PNG for `avatar()` and `media()`. It has to actually decode: the profile
+ *  dialog keeps its avatar button disabled until the image fires `load`, so a truncated stub made
+ *  the profile→lightbox layering impossible to exercise on the mock stack. */
+const PLACEHOLDER_PNG = Uint8Array.from(
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAAAjklEQVR42u3QMQ0AAAgDsDlECd6RgANOriZV0FQPhygQJEiQIEGCBAlCkCBBggQJEoQgQYIECRIkSJAgBAkSJEiQIEGCBCFIkCBBggQJEoQgQYIECRIkSBCCBAkSJEiQIEGCECRIkCBBggQJQpAgQYIECRIkCEGCBAkSJEiQIEEIEiRIkCBBggQhSJCgPwvrXzOF2HYC0wAAAABJRU5ErkJggg==",
+  ),
+  (c) => c.charCodeAt(0),
+)
+
 /** A conversation + its messages (newest last). History is paged 2-per-page for paging tests. */
 interface Fixture {
   conv: ChatConversation
@@ -518,6 +528,8 @@ export class MockProvider implements ChatProvider {
     return { ok: true, msgId: r.ts }
   }
 
+  // A DECODABLE 96×96 PNG, not a 4-byte header. The avatar button stays disabled until the image
+  // actually loads, so a truncated stub left the profile→lightbox layering untestable locally.
   async profile(userId: string): Promise<ChatProfile> {
     return {
       displayName: userId === "self-oid" ? "You" : "Other Person",
@@ -531,10 +543,10 @@ export class MockProvider implements ChatProvider {
 
   async avatar(userId: string): Promise<AvatarResult> {
     if (userId === "no-photo-oid") return { miss: true }
-    return { contentType: "image/png", body: new Uint8Array([137, 80, 78, 71]) }
+    return { contentType: "image/png", body: PLACEHOLDER_PNG }
   }
 
   async media(_url: string): Promise<MediaBytes> {
-    return { contentType: "image/png", body: new Uint8Array([137, 80, 78, 71]) }
+    return { contentType: "image/png", body: PLACEHOLDER_PNG }
   }
 }

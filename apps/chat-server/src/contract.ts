@@ -232,6 +232,32 @@ export interface BackfillStatus {
   messagesFetched: number
   /** A typed error code if the run aborted (e.g. a 429 storm); absent while healthy. */
   error?: string
+  /** Past runs, newest first (PSN-105 N). Persisted, so they survive a restart — every field above
+   *  describes only the live in-memory run. Served by `GET /api/chat/backfill`. */
+  history?: BackfillRun[]
+}
+
+/** One recorded backfill run. `finishedAt: null` means no outcome was ever written — the run is
+ *  either in flight or died with its process, which is why a run starts life as `aborted`. */
+export interface BackfillRun {
+  id: number
+  startedAt: number
+  finishedAt: number | null
+  days: number
+  conversations: number
+  messages: number
+  status: "ok" | "error" | "aborted"
+  error?: string
+}
+
+/** One sweep outcome in the diagnostics log (the wire shape of sweep.ts's SyncEvent). */
+export interface SyncEventPayload {
+  kind: "list" | "focus"
+  ts: number
+  ok: boolean
+  code?: string
+  /** Set on `focus` events — the conversation the outcome belongs to. */
+  convId?: string
 }
 
 /**
@@ -253,6 +279,17 @@ export type ChatWsServerMessage =
     }
   | { type: "backfill-progress"; service: ChatService; status: BackfillStatus }
   | { type: "health"; service: ChatService; ok: boolean; code?: string }
+  /** Sweep diagnostics (PSN-105 N). Same payload as `GET /api/chat/sync-log`, pushed so the
+   *  Settings card's "last sync" advances on its own instead of aging until a manual refresh.
+   *  Throttled by the sweep — see SYNC_LOG_EMIT_MS. */
+  | {
+      type: "sync-log"
+      service: ChatService
+      lastSyncAt: number | null
+      lastError: number | null
+      lastErrorCode?: string
+      events: SyncEventPayload[]
+    }
   /** Liveness heartbeat (PSN-106). A browser WebSocket never surfaces the protocol-level pong, so
    *  an application-level frame is the only signal a client can use to tell a live socket from a
    *  half-open one. Carries nothing but its send time. */
