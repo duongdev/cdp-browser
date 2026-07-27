@@ -7,12 +7,14 @@ How we work. Read these before writing code.
 1. [product.md](product.md) — the product bar: daily-driver browser, never-stuck experience
 2. [dev-lifecycle.md](dev-lifecycle.md) — capture → spec → build → prove → ship
 3. [tdd.md](tdd.md) — three-layer testing model tailored to an Electron CDP app
-4. [code-quality.md](code-quality.md) — SOLID, atomicity, back-compat, fresh-not-patched
-5. [agentic-coding.md](agentic-coding.md) — predictable patterns, naming, kebab-case, comment-the-why
-6. [frontend.md](frontend.md) — renderer stack: React 19, Vite, Tailwind 4, shadcn, Zustand, HugeIcons
-7. [ux.md](ux.md) — keyboard-first parity, ⌘K palette, `?` overlay, focus management
-8. [git.md](git.md) — branches, semantic commits, tNNN task IDs, hard rules
-9. [docs-discipline.md](docs-discipline.md) — docs stay alive, ADRs append-only, CONTEXT.md as glossary
+4. [e2e-verification.md](e2e-verification.md) — regression in subagents, real input events, long-and-short content, isolated stacks
+5. [code-quality.md](code-quality.md) — SOLID, atomicity, back-compat, fresh-not-patched
+6. [agentic-coding.md](agentic-coding.md) — predictable patterns, naming, kebab-case, comment-the-why
+7. [frontend.md](frontend.md) — renderer stack: React 19, Vite, Tailwind 4, shadcn, Zustand, HugeIcons
+8. [ux.md](ux.md) — keyboard-first parity, ⌘K palette, `?` overlay, focus management
+9. [feature-gates.md](feature-gates.md) — Electron-vs-web capability gating, structural over render-time
+10. [git.md](git.md) — branches, semantic commits, tNNN task IDs, hard rules
+11. [docs-discipline.md](docs-discipline.md) — docs stay alive, ADRs append-only, CONTEXT.md as glossary
 
 ## Why these exist
 

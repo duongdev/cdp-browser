@@ -19,6 +19,8 @@ Test-driven development for the parts that can be. This codebase has three disti
 
 Build every layer that applies. A pure state machine without unit tests is untested. An IPC handler "verified" only by unit tests has never actually communicated with Electron.
 
+These three layers prove a *change*. Proving the *app still works* after it — the end-to-end regression pass against a running stack, dispatched to subagents — is [e2e-verification.md](e2e-verification.md). `pnpm test:e2e` (hermetic server tests in `test/e2e/`) belongs to Layer 1's automated tier; the manual checklists it can't reach live in `docs/testing/`.
+
 ---
 
 ## Layer 1 — Strict TDD for pure logic

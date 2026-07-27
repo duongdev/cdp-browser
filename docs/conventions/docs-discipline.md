@@ -13,6 +13,8 @@ The project survives on docs that are accurate. The discipline below keeps them 
 | `docs/memories/*` | Future-you | As-discovered | Free-form |
 | `docs/guides/*` | Operators and setup | When operational procedure changes | Step-by-step |
 | `docs/tasks/*` | The task's executor | Per task | Task template |
+| `docs/testing/*` | Whoever runs the QA pass | Extended per task, never rewritten | `ID · steps · must happen` rows |
+| `docs/plans/*` | The epic's executor | Per epic (Linear-issue scoped) | Goal, workstreams, decisions, acceptance criteria |
 | `<area>/CLAUDE.md` | AI / future-you reading that area | When internals change | 4-section template |
 
 There are no per-area `README.md` files — this is a single app, not a monorepo. The root `CLAUDE.md` and the area `CLAUDE.md` files (e.g. `src/lib/CLAUDE.md`) serve the full audience.

@@ -1,7 +1,10 @@
 # Chat QA checklist
 
 Manual-QA runbook for the `/chat` surface. One source of truth — covers the mock stack, UI areas,
-and what cannot be verified locally.
+and what cannot be verified locally. Cases are **extended, never rewritten** — every fixed bug earns
+a row. How a run is dispatched (subagents, real input events, long-and-short content, isolated
+stacks) lives in [docs/conventions/e2e-verification.md](../conventions/e2e-verification.md);
+`/regression` runs it.
 
 **Last run:** 2026-07-28 · commit `da7051b`
 QE1 (8 defects found — DEF-1 blank-body data loss, DEF-2 delete timestamp, DEF-3 last-sync never
@@ -28,6 +31,14 @@ pnpm chat:mock:say -d '{"convId":"19:project@thread.v2","text":"hi"}'
 
 State writes to `.mock-data/` (gitignored). The real `chat.db`, `web-settings.json`, and the
 installed app config are never touched. `Ctrl-C` kills both processes together.
+
+Concurrent runs must not share a stack — set `MOCK_DIR`, `WEB_PORT` and `BFF_PORT` per run (every
+`chat:mock*` script honours them):
+
+```bash
+MOCK_DIR=.mock-data-b WEB_PORT=7920 BFF_PORT=7930 pnpm chat:mock
+MOCK_DIR=.mock-data-b WEB_PORT=7920 pnpm chat:mock:say -d '{"text":"hi"}'
+```
 
 ## Mock fixtures
 

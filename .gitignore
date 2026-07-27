@@ -20,7 +20,7 @@ chat.db-shm
 chat.db-wal
 
 # Local mock stack state (pnpm chat:mock — chat.db, web settings, Electron userData; wiped on boot)
-.mock-data/
+.mock-data*/
 
 # Baked build identity (Docker builder writes it; never committed)
 .gitsha

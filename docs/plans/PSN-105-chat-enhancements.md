@@ -149,20 +149,20 @@ Re-walk every item, re-run the gates, catch regressions from A–F.
 
 ## Acceptance criteria
 
-- [ ] A new Teams message appears in the sidebar **and** the open thread within ~15s with the window minimised and never focused, on Electron prod. No reload.
-- [ ] A half-open socket is detected within 45s and reconnects on its own; the "Reconnecting…" banner tells the truth.
-- [ ] A new message in a **non-focused** conversation updates that row and, when opened, the thread already has it.
-- [ ] Editing a message twice from native Teams shows all three versions in the popover with timestamps.
-- [ ] Deleting a message from native Teams leaves a tombstone that can reveal the original text.
-- [ ] The reaction bar and link-copy button are gone after ⌘-Tab away and after a conversation switch.
-- [ ] Opening an avatar, closing the profile, and reopening any profile does **not** show the lightbox.
-- [ ] Every link in a message shows its full URL on hover.
-- [ ] Settings shows app version + real SHA + built-at, server version + reachability, last sync time, and a sync event log.
-- [ ] Every icon-only button in the chat renderer has a shadcn Tooltip.
-- [ ] "Sending…" is gone; the unread preview line is bold; message links are bold + accent; a Jira URL renders as its ticket key.
-- [ ] The composer's actions collapse into a ⋯ menu at narrow width with the AI panel open, send always reachable.
-- [ ] `pnpm test`, `pnpm test:e2e`, `pnpm typecheck`, `pnpm check:changed` all green.
-- [ ] Every UI-touching change has a light + dark screenshot from a real build.
+- [ ] A new Teams message appears in the sidebar **and** the open thread within ~15s with the window minimised and never focused, on Electron prod. No reload. _(unit + mock-stack verified; real-Electron two-window check still owed)_
+- [x] A half-open socket is detected within 45s and reconnects on its own; the "Reconnecting…" banner tells the truth.
+- [x] A new message in a **non-focused** conversation updates that row and, when opened, the thread already has it.
+- [x] Editing a message twice from native Teams shows all three versions in the popover with timestamps.
+- [x] Deleting a message from native Teams leaves a tombstone that can reveal the original text.
+- [x] The reaction bar and link-copy button are gone after ⌘-Tab away and after a conversation switch.
+- [x] Opening an avatar, closing the profile, and reopening any profile does **not** show the lightbox.
+- [x] Every link in a message shows its full URL on hover.
+- [x] Settings shows app version + real SHA + built-at, server version + reachability, last sync time, and a sync event log.
+- [x] Every icon-only button in the chat renderer has a shadcn Tooltip.
+- [x] "Sending…" is gone; the unread preview line is bold; message links are bold + accent; a Jira URL renders as its ticket key.
+- [x] The composer's actions collapse into a ⋯ menu at narrow width with the AI panel open, send always reachable.
+- [x] `pnpm test`, `pnpm test:e2e`, `pnpm typecheck`, `pnpm check:changed` all green.
+- [x] Every UI-touching change has a light + dark screenshot from a real build.
 
 ## Delivered (2026-07-27)
 
