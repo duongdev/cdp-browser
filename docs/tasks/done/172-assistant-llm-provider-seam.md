@@ -62,7 +62,7 @@ Node engine: ai@7 is ESM-only and wants modern Node — `apps/chat-server` alrea
 
 ## Notes (build)
 
-- Live 9router smoke NOT yet run (router was down during the build session). Run:
-  `LLM_BASE_URL=… LLM_API_KEY=… LLM_MODEL=… node --experimental-transform-types apps/chat-server/src/llm-smoke.ts`
-  Exit 0 = streamed text + tool call verified. Record GLM/router quirks here after.
+- Live 9router smoke PASSED (2026-07-27, glm/glm-4.7 via https://9router.dustin.one/v1): streamed
+  text + one tool call round-trip, exit 0. Quirks recorded in t173 notes (step-cap flail on
+  out-of-window relative-time queries; stray `</think>` remnants — stripped since).
 - t173 defends regardless: zod arg validation on every tool, step cap, typed stream errors.
