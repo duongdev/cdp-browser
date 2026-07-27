@@ -40,7 +40,7 @@ export function ModelSelector({
           <PopoverTrigger asChild>
             <Button
               aria-label="Model"
-              className="gap-1 text-muted-foreground text-xs"
+              className="gap-1 px-1.5 text-muted-foreground text-xs"
               disabled={models === null}
               size="sm"
               variant="ghost"

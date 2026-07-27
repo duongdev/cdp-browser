@@ -39,6 +39,23 @@ const NAMED_ENTITIES: Record<string, string> = {
  *  tags dropped, entities decoded, whitespace collapsed. */
 export function stripHtml(html: string): string {
   let s = html || ""
+  // Anchors keep their HREF, not just the visible text (PSN-104): Teams renders a long URL with its
+  // own "…" truncation, so dropping the href handed the assistant an unusable half-URL — it then
+  // "quoted" a link nobody could open. A descriptive label is kept alongside the URL.
+  s = s.replace(
+    /<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi,
+    (_whole, dq: string | undefined, sq: string | undefined, inner: string) => {
+      const href = (dq ?? sq ?? "").trim()
+      const text = inner
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+      if (!href) return ` ${text} `
+      // Text that is itself a (possibly truncated) URL adds nothing next to the real href.
+      const textIsUrl = /^(https?:\/\/|www\.)/i.test(text) || text === ""
+      return textIsUrl ? ` ${href} ` : ` ${text} ${href} `
+    },
+  )
   // Media → alt text (or nothing). <img alt="x"> keeps "x"; alt-less media vanish.
   s = s.replace(/<(img|video|audio)\b[^>]*>/gi, (tag) => {
     const alt = /\balt\s*=\s*"([^"]*)"/i.exec(tag) || /\balt\s*=\s*'([^']*)'/i.exec(tag)

@@ -49,6 +49,18 @@ describe("stripHtml", () => {
     expect(stripHtml('before <img src="x.png" alt="chart"> after')).toBe("before chart after")
     expect(stripHtml('a <img src="x.png"> b <video src="v.mp4"></video> c')).toBe("a b c")
   })
+  test("anchors keep the full href, not Teams' truncated display text (PSN-104)", () => {
+    const href =
+      "https://dev.azure.com/FWDGODevOps/Digital_GenAI/_git/genai-distribution-avatar-vite-webview/pullrequest/157145"
+    // Teams renders the visible text pre-truncated with its own "…" — the assistant needs the href.
+    expect(stripHtml(`see <a href="${href}">https://dev.azure.com/FWDGODev…157145</a> ok`)).toBe(
+      `see ${href} ok`,
+    )
+    // A descriptive label is worth keeping next to the URL.
+    expect(stripHtml(`<a href="${href}">the PR</a>`)).toBe(`the PR ${href}`)
+    // An href-less anchor still yields its text.
+    expect(stripHtml("<a>plain</a>")).toBe("plain")
+  })
   test("whitespace collapses", () => {
     expect(stripHtml("<p>a</p><p>b</p>")).toBe("a b")
   })

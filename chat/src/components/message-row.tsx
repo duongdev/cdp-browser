@@ -46,9 +46,9 @@ import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { formatBodyNames } from "../lib/body-names"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
-import { elideLinkText } from "../lib/elide-links"
 import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
+import { elideLinkText } from "../lib/link-label"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -56,21 +56,8 @@ import { getCatalogGlyph } from "../lib/use-emoji-catalog"
 import { DisplayName } from "./display-name"
 import { EmojiPicker } from "./emoji-picker"
 import { ImageLightbox, type LightboxMedia } from "./image-lightbox"
+import { useCopy, useLinkHoverCopy } from "./link-hover-copy"
 import { UserAvatar } from "./user-avatar"
-
-/** Copy `text` to clipboard; briefly flip to a "copied" tick for ~1.2 s. Fine-pointer only. */
-function useCopy(): [copied: boolean, copy: (text: string) => void] {
-  const [copied, setCopied] = useState(false)
-  const t = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const copy = useCallback((text: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      if (t.current) clearTimeout(t.current)
-      t.current = setTimeout(() => setCopied(false), 1200)
-    })
-  }, [])
-  return [copied, copy]
-}
 
 // The six Teams default reactions for the quick-react bar. Mirrors core/teams-emoji.js
 // DEFAULT_REACTIONS — a frozen, closed set, kept local so the browser build needn't import the CJS
@@ -187,31 +174,14 @@ function ChatMessageRow({
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const coarse = usePointerCoarse()
-  // Link hover-copy overlay (G): tracks the hovered <a> inside the sanitized body.
-  // Null when no link is hovered. Fine pointer only — coarse skips the delegation entirely.
-  const [hoveredLink, setHoveredLink] = useState<{ href: string; rect: DOMRect } | null>(null)
-  const [linkCopied, copyLink] = useCopy()
-  // Hover-bridge (PSN-99): the copy button floats away from the link, so leaving the link doesn't
-  // hide it instantly — a short grace timer lets the cursor cross the gap onto the button, which
-  // cancels the timer on enter. Without this the button vanished before it could be clicked.
-  const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cancelLinkHide = useCallback(() => {
-    if (linkHideTimer.current) {
-      clearTimeout(linkHideTimer.current)
-      linkHideTimer.current = null
-    }
-  }, [])
-  const scheduleLinkHide = useCallback(() => {
-    cancelLinkHide()
-    linkHideTimer.current = setTimeout(() => setHoveredLink(null), 180)
-  }, [cancelLinkHide])
+  // Link hover-copy overlay (PSN-99), shared with the assistant's answers (PSN-104).
+  const linkCopy = useLinkHoverCopy(!coarse)
   // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then long bare-URL links
   // middle-elided (PSN-99). Memoized so the DOMParser pass runs once per body, not per poll re-render.
   const bodyHtml = useMemo(
     () => elideLinkText(sanitize(stampReplyIds(formatBodyNames(message.body, namePref)))),
     [message.body, namePref],
   )
-  useEffect(() => cancelLinkHide, [cancelLinkHide])
   const attachments = message.attachments ?? []
   const reactions = message.reactions ?? []
   const hasBody = deleted || message.body.trim().length > 0
@@ -468,7 +438,6 @@ function ChatMessageRow({
               >
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
-                {/* biome-ignore lint/a11y/useKeyWithMouseEvents: link hover-copy is a fine-pointer visual affordance; keyboard users access links natively via Tab */}
                 <div
                   className={cn(
                     // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
@@ -493,49 +462,9 @@ function ChatMessageRow({
                   data-pos={groupPos}
                   data-side={self ? "self" : "other"}
                   onClick={onBodyClick}
-                  onMouseOut={coarse ? undefined : scheduleLinkHide}
-                  onMouseOver={
-                    coarse
-                      ? undefined
-                      : (e) => {
-                          const a = (e.target as HTMLElement).closest?.(
-                            "a[href]",
-                          ) as HTMLAnchorElement | null
-                          if (a?.href) {
-                            cancelLinkHide()
-                            setHoveredLink({ href: a.href, rect: a.getBoundingClientRect() })
-                          } else {
-                            scheduleLinkHide()
-                          }
-                        }
-                  }
+                  {...linkCopy.bodyProps}
                 />
-                {/* Link copy button (PSN-99): FIXED at the hovered link's own end, overlapping the last
-                    few px so it sits INSIDE the link's soft highlight (no reserved layout space), and
-                    vertically centered on the link's line. Clamped to the viewport's right edge. The
-                    hover-bridge (enter cancels the hide timer) keeps it reachable. */}
-                {!coarse && hoveredLink && (
-                  <button
-                    className="link-copy-btn fixed z-30 flex size-5 items-center justify-center rounded-md border border-border bg-background/95 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      copyLink(hoveredLink.href)
-                    }}
-                    onMouseEnter={cancelLinkHide}
-                    onMouseLeave={scheduleLinkHide}
-                    style={{
-                      top: Math.max(
-                        2,
-                        hoveredLink.rect.top + Math.min(hoveredLink.rect.height, 22) / 2 - 10,
-                      ),
-                      left: Math.min(hoveredLink.rect.right - 6, window.innerWidth - 24),
-                    }}
-                    title="Copy link"
-                    type="button"
-                  >
-                    <HugeiconsIcon className="size-3" icon={linkCopied ? Tick01Icon : Copy01Icon} />
-                  </button>
-                )}
+                {linkCopy.overlay}
               </div>
             </PopoverAnchor>
             {canReact && !coarse && (

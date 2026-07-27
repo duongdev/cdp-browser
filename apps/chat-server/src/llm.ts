@@ -60,7 +60,11 @@ export async function enrichModelLimits(
       headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
       signal: AbortSignal.timeout(5000),
     })
-    if (!res.ok) return models
+    if (!res.ok) {
+      // Silent degradation cost an afternoon of "why is the window 40K again?" — say it once.
+      console.warn(`[llm] model-limit lookup failed: ${res.status} ${res.statusText}`)
+      return models
+    }
     const body = (await res.json()) as { data?: unknown }
     const byId = new Map<string, { contextWindow?: number; maxOutput?: number }>()
     for (const row of Array.isArray(body.data) ? body.data : []) {
@@ -92,7 +96,8 @@ export async function enrichModelLimits(
       const hit = byId.get(m.id)
       return hit?.contextWindow || hit?.maxOutput ? { ...m, ...hit } : m
     })
-  } catch {
+  } catch (e) {
+    console.warn(`[llm] model-limit lookup errored: ${(e as Error)?.message ?? e}`)
     return models
   }
 }

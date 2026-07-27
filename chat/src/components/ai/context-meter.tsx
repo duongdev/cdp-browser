@@ -34,7 +34,7 @@ export function ContextMeter({
       <TooltipTrigger asChild>
         <Button
           aria-label={`Context window ${clamped}% used`}
-          className="gap-1.5 text-muted-foreground text-xs"
+          className="gap-1.5 px-1.5 text-muted-foreground text-xs"
           size="sm"
           variant="ghost"
         >

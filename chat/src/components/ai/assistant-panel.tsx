@@ -11,12 +11,13 @@ import {
   AiChipIcon,
   ArrowDown01Icon,
   ArrowLeft01Icon,
-  ArrowTurnDownIcon,
   ArrowUp02Icon,
   Cancel01Icon,
+  Copy01Icon,
   Delete02Icon,
   MessageMultiple01Icon,
   PencilEdit02Icon,
+  PenToolAddIcon,
   PlusSignIcon,
   StopIcon,
   Tick01Icon,
@@ -38,6 +39,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
 import { actionItemsPrompt, catchUpPrompt } from "../../lib/assistant-actions"
 import { extractCitations } from "../../lib/assistant-citations"
@@ -55,7 +57,9 @@ import {
   loadSessionMessages,
   patchSession,
 } from "../../lib/assistant-client"
+import { labelMarkdownLinks } from "../../lib/link-label"
 import { COMPOSER_FOOTER, ComposerShell } from "../composer-shell"
+import { useCopy, useLinkHoverCopy } from "../link-hover-copy"
 import { prompt } from "../prompt-dialog"
 import { ContextMeter } from "./context-meter"
 import { ContextTray } from "./context-tray"
@@ -281,24 +285,27 @@ export function AssistantPanel(props: AssistantPanelProps) {
                 </button>
                 <div className="my-1 border-border border-t" />
                 <div className="max-h-72 overflow-y-auto">
+                  {/* Two lines (steering): the title owns the full width, model + date drop to a
+                      quiet second row instead of squeezing the title from the right. */}
                   {(sessions ?? []).map((s) => (
                     <button
                       className={cn(
-                        "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
+                        "flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
                         s.id === sessionId && "bg-accent/60",
                       )}
                       key={s.id}
                       onClick={() => openSession(s.id)}
                       type="button"
                     >
-                      <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-                      {s.model && s.model !== defaultModelId && (
-                        <span className="ml-2 max-w-24 shrink-0 truncate rounded bg-accent px-1 text-[11px] text-muted-foreground">
-                          {s.model}
+                      <span className="w-full truncate">{s.title || "New session"}</span>
+                      <span className="flex w-full min-w-0 items-center gap-1.5 text-muted-foreground text-xs">
+                        {s.model && s.model !== defaultModelId && (
+                          <span className="min-w-0 truncate">{s.model}</span>
+                        )}
+                        {s.model && s.model !== defaultModelId && <span aria-hidden>·</span>}
+                        <span className="shrink-0">
+                          {new Date(s.updatedAt).toLocaleDateString()}
                         </span>
-                      )}
-                      <span className="ml-2 shrink-0 text-muted-foreground text-xs">
-                        {new Date(s.updatedAt).toLocaleDateString()}
                       </span>
                     </button>
                   ))}
@@ -890,8 +897,20 @@ function AssistantMessage({
     .map((p) => p.text)
     .join("")
   const { text: displayText, citations } = useMemo(() => extractCitations(text), [text])
+  // Bare URLs in the answer get the SAME label the chat bubbles give them (PR chip / middle-elide),
+  // rewritten in the markdown source so Streamdown still owns the anchor and its safety modal.
+  const markdown = useMemo(() => labelMarkdownLinks(displayText), [displayText])
   // Sources stay collapsed — a long chip list buried the answer (steering).
   const [sourcesOpen, setSourcesOpen] = useState(false)
+  const coarse = usePointerCoarse()
+  const linkCopy = useLinkHoverCopy(!coarse)
+  const [copied, copyAnswer] = useCopy()
+  // "3 messages in 2 chats" reads as evidence; "3 sources" doesn't say what was cited (steering).
+  const sourcesLabel = useMemo(() => {
+    const chats = new Set(citations.map((c) => c.convId)).size
+    const m = `${citations.length} ${citations.length === 1 ? "message" : "messages"}`
+    return `${m} in ${chats} ${chats === 1 ? "chat" : "chats"}`
+  }, [citations])
 
   // The user bubble is the SAME one the thread renders for your own messages —
   // `teams-message-body` carries the radius/padding and `teams-self-bubble` the low-glare dark-mode
@@ -916,8 +935,19 @@ function AssistantMessage({
         </div>
       )}
       {displayText && (
-        <div className="ai-message-body min-w-0 max-w-full">
-          <Streamdown parseIncompleteMarkdown>{displayText}</Streamdown>
+        <div className="relative min-w-0 max-w-full">
+          {/* Link hover-copy is a fine-pointer affordance; links stay Tab-reachable natively. */}
+          <div className="ai-message-body min-w-0 max-w-full" {...linkCopy.bodyProps}>
+            {/* linkSafety off (steering: "the external link modal is broken"): with it on,
+                Streamdown renders a <button> that pops an interstitial and carries NO href — so a
+                link in an answer behaved differently from the identical link in a message bubble,
+                and neither the PR chip (an href CSS selector) nor hover-copy could see it. Off, it
+                emits a real target=_blank anchor, exactly like a chat message's link. */}
+            <Streamdown linkSafety={{ enabled: false }} parseIncompleteMarkdown>
+              {markdown}
+            </Streamdown>
+          </div>
+          {linkCopy.overlay}
         </div>
       )}
       {!streaming && !displayText && toolCalls.length > 0 && (
@@ -937,7 +967,7 @@ function AssistantMessage({
               className={cn("size-3 transition-transform", sourcesOpen && "rotate-180")}
               icon={ArrowDown01Icon}
             />
-            {citations.length} {citations.length === 1 ? "source" : "sources"}
+            {sourcesLabel}
           </button>
           {sourcesOpen && (
             <div className="flex min-w-0 flex-wrap gap-1">
@@ -958,12 +988,19 @@ function AssistantMessage({
       )}
       {/* Message actions live in a hover-revealed row under the answer (ChatGPT-style) instead of
           a permanently visible button that competed with the answer text. */}
-      {!streaming && displayText && onInsertToComposer && (
-        <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {!streaming && displayText && (
+        <div className="-ml-1.5 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          {onInsertToComposer && (
+            <IconButton
+              icon={PenToolAddIcon}
+              label="Insert into composer"
+              onClick={() => onInsertToComposer(displayText)}
+            />
+          )}
           <IconButton
-            icon={ArrowTurnDownIcon}
-            label="Insert into composer"
-            onClick={() => onInsertToComposer(displayText)}
+            icon={copied ? Tick01Icon : Copy01Icon}
+            label={copied ? "Copied" : "Copy response"}
+            onClick={() => copyAnswer(displayText)}
           />
         </div>
       )}

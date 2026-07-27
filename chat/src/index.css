@@ -15,6 +15,11 @@
    (t152 fix). Source the shared renderer tree explicitly. */
 @source "../../src";
 
+/* Streamdown ships prebuilt JS carrying Tailwind utility classes (its code block, table controls
+   and the external-link safety modal). Tailwind only emits classes it can SEE, so without this
+   the modal rendered as unstyled full-page text (PSN-104 steering). */
+@source "../../node_modules/streamdown/dist/*.js";
+
 /* Chat-only typefaces (selectable in Settings → Font). Files live in chat/public/fonts/ so only the
    /chat build ships them; the / browser keeps Manrope/DM-Mono. Root-absolute urls get the /chat/ base
    prepended by Vite.
@@ -414,6 +419,25 @@
 .ai-message-body pre code {
   background: none;
   padding: 0;
+}
+/* Pull-request chip (PSN-104): an Azure DevOps PR link reads as "repo#id" (link-label.ts sets the
+   text on both the sanitized-HTML and the markdown path). Keyed on the href so ONE rule covers a
+   human message bubble and an assistant answer — neither renderer has to stamp a class. */
+.teams-message-body a[href*="/pullrequest/"],
+.ai-message-body a[href*="/pullrequest/"] {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--accent) 50%, transparent);
+  padding: 0 0.5rem;
+  text-decoration: none;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+}
+.teams-message-body a[href*="/pullrequest/"]:hover,
+.ai-message-body a[href*="/pullrequest/"]:hover {
+  background: var(--accent);
 }
 .conv-row-title {
   font-size: calc(0.875rem * var(--chat-font-scale, 1));

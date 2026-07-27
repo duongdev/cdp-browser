@@ -36,6 +36,7 @@ import {
 import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
 import { parsePath, pathFor } from "./lib/chat-route"
+import { DEFAULT_CHAT_SETTINGS } from "./lib/chat-settings"
 import { chatShell } from "./lib/chat-shell"
 import { useChatWs } from "./lib/chat-ws-context"
 import { buildActions, type ChatAction, type ChatContext } from "./lib/command-registry"
@@ -595,9 +596,7 @@ export function ChatApp() {
 
   // ── AI assistant panel (t174, PSN-104, ADR-0021) ────────────────────────────
   // Open flag / width / active session persist per device in chat settings. Wide → third column
-  // right of the thread; narrow → full-screen stacked view. `aiRefreshNonce` remounts the active
-  // session's chat after "Ask AI about this" appends a context excerpt server-side.
-  const [aiRefreshNonce, setAiRefreshNonce] = useState(0)
+  // right of the thread; narrow → full-screen stacked view.
   // The attach tray's live contents for the active session (grilled: one visible context concept).
   // `null` = no local override yet, so the panel renders the session's stored refs; an array is set
   // only after an attach/detach so the chip appears/disappears instantly.
@@ -631,6 +630,12 @@ export function ChatApp() {
     },
     [updateSettings],
   )
+  // Double-click the seam to go back to the shipped width (steering) — the usual escape hatch when
+  // a drag left the column at an awkward size.
+  const resetListWidth = useCallback(() => {
+    setListWidth(DEFAULT_CHAT_SETTINGS.listWidth)
+    updateSettings({ listWidth: DEFAULT_CHAT_SETTINGS.listWidth })
+  }, [updateSettings])
 
   const toggleAi = useCallback(() => {
     updateSettings({ aiPanelOpen: !settings.aiPanelOpen })
@@ -808,7 +813,6 @@ export function ChatApp() {
       onOpenRef={openRef}
       onSessionChange={setAiSession}
       pendingPrompt={aiPrompt}
-      refreshNonce={aiRefreshNonce}
       sessionId={settings.aiSessionId}
     />
   ) : null
@@ -832,6 +836,10 @@ export function ChatApp() {
     },
     [updateSettings],
   )
+  const resetAiWidth = useCallback(() => {
+    setAiWidth(DEFAULT_CHAT_SETTINGS.aiPanelWidth)
+    updateSettings({ aiPanelWidth: DEFAULT_CHAT_SETTINGS.aiPanelWidth })
+  }, [updateSettings])
 
   // The command registry (t152): pure data, effects injected here. Jump-to-conversation rows are
   // generated per conversation; the rest are static app/message actions. Only actions that work
@@ -1484,7 +1492,9 @@ export function ChatApp() {
           {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
           <div
             className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+            onDoubleClick={resetListWidth}
             onPointerDown={onListResizeDown}
+            title="Drag to resize · double-click to reset"
           />
           {threadPanes}
           {keepAlive.mounted.length === 0 && (
@@ -1498,7 +1508,9 @@ export function ChatApp() {
             {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
             <div
               className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+              onDoubleClick={resetAiWidth}
               onPointerDown={onAiResizeDown}
+              title="Drag to resize · double-click to reset"
             />
             {aiPanel}
           </aside>
