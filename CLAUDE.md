@@ -233,6 +233,41 @@ CI (`.github/workflows/ci.yml`, on PR + push to main) runs: install (frozen),
 `check:changed`. Biome is scoped to the PR diff (not pristine `pnpm check`, which reds
 on pre-existing errors in untouched files).
 
+### Local mock chat stack (no tenant, no deploy)
+
+The whole chat product — the web `/chat` surface, the BFF, and the **CDP Chats Electron shell** —
+runs on a laptop against fixtures, with no Teams tenant and nothing deployed:
+
+```bash
+pnpm chat:mock                        # builds both bundles, boots BFF + web on 7910/7900 (mock provider)
+open http://localhost:7900/chat       # the web surface
+pnpm chat:mock:electron               # the real Electron shell against that server
+pnpm chat:mock:say -d '{"text":"hi"}' # simulate an INBOUND message, now
+```
+
+- **Isolation.** Everything writes under `.mock-data/` (`chat.db`, web settings, the Electron
+  `--user-data-dir`), wiped on every boot — the real `chat.db`, `web-settings.json` and the
+  installed app's config are never touched. Ports are 7900/7910, so a real `pnpm chat:web` on 7800
+  can run alongside. `concurrently -k` takes both processes down together on Ctrl-C.
+- **Fixtures** live in `apps/chat-server/src/providers/mock-provider.ts`. The first three
+  conversations are pinned by unit tests; `richSeed()` holds the rest — links (Jira / Azure DevOps
+  PR / a long elided one), reactions, an edited message, a tombstone, an @mention, a file
+  attachment, a system line, unread rows, a muted conversation, a locally renamed one, and a
+  30-message thread that pages. Message ids are fixed; timestamps are relative to process start, so
+  relative-time UI looks real without drifting inside a run. `MOCK_PREFS` seeds the BFF-local
+  mute/rename/folder state a provider can't express. `CHAT_MOCK_PAGE` sets the history page size
+  (2 in tests, 20 in the mock stack).
+- **Inbound simulation** is the point (PSN-106). `POST /api/chat/mock/say {convId?, text?}` appends
+  an inbound message, bumps the conversation version and runs the list sweep immediately, so the
+  full delivery path fires on demand: WS delta → FE → `chatShell.notify` → OS notification + dock
+  badge. The route only exists under `CHAT_PROVIDER=mock`. For the minimised case, background the
+  app first — `osascript -e 'tell application "Finder" to activate' && sleep 3 && pnpm chat:mock:say`
+  — and watch the shell log `[chat] notify <convId>: …` as it delivers.
+- **Not covered locally:** anything needing a real tenant (Teams cred minting, the CDP keeper tab,
+  AMS media bytes, real send/edit round-trips against the service), Web Push (needs an installed
+  PWA over HTTPS; the mock BFF runs without VAPID keys), and whether the OS toast actually *draws*
+  — the log line proves the hop, a human eye proves the pixels.
+
 ## Known Limitations
 
 - CDP screencast only works for the **active tab** on the remote browser.

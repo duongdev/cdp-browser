@@ -19,12 +19,12 @@ import { type Captioner, createCaptioner, downscaleImage } from "./caption.ts"
 import type { ChatService } from "./contract.ts"
 import { resolveCaptionModel } from "./llm.ts"
 import { findByObjectId } from "./media-store.ts"
-import { MockProvider } from "./providers/mock-provider.ts"
+import { MOCK_PREFS, MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
 import { createPushSender } from "./push.ts"
 import { type BackfillAccessor, createRoutes } from "./routes.ts"
-import { migrate } from "./store.ts"
+import { migrate, setPrefs } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
 import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
 
@@ -46,11 +46,17 @@ if (VAPID_PRIVATE_KEY) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, 
 else console.warn("[chat-server] VAPID_PRIVATE_KEY unset — Teams web push disabled")
 
 const providers = new Map<ChatService, ChatProvider>()
+let mock: { service: ChatService; provider: MockProvider } | null = null
 if (process.env.CHAT_PROVIDER === "mock") {
   // Default "mock" service id for hermetic e2e; CHAT_MOCK_SERVICE=teams lets the real FE (which
   // pins service "teams") run against fixtures for local visual dev.
   const mockService = (process.env.CHAT_MOCK_SERVICE || "mock") as ChatService
-  providers.set(mockService, new MockProvider(mockService))
+  const provider = new MockProvider(mockService)
+  providers.set(mockService, provider)
+  mock = { service: mockService, provider }
+  // Mute / rename / folder are BFF-local prefs the provider can't express — seed them so those
+  // row states are reachable in the local mock stack.
+  for (const { convId, patch } of MOCK_PREFS) setPrefs(db, mockService, convId, patch)
 } else providers.set("teams", new TeamsProvider())
 
 // A backfill engine per provider; the routes read/start through this map.
@@ -108,6 +114,23 @@ app.route(
 )
 // Sweep engines created before routes so getSyncLog can be wired at startup.
 const sweepEngines = new Map<ChatService, import("./sweep.ts").SweepEngine>()
+
+// Local-only inbound simulator (PSN-105 I). Mock provider only — with a real provider this route
+// does not exist. Appends an inbound message and runs the list sweep immediately, so the full
+// delivery path (WS delta → FE, web push, Electron notification, dock badge) fires on demand and
+// "does it arrive while minimised?" is testable with no tenant. Registered before the real
+// /api/chat routes so it isn't shadowed.
+//   curl -X POST localhost:7800/api/chat/mock/say -d '{"text":"ping"}'
+if (mock) {
+  const { service, provider } = mock
+  app.all("/api/chat/mock/say", async (c) => {
+    const q = c.req.query()
+    const body = c.req.method === "POST" ? await c.req.json().catch(() => ({})) : {}
+    const sent = provider.inject(body.convId ?? q.convId, body.text ?? q.text)
+    await sweepEngines.get(service)?.runListOnce()
+    return c.json({ ok: true, ...sent })
+  })
+}
 
 app.route(
   "/api/chat",

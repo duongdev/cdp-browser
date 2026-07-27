@@ -102,6 +102,10 @@ function createWindow() {
 // Notification whose click shows/focuses the window and posts the convId back so the
 // renderer opens that conversation.
 ipcMain.on("chat:notify", (_e, { title, body, convId } = {}) => {
+  // The OS toast can only be verified by eye, so log the hop too: against the local mock stack
+  // (`pnpm chat:mock` + `chat:mock:say`) this line is the terminal-visible proof that delivery
+  // reached the shell while the window was unfocused or minimised.
+  console.info(`[chat] notify ${convId}: ${title} — ${body}`)
   if (!Notification.isSupported()) return
   const n = new Notification({ title: title || "CDP Chats", body: body || "" })
   liveNotifications.add(n)

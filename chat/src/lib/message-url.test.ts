@@ -10,10 +10,16 @@ describe("buildChatMessageUrl", () => {
 })
 
 describe("buildTeamsMessageUrl", () => {
-  it("includes convId and msgId in the deep link", () => {
-    const url = buildTeamsMessageUrl("19:abc@thread.v2", "1234567890")
-    expect(url).toContain("19:abc@thread.v2")
-    expect(url).toContain("1234567890")
-    expect(url.startsWith("https://teams.microsoft.com/l/message/")).toBe(true)
+  // Byte-for-byte the URL Teams' own "Copy link" produced on a live client (PSN-105 H),
+  // with the real conversation id swapped for a fake one.
+  it("matches the format Teams' own Copy link emits", () => {
+    expect(buildTeamsMessageUrl("19:abc@thread.v2", "1785158747611")).toBe(
+      "https://teams.microsoft.com/l/message/19:abc@thread.v2/1785158747611?context=%7B%22contextType%22%3A%22chat%22%7D",
+    )
+  })
+
+  it("keeps the chat context param, which routes the link to the chat app", () => {
+    const ctx = new URL(buildTeamsMessageUrl("19:abc@thread.v2", "1")).searchParams.get("context")
+    expect(JSON.parse(ctx ?? "")).toEqual({ contextType: "chat" })
   })
 })
