@@ -33,6 +33,7 @@ import {
   type SearchPage,
   searchMessages,
 } from "../lib/chat-client"
+import { parseSearchUrlState, pathForSearch } from "../lib/chat-route"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { relativeTime } from "../lib/conversation-view"
 import {
@@ -45,6 +46,7 @@ import {
   loadRecentSearchs,
   parseSort,
   RECENT_SEARCHES_KEY,
+  removeRecentSearch,
   SCOPE_KINDS,
   type ScopeKind,
   SEARCH_SORT_KEY,
@@ -72,16 +74,37 @@ export interface SearchViewProps {
   onBack: () => void
   /** Name-display preference threaded through to ThreadView. */
   namePref?: import("../lib/display-name").NamePref
+  /** Left-rail width, synced with the conversation list's own drag-resizable width (`settings.
+   *  listWidth`) so the two surfaces feel like one app, not two differently-sized panels. */
+  listWidth: number
+  onResizeDown: (e: React.PointerEvent) => void
+  onResetWidth: () => void
 }
 
-export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
-  const [query, setQuery] = useState("")
+export function SearchView({
+  convById,
+  onBack,
+  namePref,
+  listWidth,
+  onResizeDown,
+  onResetWidth,
+}: SearchViewProps) {
+  // Restore query/sort/scope from the URL on mount (refresh / a shared link) — read once, lazy
+  // init only. Later changes sync OUT to the URL via `history.replaceState` (never `pushState` —
+  // one search shouldn't spam back-button history per keystroke).
+  const initialUrlState = useRef(parseSearchUrlState(window.location.search)).current
+  const [query, setQuery] = useState(initialUrlState.q ?? "")
   const [state, setState] = useState<ListState>({ status: "idle" })
   // The selected hit drives the middle pane: open that conversation scrolled to its message.
-  // `selected` carries the convId + msgId + a nonce so re-clicking the same row re-jumps.
-  const [selected, setSelected] = useState<{ convId: string; msgId: string; nonce: number } | null>(
-    null,
-  )
+  // `selected` carries the convId + msgId + a nonce (so re-clicking the same row re-jumps) + the
+  // hit's own `convKind` — needed so a not-yet-listed conversation's stub reflects its REAL kind
+  // instead of a hardcoded guess (bug: every un-listed hit rendered "Group chat" even for a DM).
+  const [selected, setSelected] = useState<{
+    convId: string
+    msgId: string
+    nonce: number
+    convKind: SearchHit["convKind"]
+  } | null>(null)
   const [recent, setRecent] = useState<string[]>(() => {
     try {
       return loadRecentSearchs(localStorage.getItem(RECENT_SEARCHES_KEY))
@@ -89,18 +112,40 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
       return []
     }
   })
+  const persistRecent = useCallback((next: string[]) => {
+    try {
+      localStorage.setItem(RECENT_SEARCHES_KEY, serializeRecentSearchs(next))
+    } catch {
+      // storage disabled (private mode / quota) — the in-memory list still works this session
+    }
+  }, [])
+  const removeRecent = useCallback(
+    (q: string) => {
+      setRecent((list) => {
+        const next = removeRecentSearch(list, q)
+        persistRecent(next)
+        return next
+      })
+    },
+    [persistRecent],
+  )
+  const clearAllRecent = useCallback(() => {
+    setRecent([])
+    persistRecent([])
+  }, [persistRecent])
   const [focusedIndex, setFocusedIndex] = useState(0)
 
   // Sort + scope (WS-F). Sort persists across sessions (chat-scoped localStorage, like recent
   // searches). Scope is session-only for v1 — a persistent default would mask new DMs silently.
   const [sort, setSort] = useState<SearchSort>(() => {
+    if (initialUrlState.sort) return initialUrlState.sort
     try {
       return parseSort(localStorage.getItem(SEARCH_SORT_KEY))
     } catch {
       return DEFAULT_SORT
     }
   })
-  const [scopeKind, setScopeKind] = useState<ScopeKind>(DEFAULT_SCOPE_KIND)
+  const [scopeKind, setScopeKind] = useState<ScopeKind>(initialUrlState.scope ?? DEFAULT_SCOPE_KIND)
 
   // The last successfully-landed parsed query — keeps chips visible while the next query is in
   // flight (so toggling sort/scope or removing a chip doesn't blank the bar mid-request).
@@ -111,11 +156,28 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
   // The running query is the debounced `query`. We track the in-flight request via an
   // AbortController so a slower earlier query can't clobber a faster later one (out-of-order
   // landing — the classic debounce hazard).
-  const [debounced, setDebounced] = useState("")
+  // A URL-restored query runs immediately (no artificial wait on page load); a typed query still
+  // debounces.
+  const [debounced, setDebounced] = useState(initialUrlState.q ?? "")
+  const skipNextDebounce = useRef(Boolean(initialUrlState.q))
   useEffect(() => {
+    if (skipNextDebounce.current) {
+      skipNextDebounce.current = false
+      return
+    }
     const t = setTimeout(() => setDebounced(query), DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [query])
+
+  // Sync query/sort/scope OUT to the URL (PSN-115 follow-up: a refresh used to drop the user back
+  // to an empty search — the whole surface was unrecoverable across a reload). `replaceState`, not
+  // `pushState` — a plain search shouldn't grow the back-button stack per query/toggle change.
+  useEffect(() => {
+    const path = pathForSearch({ q: debounced || undefined, sort, scope: scopeKind })
+    if (window.location.pathname + window.location.search !== path) {
+      window.history.replaceState(window.history.state, "", path)
+    }
+  }, [debounced, sort, scopeKind])
 
   // Track the latest request so a slow earlier response can't land over a newer one.
   const reqSeq = useRef(0)
@@ -147,11 +209,7 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
         // Persist the query as a recent search only on a successful page land.
         setRecent((list) => {
           const next = addRecentSearch(list, q)
-          try {
-            localStorage.setItem(RECENT_SEARCHES_KEY, serializeRecentSearchs(next))
-          } catch {
-            // storage disabled (private mode / quota) — the in-memory list still works this session
-          }
+          persistRecent(next)
           return next
         })
       })
@@ -191,7 +249,12 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
   })
 
   const select = useCallback((hit: SearchHit) => {
-    setSelected({ convId: hit.convId, msgId: hit.msgId, nonce: Date.now() })
+    setSelected({
+      convId: hit.convId,
+      msgId: hit.msgId,
+      nonce: Date.now(),
+      convKind: hit.convKind,
+    })
   }, [])
 
   const moveFocus = useCallback(
@@ -253,12 +316,14 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
   const rows = state.status === "ready" ? state.page : []
   // The selected conversation's metadata. A substrate hit may reference a conversation not in the
   // list — fall back to a stub so ThreadView can still fetch history by id.
-  const selectedConv = selected ? (convById[selected.convId] ?? stubFor(selected.convId)) : null
+  const selectedConv = selected
+    ? (convById[selected.convId] ?? stubFor(selected.convId, selected.convKind))
+    : null
 
   return (
     <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
       {/* ── left rail ─────────────────────────────────────────────────────────── */}
-      <aside className="flex w-[360px] shrink-0 flex-col border-border border-r">
+      <aside className="flex shrink-0 flex-col border-border border-r" style={{ width: listWidth }}>
         <header className="titlebar flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
           <Button
             aria-label="Back to chat"
@@ -309,7 +374,12 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           {state.status === "idle" ? (
             recent.length > 0 ? (
-              <RecentList onPick={runRecent} queries={recent} />
+              <RecentList
+                onClearAll={clearAllRecent}
+                onPick={runRecent}
+                onRemove={removeRecent}
+                queries={recent}
+              />
             ) : (
               <EmptyState
                 hint="Type a word, or use from: / in: / after: / has:link / mentions:me"
@@ -366,7 +436,7 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
                     key={`${hit.convId}:${hit.msgId}`}
                     onClick={() => select(hit)}
                     onEnter={() => select(hit)}
-                    parseText={debounced.trim()}
+                    parseText={parsed?.text ?? debounced.trim()}
                   />
                 ))}
               </div>
@@ -377,6 +447,15 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
 
       {/* ── middle pane ───────────────────────────────────────────────────────── */}
       <section className="relative min-w-0 flex-1">
+        {/* Same drag-resize seam as the conversation list (chat-app.tsx) — shares `listWidth` so
+            the column feels like one app's rail, not a second differently-sized panel. */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
+        <div
+          className="-translate-x-1/2 absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-accent"
+          onDoubleClick={onResetWidth}
+          onPointerDown={onResizeDown}
+          title="Drag to resize · double-click to reset"
+        />
         {selectedConv ? (
           <ThreadView
             conversation={selectedConv}
@@ -401,10 +480,13 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
 /** A minimal conversation row for a substrate hit that references a conversation not in the local
  *  list. ThreadView only needs `id` + `kind` to fetch history by id; the rest is filled in as the
  *  server returns messages. */
-function stubFor(convId: string): TeamsConversation {
+// `kind` comes from the hit itself when known (server has this conv locally); a substrate-only
+// reference the server never ingested has no kind — "group" is the least-wrong guess there (a
+// bare DM ThreadView header degrades to "Direct message" either way once real data lands).
+function stubFor(convId: string, kind: TeamsConversation["kind"] | null): TeamsConversation {
   return {
     id: convId,
-    kind: "group",
+    kind: kind ?? "group",
     topic: null,
     lastMessageId: null,
     lastMessageVersion: 0,
@@ -435,11 +517,11 @@ function FilterBar({
   onScopeChange: (next: ScopeKind) => void
 }) {
   // ponytail: chips render from the LAST landed parsed query so they stay visible while the next
-  // query is in flight. Hidden in idle/empty states — no parsed yet, and default sort+scope means
-  // nothing to surface.
+  // query is in flight. The bar itself (sort + scope) must stay visible for ANY landed query — a
+  // plain string search with no KQL operators has zero chips but sort/scope still apply to it.
+  // (Bug: this used to hide the whole bar, including sort/scope, whenever there were no chips.)
   const chips = parsed ? filterChips(parsed) : []
-  const hasNonDefault = sort !== DEFAULT_SORT || scopeKind !== DEFAULT_SCOPE_KIND
-  if (chips.length === 0 && !hasNonDefault) return null
+  if (!parsed) return null
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-border border-b px-3 py-2">
       {chips.length > 0 && (
@@ -582,17 +664,36 @@ function ResultRow({
   )
 }
 
-function RecentList({ queries, onPick }: { queries: string[]; onPick: (q: string) => void }) {
+function RecentList({
+  queries,
+  onPick,
+  onRemove,
+  onClearAll,
+}: {
+  queries: string[]
+  onPick: (q: string) => void
+  onRemove: (q: string) => void
+  onClearAll: () => void
+}) {
   return (
     <div className="px-3 py-2">
-      <div className="px-1 pb-1 font-medium text-muted-foreground text-[11px] uppercase tracking-wide">
-        Recent searches
+      <div className="flex items-center justify-between px-1 pb-1">
+        <span className="font-medium text-muted-foreground text-[11px] uppercase tracking-wide">
+          Recent searches
+        </span>
+        <button
+          className="rounded px-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          onClick={onClearAll}
+          type="button"
+        >
+          Clear all
+        </button>
       </div>
       <ul className="flex flex-col gap-0.5">
         {queries.map((q) => (
-          <li key={q}>
+          <li className="group flex items-center" key={q}>
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               onClick={() => onPick(q)}
               type="button"
             >
@@ -602,6 +703,14 @@ function RecentList({ queries, onPick }: { queries: string[]; onPick: (q: string
                 icon={Search01Icon}
               />
               <span className="truncate">{q}</span>
+            </button>
+            <button
+              aria-label={`Remove "${q}" from recent searches`}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 group-hover:opacity-100"
+              onClick={() => onRemove(q)}
+              type="button"
+            >
+              <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
             </button>
           </li>
         ))}

@@ -26,6 +26,34 @@ export function pathFor(convId: string | null): string {
   return convId ? PREFIX + encodeURIComponent(convId) : "/chat/"
 }
 
-export function pathForSearch(): string {
-  return SEARCH_PATH
+/** `q`/`sort`/`scope` ride as URL search params on `/chat/search` — a refresh (or a shared link)
+ *  restores the search state instead of dropping back to empty. `sort`/`scope` are omitted when
+ *  at their default so a plain query keeps a clean URL. */
+export interface SearchUrlState {
+  q?: string
+  sort?: "relevance" | "recent"
+  scope?: "all" | "dm" | "group"
+}
+
+export function pathForSearch(state?: SearchUrlState): string {
+  if (!state) return SEARCH_PATH
+  const params = new URLSearchParams()
+  if (state.q) params.set("q", state.q)
+  if (state.sort && state.sort !== "relevance") params.set("sort", state.sort)
+  if (state.scope && state.scope !== "all") params.set("scope", state.scope)
+  const qs = params.toString()
+  return qs ? `${SEARCH_PATH}?${qs}` : SEARCH_PATH
+}
+
+/** Parse `q`/`sort`/`scope` back out of a `/chat/search?...` URL's search string. Defensive — a
+ *  garbage `sort`/`scope` value falls back to undefined (the caller's default) rather than
+ *  propagating an invalid enum into state. */
+export function parseSearchUrlState(search: string): SearchUrlState {
+  const params = new URLSearchParams(search)
+  const q = params.get("q") ?? undefined
+  const rawSort = params.get("sort")
+  const sort = rawSort === "recent" ? "recent" : undefined
+  const rawScope = params.get("scope")
+  const scope = rawScope === "dm" || rawScope === "group" ? rawScope : undefined
+  return { q, sort, scope }
 }

@@ -214,6 +214,38 @@ ones pass.
 
 ---
 
+### 10. Global message search (PSN-115)
+
+Proactive backfilling + full-screen search. Local FTS is the fast path; substrate (Teams server-side search) fills gaps; hits hydrate into `chat.db` and the WS `messages-upsert` delta flips `hydrated:false` rows live. Deep plan: [`PSN-115-search-e2e-plan.md`](PSN-115-search-e2e-plan.md).
+
+| ID | Steps | Must happen |
+|----|-------|-------------|
+| SB-01 | From `/chat/`, hit `⌘K` → "Search messages" | Route changes to `/chat/search`; AI + conversation-list columns hidden; left rail = search input, middle = placeholder |
+| SB-02 | Click the search icon at the top of the AI-assistant rail | Same `/chat/search` surface opens |
+| SB-03 | Type a term that exists in seeded messages (e.g. `deploy`) | Debounced (~250ms); result rows populate: sender · convTitle, snippet, relative time |
+| SB-04 | Row 1 | The matched term is wrapped in a yellow `<mark>` highlight (readable in light + dark) |
+| SB-05 | Click a result | Middle ThreadView opens that conversation scrolled to the message; `msg-jump-flash` ring appears |
+| SB-06 | A substrate hit whose message is NOT in `chat.db` (mock fixture: gap hit) | Row shows a muted "fetching context…" pill; after the WS `messages-upsert` delta lands, the pill disappears (hydrated flip) |
+| SB-07 | Click that un-hydrated substrate hit | ThreadView fetches the window and renders the message (not a permanent `missing`) |
+| SB-08 | Clear the query | Empty state: "No messages" + hint + icon; FilterBar hidden |
+| SB-09 | Type a nonsense term | Empty state (not an error) |
+| SB-10 | Kill the BFF mid-query, retry | Error state with a Retry button; no crash |
+| SB-11 | Type `from:alice deploy` | FilterBar shows a `from: alice` chip (removable ×) + the free-text runs the query; `parsed` echo drives the chips |
+| SB-12 | Click the × on the `from:` chip | Operator stripped from the query; search re-runs with the free text only |
+| SB-13 | Toggle sort Relevance ⇄ Recent | First-row identity changes; choice persists across reloads (`chat:search-sort`) |
+| SB-14 | Toggle scope DMs / Groups / All | Result set filters by conversation kind; All = unfiltered |
+| SB-15 | Keyboard: focus the listbox, `j` / `k` | Selection moves; `Enter` opens the focused row; `Esc` returns to `/chat/` |
+| SB-16 | Run two searches; reload | Recent searches (≤5) persist; click a recent to re-run |
+| SB-17 | Long/short: type a 1-char query, then a 300-char query | Result rows + FilterBar don't overflow; snippet wraps, no horizontal scroll |
+| SB-18 | Long/short: a hit whose convTitle is 200 chars mixed-script (VN/CJK) | Row truncates cleanly; no layout shift |
+| SB-19 | Dark scheme, populated + empty | No contrast/clipping; highlight + pill readable |
+| SB-20 | `POST /api/chat/search {service:"teams",query:"deploy"}` direct | 200; `rows` merge local + substrate; `parsed` echo present; `degraded` absent |
+| SB-21 | Mock provider returns 0 hits + `degraded:"rate_limited"` | Response carries `degraded`; UI shows the yellow "local results only" banner |
+| SB-22 | `pnpm test` (chat-server + chat FE) | Search/hydrate/parser unit + integration suites green |
+| SB-23 | `pnpm typecheck` + `BIOME_SINCE=origin/main pnpm check:changed` | Clean |
+
+---
+
 ## Cannot be verified locally
 
 | Area | Why |

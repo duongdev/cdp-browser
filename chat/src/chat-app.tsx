@@ -3,6 +3,7 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   ReloadIcon,
+  Search01Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -111,6 +112,7 @@ function HeaderButton({
 function AppHeader({
   onOpenSettings,
   onToggleAi,
+  onOpenSearch,
   canBack,
   canForward,
   filter,
@@ -118,6 +120,10 @@ function AppHeader({
 }: {
   onOpenSettings: () => void
   onToggleAi: () => void
+  /** Always-visible search entry (PSN-115). The AI-rail search icon only exists once that panel
+   *  is open, and it's collapsed by default — without this button, search had NO discoverable
+   *  entry point besides memorizing ⌘K. */
+  onOpenSearch: () => void
   canBack: boolean
   canForward: boolean
   filter: ListFilter
@@ -136,6 +142,7 @@ function AppHeader({
           the bar (PSN-99 regression — the Electron nav cluster drifted left toward the traffic lights). */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5">
+          <HeaderButton icon={Search01Icon} label="Search messages (⌘K)" onClick={onOpenSearch} />
           <HeaderButton icon={AiChipIcon} label="AI assistant (⌘⌥B)" onClick={onToggleAi} />
           <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
           {shell && (
@@ -1524,7 +1531,14 @@ export function ChatApp() {
   if (searchOpen) {
     return (
       <div className="flex h-[var(--app-h,100dvh)] w-full flex-col bg-background">
-        <SearchView convById={convById} namePref={namePref} onBack={backFromSearch} />
+        <SearchView
+          convById={convById}
+          listWidth={listWidth}
+          namePref={namePref}
+          onBack={backFromSearch}
+          onResetWidth={resetListWidth}
+          onResizeDown={onListResizeDown}
+        />
         {palette}
       </div>
     )
@@ -1542,6 +1556,7 @@ export function ChatApp() {
             canForward={canNav.forward}
             filter={listFilter}
             onFilterChange={setListFilter}
+            onOpenSearch={openSearch}
             onOpenSettings={() => setSettingsOpen(true)}
             onToggleAi={toggleAi}
           />
@@ -1612,6 +1627,7 @@ export function ChatApp() {
           canForward={canNav.forward}
           filter={listFilter}
           onFilterChange={setListFilter}
+          onOpenSearch={openSearch}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggleAi={toggleAi}
         />
