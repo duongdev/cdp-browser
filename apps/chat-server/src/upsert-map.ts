@@ -37,6 +37,7 @@ export function toConversationInput(
     lastMessageTs: c.lastMessageTs,
     lastMessagePreview: c.lastMessagePreview,
     lastMessageFromMe: c.lastMessageFromMe,
+    lastMessageSender: c.lastMessageSender,
     readHorizonTs: c.readTs,
     unreadBookmarkTs: c.unreadBookmarkTs,
   }
