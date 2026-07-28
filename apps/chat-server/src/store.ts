@@ -1006,6 +1006,24 @@ export function upsertUsers(
   run(rows)
 }
 
+/** The most-recently-seen cached display names, newest first. Backs the search box's bare `from:`
+ *  starter list (PSN-115) — `resolvePerson` is a matcher and returns nothing for an empty needle,
+ *  so an un-typed operator would otherwise render an empty dropdown. */
+export function listRecentUsers(
+  db: Db,
+  service: string,
+  limit = 8,
+): { id: string; displayName: string }[] {
+  const rows = db
+    .prepare(
+      `SELECT id, display_name FROM users
+       WHERE service = ? AND display_name IS NOT NULL AND display_name <> ''
+       ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(service, Math.max(1, limit)) as { id: string; display_name: string }[]
+  return rows.map((r) => ({ id: r.id, displayName: r.display_name }))
+}
+
 /** Cached names for a set of ids → Map(id → displayName). Only hits present (caller diffs for
  *  misses). Empty list → empty map. */
 export function getUsers(db: Db, service: string, ids: string[]): Map<string, string> {

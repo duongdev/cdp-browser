@@ -256,12 +256,16 @@ export interface SearchOpts {
   limit?: number
 }
 
-/** FTS MATCH on the folded query + SQL filters, relevance (bm25) then recency. */
+/** FTS MATCH on the folded query + SQL filters, relevance (bm25) then recency. When there's no
+ *  free-text term BUT a scope filter is set (sender / convId / convIds), falls back to a plain
+ *  scan — so `from:"Ann"` (no other text) returns Ann's messages instead of nothing (the FTS
+ *  index can't be MATCHed against an empty query). */
 export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
-  const match = toMatchQuery(opts.query)
-  if (!match) return []
   if (opts.convIds && opts.convIds.length === 0) return []
   const limit = Number.isFinite(opts.limit) && (opts.limit as number) > 0 ? opts.limit : 20
+  const match = toMatchQuery(opts.query)
+  const hasScope = opts.sender || opts.convId || (opts.convIds && opts.convIds.length > 0)
+  if (!match && !hasScope) return []
   // A scope is a variable-length IN list — generated named placeholders keep every value bound
   // (the rest of this query binds by name, and the two styles can't be mixed).
   const scopeIds = opts.convIds ?? []
@@ -269,12 +273,16 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
     ? `AND m.conv_id IN (${scopeIds.map((_, i) => `@scope${i}`).join(",")})`
     : ""
   const scopeParams = Object.fromEntries(scopeIds.map((id, i) => [`scope${i}`, id]))
+  const fts = match
+    ? `JOIN messages_fts f ON m.rowid = f.rowid
+       WHERE messages_fts MATCH @match`
+    : `WHERE 1=1`
+  const order = match ? "f.rank, m.ts DESC" : "m.ts DESC"
   const rows = db
     .prepare(`
       SELECT m.service, m.conv_id, m.id, m.sender_id, m.sender_name, m.ts, m.body
-      FROM messages_fts f
-      JOIN messages m ON m.rowid = f.rowid
-      WHERE messages_fts MATCH @match
+      FROM messages m
+      ${fts}
         AND m.deleted = 0
         AND (@service IS NULL OR m.service = @service)
         AND (@sender IS NULL OR m.sender_id = @sender)
@@ -283,12 +291,12 @@ export function searchMessages(db: Db, opts: SearchOpts): SearchHit[] {
         AND (@after IS NULL OR m.ts >= @after)
         AND (@before IS NULL OR m.ts <= @before)
         AND (@mentionsMe IS NULL OR m.mentions_me = @mentionsMe)
-      ORDER BY f.rank, m.ts DESC
+      ORDER BY ${order}
       LIMIT @limit
     `)
     .all({
       ...scopeParams,
-      match,
+      ...(match ? { match } : {}),
       service: opts.service ?? null,
       sender: opts.sender ?? null,
       convId: opts.convId ?? null,

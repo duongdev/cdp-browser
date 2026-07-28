@@ -271,8 +271,13 @@ export function createRoutes(deps: RoutesDeps) {
   // fold-matched so "ann" finds "Ann Wong". Capped; empty query returns the most-recent few.
   app.get("/people", (c) => {
     const { service } = pick(deps, c.req.query("service"))
-    const q = (c.req.query("q") ?? "").toString()
-    const people = resolvePerson(deps.db, service, { name: q, limit: 8 })
+    const q = (c.req.query("q") ?? "").toString().trim()
+    // `resolvePerson` is a MATCHER — it returns nothing for an empty needle. A bare `from:` (no
+    // letters typed yet) must still show a starter list, or the dropdown looks broken, so fall
+    // back to the most-recently-seen names.
+    const people = q
+      ? resolvePerson(deps.db, service, { name: q, limit: 8 })
+      : store.listRecentUsers(deps.db, service, 8)
     return c.json({ people })
   })
 
@@ -474,7 +479,11 @@ export function createRoutes(deps: RoutesDeps) {
     const substrateHits: SearchHit[] = []
     let degraded: SearchPage["degraded"] | undefined
     const substrateProviderHits: ProviderSearchHit[] = []
-    const substrateQueryText = parsed.text.trim() || query.trim()
+    // Substrate is a full-text search — it can't be filtered by sender/conv, only by query text.
+    // So an operators-only query (`from:"Ann"` with no free text) skips substrate entirely and
+    // relies on the local sender/conv scan above (the old fallback to the raw query string sent
+    // `from:"Ann"` to substrate as a search term and returned nothing).
+    const substrateQueryText = parsed.text.trim()
     if (substrateQueryText) {
       try {
         const page = await provider.searchMessages(substrateQueryText, {

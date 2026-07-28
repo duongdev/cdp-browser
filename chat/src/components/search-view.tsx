@@ -63,6 +63,9 @@ import type { TeamsConversation } from "../lib/teams-client"
 import { type ThreadHandle, ThreadView } from "./thread-view"
 
 const DEBOUNCE_MS = 250
+/** Idle window before a query is written to search history. Longer than DEBOUNCE_MS so the
+ *  intermediate queries of one continuous typing run collapse into a single history entry. */
+const RECENT_SETTLE_MS = 1200
 
 type ListState =
   | { status: "idle" }
@@ -193,6 +196,22 @@ export function SearchView({
     },
     [persistRecent],
   )
+  // The last query that produced results and is therefore eligible for history. Written by the
+  // fetch, consumed by the settle effect (or Enter) — a ref so it never re-renders.
+  const saveableRef = useRef<string | null>(null)
+  const commitRecent = useCallback(
+    (q?: string) => {
+      const value = (q ?? saveableRef.current ?? "").trim()
+      if (!value) return
+      saveableRef.current = null
+      setRecent((list) => {
+        const next = addRecentSearch(list, value)
+        persistRecent(next)
+        return next
+      })
+    },
+    [persistRecent],
+  )
   const clearAllRecent = useCallback(() => {
     setRecent([])
     persistRecent([])
@@ -270,12 +289,10 @@ export function SearchView({
         })
         setParsed(page.parsed ?? { text: q, filters: {} })
         setFocusedIndex(0)
-        // Persist the query as a recent search only on a successful page land.
-        setRecent((list) => {
-          const next = addRecentSearch(list, q)
-          persistRecent(next)
-          return next
-        })
+        // A landed page only marks the query as SAVEABLE — the settle effect below decides when to
+        // actually write it to history, so typing "hel" → pause → "lo" leaves one "hello" entry
+        // rather than one per intermediate query that happened to land.
+        saveableRef.current = q
       })
       .catch((e: unknown) => {
         if (ac.signal.aborted || mySeq !== reqSeq.current) return
@@ -290,7 +307,17 @@ export function SearchView({
         setState({ status: "error", message })
       })
     return () => ac.abort()
-  }, [debounced, sort, scopeKind, persistRecent])
+  }, [debounced, sort, scopeKind])
+
+  // History settle: only write a recent search once the user STOPS typing for a beat. Typing
+  // "hel" → pause → "lo" fires two searches (both land) but must leave ONE "hello" entry, not
+  // "hel" + "hello". The timer restarts on every keystroke, so only the final query survives.
+  // Enter commits immediately (see the input's onKeyDown) for the impatient path.
+  useEffect(() => {
+    if (!query.trim()) return
+    const t = setTimeout(() => commitRecent(), RECENT_SETTLE_MS)
+    return () => clearTimeout(t)
+  }, [query, commitRecent])
 
   const onSortChange = useCallback((next: SearchSort) => {
     setSort(next)
@@ -452,12 +479,17 @@ export function SearchView({
                     return
                   }
                 }
-                // Enter with no suggestion open picks the focused search result (Slack-like).
-                if (e.key === "Enter" && state.status === "ready") {
-                  const hit = state.page[focusedIndex]
-                  if (hit) {
-                    e.preventDefault()
-                    select(hit)
+                // Enter with no suggestion open commits the query to history immediately (the
+                // impatient path — no need to wait out RECENT_SETTLE_MS) and picks the focused
+                // search result (Slack-like).
+                if (e.key === "Enter") {
+                  commitRecent(query)
+                  if (state.status === "ready") {
+                    const hit = state.page[focusedIndex]
+                    if (hit) {
+                      e.preventDefault()
+                      select(hit)
+                    }
                   }
                 }
               }}
@@ -548,6 +580,7 @@ export function SearchView({
               >
                 {rows.map((hit, i) => (
                   <ResultRow
+                    active={selected?.convId === hit.convId && selected?.msgId === hit.msgId}
                     focused={i === focusedIndex}
                     hit={hit}
                     key={`${hit.convId}:${hit.msgId}`}
@@ -660,7 +693,7 @@ function FilterBar({
           ))}
         </ul>
       )}
-      <div className="ml-auto flex items-center gap-1">
+      <div className="flex items-center gap-1">
         <ToggleGroup
           aria-label="Sort results"
           className="gap-0.5"
@@ -714,12 +747,15 @@ function FilterBar({
 function ResultRow({
   hit,
   focused,
+  active,
   onClick,
   onEnter,
   parseText,
 }: {
   hit: SearchHit
   focused: boolean
+  /** Persistently highlighted when this row's message is the one open in the middle pane. */
+  active: boolean
   onClick: () => void
   onEnter: () => void
   /** The free-text portion of the query (operators stripped) to highlight in the snippet. */
@@ -730,9 +766,12 @@ function ResultRow({
     <div aria-selected={focused} role="option" tabIndex={-1}>
       <button
         className={cn(
-          "mx-2 my-0.5 flex w-[calc(100%-1rem)] flex-col gap-1 rounded-lg px-3 py-2.5 text-left transition-colors",
+          // mx-3 + w-[calc(100%-1.5rem)] aligns the row's box to the search input's px-3 edges so
+          // the result list and the input read as one column (pixel-perfect, not wider/narrower).
+          "mx-3 my-0.5 flex w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-transparent px-3 py-2.5 text-left transition-colors",
           "hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-          focused && "bg-muted",
+          active && "border-ring/40 bg-accent",
+          !active && focused && "bg-muted",
         )}
         onClick={onClick}
         onDoubleClick={onEnter}
@@ -864,7 +903,7 @@ function SuggestionPopover({
 }) {
   return (
     <div
-      className="absolute top-full left-3 z-30 mt-1 w-[calc(100%-1.5rem)] overflow-hidden rounded-lg border border-border bg-popover shadow-md"
+      className="absolute top-full left-0 z-30 mt-1 w-full overflow-hidden rounded-lg border border-border bg-popover shadow-md"
       id={id}
       role="listbox"
     >
