@@ -454,6 +454,18 @@ function ChatMessageRow({
                 onMouseEnter={reactBar.onEnter}
                 onMouseLeave={reactBar.onLeave}
               >
+                {/* Hover bridge (PSN-113 D): the reaction bar floats above with a 6px sideOffset,
+                    leaving an uncovered gap that fired mouseleave mid-transit (cursor never reached
+                    the bar before the close grace expired). This transparent pad spans that gap on
+                    the bar's anchor side, so cursor travel bubble→bar stays inside the hover region.
+                    Constrained to the bar's column so it can't intercept clicks on the message body
+                    or an adjacent upper bubble; aria-hidden so it's invisible to AT. */}
+                {canReact && !coarse && (
+                  <span
+                    aria-hidden
+                    className={cn("absolute -top-3 h-3 w-40", self ? "left-0" : "right-0")}
+                  />
+                )}
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
                 <div

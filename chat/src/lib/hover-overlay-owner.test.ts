@@ -58,16 +58,36 @@ describe("hover overlay owner", () => {
     expect(store.owner()).toBeNull()
   })
 
-  it("keeps at most one owner across a fast travel over many rows", () => {
+  it("a row-to-row swap now waits the open delay (never two bars, never an instant yank)", () => {
     const { store, clock } = make()
     store.requestOpen("a")
+    clock.tick(100) // a owns
+    // b brushes past while a is open — b does NOT evict a within the openDelay window
+    store.requestOpen("b")
+    expect(store.owner()).toBe("a")
+    clock.tick(99)
+    expect(store.owner()).toBe("a")
+    clock.tick(1) // b's openDelay fires → b claims, a is gone (never two painted)
+    expect(store.owner()).toBe("b")
+    store.requestOpen("c")
+    expect(store.owner()).toBe("b")
     clock.tick(100)
-    for (const id of ["b", "c", "d"]) {
-      store.requestOpen(id)
-      expect(store.owner()).toBe(id) // instant swap, never two
-    }
+    expect(store.owner()).toBe("c")
+  })
+
+  it("re-entering the live owner's bar cancels a pending open from a brush past another row", () => {
+    // The gap-crossing fix (PSN-113 D): the cursor leaves a (grace starts), brushes an adjacent
+    // bubble b (b schedules an open), then reaches a's bar (a's requestOpen cancels b's pending).
+    const { store, clock } = make()
+    store.requestOpen("a")
+    clock.tick(100) // a owns
+    store.requestClose("a") // grace starts (mouseleave from the bubble)
+    clock.tick(20) // mid-grace
+    store.requestOpen("b") // b brushes past — cancels a's pending close, schedules b's open
+    expect(store.owner()).toBe("a")
+    store.requestOpen("a") // cursor reaches a's bar — cancels b's pending, a already owns → stay
     clock.tick(500)
-    expect(store.owner()).toBe("d")
+    expect(store.owner()).toBe("a")
   })
 
   it("closes after the grace delay, not instantly", () => {
@@ -125,6 +145,22 @@ describe("hover overlay owner", () => {
     expect(store.owner()).toBe("a")
     store.release("a")
     expect(store.owner()).toBeNull()
+  })
+
+  it("the default closeDelay is 300ms (the gap-grace window, PSN-113 D)", () => {
+    const clock = fakeClock()
+    const store = createHoverOverlayOwner({
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+    store.requestOpen("a")
+    clock.tick(180) // default openDelay
+    expect(store.owner()).toBe("a")
+    store.requestClose("a")
+    clock.tick(299)
+    expect(store.owner()).toBe("a") // still in grace
+    clock.tick(1)
+    expect(store.owner()).toBeNull() // 300ms total
   })
 
   it("release beats a lock (blur / conversation switch with the picker open)", () => {

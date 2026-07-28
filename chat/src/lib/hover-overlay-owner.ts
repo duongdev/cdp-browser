@@ -12,9 +12,9 @@
 // use-hover-overlay.ts; the store itself knows nothing about the DOM.
 //
 // Delay policy:
-//  - Nothing open → opening waits `openDelay`, so brushing past a row never spawns a toolbar.
-//  - Something already open → switching row is INSTANT (the user is clearly in "picking" mode; a
-//    second delay there just feels laggy).
+//  - Opening always waits `openDelay`, so brushing past a row never spawns a toolbar — even when
+//    another overlay is already up. Previously a row-to-row swap was instant, which let a brush past
+//    an adjacent bubble yank ownership from a bar the user was actively moving toward (PSN-113 D).
 //  - Leaving waits `closeDelay`, the grace window that lets the cursor cross the anchor→content gap.
 //  - A locked owner (its emoji catalog is open) can't be evicted or closed by hover at all; only an
 //    authoritative dismissal (`release` on blur / conversation switch / unmount) takes it down.
@@ -22,7 +22,7 @@
 export interface HoverOverlayOptions {
   /** Dwell before an overlay appears when none is open. Default 180ms. */
   openDelay?: number
-  /** Grace before an overlay disappears after the pointer leaves. Default 140ms. */
+  /** Grace before an overlay disappears after the pointer leaves. Default 300ms. */
   closeDelay?: number
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
@@ -32,7 +32,7 @@ export interface HoverOverlayOwner {
   /** The id currently showing an overlay, or null. */
   owner(): string | null
   subscribe(listener: () => void): () => void
-  /** Pointer entered `id` — open after the delay, or immediately if another overlay is already up. */
+  /** Pointer entered `id` — open after the delay (even if another overlay is already up). */
   requestOpen(id: string): void
   /** Pointer left `id` — close after the grace delay. */
   requestClose(id: string): void
@@ -48,7 +48,7 @@ export interface HoverOverlayOwner {
 
 export function createHoverOverlayOwner(opts: HoverOverlayOptions = {}): HoverOverlayOwner {
   const openDelay = opts.openDelay ?? 180
-  const closeDelay = opts.closeDelay ?? 140
+  const closeDelay = opts.closeDelay ?? 300
   const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
   const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
 
@@ -79,12 +79,10 @@ export function createHoverOverlayOwner(opts: HoverOverlayOptions = {}): HoverOv
       if (lockedId !== null && lockedId !== id) return
       cancelPending()
       if (ownerId === id) return
-      // Already showing one somewhere else → swap instantly, so the invariant holds with no window
-      // in which both are painted.
-      if (ownerId !== null) {
-        set(id)
-        return
-      }
+      // Wait the open delay even when another overlay is already up. The old instant-swap let a
+      // brush past an adjacent bubble evict a bar the user was actively moving toward; now the new
+      // row only claims after the delay, and the old owner closes on its own grace — so there's
+      // still never a window in which both are painted (PSN-113 D).
       pending = setTimer(() => {
         pending = null
         set(id)
