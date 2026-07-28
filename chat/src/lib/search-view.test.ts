@@ -12,6 +12,7 @@ import {
   loadRecentSearchs,
   MAX_RECENT_SEARCHES,
   parseSort,
+  removeRecentSearch,
   SCOPE_KINDS,
   SEARCH_SORT_KEY,
   SORTS,
@@ -37,6 +38,15 @@ describe("highlightSegments", () => {
     expect(highlightSegments("Pushed the deploy", "deploy")).toEqual(["Pushed the ", "deploy"])
   })
 
+  it("splits so the plain segment always lands at an even index, matched at odd", () => {
+    const segs = highlightSegments("Pushed the deploy", "deploy")
+    expect(segs).not.toBeNull()
+    // biome-ignore lint/style/noNonNullAssertion: asserted above
+    segs!.forEach((seg, i) => {
+      if (i % 2 === 1) expect(seg.toLowerCase()).toBe("deploy")
+    })
+  })
+
   it("handles Vietnamese diacritics intact (case-sensitive slice, case-insensitive search)", () => {
     // The needle "triển khai" matches a different-cased substring; diacritics preserved.
     const segs = highlightSegments("Kế hoạch triển khai hôm nay", "TRIỂN KHAI")
@@ -44,12 +54,28 @@ describe("highlightSegments", () => {
     expect(segs).toEqual(["Kế hoạch ", "triển khai", " hôm nay"])
   })
 
-  it("returns multiple segments for a term that repeats", () => {
+  it("returns multiple segments for a term that repeats, plain always at even index", () => {
+    // Regression: a leading empty plain segment keeps even=plain/odd=match parity so the caller's
+    // `i % 2 === 1` check highlights the right half. The bug shipped this as
+    // ["deploy", " then ", "deploy", " again"] — even index 0 held a MATCH, so the renderer (which
+    // always treats even as plain) drew the leading "deploy" unhighlighted and lit up " then "
+    // instead.
     expect(highlightSegments("deploy then deploy again", "deploy")).toEqual([
+      "",
       "deploy",
       " then ",
       "deploy",
       " again",
+    ])
+  })
+
+  it("highlights a match at the very start of the snippet (bug repro: 'hello ...')", () => {
+    // Live bug (PSN-115): every message starts with the searched word ("hello"), so the match sits
+    // at index 0 on every row — the exact case the old parity-by-position logic got backwards.
+    expect(highlightSegments("hello world, welcome", "hello")).toEqual([
+      "",
+      "hello",
+      " world, welcome",
     ])
   })
 })
@@ -89,6 +115,18 @@ describe("recent searches", () => {
     // serialize caps at write, but be defensive on read too.
     expect(loadRecentSearchs(tooLong).length).toBeLessThanOrEqual(MAX_RECENT_SEARCHES)
   })
+
+  it("removeRecentSearch drops an exact match, leaves the rest in order", () => {
+    expect(removeRecentSearch(["deploy", "lunch", "hi"], "lunch")).toEqual(["deploy", "hi"])
+  })
+
+  it("removeRecentSearch is a no-op when the query isn't in the list", () => {
+    expect(removeRecentSearch(["deploy", "lunch"], "nope")).toEqual(["deploy", "lunch"])
+  })
+
+  it("removeRecentSearch on an empty list stays empty", () => {
+    expect(removeRecentSearch([], "deploy")).toEqual([])
+  })
 })
 
 describe("applyHydrated", () => {
@@ -99,6 +137,7 @@ describe("applyHydrated", () => {
       ts: 1,
       sender: "Alice",
       convTitle: "Demo",
+      convKind: "group" as const,
       snippet: "hi",
       source: "substrate" as const,
       hydrated: false,

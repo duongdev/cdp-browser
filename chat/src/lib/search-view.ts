@@ -10,23 +10,31 @@ import type { ParsedQuery, SearchHit } from "./chat-client"
 
 /** Split `snippet` into segments around case-insensitive matches of `term`. Returns `null` when
  *  `term` is blank or not found — the caller renders the snippet verbatim in that case. The
- *  returned array alternates plain / matched / plain / …, with always at least 3 entries when
- *  a match exists. */
+ *  returned array ALWAYS alternates plain (even index) / matched (odd index) — a leading match
+ *  gets a leading empty-string plain segment so parity holds even when the term opens the
+ *  snippet. Without this, a match at index 0 landed at segs[0] (even/plain) and the callers's
+ *  `i % 2 === 1` check highlighted the wrong half of the line (bug: "hello" at the start of a
+ *  message rendered unhighlighted while the rest of the line lit up). */
 export function highlightSegments(snippet: string, term: string): string[] | null {
   const t = term.trim()
   if (!t || !snippet) return null
   const lower = snippet.toLowerCase()
   const needle = t.toLowerCase()
   if (!lower.includes(needle)) return null
+  // Strict alternation: push a plain segment (possibly "" — e.g. a leading match) before EVERY
+  // match, then the match itself. This guarantees even index = plain, odd index = match,
+  // regardless of where matches fall. The final trailing plain segment is only pushed when
+  // non-empty (a match at the very end needs no empty tail); the LEADING one is always pushed,
+  // even empty, since that's the parity the caller depends on.
   const out: string[] = []
   let i = 0
-  while (i < snippet.length) {
+  for (;;) {
     const at = lower.indexOf(needle, i)
     if (at === -1) {
-      out.push(snippet.slice(i))
+      if (snippet.slice(i)) out.push(snippet.slice(i))
       break
     }
-    if (at > i) out.push(snippet.slice(i, at))
+    out.push(snippet.slice(i, at))
     out.push(snippet.slice(at, at + needle.length))
     i = at + needle.length
   }
@@ -47,6 +55,11 @@ export function addRecentSearch(list: string[], query: string): string[] {
   if (!q) return list
   const rest = list.filter((x) => x !== q)
   return [q, ...rest].slice(0, MAX_RECENT_SEARCHES)
+}
+
+/** Remove one entry from the recent-search list (exact match). Pure — no-op if absent. */
+export function removeRecentSearch(list: string[], query: string): string[] {
+  return list.filter((x) => x !== query)
 }
 
 /** Load the recent-search list. Tolerant of corruption — a malformed payload resets to empty. */
