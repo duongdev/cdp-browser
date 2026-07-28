@@ -449,6 +449,7 @@ function ChatMessageRow({
               (DOMPurify, strict allowlist) before it hits the DOM — never render body raw. */}
           <Popover open={reactBar.open}>
             <PopoverAnchor asChild>
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: hover-surface for the reaction bar; not interactive itself */}
               <div
                 className="relative min-w-0 max-w-[85%] md:max-w-[65ch]"
                 onMouseEnter={reactBar.onEnter}
