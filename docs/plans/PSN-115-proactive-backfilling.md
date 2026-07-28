@@ -104,3 +104,9 @@ Critical path: A → B → D → E → F → G → H → I. C runs alongside D. 
 - Electron-native Teams creds (structurally stubbed; the `/chat` Electron shell inherits search through the web server).
 - Full adaptive-card / attachment search beyond message body text.
 - Replacing the existing manual Settings backfill (kept as-is).
+
+## Related epics
+
+- **PSN-114 (Expose chats as MCP server)** — strong synergy, low conflict if sequenced. PSN-114 exposes `chat.db` queries as MCP tools for Claude Code; without PSN-115 those tools only see the synced DB subset. PSN-115's `provider.searchMessages` + hydrate + `/api/chat/search` are the **data plane PSN-114 should reuse** so an MCP `search_messages` reaches all Teams history, not just what's local. **Land PSN-115's search seam (WS-A/B/D) before PSN-114 wires its MCP tools.** Shared files to coordinate if the two run in parallel: `assistant/loop.ts` tool defs, `search.ts`, `contract.ts`, `routes.ts` — same-file edits are the only real conflict risk.
+
+- **E2E test plan** — the deep QE artifact for this epic lives in [`docs/testing/PSN-115-search-e2e-plan.md`](../testing/PSN-115-search-e2e-plan.md).
