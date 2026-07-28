@@ -24,6 +24,10 @@ export interface TeamsConversation {
   lastMessageFromMe: boolean
   /** True while an explicit mark-unread sentinel forces the row unread past the Teams horizon (t155). */
   unreadSticky: boolean
+  /** Sender display name of the last message (D3, read-time JOIN over `messages.sender_name`).
+   *  Absent when the last-message row isn't synced yet (a never-opened thread). Drives the
+   *  "FirstName: …" prefix in `previewLine` for group chats with ≥3 members. */
+  lastMessageSender?: string
   muted: boolean
   /** Local labels applied to this row (t156): set by applyPrefs from the prefs map, not the server
    *  conversation payload. Absent until prefs merge. */

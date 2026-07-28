@@ -194,6 +194,32 @@ describe("conversations", () => {
     )
     expect(cols).toContain("title")
   })
+
+  // PSN-113 C (D3): listConversations LEFT JOINs the last-message row to surface its sender name.
+  test("lastMessageSender is the joined last-message row's sender_name", () => {
+    upsertConversations(db, "teams", [
+      { id: "g1", kind: "group", lastMessageId: "m1", lastMessageVersion: 1, lastMessageTs: 100 },
+    ])
+    upsertMessages(db, "teams", "g1", [
+      { id: "m1", ts: 100, body: "hi", senderName: "Glory Nguyen - Group Office" },
+    ])
+    const row = listConversations(db, "teams").find((c) => c.id === "g1")
+    expect(row?.lastMessageSender).toBe("Glory Nguyen - Group Office")
+  })
+
+  test("lastMessageSender is absent when the last-message row isn't synced yet", () => {
+    upsertConversations(db, "teams", [
+      {
+        id: "g2",
+        kind: "group",
+        lastMessageId: "stale",
+        lastMessageVersion: 1,
+        lastMessageTs: 100,
+      },
+    ])
+    const row = listConversations(db, "teams").find((c) => c.id === "g2")
+    expect(row?.lastMessageSender).toBeUndefined()
+  })
 })
 
 describe("read state", () => {

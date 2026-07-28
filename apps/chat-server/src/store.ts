@@ -289,9 +289,11 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
       SELECT c.id, c.kind, c.topic, c.title, c.avatar_user_id, c.member_ids,
              c.last_message_id, c.last_message_version, c.last_message_ts,
              c.last_message_preview, c.last_message_from_me, c.muted,
-             r.read_horizon_ts, r.local_read_ts, r.unread_bookmark_ts
+             r.read_horizon_ts, r.local_read_ts, r.unread_bookmark_ts,
+             m.sender_name AS last_message_sender_name
       FROM conversations c
       LEFT JOIN read_state r ON r.service = c.service AND r.conv_id = c.id
+      LEFT JOIN messages m ON m.service = c.service AND m.conv_id = c.id AND m.id = c.last_message_id
       WHERE c.service = ?
       ORDER BY c.last_message_ts DESC NULLS LAST, c.id
     `)
@@ -321,6 +323,9 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
       lastMessageTs: r.last_message_ts,
       lastMessagePreview: r.last_message_preview,
       lastMessageFromMe: !!r.last_message_from_me,
+      // Read-time JOIN of the last message row (D3). Absent when `last_message_id` has no row yet
+      // (a never-opened thread) — degrades to no prefix in `previewLine`, matching native Teams.
+      ...(r.last_message_sender_name ? { lastMessageSender: r.last_message_sender_name } : {}),
       readTs,
       unreadSticky: sticky,
       muted: !!r.muted,
@@ -345,6 +350,7 @@ interface ReadRow {
   read_horizon_ts: number | null
   local_read_ts: number | null
   unread_bookmark_ts: number | null
+  last_message_sender_name: string | null
 }
 
 /** The watermark a row's unread is measured against: `lastMessageTs > readTs` means unread.

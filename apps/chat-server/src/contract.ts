@@ -39,6 +39,10 @@ export interface ChatConversation {
   lastMessageFromMe: boolean
   /** True while an explicit mark-unread bookmark forces the row unread past the read watermark. */
   unreadSticky: boolean
+  /** The sender display name of the last message, surfaced via a read-time JOIN over
+   *  `messages.sender_name` (D3). Absent when the last-message row isn't synced yet (a never-opened
+   *  thread) or the conversation has no messages — `previewLine` degrades to no sender prefix. */
+  lastMessageSender?: string
   muted: boolean
   /** Local labels applied to this row (from prefs, not the provider payload). */
   labels?: string[]
