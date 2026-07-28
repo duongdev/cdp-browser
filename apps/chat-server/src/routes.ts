@@ -11,12 +11,27 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type BetterSqlite3 from "better-sqlite3"
 import { Hono } from "hono"
-import type { BackfillStatus, ChatMessage, ChatService } from "./contract.ts"
+import type {
+  BackfillStatus,
+  ChatConversation,
+  ChatMessage,
+  ChatService,
+  SearchHit,
+  SearchPage,
+  SearchScope,
+} from "./contract.ts"
 import { MAX_VERSIONS_PER_MESSAGE } from "./edit-history.ts"
 import { amsObjectId, amsUrlFromSrc } from "./media-images.ts"
 import { findByObjectId } from "./media-store.ts"
-import type { AvatarResult, ChatProvider, MediaBytes } from "./providers/provider.ts"
+import type {
+  AvatarResult,
+  ChatProvider,
+  MediaBytes,
+  ProviderSearchHit,
+} from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
+import { listConversationsByQuery, resolvePerson, resolveScope, searchMessages } from "./search.ts"
+import { parseQuery } from "./search-query.ts"
 import * as store from "./store.ts"
 import { toConversationInput, toMessageInput } from "./upsert-map.ts"
 
@@ -40,12 +55,24 @@ export interface BackfillAccessor {
   getBackfillStatus(): BackfillStatus
 }
 
+/** The hydrate accessor a service's engine exposes (PSN-115 WS-B/D). Optional so tests/boot without
+ *  an engine still serve the search route — substrate hits just stay `hydrated:false` until the
+ *  next sweep picks the conversation up. */
+export interface HydrateAccessor {
+  /** Fire-and-forget batched hydrate for substrate hits not yet in chat.db. The route does NOT
+   *  await this; completion reaches the FE via the existing `messages-upsert` WS delta. */
+  hydrateHits(hits: ProviderSearchHit[]): Promise<unknown>
+}
+
 export interface RoutesDeps {
   db: Db
   /** service id → provider. `service` defaults to "teams". */
   providers: Map<ChatService, ChatProvider>
   /** service id → backfill engine. Optional so tests/boot without an engine still serve the route. */
   backfills?: Map<ChatService, BackfillAccessor>
+  /** service id → hydrate engine (PSN-115). Optional — the search route degrades to local-only
+   *  hydrate-deferred rows when no engine is wired (e.g. unit tests). */
+  hydrates?: Map<ChatService, HydrateAccessor>
   /** The non-secret VAPID public key the FE uses as `applicationServerKey` (WS-G). Absent → the
    *  key route returns null and push is effectively disabled. */
   vapidPublicKey?: string
@@ -349,6 +376,212 @@ export function createRoutes(deps: RoutesDeps) {
       customTitle: b.customTitle,
     })
     return c.json({ prefs })
+  })
+
+  // ---- search (PSN-115 WS-D) -----------------------------------------------
+  // One request-response: merge local FTS + substrate, dedupe by (convId,msgId), apply sort +
+  // scope, return the merged row list. Background hydrate-on-render rides the existing WS delta hub
+  // (hydrate goes through store.upsertMessages → the existing `messages-upsert` delta fires → the
+  // open search view flips `hydrated:false` rows in place). NO SSE, no new transport.
+  app.post("/search", async (c) => {
+    const b = await readBody(c)
+    const { service, provider } = pick(deps, b.service)
+    const query: string = typeof b.query === "string" ? b.query : ""
+    const parsed = parseQuery(query)
+    const sort: "relevance" | "recent" = b.sort === "recent" ? "recent" : "relevance"
+    const scope: SearchScope = b.scope && typeof b.scope === "object" ? b.scope : { kind: "all" }
+
+    // Conv-id → {title, kind} for snippet/scope resolution. Built once; substrate hits may
+    // reference convs we have never ingested, in which case title stays null and kind is unknown.
+    const convs = new Map<string, { title: string | null; kind: ChatConversation["kind"] | null }>()
+    for (const cv of store.listConversations(deps.db, service)) {
+      convs.set(cv.id, { title: cv.title ?? cv.topic ?? null, kind: cv.kind })
+    }
+
+    // ---- LOCAL leg: FTS over the folded shadow index ----------------------
+    // Filters we can honour natively: sender (resolvePerson → id), conv (in: → convId), date range,
+    // mentionsMe. `has:` is FTS-unsupported today — when present, the local leg is empty (honest:
+    // we'd rather show zero local than wrong local). The substrate leg can still surface them.
+    let localHits: SearchHit[] = []
+    const ff = parsed.filters
+    const hasUnsupportedByFts = ff.has && ff.has.length > 0
+    let localSkipped = false
+    if (!hasUnsupportedByFts) {
+      const senderId =
+        ff.from === undefined
+          ? undefined
+          : resolvePerson(deps.db, service, { name: ff.from })[0]?.id
+      // `from:` set but unresolved locally → no local hits (don't fall through to unfiltered).
+      if (ff.from === undefined || senderId !== undefined) {
+        let convIdFilter: string | undefined
+        if (ff.in !== undefined) {
+          // Resolve `in:` to a convId by title/topic/`in:`-literal match. None → no local hits.
+          const matches = listConversationsByQuery(deps.db, service, { query: ff.in, limit: 5 })
+          if (!matches.length) {
+            localSkipped = true
+          } else if (matches.length === 1) {
+            convIdFilter = matches[0].id
+          } else {
+            // Ambiguous name → narrow with exact-title preference, else first match.
+            const want = ff.in.toLowerCase()
+            const exact = matches.find((m) => (m.title ?? "").toLowerCase() === want)
+            convIdFilter = (exact ?? matches[0]).id
+          }
+        }
+        if (!localSkipped) {
+          const ftsHits = searchMessages(deps.db, {
+            query: parsed.text,
+            service,
+            sender: senderId,
+            convId: convIdFilter,
+            after: ff.afterTs,
+            before: ff.beforeTs,
+            mentionsMe: ff.mentionsMe,
+            limit: 50,
+          })
+          localHits = ftsHits.map((h) => {
+            const cv = convs.get(h.convId)
+            return {
+              convId: h.convId,
+              msgId: h.msgId,
+              ts: h.ts ?? 0,
+              sender: h.senderName ?? h.senderId ?? "",
+              convTitle: cv?.title ?? null,
+              snippet: h.snippet,
+              source: "local" as const,
+              hydrated: true,
+            }
+          })
+        }
+      }
+    }
+
+    // ---- SUBSTRATE leg: provider searchMessages ---------------------------
+    // We pass only the free-text substring — operators were extracted by the parser and are applied
+    // as post-filters below so local + substrate honour them uniformly.
+    const substrateHits: SearchHit[] = []
+    let degraded: SearchPage["degraded"] | undefined
+    const substrateProviderHits: ProviderSearchHit[] = []
+    const substrateQueryText = parsed.text.trim() || query.trim()
+    if (substrateQueryText) {
+      try {
+        const page = await provider.searchMessages(substrateQueryText, {
+          sort,
+          cursor: b.cursor ?? null,
+        })
+        for (const ph of page.rows) {
+          substrateProviderHits.push(ph)
+          const cv = convs.get(ph.convId)
+          substrateHits.push({
+            convId: ph.convId,
+            msgId: ph.msgId,
+            ts: ph.ts,
+            sender: ph.sender,
+            convTitle: cv?.title ?? null,
+            snippet: ph.preview,
+            source: "substrate",
+            hydrated: store.hasMessage(deps.db, service, ph.convId, ph.msgId),
+          })
+        }
+      } catch (err) {
+        // Substrate auth/rate-limit/transport failure → degrade to local-only (honest signal).
+        // Non-ProviderError still counts as `upstream_error` — never crash the search route.
+        if (err instanceof ProviderError) {
+          degraded = err.code === "rate_limited" ? "rate_limited" : "auth"
+        } else {
+          degraded = "upstream_error"
+        }
+      }
+    }
+
+    // ---- MERGE + DEDUPE ----------------------------------------------------
+    // Local wins on (convId,msgId) collisions: it's the authoritative/hydrated copy. The dedupe
+    // key is the message identity, so a substrate hit pointing at a message already in chat.db is
+    // replaced by the local row (which carries `hydrated:true` + an FTS snippet).
+    const seen = new Set<string>()
+    const merged: SearchHit[] = []
+    for (const h of localHits) {
+      const k = `${h.convId}:${h.msgId}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      merged.push(h)
+    }
+    for (const h of substrateHits) {
+      const k = `${h.convId}:${h.msgId}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      merged.push(h)
+    }
+
+    // ---- POST-FILTERS on the merged set -----------------------------------
+    // `from:`/`in:` post-filter both legs uniformly (local already narrowed where it could).
+    // `has:` is FTS-unsupported locally, so it effectively narrows the substrate leg only.
+    const filtered = merged.filter((h) => {
+      if (ff.from !== undefined) {
+        const want = ff.from.toLowerCase()
+        if (!h.sender.toLowerCase().includes(want)) return false
+      }
+      if (ff.in !== undefined) {
+        const want = ff.in.toLowerCase()
+        const titleMatch = (h.convTitle ?? "").toLowerCase().includes(want)
+        const idMatch = h.convId.toLowerCase().includes(want)
+        if (!titleMatch && !idMatch) return false
+      }
+      return true
+    })
+
+    // ---- SCOPE ------------------------------------------------------------
+    // dm/group from the conv's stored kind; folder/label resolved via resolveScope. Empty convIds
+    // under folder/label = "nothing qualifies", NOT "unfiltered" (matches search.ts convention).
+    let scoped = filtered
+    if (scope.kind === "dm" || scope.kind === "group") {
+      scoped = filtered.filter((h) => {
+        const kind = convs.get(h.convId)?.kind
+        return scope.kind === "dm" ? kind === "oneOnOne" : kind === "group"
+      })
+    } else if (scope.kind === "folder" || scope.kind === "label") {
+      const resolved = resolveScope(deps.db, service, scope.name)
+      const ids = resolved ? new Set(resolved.convIds) : new Set<string>()
+      scoped = filtered.filter((h) => ids.has(h.convId))
+    }
+
+    // ---- SORT -------------------------------------------------------------
+    // `recent` → ts desc. `relevance` → preserve substrate's native rank (Microsoft owns ranking),
+    // local FTS hits (already bm25-ranked inside their own set) appended after. A deterministic
+    // tiebreaker (convId,msgId) keeps the order stable across renders.
+    if (sort === "recent") {
+      scoped.sort((a, b) => b.ts - a.ts || (a.msgId < b.msgId ? -1 : 1))
+    } else {
+      scoped.sort((a, b) => {
+        if (a.source !== b.source) return a.source === "substrate" ? -1 : 1
+        if (a.source === "local") return b.ts - a.ts || (a.msgId < b.msgId ? -1 : 1)
+        return 0
+      })
+    }
+
+    // ---- BACKGROUND HYDRATE-ON-RENDER -------------------------------------
+    // Fire-and-forget: substrate hits not yet in chat.db get their window fetched + upserted. The
+    // existing `messages-upsert` WS delta reaches the open search view, which flips `hydrated:false`
+    // rows in place. Never awaited — the response returns immediately. The hydrate engine's own
+    // single-flight + page ceiling bounds the work; absence of an engine just means rows stay
+    // `hydrated:false` until the next sweep picks the conv up.
+    const hydrateEngine = deps.hydrates?.get(service)
+    if (hydrateEngine) {
+      const notHydrated = substrateProviderHits.filter(
+        (ph) => !store.hasMessage(deps.db, service, ph.convId, ph.msgId),
+      )
+      if (notHydrated.length) void hydrateEngine.hydrateHits(notHydrated)
+    }
+
+    // cursor paging is deferred — substrate from/size chaining is a later increment. Returning null
+    // is honest: the merged page is the best we have right now.
+    return c.json({
+      rows: scoped,
+      parsed,
+      cursor: null,
+      total: scoped.length,
+      ...(degraded ? { degraded } : {}),
+    } satisfies SearchPage)
   })
 
   // ---- read state ----------------------------------------------------------

@@ -345,6 +345,11 @@ export interface AssistantCitation {
 // providers/provider.ts) vs the MERGED SearchHit the BFF's `/api/chat/search` route returns after
 // fusing local FTS + substrate rows, deduping by (convId,msgId) and hydrating conv titles/snippets.
 
+// `ParsedQuery` is the parsed-KQL echo the FE renders filter chips from. Defined in
+// search-query.ts (pure parser, no contract deps) and re-exported here so the FE imports the whole
+// search contract from one place.
+export type { ParsedFilters, ParsedQuery } from "./search-query.ts"
+
 /** A scope filter the user applies in the search surface. `all`/`dm`/`group` are structural kinds;
  *  `folder`/`label` reference a BFF-local organisation the provider never sees (`conversation_prefs`
  *  in the store — `listScopes`/`resolveScope` over `prefs`). */
@@ -371,10 +376,22 @@ export interface SearchHit {
   hydrated: boolean
 }
 
-/** A page of search results. `cursor` is opaque to the FE; `degraded` is set when substrate
- *  401/429'd and the page is local-only (honest signal, never a silent failure). */
+/** `POST /api/chat/search` body (PSN-115 WS-D). `query` is raw KQL; `sort` defaults to relevance. */
+export interface SearchRequest {
+  service: ChatService
+  query: string
+  sort?: "relevance" | "recent"
+  scope?: SearchScope
+  cursor?: string | null
+}
+
+/** A page of search results. `parsed` echoes the parsed KQL so the FE can render filter chips
+ *  server-side; `degraded` is set when substrate 401/429'd and the page is local-only (honest
+ *  signal, never a silent failure). */
 export interface SearchPage {
   rows: SearchHit[]
+  /** The parsed query echo — chips render from this. Always present. */
+  parsed: import("./search-query.ts").ParsedQuery
   cursor: string | null
   total: number
   /** Present when substrate was unreachable / rate-limited and the page is local-only. */
