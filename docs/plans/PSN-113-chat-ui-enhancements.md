@@ -11,7 +11,20 @@ Four targeted fixes on the `/chat` surface, each a daily-driver-felt papercut:
 3. **Group-chat preview + notification toast** prefix the sender’s first name: “Glory: Hello”.
 4. **Reaction pane hover** stops vanishing mid-transit — the bar survives the cursor crossing the gap, and an adjacent bubble no longer steals an open bar.
 
-Constraints (from the issue): self-chat only, no mutations on other users’ threads. Verification is **visual and mandatory** — `/cdp` + chrome-devtools MCP against `pnpm chat:bff` (and the probe host `100.85.206.8:9222`).
+Constraints (from the issue): self-chat only, no mutations on other users’ threads.
+
+## Verification (no vision this session)
+
+This session has **no vision**. Every workstream is verifiable for *correctness* without a screenshot — TDD + real-input e2e + DOM/JS state reads. Vision is only the late "feel" gate (does the bridge look right, is the prefix readable) — that falls to the operator's daily-driver pass, which is the project's bar anyway ("I'd want to use this").
+
+- **Unit (TDD, pure):** the bulk. `conversation-view.test.ts`, `hover-overlay-owner.test.ts`, a Headless Tiptap editor in jsdom for the composer keydown/doc assertions, store.ts JOIN test.
+- **E2E, real input (no `dispatchEvent`):** Playwright / chrome-devtools MCP `Input.*` for click/type/hover/key — drives the mock stack. Per `docs/conventions/e2e-verification.md`.
+- **State reads via `evaluate_script`:** `document.activeElement`, `editor.isActive('bold')`, Radix `data-state` / `aria-pressed`, `getBoundingClientRect`, computed styles, ProseMirror `view.state.doc.toJSON()`. Read-only — never to *drive* the UI.
+- **Inbound simulation:** `pnpm chat:mock:say -d '{"convId":"…","text":"…"}'` → assert the WS delta / `chat:notify` payload body string + the rendered sidebar preview text.
+- **Mock stack needs Node 24** (`nvm use 24` — `better-sqlite3` is Node-24-ABI; Node 22/20 fails `ERR_DLOPEN_FAILED`). Per `docs/testing/chat-qa.md`.
+- `/regression` dispatches the chat-QA pass to subagents (verdict only, evidence stays on disk). Extend `docs/testing/chat-qa.md` with new case IDs for A–D (the doc is "extended, never rewritten").
+
+**Residual needing a human/vision eye before merge:** the hover "feel" (lag, bridge geometry), the prefix's visual weight in a long preview, light/dark pixel check. The operator does this; it is not a blocker for `build`-phase correctness gates.
 
 ## Baseline (probed)
 
@@ -41,14 +54,14 @@ Each is one session. Same branch, same PR throughout.
 - In `handleKeyDown` (composer.tsx:341), handle `Shift+Enter`: if `ed.isActive("listItem") || ed.isActive("codeBlock")` → return false (current hardBreak/native); else `event.preventDefault(); ed.chain().focus().splitBlock().run(); return true`.
 - Add `onMouseDown={(e) => e.preventDefault()}` to the **Aa / Formatting** toggle (composer.tsx:845) and the **Attach** button (composer.tsx:655).
 - Tests: extend `chat/src/lib/rich-compose.test.ts`? The keydown lives in the component (not pure) — cover the new branch via a focused Tiptap instance in a vitest + jsdom test (Headless editor) asserting the post-Shift+Enter doc is two paragraphs, and that `- ` on the second produces a list only on that paragraph.
-- **Verify (visual, mandatory):** `/cdp` against `pnpm chat:bff` self-chat — type a line, Shift+Enter, `- item` → bullet applies to the new line only; click Aa → editor keeps focus (caret visible); click B with empty caret → B highlights at once.
+- **Verify (no vision):** Headless Tiptap in jsdom — after `text + Shift+Enter + "- item"`, assert `editor.getJSON()` is `{ doc: { type:'doc', content:[ {type:'paragraph',...}, {type:'bulletList', content:[{type:'listItem',...}]}] } }` (the bullet wraps only the second paragraph). Real-input e2e on the mock stack: focus the editor, `page.keyboard` type the same sequence, `evaluate_script` reads `editor.getHTML()` → assert two-block structure. Focus-keep: `page.click('button[aria-label="Formatting"]')`, then `evaluate_script(() => document.activeElement?.className)` → assert it’s the `.ProseMirror` node (same for Attach).
 
 ### B — Composer: format active states
 **Touches:** `chat/src/components/composer.tsx`.
 - Add `onTransaction` to `useEditor` config (composer.tsx:386 region) → `setTick`.
 - Convert the 5 block `FmtButton`s to reflect `editor.isActive(...)` (accent bg + foreground when active). Keep them as `Button` (not ToggleGroup) — a per-button `aria-pressed` + conditional class is enough.
 - Tests: unit-test the active-derivation is unchanged for BIUS; the block-active is a render concern — assert via the Headless editor that `editor.isActive("bulletList")` is true after `toggleBulletList`.
-- **Verify (visual):** `/cdp` — click each of B/I/U/S with no selection → highlights immediately; place caret in a list/quote/code-block → the corresponding toolbar button shows active; move caret out → clears. Dependent on A (same file) — do A then B in the same session or sequence.
+- **Verify (no vision):** Real-input e2e on the mock stack — focus editor, `page.click` each BIUS ToggleGroupItem with an empty selection, then `evaluate_script(() => editor.isActive('bold'))` (and `…('italic'|'underline'|'strike')`) → assert true; also assert the ToggleGroupItem DOM has `data-state="on"`. For block formats: `page.click` the bullet-list button, `evaluate_script(() => editor.isActive('bulletList'))` → true, and the FmtButton has `aria-pressed="true"`; move caret to a plain paragraph → `aria-pressed="false"`. Dependent on A (same file) — do A then B in the same session or sequence.
 
 ### C — Group sender prefix (sidebar preview + toast)
 **Touches:** `apps/chat-server/src/store.ts` (conv-row SELECT + shaper), `apps/chat-server/src/contract.ts` (`ChatConversation`), `chat/src/lib/teams-client.ts` (`TeamsConversation`), `chat/src/lib/conversation-view.ts` (`previewLine`), `chat/src/components/conversation-row.tsx` (pass `namePref`? no — always first name), `chat/src/chat-app.tsx` (notify build already calls `previewLine`).
@@ -56,7 +69,7 @@ Each is one session. Same branch, same PR throughout.
 - contract.ts + teams-client.ts: add `lastMessageSender?: string` to the conv shape.
 - conversation-view.ts `previewLine`: accept the sender (already on `conv`), prefix when `conv.kind === "group" && (conv.memberIds?.length ?? 0) > 2 && !conv.lastMessageFromMe && conv.lastMessageSender` → `` `${formatName(conv.lastMessageSender, { mode: "first" })}: ${base}` ``. Reuse `formatName` from `display-name.ts`.
 - Tests: pure unit tests in `conversation-view.test.ts` — group + sender → prefixed; group + fromMe → not; oneOnOne → not; group + memberIds≤2 → not; unknown sender → not. store.ts: a test that a conv whose last_message_id matches a messages row yields `lastMessageSender`, and a missing row yields undefined.
-- **Verify (visual):** `/cdp` against the probe host + `pnpm chat:bff` — a group chat (≥3 members) shows “Glory: …” in the sidebar; trigger an inbound (mock `say`) → toast body reads “Glory: …”. 1:1 DM shows no prefix.
+- **Verify (no vision):** Pure unit tests cover the prefix predicate (group/DM/fromMe/memberCount/unknown). Backend: a store.ts test asserting a conv whose `last_message_id` matches a messages row yields `lastMessageSender`, missing row → undefined. E2E on the mock stack: `GET /api/chat/conversations` → assert the group conv’s `lastMessageSender` + the rendered sidebar row text startsWith `"FirstName: "`; `pnpm chat:mock:say` into a group conv → read the WS delta / `chat:notify` payload body → assert it startsWith `"FirstName: "`. 1:1 DM and self-sent last message → assert no prefix.
 - **Risk:** the JOIN must cover EVERY conv-row read (HTTP list, WS snapshot, WS delta). Missing one → flicker. Single-owner the row shape so it can’t drift.
 
 ### D — Reaction pane hover bridge
@@ -64,7 +77,7 @@ Each is one session. Same branch, same PR throughout.
 - hover-overlay-owner.ts: (a) raise default `closeDelay` (~300ms); (b) replace instant-swap-while-open (line 84-86) with a short pending open (reuse `openDelay`) so a brush doesn’t evict a live owner; the old owner closes on its own grace.
 - message-row.tsx: render an invisible bridge (a tall transparent pad / `before` pseudo-element on the bar) spanning the bubble→bar gap so `onMouseEnter` on the bar cancels the close before the gap transit completes; ensure the bar sits above adjacent bubbles (z-index) and captures the pointer first.
 - Tests: pure timing tests in `hover-overlay-owner.test.ts` (already exists per the lib) — assert a second `requestOpen(B)` while A is open does NOT evict A instantly; A closes only after its grace; entering the bar region cancels the close.
-- **Verify (visual):** `/cdp` — hover a bubble, move cursor up to the reaction bar across the gap → bar stays; hover the lower of two stacked bubbles, move up toward its bar (crossing the upper bubble) → the LOWER bubble’s bar survives, the upper does not steal.
+- **Verify (no vision):** Pure timing tests in `hover-overlay-owner.test.ts` (DI timers) — assert (a) `closeDelay` raised to ~300ms; (b) a second `requestOpen(B)` while A is open does NOT evict A instantly (A still owns until its own grace fires); (c) entering the bar region cancels the pending close. E2E real-input: two stacked bubbles, `page.hover` the lower, then move the mouse toward its bar in steps (real `Input.dispatchMouseEvent`), crossing the upper bubble’s box — `evaluate_script` reads the lower bar’s `data-state`/opacity → assert still open; the upper bar is NOT open. Assert the bridge element’s `getBoundingClientRect` spans the bubble→bar gap.
 - **Risk:** slowing the swap can feel laggy when deliberately moving between bubbles. Tune by feel; keep `openDelay` short. If the bridge element traps clicks on the message, constrain it to the bar’s anchor column only.
 
 ### Bug-sweep (last)
@@ -91,7 +104,7 @@ A→B sequential. C and D parallel with A/B.
 - [ ] C: A group chat (≥3 members) shows “FirstName: …” in the sidebar preview and in the OS/web notification body; 1:1 DMs and self-sent last messages show no prefix; unknown sender degrades to no prefix.
 - [ ] D: The reaction bar survives the cursor moving from the bubble to the bar; an adjacent upper bubble no longer steals an open bar mid-transit.
 - [ ] `pnpm test`, `pnpm typecheck`, `pnpm check:changed` green.
-- [ ] `/cdp` visual pass (light + dark) for every WS, screenshots in the Linear comment.
+- [ ] No-vision e2e green per WS (real input + `evaluate_script` state reads) on the mock stack; unit tests cover the pure predicates. Light/dark **visual** pass is the operator's daily-driver gate (not a `build`-phase blocker — this session has no vision).
 - [ ] `/` browser PWA byte-unchanged; no new dependencies.
 
 ## Out of scope
