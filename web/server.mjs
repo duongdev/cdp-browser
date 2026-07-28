@@ -1104,7 +1104,12 @@ async function teamsConversations(cursor) {
       typeof raw.lastMessage.from === "string" &&
       raw.lastMessage.from
     ) {
-      lastFromByConvId.set(raw.id, raw.lastMessage.from)
+      // `lastMessage.from` arrives as a bare `8:orgid:<oid>` MRI OR a contacts URL tail
+      // (`https://contacts.skype.com/…/8:orgid:<oid>`) — see isSelfLastMessage. oidFromMri only
+      // strips the `8:orgid:` prefix, so feed it the `/`-tail or Graph.getByIds can't match it
+      // and every group sender stays unresolved (the fresh-DB 0/42 on real data).
+      const from = raw.lastMessage.from.split("/").pop() || raw.lastMessage.from
+      lastFromByConvId.set(raw.id, from)
     }
   }
   return {
