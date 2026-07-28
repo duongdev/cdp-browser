@@ -14,11 +14,13 @@
 import {
   Alert02Icon,
   ArrowLeft01Icon,
+  BubbleChatIcon,
   Cancel01Icon,
   InboxIcon,
   Loading03Icon,
   ReloadIcon,
   Search01Icon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -28,7 +30,9 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import {
   ChatApiError,
+  fetchPeople,
   type ParsedQuery,
+  type PersonSuggestion,
   type SearchHit,
   type SearchPage,
   searchMessages,
@@ -36,6 +40,7 @@ import {
 import { parseSearchUrlState, pathForSearch } from "../lib/chat-route"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { relativeTime } from "../lib/conversation-view"
+import { applySuggestion, detectSuggestion, type SuggestionRange } from "../lib/search-suggest"
 import {
   addRecentSearch,
   applyHydrated,
@@ -105,6 +110,65 @@ export function SearchView({
     nonce: number
     convKind: SearchHit["convKind"]
   } | null>(null)
+
+  // ---- KQL suggestion dropdown (from:/in:) — mirrors the composer @-mention picker ---------
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [caret, setCaret] = useState(0)
+  const suggestion = useMemo(() => detectSuggestion(query, caret), [query, caret])
+  const [people, setPeople] = useState<PersonSuggestion[]>([])
+  const [sugIndex, setSugIndex] = useState(0)
+  // `in:` suggestions come from the local conv list (no fetch); `from:` from the people endpoint.
+  const convSuggestions = useMemo(() => {
+    if (!suggestion || suggestion.kind !== "in") return []
+    const partial = suggestion.partial.trim().toLowerCase()
+    const all = Object.values(convById)
+      .map((c) => ({ id: c.id, label: c.title?.trim() || c.topic?.trim() || "" }))
+      .filter((c) => c.label.length > 0)
+    const ranked = all.sort((a, b) => a.label.localeCompare(b.label))
+    if (!partial) return ranked.slice(0, 8)
+    return ranked.filter((c) => c.label.toLowerCase().includes(partial)).slice(0, 8)
+  }, [suggestion, convById])
+  const sugItems =
+    suggestion?.kind === "in"
+      ? convSuggestions
+      : people.map((p) => ({ id: p.id, label: p.displayName }))
+  // Fetch people only when a `from:` token is open.
+  useEffect(() => {
+    if (!suggestion || suggestion.kind !== "in") {
+      if (suggestion?.kind !== "from") setPeople([])
+    }
+    if (!suggestion || suggestion.kind !== "from") return
+    const ac = new AbortController()
+    const t = setTimeout(() => {
+      fetchPeople(suggestion.partial, ac.signal)
+        .then((rows) => {
+          setPeople(rows)
+          setSugIndex(0)
+        })
+        .catch(() => {})
+    }, 150) // debounce — don't hammer the endpoint per keystroke
+    return () => {
+      clearTimeout(t)
+      ac.abort()
+    }
+  }, [suggestion])
+  // Reset the selection when the item set changes.
+  useEffect(() => setSugIndex(0), [sugItems.length])
+  const applyPick = useCallback(
+    (label: string) => {
+      if (!suggestion) return
+      const { value: next, caret } = applySuggestion(query, suggestion, label)
+      setQuery(next)
+      setCaret(caret)
+      requestAnimationFrame(() => {
+        const el = inputRef.current
+        if (!el) return
+        el.focus()
+        el.setSelectionRange(caret, caret)
+      })
+    },
+    [query, suggestion],
+  )
   const [recent, setRecent] = useState<string[]>(() => {
     try {
       return loadRecentSearchs(localStorage.getItem(RECENT_SEARCHES_KEY))
@@ -344,12 +408,51 @@ export function SearchView({
               icon={Search01Icon}
             />
             <Input
+              aria-autocomplete="list"
+              aria-controls={suggestion && sugItems.length > 0 ? "search-suggest-list" : undefined}
+              aria-expanded={suggestion != null && sugItems.length > 0}
               aria-label="Search messages"
               autoFocus
               className="h-10 pl-9 pr-3"
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setCaret(e.target.selectionStart ?? e.target.value.length)
+              }}
               onKeyDown={(e) => {
-                // Enter in the input picks the first result, if any — matches Slack.
+                // The suggestion dropdown owns navigation while open — mirrors the composer
+                // @-mention picker: Arrow/Enter/Tab pick, Esc closes, else falls through.
+                if (suggestion && sugItems.length > 0) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault()
+                    setSugIndex((i) => (i + 1) % sugItems.length)
+                    return
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault()
+                    setSugIndex((i) => (i - 1 + sugItems.length) % sugItems.length)
+                    return
+                  }
+                  if (e.key === "Enter" || e.key === "Tab") {
+                    const pick = sugItems[sugIndex]
+                    if (pick) {
+                      e.preventDefault()
+                      applyPick(pick.label)
+                      return
+                    }
+                  }
+                  if (e.key === "Escape") {
+                    // Collapse the suggestion by nudging the caret out of the token (a trailing
+                    // space) so the user keeps typing free text.
+                    e.preventDefault()
+                    const el = e.currentTarget
+                    const pos = el.selectionStart ?? query.length
+                    const next = `${query.slice(0, pos)} `
+                    setQuery(next)
+                    requestAnimationFrame(() => el.setSelectionRange(next.length, next.length))
+                    return
+                  }
+                }
+                // Enter with no suggestion open picks the focused search result (Slack-like).
                 if (e.key === "Enter" && state.status === "ready") {
                   const hit = state.page[focusedIndex]
                   if (hit) {
@@ -358,9 +461,23 @@ export function SearchView({
                   }
                 }
               }}
+              onKeyUp={(e) => setCaret(e.currentTarget.selectionStart ?? query.length)}
+              onSelect={(e) =>
+                setCaret((e.currentTarget as HTMLInputElement).selectionStart ?? query.length)
+              }
               placeholder="Search messages…  from:  in:  after:  has:link"
+              ref={inputRef}
               value={query}
             />
+            {suggestion && sugItems.length > 0 && (
+              <SuggestionPopover
+                id="search-suggest-list"
+                index={sugIndex}
+                items={sugItems}
+                kind={suggestion.kind}
+                onPick={applyPick}
+              />
+            )}
           </div>
         </div>
         <FilterBar
@@ -726,6 +843,59 @@ function EmptyState({ icon, title, hint }: { icon: React.ReactNode; title: strin
       <p className="font-medium text-foreground text-sm">{title}</p>
       <p className="max-w-xs text-center text-muted-foreground text-xs leading-relaxed">{hint}</p>
     </CenteredState>
+  )
+}
+
+// The KQL suggestion dropdown (PSN-115 follow-up): people for `from:`, conversations for `in:`.
+// Anchored under the search input; keyboard nav is driven by the input's onKeyDown (this just
+// renders + reports a click). Mirrors the composer @-mention picker's look.
+function SuggestionPopover({
+  id,
+  kind,
+  items,
+  index,
+  onPick,
+}: {
+  id: string
+  kind: "from" | "in"
+  items: { id: string; label: string }[]
+  index: number
+  onPick: (label: string) => void
+}) {
+  return (
+    <div
+      className="absolute top-full left-3 z-30 mt-1 w-[calc(100%-1.5rem)] overflow-hidden rounded-lg border border-border bg-popover shadow-md"
+      id={id}
+      role="listbox"
+    >
+      <div className="border-border border-b px-2.5 py-1 text-[10px] tracking-wide text-muted-foreground uppercase">
+        {kind === "from" ? "People" : "Conversations"}
+      </div>
+      <ul className="max-h-60 overflow-y-auto py-1">
+        {items.map((item, i) => (
+          <li key={item.id}>
+            <button
+              aria-selected={i === index}
+              className={cn(
+                "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm",
+                i === index ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+              )}
+              onClick={() => onPick(item.label)}
+              onMouseDown={(e) => e.preventDefault()} // keep the input's focus/selection
+              role="option"
+              type="button"
+            >
+              <HugeiconsIcon
+                aria-hidden
+                className="size-3.5 shrink-0 text-muted-foreground"
+                icon={kind === "from" ? UserCircleIcon : BubbleChatIcon}
+              />
+              <span className="truncate">{item.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 

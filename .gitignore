@@ -48,3 +48,8 @@ teams-notify-state.json
 
 # Verification screenshots (evidence lives in the PR/issue, not the repo)
 .shots/
+
+# regression/QA screenshot artifacts
+.reg/
+.tmp-reg/
+*.pre-3way.bak

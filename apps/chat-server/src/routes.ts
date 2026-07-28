@@ -265,6 +265,17 @@ export function createRoutes(deps: RoutesDeps) {
     return c.json({ profile: await provider.profile(userId) })
   })
 
+  // Global people suggestions for the search box's `from:` operator (PSN-115 follow-up). The
+  // composer's @-mention uses per-conversation `fetchRoster`, useless for a GLOBAL `from:` — this
+  // reads the `users` cache (everyone the BFF has seen) via the existing pure `resolvePerson`,
+  // fold-matched so "ann" finds "Ann Wong". Capped; empty query returns the most-recent few.
+  app.get("/people", (c) => {
+    const { service } = pick(deps, c.req.query("service"))
+    const q = (c.req.query("q") ?? "").toString()
+    const people = resolvePerson(deps.db, service, { name: q, limit: 8 })
+    return c.json({ people })
+  })
+
   app.get("/avatar", async (c) => {
     const { provider } = pick(deps, c.req.query("service"))
     const userId = c.req.query("userId")

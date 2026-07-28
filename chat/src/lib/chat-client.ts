@@ -137,6 +137,23 @@ export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse | 
   }
 }
 
+/** Global people suggestions for the search box's `from:` operator (PSN-115). Returns the
+ *  display-name cache (everyone the BFF has seen), fold-matched server-side. Best-effort: a
+ *  network/error returns an empty list so the suggestion popover just closes — never blocks
+ *  typing. */
+export async function fetchPeople(q: string, signal?: AbortSignal): Promise<PersonSuggestion[]> {
+  try {
+    const res = await fetch(`/api/chat/people?service=${SERVICE}&q=${encodeURIComponent(q)}`, {
+      signal,
+    })
+    if (!res.ok) return []
+    const data = (await res.json()) as { people?: PersonSuggestion[] }
+    return Array.isArray(data.people) ? data.people : []
+  } catch {
+    return []
+  }
+}
+
 /** Fetch one user's profile card. Throws ChatApiError with the server's typed code. */
 export async function fetchProfile(userId: string, signal?: AbortSignal): Promise<TeamsProfile> {
   const res = await fetch(
@@ -482,6 +499,14 @@ export type {
   SearchPage,
   SearchScope,
 } from "../../../apps/chat-server/src/contract"
+
+/** A people-suggestion row for the search box's `from:` operator (PSN-115). Mirrors the server's
+ *  `PersonCandidate` (`apps/chat-server/src/search.ts`) without importing it — keeps the FE
+ *  boundary clean. */
+export interface PersonSuggestion {
+  id: string
+  displayName: string
+}
 
 import type { SearchPage, SearchScope } from "../../../apps/chat-server/src/contract"
 
