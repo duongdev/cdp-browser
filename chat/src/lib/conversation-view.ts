@@ -39,18 +39,15 @@ export function conversationLabel(conv: TeamsConversation): string {
  *  one clean plain-text line. Mirrors core/teams-render.js `previewText` (the CJS core can't be
  *  imported into the typechecked chat bundle); its live-shape branches are tested there + here.
  *
- *  Group chats (≥3 members) prefix the sender's first name ("Glory: …") so a busy group preview
- *  reads at a glance; 1:1 DMs, self-chat, self-sent last messages, and unknown senders stay
- *  unprefixed (D4). Always `{ mode: "first" }` regardless of the viewer's name pref — the full name
- *  is too long for a one-line preview. */
+ *  Group chats prefix the sender's first name ("Glory: …") so a busy group preview reads at a
+ *  glance; 1:1 DMs, self-chat, self-sent last messages, and unknown senders stay unprefixed (D4).
+ *  The gate is `kind === "group"` (a Teams group is ≥3 total by definition — not a 1:1); NOT
+ *  `memberIds.length`, which holds only the first few NON-SELF oids (t161) and is a capped floor,
+ *  so a count threshold on it mis-gates large groups. Always `{ mode: "first" }` regardless of the
+ *  viewer's name pref — the full name is too long for a one-line preview. */
 export function previewLine(conv: TeamsConversation): string {
   const base = previewText(conv.lastMessagePreview) || "No messages yet"
-  if (
-    conv.kind === "group" &&
-    (conv.memberIds?.length ?? 0) > 2 &&
-    !conv.lastMessageFromMe &&
-    conv.lastMessageSender
-  ) {
+  if (conv.kind === "group" && !conv.lastMessageFromMe && conv.lastMessageSender) {
     return `${formatName(conv.lastMessageSender, { mode: "first" })}: ${base}`
   }
   return base

@@ -216,8 +216,14 @@ describe("previewLine", () => {
       ...over,
     })
 
-  it("prefixes the sender's first name in a group (>=3 members)", () => {
+  it("prefixes the sender's first name in a group", () => {
     expect(previewLine(groupConv({}))).toBe("Glory: hi team")
+  })
+
+  it("prefixes a group regardless of memberIds count (gate is kind, not memberIds — t161 caps memberIds to the first few non-self oids, so a count threshold mis-gates large groups)", () => {
+    expect(
+      previewLine(groupConv({ memberIds: ["a"], lastMessageSender: "Bob Tan - Group Office" })),
+    ).toBe("Bob: hi team")
   })
 
   it("does NOT prefix when the last message is self-sent", () => {
@@ -240,14 +246,6 @@ describe("previewLine", () => {
     expect(
       previewLine(conv({ kind: "self", lastMessagePreview: "note", lastMessageSender: "Me" })),
     ).toBe("note")
-  })
-
-  it("does NOT prefix a group with <=2 memberIds (1:1 dressed as group)", () => {
-    expect(
-      previewLine(
-        groupConv({ memberIds: ["a", "b"], lastMessageSender: "Bob Tan - Group Office" }),
-      ),
-    ).toBe("hi team")
   })
 
   it("does NOT prefix when the sender is unknown (lastMessageSender absent)", () => {
