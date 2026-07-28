@@ -10,15 +10,58 @@ The ask also says "research custom MCP servers to propose enhancements and bette
 
 Constraints (from the issue): self-chat only, no mutations on other users' threads. Read-only satisfies this trivially.
 
-## Verification
+## End-to-end local testing strategy
 
-No vision needed — the MCP server has no UI. Correctness = the protocol contract + data fidelity.
+No vision needed — the MCP server has no UI. Correctness = the MCP wire contract + data fidelity. Four layers, bottom-up. **L1–L3 are hermetic and run in `pnpm test` (CI); L4 is HITL** (a real agent turn no CI can close).
 
-- **Unit (TDD, pure):** the thin MCP wiring in `apps/chat-server/src/mcp.ts` over the *already-tested* pure fns in `search.ts` / `unread-overview.ts`. Assert each tool/resource/prompt is registered with the right schema and returns the expected shape against an in-memory `:memory:` db seeded by the existing test helpers.
-- **Protocol contract:** a raw `curl POST http://localhost:7810/mcp` `InitializeRequest` → `InitializeResponse`; `tools/list`, `resources/list`, `prompts/list` return the registered set; a `tools/call search_messages` returns hits. Stateless (no `Mcp-Session-Id`).
-- **Live against the mock stack:** `pnpm chat:mock` (Node 24, per `docs/testing/chat-qa.md`), then `claude mcp add --transport http chats http://localhost:7810/mcp` and a real Claude Code turn ("what did I miss today") exercises the full path on fixture data.
-- **Security gate:** `/mcp` rejects a request with a non-localhost `Origin` (DNS-rebinding defense, per spec). Confirmed via `curl -H "Origin: https://evil.example"`.
-- **Gates:** `pnpm test` (chat-server scope), `pnpm typecheck`, `pnpm check:changed` all clean.
+**Testability shape (load-bearing):** `mcp.ts` exports `createMcpServer({ db, service, vision }) → McpServer` AND a thin `mountMcp(app, { db, service, vision })` Hono route, **independent of `index.ts`'s full boot** (no sweep/captioner/WS-hub timers). L2/L3 tests build a minimal Hono app with just `mountMcp` on an ephemeral port + a mock provider + `:memory:` db, so the MCP surface is testable in isolation. The captioner is only needed for `view_image`'s caption fallback — stub `vision` in tests.
+
+### L1 — Unit (pure, TDD)
+`apps/chat-server/src/mcp.test.ts`, `:memory:` db + the mock provider's fixtures. Each tool/resource/prompt registered with the right zod schema; each `execute` returns the expected shape for a seeded hit and a miss. `view_image` with a stub `vision.fetchImage` → MCP image content; bytes-unavailable → caption fallback. These are the WS-A/B unit tests.
+
+### L2 — Protocol contract (raw JSON-RPC over HTTP, no SDK client)
+Boot the minimal app (`mountMcp` only) on an ephemeral port with `CHAT_PROVIDER=mock` + `:memory:` db; assert the wire contract with raw `fetch` POSTs:
+- `initialize` → `InitializeResponse`; **no `Mcp-Session-Id`** header (stateless, D1/D8); a second `initialize` without `DELETE` works.
+- `MCP-Protocol-Version` header accepted; missing → server assumes `2025-03-26` (spec).
+- `tools/list` → 8; `resources/list` → 2 + the URI template; `prompts/list` → 3.
+- `tools/call search_messages` → fixture hits; `resources/read chat://conversations` + `chat://conversation/{id}` → seeded data; `prompts/get` each → seeded guidance.
+- **Security gate:** non-localhost `Origin` (`Origin: https://evil.example`) → 4xx (DNS-rebinding, D8).
+- POST with `Accept` lacking `application/json` + `text/event-stream` → 4xx (spec).
+
+This proves the server speaks correct MCP independent of any client SDK.
+
+### L3 — Programmatic MCP-client e2e (hermetic backbone)
+Same minimal app, but connect a **real `@modelcontextprotocol/sdk` client** over streamable HTTP (the client ships in the same package we add in WS-A — free). Exercise every tool against the mock provider's pinned conversations + `richSeed()` (links, @mention, edited msg, tombstone, unread row, muted row, 30-msg paging thread, folder/label prefs via `MOCK_PREFS`):
+- `search_messages` finds the @mention (diacritic-fold check too).
+- `get_context` walks a reply chain via `aroundMsgId`.
+- `list_scopes` + `resolve_scope` return the seeded folder/label.
+- `get_unread_overview` returns the unread row, excludes the muted one unless `includeMuted`.
+- `view_image` returns image content (or caption fallback per R4).
+- `resolve_person` + `list_conversations` return seeded rows.
+
+Real client, real transport, real BFF, real (mock) data — zero network, zero tenant. This is the regression backbone.
+
+### L4 — HITL: real Claude Code turn (manual, not CI)
+`pnpm chat:mock` (Node 24, `nvm use 24` for the `better-sqlite3` ABI) → `claude mcp add --transport http chats http://localhost:7810/mcp` → scripted turns against fixtures:
+- "what did I miss today" → `get_unread_overview`.
+- "summarize <conversation>" → `get_context`.
+- "find the decision about X" → `search_messages`.
+- "what's in the screenshot in <msg>" → `view_image`.
+- Inject mid-turn: `pnpm chat:mock:say -d '{"convId":"…","text":"…"}'` then re-ask → agent sees the new message (live-data proof, mirrors the chat-qa mock-say pattern).
+
+Assert the agent cites real `(convId,msgId)` from fixtures. **Capture the served commit first** (preview deploys lag pushes — verify the served commit before debugging "still broken"). A human/agent closes this; it is the "does a real agent actually work" gate.
+
+### Regression dispatch
+Extend `docs/testing/chat-qa.md` with MCP case IDs covering L2/L3/L4 (the `/regression` skill fans these to subagents like the existing chat surface). **Extended, never rewritten.** `/regression` verdict-only, evidence on disk.
+
+### Mock-stack caveats (from CLAUDE.md)
+- Node 24 for `better-sqlite3` ABI (`nvm use 24`).
+- Mock DB starts empty — seed before calling a feature missing.
+- `pnpm chat:mock:say` is the inbound simulator (PSN-106) — use it for live-data turns.
+- **R4:** confirm `MockProvider.media()` serves image bytes; if not, add a small fixture so L3 `view_image` covers the image-content path, not just caption fallback.
+
+### Gates
+`pnpm test` (chat-server scope — L1+L2+L3 hermetic), `pnpm typecheck`, `pnpm check:changed` clean in CI. L4 is the operator's manual pass before merge.
 
 ## Baseline (probed 2026-07-28)
 
@@ -50,7 +93,7 @@ Each is one session. Same branch, same PR throughout. Bug-sweep last.
 - **A.0 (research, no code):** `pnpm add @modelcontextprotocol/sdk` in `apps/chat-server`, then read the installed `StreamableHTTPServerTransport` + `McpServer` types to confirm the exact Hono bridge: a `/mcp` catch-all whose handler builds a web `Request`/`Response` bridge to the transport (stateless mode, `sessionIdGenerator: undefined`). Verify against installed types, not memory.
 - **A.1 `createMcpServer({ db, service, vision })` → `McpServer`:** register the 8 tools. Each tool's `execute` calls the *same pure fn* the assistant uses (`searchMessages`, `getContextWindow`, `listConversationsByQuery`, `listScopes`, `resolveScope`, `resolvePerson`, `getUnreadOverview`, and `view_image` → `listMessageImages` + `vision.fetchImage`). Schemas copied from `loop.ts`. Tool-result rows shaped exactly like the assistant's (`convId,msgId,sender,ts,…`).
 - **A.2 `view_image`:** return MCP image content `{ type:"image", data, mimeType }` from the fetched/downscaled bytes; fall back to the transcription (`caption`) when bytes are unavailable, mirroring the assistant's honest fallback.
-- **A.3 Mount:** in `index.ts`, build the server with the assistant's existing vision wiring (reuse the `assistantService` + `assistantProvider` + `assistantCaptioner` already resolved there) and attach `/mcp` to the Hono app with the `Origin` check.
+- **A.3 Mount:** `mcp.ts` exports `createMcpServer({ db, service, vision }) → McpServer` and a thin `mountMcp(app, …)` Hono route at `/mcp` (with the `Origin` check), **decoupled from `index.ts`'s full boot** so L2/L3 tests mount it alone on an ephemeral port. In `index.ts`, call `mountMcp(app, { db, service: assistantService, vision: <assistant's existing fetchImage/downscale wiring> })` — reuse the `assistantService` + `assistantProvider` + `assistantCaptioner` already resolved there.
 - **Tests:** `mcp.test.ts` against `:memory:` db + mock fixtures — each tool registered, schema correct, `execute` returns expected shape for a seeded hit/miss. `view_image` covered with a stub `vision.fetchImage`.
 - **Verify:** `curl POST /mcp` initialize + `tools/list` (12 entries after B; 8 here) + `tools/call search_messages` against `pnpm chat:mock` returns fixture hits. `Origin: https://evil.example` → 4xx.
 
@@ -67,7 +110,7 @@ Each is one session. Same branch, same PR throughout. Bug-sweep last.
 - **C.1 ADR-0023:** the MCP-server decision (HTTP on BFF, read-only, single-service, resources+prompts, security posture). Append-only, per `docs/conventions/docs-discipline.md`.
 - **C.2 CLAUDE.md:** one bullet under the "Teams chat app" block — the `/mcp` endpoint, what it exposes, the `claude mcp add` one-liner, the localhost/no-auth stance.
 - **C.3 Guide:** `docs/guides/chat-mcp.md` — connect Claude Code to the local BFF, the tool/resource/prompt catalog, the mock-stack quickstart.
-- **C.4 Manual end-to-end:** `pnpm chat:mock`, `claude mcp add --transport http chats http://localhost:7810/mcp`, run a real turn ("summarize my unread", "find the decision about X") against fixtures — assert the agent retrieves real rows.
+- **C.4 Manual end-to-end (L4):** `pnpm chat:mock`, `claude mcp add --transport http chats http://localhost:7810/mcp`, run the scripted turns (summarize unread / find decision / view screenshot) against fixtures — assert the agent retrieves real rows and cites `(convId,msgId)`. Capture served commit first.
 - **C.5 Bug-sweep:** re-read the diff; confirm no orphan imports, no drift from `loop.ts` schemas, the `/` build is byte-unchanged.
 - Depends on A + B.
 
@@ -85,12 +128,14 @@ Linear: A → B → C. Each is one session; none overlap (all touch `mcp.ts`).
 
 - [ ] BFF boots; `POST /mcp` returns a spec-correct `InitializeResponse` (stateless, no `Mcp-Session-Id`).
 - [ ] `tools/list` returns the 8 tools; `resources/list` returns the 2 resources (+ template); `prompts/list` returns the 3 prompts.
-- [ ] Each tool returns real data against `pnpm chat:mock` (search/context/list/scopes/person/unread + view_image image content).
+- [ ] **L1 unit:** each tool/resource/prompt registered with correct schema + execute shape (`:memory:` + fixtures).
+- [ ] **L2 contract:** raw-JSON-RPC initialize/list/call + stateless assertion + `Accept` validation pass; non-localhost `Origin` → 4xx.
+- [ ] **L3 client e2e:** a real MCP client over HTTP exercises every tool against `richSeed()` fixtures (search, reply-chain walk, scopes, unread excl. muted, view_image, person, list).
 - [ ] `view_image` returns MCP image content when bytes resolve, transcription fallback otherwise.
-- [ ] `/mcp` rejects a non-localhost `Origin` (DNS-rebinding gate).
 - [ ] BFF binds `127.0.0.1` (verified or enforced).
-- [ ] A real Claude Code turn over the mock stack retrieves rows (`claude mcp add --transport http …`).
+- [ ] **L4 HITL:** a real Claude Code turn over `pnpm chat:mock` retrieves rows + cites real `(convId,msgId)`; `chat:mock:say` mid-turn is seen live.
 - [ ] `pnpm test` / `typecheck` / `check:changed` clean (chat-server scope).
+- [ ] `docs/testing/chat-qa.md` extended with MCP case IDs (L2/L3/L4).
 - [ ] ADR-0023 + CLAUDE.md bullet + `docs/guides/chat-mcp.md` shipped.
 - [ ] `/` build byte-unchanged.
 
