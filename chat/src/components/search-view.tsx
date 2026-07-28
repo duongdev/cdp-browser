@@ -16,6 +16,7 @@ import {
   ArrowLeft01Icon,
   Cancel01Icon,
   InboxIcon,
+  Loading03Icon,
   ReloadIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons"
@@ -270,17 +271,17 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
           </Button>
           <span className="px-1 font-heading font-semibold text-foreground text-sm">Search</span>
         </header>
-        <div className="shrink-0 p-2">
+        <div className="shrink-0 px-3 pt-3 pb-2">
           <div className="relative">
             <HugeiconsIcon
               aria-hidden
-              className="top-1/2 left-2.5 absolute size-4 -translate-y-1/2 text-muted-foreground"
+              className="top-1/2 left-3 absolute size-4 -translate-y-1/2 text-muted-foreground"
               icon={Search01Icon}
             />
             <Input
               aria-label="Search messages"
               autoFocus
-              className="h-9 pl-8"
+              className="h-10 pl-9 pr-3"
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 // Enter in the input picks the first result, if any — matches Slack.
@@ -347,13 +348,13 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
           ) : (
             <>
               {state.degraded && (
-                <div className="mx-2 mb-1 mt-1 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2.5 py-1.5 text-yellow-700 text-xs dark:text-yellow-300">
+                <div className="mx-3 mb-1 mt-1 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2.5 py-1.5 text-yellow-700 text-xs dark:text-yellow-300">
                   Showing local results only — live search is temporarily unavailable.
                 </div>
               )}
               <div
                 aria-label="Search results"
-                className="py-1"
+                className="focus-visible:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-ring/30"
                 onKeyDown={onKeyDown}
                 role="listbox"
                 tabIndex={0}
@@ -440,16 +441,16 @@ function FilterBar({
   const hasNonDefault = sort !== DEFAULT_SORT || scopeKind !== DEFAULT_SCOPE_KIND
   if (chips.length === 0 && !hasNonDefault) return null
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-1 border-border border-b px-2 py-1.5">
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-border border-b px-3 py-2">
       {chips.length > 0 && (
-        <ul aria-label="Active filters" className="flex flex-wrap items-center gap-1">
+        <ul aria-label="Active filters" className="flex flex-wrap items-center gap-1.5">
           {chips.map((chip) => (
             <li key={chip.key}>
-              <span className="inline-flex items-center gap-1 rounded-md bg-accent px-1.5 py-0.5 text-foreground text-xs">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/60 px-2 py-0.5 text-foreground text-xs">
                 <span className="truncate">{chip.label}</span>
                 <button
                   aria-label={`Remove filter ${chip.label}`}
-                  className="flex size-3.5 items-center justify-center rounded-full text-muted-foreground hover:bg-background hover:text-foreground"
+                  className="-mr-1 flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                   onClick={() => onRemoveChip(chip.removeQuery)}
                   type="button"
                 >
@@ -474,7 +475,7 @@ function FilterBar({
           {SORTS.map((s) => (
             <ToggleGroupItem
               aria-label={s === "relevance" ? "Sort by relevance" : "Sort by recent"}
-              className="data-[state=on]:bg-accent data-[state=on]:text-foreground text-muted-foreground text-xs"
+              className="text-muted-foreground text-xs data-[state=on]:bg-muted data-[state=on]:text-foreground"
               key={s}
               value={s}
             >
@@ -496,7 +497,7 @@ function FilterBar({
           {SCOPE_KINDS.map((k) => (
             <ToggleGroupItem
               aria-label={`Scope: ${k}`}
-              className="data-[state=on]:bg-accent data-[state=on]:text-foreground text-muted-foreground text-xs capitalize"
+              className="text-muted-foreground text-xs capitalize data-[state=on]:bg-muted data-[state=on]:text-foreground"
               // ponytail: folder/label scope needs a picker over conversation_prefs and is a
               // declared WS-F follow-up — only the 3 structural kinds are surfaced here.
               key={k}
@@ -530,25 +531,32 @@ function ResultRow({
     <div aria-selected={focused} role="option" tabIndex={-1}>
       <button
         className={cn(
-          "flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-accent",
-          focused && "bg-accent/60",
+          "mx-2 my-0.5 flex w-[calc(100%-1rem)] flex-col gap-1 rounded-lg px-3 py-2.5 text-left transition-colors",
+          "hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+          focused && "bg-muted",
         )}
         onClick={onClick}
         onDoubleClick={onEnter}
         type="button"
       >
         <span className="flex items-baseline justify-between gap-2">
-          <span className="truncate font-medium text-sm">
-            {hit.sender || "Unknown"}
-            <span className="text-muted-foreground"> · {hit.convTitle ?? hit.convId}</span>
+          <span className="min-w-0 truncate text-foreground text-sm">
+            <span className="font-semibold">{hit.sender || "Unknown"}</span>
+            <span className="text-muted-foreground"> · </span>
+            <span className="text-muted-foreground">{hit.convTitle ?? hit.convId}</span>
           </span>
-          <span className="shrink-0 text-muted-foreground text-xs">{relativeTime(hit.ts)}</span>
+          <span className="shrink-0 font-mono text-muted-foreground text-xs">
+            {relativeTime(hit.ts)}
+          </span>
         </span>
-        <span className="line-clamp-2 text-muted-foreground text-sm">
+        <span className="line-clamp-2 text-foreground/80 text-sm leading-snug">
           {segs
             ? segs.map((s, i) =>
                 i % 2 === 1 ? (
-                  <mark className="rounded-sm bg-yellow-300/40 px-0.5" key={`m-${s}`}>
+                  <mark
+                    className="rounded-sm bg-yellow-300/40 px-0.5 text-foreground dark:bg-yellow-300/25 dark:text-foreground"
+                    key={`m-${s}`}
+                  >
                     {s}
                   </mark>
                 ) : (
@@ -557,10 +565,16 @@ function ResultRow({
               )
             : hit.snippet}
         </span>
-        {/* Substrate-not-yet-hydrated indicator: a tiny muted pill. Local/hydrated = nothing. */}
+        {/* Substrate-not-yet-hydrated indicator: a tiny muted pill with a spinning glyph. Local/
+            hydrated = nothing. Flips away the moment the WS messages-upsert delta lands the row. */}
         {!hit.hydrated && (
-          <span className="mt-0.5 self-start rounded-sm bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-            fetching context…
+          <span
+            aria-label="Fetching message context"
+            className="mt-0.5 inline-flex items-center gap-1 self-start rounded-full bg-muted/80 px-2 py-0.5 text-muted-foreground text-[10px] capitalize"
+            role="status"
+          >
+            <HugeiconsIcon aria-hidden className="size-3 animate-spin" icon={Loading03Icon} />
+            fetching context
           </span>
         )}
       </button>
@@ -570,13 +584,15 @@ function ResultRow({
 
 function RecentList({ queries, onPick }: { queries: string[]; onPick: (q: string) => void }) {
   return (
-    <div className="px-2 py-1">
-      <div className="px-1.5 py-1 font-medium text-muted-foreground text-xs">Recent searches</div>
-      <ul>
+    <div className="px-3 py-2">
+      <div className="px-1 pb-1 font-medium text-muted-foreground text-[11px] uppercase tracking-wide">
+        Recent searches
+      </div>
+      <ul className="flex flex-col gap-0.5">
         {queries.map((q) => (
           <li key={q}>
             <button
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               onClick={() => onPick(q)}
               type="button"
             >
@@ -598,17 +614,17 @@ function EmptyState({ icon, title, hint }: { icon: React.ReactNode; title: strin
   return (
     <CenteredState>
       {icon}
-      <p className="font-medium text-sm">{title}</p>
-      <p className="max-w-xs text-center text-muted-foreground text-xs">{hint}</p>
+      <p className="font-medium text-foreground text-sm">{title}</p>
+      <p className="max-w-xs text-center text-muted-foreground text-xs leading-relaxed">{hint}</p>
     </CenteredState>
   )
 }
 
 function ResultSkeleton() {
   return (
-    <div aria-hidden className="flex flex-col gap-2 p-2">
-      {[0, 1, 2, 3, 4].map((i) => (
-        <div className="flex flex-col gap-1 rounded-md px-2.5 py-2" key={i}>
+    <div aria-hidden className="flex flex-col gap-0.5 p-2">
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <div className="flex flex-col gap-1.5 rounded-lg px-3 py-2.5" key={i}>
           <div className="flex justify-between">
             <div className="h-3.5 w-1/3 animate-pulse rounded bg-muted" />
             <div className="h-3 w-10 animate-pulse rounded bg-muted" />
@@ -623,7 +639,7 @@ function ResultSkeleton() {
 
 function CenteredState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
       {children}
     </div>
   )
