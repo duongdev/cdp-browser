@@ -226,7 +226,7 @@ export function SearchView({
         setState({ status: "error", message })
       })
     return () => ac.abort()
-  }, [debounced, sort, scopeKind])
+  }, [debounced, sort, scopeKind, persistRecent])
 
   const onSortChange = useCallback((next: SearchSort) => {
     setSort(next)
