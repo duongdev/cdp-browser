@@ -2,6 +2,15 @@
 
 Plan-only until the label flips to `build`. Same issue, same branch (`chat-expose-chats-as-mcp-server`), ONE PR.
 
+> **Status (2026-07-28): HALTED on PSN-115.** Build was started, then halted. PSN-115's locked plan
+> (PR #43, `docs/plans/PSN-115-proactive-backfilling.md`) declares a sequencing dependency: land
+> PSN-115's search seam (WS-A substrate provider + WS-B hydrate + WS-D `/api/chat/search`) **before**
+> PSN-114 wires its MCP tools. PSN-114's MCP `search_messages` (and `list_conversations`) must reuse
+> PSN-115's data plane so an MCP query reaches all Teams history, not just the local `chat.db`
+> subset. A `chat.db`-only MCP search would ship the wrong contract and be rewritten when PSN-115
+> lands. See D10. The WIP scaffold (`mcp.ts` transport/mount/Origin-gate + 6 stable tools) is
+> drafted in the worktree but **uncommitted** — resume from it once PSN-115's seam is in.
+
 ## Goal
 
 A coding agent (Claude Code, any MCP client) connects to the running chat BFF and **reads the user's own synced chat history** — search messages, read a thread, list conversations, resolve people, see unread, look at an inline image. Read-only by construction; no send/react/edit surface. This makes `chat.db` addressable from the agent the operator already lives in, reusing the AI assistant's proven retrieval layer verbatim.
@@ -83,6 +92,7 @@ Extend `docs/testing/chat-qa.md` with MCP case IDs covering L2/L3/L4 (the `/regr
 - **D7 — In-process packaging.** New module `apps/chat-server/src/mcp.ts` + `@modelcontextprotocol/sdk` dep, mounted on the **existing** Hono app in `index.ts`. Shares the BFF's already-open `db` handle — no second connection, zero concurrency concern. Not a new package, not a new process.
 - **D8 — Security hardening per spec.** Validate the `Origin` header on every `/mcp` request (reject non-localhost) and confirm the BFF binds `127.0.0.1` (enforce if `@hono/node-server` defaults wider). Stateless = no session-fixation surface.
 - **D9 — The AI assistant is NOT refactored onto MCP.** Two adapters (assistant's `loop.ts` over the `ai` SDK; the new `mcp.ts` over the MCP SDK), both calling the *same* pure fns in `search.ts`/`unread-overview.ts` — which is already the shared 90%. The remaining ~100-line wrapper duplication is justified because the adapters diverge at real, load-bearing boundaries: (a) the assistant's `onSurfaced` builds the citation allow-set (chip validation), which MCP has no hook for; (b) `view_image` in the assistant uses an ai-sdk-specific image-buffer hack (pixels re-injected as a `role:"user"` part next step, because `@ai-sdk/openai-compatible` drops image content from tool results), whereas MCP returns image content natively in the tool result — routing the assistant through MCP would **break `view_image` and lose citations**; (c) the assistant is co-located in the same process, so a JSON-RPC+HTTP loopback per streamed tool call is pure overhead with no functional gain. A shared neutral "tool manifest" is deferred until a third consumer appears (CLI client, bot) — premature with two. Revisit only if the assistant moves to a separate process, at which point `@ai-sdk/mcp` against this server becomes the canonical tool surface.
+- **D10 — Sequencing dependency on PSN-115 (halt).** PSN-115 adds a substrate search data plane: `ChatProvider.searchMessages` (Teams Substrate Search API, in-page via `runInTeamsPage`) + a hydrate pipeline (upsert missing windows into `chat.db`, FTS-indexed) + a hybrid `POST /api/chat/search` (local FTS fast path, substrate live fallback). PSN-115's plan (PR #43) explicitly says: **land PSN-115's search seam before PSN-114 wires its MCP tools**, and PSN-114's MCP `search_messages` / `list_conversations` should reuse that data plane so an MCP query reaches all Teams history, not just the synced subset. Shipping PSN-114 with a `chat.db`-only `search_messages` now = wrong contract + guaranteed rewrite. ⇒ **WS-A's `search_messages` + `list_conversations` tools wait on PSN-115's seam; the other 6 tools (get_context, list_scopes, resolve_scope, resolve_person, get_unread_overview, view_image) are unaffected.** When PSN-115 lands, the MCP `search_messages` calls the SAME hybrid path the assistant uses (the assistant's `search_messages` tool also gains substrate fallback in PSN-115 WS-C) — so the two adapters stay in lockstep without the assistant routing through MCP (D9 still holds). Shared-file conflict risk per PSN-115's plan: `search.ts`, `contract.ts`, `assistant/loop.ts` tool defs, `routes.ts`.
 
 ## Workstreams
 
