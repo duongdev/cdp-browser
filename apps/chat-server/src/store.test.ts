@@ -195,30 +195,49 @@ describe("conversations", () => {
     expect(cols).toContain("title")
   })
 
-  // PSN-113 C (D3): listConversations LEFT JOINs the last-message row to surface its sender name.
-  test("lastMessageSender is the joined last-message row's sender_name", () => {
+  // PSN-113 C-fix: lastMessageSender is resolved from `lastMessage.from` at the
+  // /internal/teams seam and persisted on the row — no read-time JOIN on `messages`.
+  test("lastMessageSender is persisted from conv.lastMessageSender on upsert", () => {
     upsertConversations(db, "teams", [
-      { id: "g1", kind: "group", lastMessageId: "m1", lastMessageVersion: 1, lastMessageTs: 100 },
+      {
+        id: "g1",
+        kind: "group",
+        lastMessageId: "m1",
+        lastMessageVersion: 1,
+        lastMessageTs: 100,
+        lastMessageSender: "Glory Nguyen - Group Office",
+      },
     ])
-    upsertMessages(db, "teams", "g1", [
-      { id: "m1", ts: 100, body: "hi", senderName: "Glory Nguyen - Group Office" },
-    ])
+    // The row surfaces the stored name without needing the message row synced.
     const row = listConversations(db, "teams").find((c) => c.id === "g1")
     expect(row?.lastMessageSender).toBe("Glory Nguyen - Group Office")
   })
 
-  test("lastMessageSender is absent when the last-message row isn't synced yet", () => {
+  test("lastMessageSender is absent when never provided", () => {
     upsertConversations(db, "teams", [
-      {
-        id: "g2",
-        kind: "group",
-        lastMessageId: "stale",
-        lastMessageVersion: 1,
-        lastMessageTs: 100,
-      },
+      { id: "g2", kind: "group", lastMessageId: "m1", lastMessageVersion: 1, lastMessageTs: 100 },
     ])
     const row = listConversations(db, "teams").find((c) => c.id === "g2")
     expect(row?.lastMessageSender).toBeUndefined()
+  })
+
+  // COALESCE contract (matches `title` / `avatarUserId`): an absent incoming sender never
+  // clears a previously-resolved name — a list fetch that omits the field can't undo Graph.
+  test("lastMessageSender absent on a later upsert keeps the stored name", () => {
+    upsertConversations(db, "teams", [
+      {
+        id: "g3",
+        kind: "group",
+        lastMessageVersion: 1,
+        lastMessageTs: 100,
+        lastMessageSender: "Alice Wong",
+      },
+    ])
+    upsertConversations(db, "teams", [
+      { id: "g3", kind: "group", lastMessageVersion: 2, lastMessageTs: 200 },
+    ])
+    const row = listConversations(db, "teams").find((c) => c.id === "g3")
+    expect(row?.lastMessageSender).toBe("Alice Wong")
   })
 })
 
