@@ -1,6 +1,7 @@
 // Pure list-shaping helpers for the conversation list (t128). No React, no I/O — the row is
 // presentation over these. Member-name resolution + HTML rendering land in t129, so for now a
 // DM without a topic degrades to a kind label and the preview is tag-stripped raw content.
+import { formatName } from "./display-name"
 import type { TeamsConversation } from "./teams-client"
 
 /** Display label with a pending flag (PSN-103). `pending` is true when the conversation is a
@@ -33,12 +34,23 @@ export function conversationLabel(conv: TeamsConversation): string {
   return conversationLabelStatus(conv).label
 }
 
-/** One-line last-message preview (t151). The list stores the RAW last-message content, so a quoted
- *  reply, a system event, or a card would otherwise leak markup/XML. This reduces any shape to one
- *  clean plain-text line. Mirrors core/teams-render.js `previewText` (the CJS core can't be imported
- *  into the typechecked chat bundle); its live-shape branches are tested there + here. */
+/** One-line last-message preview (t151, D3/D4). The list stores the RAW last-message content, so a
+ *  quoted reply, a system event, or a card would otherwise leak markup/XML. This reduces any shape to
+ *  one clean plain-text line. Mirrors core/teams-render.js `previewText` (the CJS core can't be
+ *  imported into the typechecked chat bundle); its live-shape branches are tested there + here.
+ *
+ *  Group chats prefix the sender's first name ("Glory: …") so a busy group preview reads at a
+ *  glance; 1:1 DMs, self-chat, self-sent last messages, and unknown senders stay unprefixed (D4).
+ *  The gate is `kind === "group"` (a Teams group is ≥3 total by definition — not a 1:1); NOT
+ *  `memberIds.length`, which holds only the first few NON-SELF oids (t161) and is a capped floor,
+ *  so a count threshold on it mis-gates large groups. Always `{ mode: "first" }` regardless of the
+ *  viewer's name pref — the full name is too long for a one-line preview. */
 export function previewLine(conv: TeamsConversation): string {
-  return previewText(conv.lastMessagePreview) || "No messages yet"
+  const base = previewText(conv.lastMessagePreview) || "No messages yet"
+  if (conv.kind === "group" && !conv.lastMessageFromMe && conv.lastMessageSender) {
+    return `${formatName(conv.lastMessageSender, { mode: "first" })}: ${base}`
+  }
+  return base
 }
 
 // First <tag>…</tag> inner text, markup-stripped, or "".

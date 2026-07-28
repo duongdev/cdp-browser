@@ -38,6 +38,7 @@ const SCHEMA = [
     last_message_ts      INTEGER,
     last_message_preview TEXT,
     last_message_from_me INTEGER DEFAULT 0,
+    last_message_sender_name TEXT,
     newest_synced_ts     INTEGER,
     oldest_synced_ts     INTEGER,
     muted                INTEGER DEFAULT 0,
@@ -138,6 +139,7 @@ const ADDED_COLUMNS: [table: string, column: string, decl: string][] = [
   ["conversations", "member_ids", "TEXT"],
   ["read_state", "unread_bookmark_ts", "INTEGER"],
   ["messages", "edit_ts", "INTEGER"],
+  ["conversations", "last_message_sender_name", "TEXT"],
 ]
 
 /** Idempotent — safe on every boot (`CREATE … IF NOT EXISTS` + the column adds above). */
@@ -186,6 +188,9 @@ export interface ConversationInput {
   lastMessageTs?: number | null
   lastMessagePreview?: string
   lastMessageFromMe?: boolean
+  /** Resolved display name of the last message's sender (group-chat preview prefix,
+   *  PSN-113 C-fix). Absent = unresolved, never clears a stored name (COALESCE). */
+  lastMessageSender?: string | null
   readHorizonTs?: number | null
   /** The provider's mark-unread bookmark; 0 clears it. Absent = leave the stored one alone. */
   unreadBookmarkTs?: number | null
@@ -227,11 +232,15 @@ export function upsertConversations(
   // Ungated identity update: title + avatar fields land whenever a resolved value arrives,
   // independent of version (a name/roster resolves on its own schedule). `COALESCE` is the
   // never-clear rule — a null (empty/absent) incoming value means "still unresolved", not "cleared".
+  // `last_message_sender_name` follows the same contract (PSN-113 C-fix): the raw conv-list
+  // payload carries the sender MRI on every sweep, so the resolved name lands whenever Graph
+  // resolves it — an absent value never reverts a previously-resolved name.
   const identityStmt = db.prepare(`
     UPDATE conversations SET
       title = COALESCE(@title, title),
       avatar_user_id = COALESCE(@avatar_user_id, avatar_user_id),
-      member_ids = COALESCE(@member_ids, member_ids)
+      member_ids = COALESCE(@member_ids, member_ids),
+      last_message_sender_name = COALESCE(@last_message_sender_name, last_message_sender_name)
     WHERE service = @service AND id = @id
   `)
   const processed: ConversationInput[] = []
@@ -246,6 +255,7 @@ export function upsertConversations(
         title: title || null,
         avatar_user_id: conv.avatarUserId || null,
         member_ids: conv.memberIds?.length ? JSON.stringify(conv.memberIds) : null,
+        last_message_sender_name: conv.lastMessageSender || null,
       }
       stmt.run({
         ...identity,
@@ -288,7 +298,7 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
     .prepare(`
       SELECT c.id, c.kind, c.topic, c.title, c.avatar_user_id, c.member_ids,
              c.last_message_id, c.last_message_version, c.last_message_ts,
-             c.last_message_preview, c.last_message_from_me, c.muted,
+             c.last_message_preview, c.last_message_from_me, c.last_message_sender_name, c.muted,
              r.read_horizon_ts, r.local_read_ts, r.unread_bookmark_ts
       FROM conversations c
       LEFT JOIN read_state r ON r.service = c.service AND r.conv_id = c.id
@@ -321,6 +331,10 @@ export function listConversations(db: Db, service: string): ChatConversation[] {
       lastMessageTs: r.last_message_ts,
       lastMessagePreview: r.last_message_preview,
       lastMessageFromMe: !!r.last_message_from_me,
+      // PSN-113 C-fix: resolved at the /internal/teams seam from `lastMessage.from` (raw conv
+      // list) via a Graph batch, persisted on the row — no read-time JOIN on `messages` (which
+      // is empty for a never-opened thread and was the source of the fresh-DB miss).
+      ...(r.last_message_sender_name ? { lastMessageSender: r.last_message_sender_name } : {}),
       readTs,
       unreadSticky: sticky,
       muted: !!r.muted,
@@ -345,6 +359,7 @@ interface ReadRow {
   read_horizon_ts: number | null
   local_read_ts: number | null
   unread_bookmark_ts: number | null
+  last_message_sender_name: string | null
 }
 
 /** The watermark a row's unread is measured against: `lastMessageTs > readTs` means unread.

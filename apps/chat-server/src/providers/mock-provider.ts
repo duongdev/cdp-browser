@@ -417,7 +417,17 @@ export class MockProvider implements ChatProvider {
   async listConversations(cursor?: string | null): Promise<ConversationsPage> {
     // Single page — the fixture set is small; cursor always ends.
     if (cursor) return { conversations: [], cursor: null }
-    return { conversations: this.fixtures.map((f) => ({ ...f.conv })), cursor: null }
+    return {
+      conversations: this.fixtures.map((f) => {
+        // The real BFF resolves `lastMessageSender` at the /internal/teams seam; the mock has no
+        // seam, so derive it from the fixture's last message (the pre-C-fix LEFT JOIN behavior,
+        // restored) — keeps the mock a valid test bed for the group preview prefix + the toast body.
+        const last = f.messages[f.messages.length - 1]
+        const sender = last && !last.self ? last.senderName : undefined
+        return { ...f.conv, ...(sender ? { lastMessageSender: sender } : {}) }
+      }),
+      cursor: null,
+    }
   }
 
   async fetchHistory(convId: string, cursor?: string | null): Promise<HistoryPage> {

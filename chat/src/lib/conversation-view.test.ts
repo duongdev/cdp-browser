@@ -205,6 +205,56 @@ describe("previewLine", () => {
       "No messages yet",
     )
   })
+
+  // ---- PSN-113 C: group sender prefix (D3 + D4) ----
+  const groupConv = (over: Partial<TeamsConversation>): TeamsConversation =>
+    conv({
+      kind: "group",
+      memberIds: ["a", "b", "c"],
+      lastMessagePreview: "hi team",
+      lastMessageSender: "Glory Nguyen - Group Office",
+      ...over,
+    })
+
+  it("prefixes the sender's first name in a group", () => {
+    expect(previewLine(groupConv({}))).toBe("Glory: hi team")
+  })
+
+  it("prefixes a group regardless of memberIds count (gate is kind, not memberIds — t161 caps memberIds to the first few non-self oids, so a count threshold mis-gates large groups)", () => {
+    expect(
+      previewLine(groupConv({ memberIds: ["a"], lastMessageSender: "Bob Tan - Group Office" })),
+    ).toBe("Bob: hi team")
+  })
+
+  it("does NOT prefix when the last message is self-sent", () => {
+    expect(previewLine(groupConv({ lastMessageFromMe: true }))).toBe("hi team")
+  })
+
+  it("does NOT prefix a 1:1 DM", () => {
+    expect(
+      previewLine(
+        conv({
+          kind: "oneOnOne",
+          lastMessagePreview: "hey",
+          lastMessageSender: "Alice Wong",
+        }),
+      ),
+    ).toBe("hey")
+  })
+
+  it("does NOT prefix self-chat", () => {
+    expect(
+      previewLine(conv({ kind: "self", lastMessagePreview: "note", lastMessageSender: "Me" })),
+    ).toBe("note")
+  })
+
+  it("does NOT prefix when the sender is unknown (lastMessageSender absent)", () => {
+    expect(previewLine(groupConv({ lastMessageSender: undefined }))).toBe("hi team")
+  })
+
+  it("prefixes even when the preview is empty — 'FirstName: No messages yet'", () => {
+    expect(previewLine(groupConv({ lastMessagePreview: "" }))).toBe("Glory: No messages yet")
+  })
 })
 
 describe("relativeTime", () => {

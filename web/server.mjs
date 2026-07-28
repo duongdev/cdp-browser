@@ -1091,7 +1091,31 @@ async function teamsConversations(cursor) {
   const convs = teamsListConversations(teamsDb, cred.tenant)
     .filter((c) => bookmarks.has(c.id))
     .map((c) => ({ ...c, unreadBookmarkTs: bookmarks.get(c.id) || 0 }))
-  return { conversations: await teamsResolveTitles(cred, convs), cursor: out.cursor }
+  // PSN-113 C-fix: the raw conv-list response carries the last sender's MRI at
+  // `lastMessage.from`, which the DB row loses. Hand it to teamsResolveTitles so the
+  // preview prefix ("FirstName: …") resolves straight from the list fetch — no history
+  // sweep needed (the prior LEFT JOIN on last_message_id → messages.sender_name came
+  // back empty on a fresh DB where the thread's messages aren't synced yet).
+  const lastFromByConvId = new Map()
+  for (const raw of out.conversations) {
+    if (
+      raw?.id &&
+      raw.lastMessage &&
+      typeof raw.lastMessage.from === "string" &&
+      raw.lastMessage.from
+    ) {
+      // `lastMessage.from` arrives as a bare `8:orgid:<oid>` MRI OR a contacts URL tail
+      // (`https://contacts.skype.com/…/8:orgid:<oid>`) — see isSelfLastMessage. oidFromMri only
+      // strips the `8:orgid:` prefix, so feed it the `/`-tail or Graph.getByIds can't match it
+      // and every group sender stays unresolved (the fresh-DB 0/42 on real data).
+      const from = raw.lastMessage.from.split("/").pop() || raw.lastMessage.from
+      lastFromByConvId.set(raw.id, from)
+    }
+  }
+  return {
+    conversations: await teamsResolveTitles(cred, convs, lastFromByConvId),
+    cursor: out.cursor,
+  }
 }
 
 // ---- Teams push notifications (moved to the BFF, PSN-93 WS-G) --------------
@@ -1264,7 +1288,7 @@ async function teamsRoster(convId) {
 // Attach a `title` to each conversation: topic'd convs keep their topic (composeTitle passes it
 // through); topic-less DMs/group-DMs resolve member names (id-derived for a 1:1, roster-fetched
 // for a group-DM), hitting the cache first and Graph-resolving only the misses in one batch.
-async function teamsResolveTitles(cred, convs) {
+async function teamsResolveTitles(cred, convs, lastFromByConvId = new Map()) {
   const selfMri = `8:orgid:${cred.userId || ""}`
   const hasSelf = convs.some((c) => c.kind === "self")
   const mrisByConv = new Map()
@@ -1273,6 +1297,15 @@ async function teamsResolveTitles(cred, convs) {
     if (c.topic && c.topic.trim()) continue // topic wins — no name resolution needed
     if (c.kind === "oneOnOne") mrisByConv.set(c.id, teamsOtherMrisFromId(c.id, selfMri))
     else if (c.kind === "group") groupDmIds.push(c.id) // self chat's title is selfName-only
+  }
+  // PSN-113 C-fix: the last-message sender MRIs (from the raw conv-list payload) ride
+  // the SAME cache-first + Graph batch as the title names — one round-trip, one shared
+  // cache. Best-effort: unresolved senders just leave `lastMessageSender` unset and the
+  // FE prefix degrades to the bare preview.
+  const senderByConvId = new Map()
+  for (const c of convs) {
+    const from = lastFromByConvId.get(c.id)
+    if (from) senderByConvId.set(c.id, from)
   }
 
   const cache = new Map()
@@ -1288,6 +1321,7 @@ async function teamsResolveTitles(cred, convs) {
     }
     const needed = new Set()
     for (const mris of mrisByConv.values()) for (const m of mris) needed.add(m)
+    for (const from of senderByConvId.values()) needed.add(from)
     // Resolve self's own display name in the same batch when a self chat is present, so its
     // "{selfName} (You)" title works even without cred.displayName.
     if (hasSelf && cred.userId) needed.add(selfMri)
@@ -1311,31 +1345,38 @@ async function teamsResolveTitles(cred, convs) {
   }
 
   const selfName = cred.displayName || cache.get(selfMri) || ""
-  return convs.map((c) => ({
-    ...c,
-    title: teamsComposeTitle({
-      kind: c.kind,
-      topic: c.topic,
-      memberNames: (mrisByConv.get(c.id) || []).map((m) => cache.get(m)).filter(Boolean),
-      selfName,
-    }),
-    // The oid whose photo represents this row (t153): a 1:1 → the other member, the self Notes chat
-    // → the viewer, a group → none (keeps the initials tile). Undefined when unknown.
-    avatarUserId:
-      c.kind === "self"
-        ? cred.userId || undefined
-        : c.kind === "oneOnOne"
-          ? teamsOidFromMri((mrisByConv.get(c.id) || [])[0] || "") || undefined
+  return convs.map((c) => {
+    const fromMri = senderByConvId.get(c.id)
+    const senderName = fromMri ? cache.get(fromMri) : undefined
+    return {
+      ...c,
+      title: teamsComposeTitle({
+        kind: c.kind,
+        topic: c.topic,
+        memberNames: (mrisByConv.get(c.id) || []).map((m) => cache.get(m)).filter(Boolean),
+        selfName,
+      }),
+      // The oid whose photo represents this row (t153): a 1:1 → the other member, the self Notes chat
+      // → the viewer, a group → none (keeps the initials tile). Undefined when unknown.
+      avatarUserId:
+        c.kind === "self"
+          ? cred.userId || undefined
+          : c.kind === "oneOnOne"
+            ? teamsOidFromMri((mrisByConv.get(c.id) || [])[0] || "") || undefined
+            : undefined,
+      // Group facepile (t161): the first few non-self member oids, for the composite avatar.
+      memberIds:
+        c.kind === "group"
+          ? (mrisByConv.get(c.id) || [])
+              .map(teamsOidFromMri)
+              .filter((oid) => oid && oid !== teamsOidFromMri(cred.userId || ""))
+              .slice(0, 3)
           : undefined,
-    // Group facepile (t161): the first few non-self member oids, for the composite avatar.
-    memberIds:
-      c.kind === "group"
-        ? (mrisByConv.get(c.id) || [])
-            .map(teamsOidFromMri)
-            .filter((oid) => oid && oid !== teamsOidFromMri(cred.userId || ""))
-            .slice(0, 3)
-        : undefined,
-  }))
+      // PSN-113 C-fix: resolved display name for the group-chat preview prefix. Absent when
+      // the conv had no lastMessage.from OR the Graph batch failed — FE prefix degrades.
+      ...(senderName ? { lastMessageSender: senderName } : {}),
+    }
+  })
 }
 
 // Resolve each reaction's reactor MRIs → display names for the hover tooltip (t143), reusing the
