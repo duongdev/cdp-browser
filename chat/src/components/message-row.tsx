@@ -457,15 +457,13 @@ function ChatMessageRow({
               >
                 {/* Hover bridge (PSN-113 D): the reaction bar floats above with a 6px sideOffset,
                     leaving an uncovered gap that fired mouseleave mid-transit (cursor never reached
-                    the bar before the close grace expired). This transparent pad spans that gap on
-                    the bar's anchor side, so cursor travel bubble→bar stays inside the hover region.
-                    Constrained to the bar's column so it can't intercept clicks on the message body
-                    or an adjacent upper bubble; aria-hidden so it's invisible to AT. */}
+                    the bar before the close grace expired). This transparent pad spans that gap, so
+                    cursor travel bubble→bar stays inside the hover region. inset-x-0 keeps it within
+                    the bubble's box (a fixed-width, side-anchored pad overshot the viewport on a
+                    narrow right-aligned self bubble → horizontal scrollbar); only 12px tall above the
+                    bubble top, so it never covers the message body. aria-hidden = invisible to AT. */}
                 {canReact && !coarse && (
-                  <span
-                    aria-hidden
-                    className={cn("absolute -top-3 h-3 w-40", self ? "left-0" : "right-0")}
-                  />
+                  <span aria-hidden className="absolute -top-3 inset-x-0 h-3" />
                 )}
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated image-tap + link hover; not a real interactive element */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
