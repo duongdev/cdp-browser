@@ -6,12 +6,19 @@ a row. How a run is dispatched (subagents, real input events, long-and-short con
 stacks) lives in [docs/conventions/e2e-verification.md](../conventions/e2e-verification.md);
 `/regression` runs it.
 
-**Last run:** 2026-07-28 · commit `da7051b`
+**Last run:** 2026-07-28 · commit `23ffa6f`
 QE1 (8 defects found — DEF-1 blank-body data loss, DEF-2 delete timestamp, DEF-3 last-sync never
 advancing, DEF-4 deferred conversations never retried, DEF-5 truncated off-by-one, DEF-6 dead error
 path, DEF-7 Node version, DEF-8 mock 500-not-404; all since fixed). QE2: all areas PASS. QE3:
 32 PASS / 1 inconclusive (TC-25 profile→lightbox, since verified by hand) / network-dependent cases
-skipped.
+skipped. QE4 (PSN-115 global search): Area 10 SB-01..SB-30 — 28 PASS, 2 BLOCKED (SB-15 shared-
+browser keystroke theft from concurrent subagents, not an app defect; SB-21 the mock provider has
+no rate-limit-trigger hook — the degraded path is unit-tested, just not drivable live). Smoke
+D/A/C/R: all PASS after a contention-caused BLOCKED batch was re-run on a dedicated isolated stack
+(`pnpm test` 2181/2181 green on Node 24). Also live-probed the deployed preview
+(preview-cdp-browser-app-1yrpdy-s8slux.dp.dustin.one, serving this same commit) against real Teams
+data — search, sort/scope-always-visible, URL restore, result→thread jump, and dark theme all PASS,
+zero search-related console errors.
 
 ---
 
@@ -243,6 +250,13 @@ Proactive backfilling + full-screen search. Local FTS is the fast path; substrat
 | SB-21 | Mock provider returns 0 hits + `degraded:"rate_limited"` | Response carries `degraded`; UI shows the yellow "local results only" banner |
 | SB-22 | `pnpm test` (chat-server + chat FE) | Search/hydrate/parser unit + integration suites green |
 | SB-23 | `pnpm typecheck` + `BIOME_SINCE=origin/main pnpm check:changed` | Clean |
+| SB-24 | Search a term whose match sits at index 0 of a snippet (e.g. every seed message starts with it) | `<mark>` highlights the correct word, not the text after it (regression: parity bug had this backwards) |
+| SB-25 | Search a plain string, zero KQL operators | Sort (Relevance/Recent) + scope (All/DMs/Groups) toggles still visible (regression: FilterBar used to hide entirely with no chips) |
+| SB-26 | Load `/chat/search?q=deploy&sort=recent&scope=group`, no typing | Query, sort, and scope all restore from the URL |
+| SB-27 | Drag the seam between the search left rail and the middle pane; double-click it | Resizes live; double-click resets to default; same width reflected on `/chat/`'s conversation list (shared `listWidth`) |
+| SB-28 | With 2+ recent searches, click one row's × , then "Clear all" | Only that row disappears first; "Clear all" empties the rest |
+| SB-29 | Open a search result whose conversation isn't in the local list yet (substrate-only hit) | Middle pane's stub conversation reflects the hit's real `convKind` (no hardcoded "Group chat" for what's actually a DM) |
+| SB-30 | From `/chat/`, click the search icon in the main app header (top bar, not inside the AI panel) | Opens `/chat/search` — the entry point that exists even when the AI panel (closed by default) has never been opened |
 
 ---
 
