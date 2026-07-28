@@ -470,3 +470,43 @@ export async function getBackfillStatus(): Promise<
     return null
   }
 }
+
+// ---- search (PSN-115 WS-E) -------------------------------------------------
+
+// Mirror the server contract (`apps/chat-server/src/contract.ts`) for the FE. Field-identical —
+// re-exported so component imports come from one place. Same raw-import pattern as BackfillStatus.
+export type {
+  ParsedFilters,
+  ParsedQuery,
+  SearchHit,
+  SearchPage,
+} from "../../../apps/chat-server/src/contract"
+
+import type { SearchPage } from "../../../apps/chat-server/src/contract"
+
+export type SearchSort = "relevance" | "recent"
+
+/** Run a global message search. `query` is raw KQL — the server parses. Empty query returns an
+ *  empty page without erroring (the FE shows the empty state). */
+export async function searchMessages(
+  query: string,
+  opts?: { sort?: SearchSort; cursor?: string | null; signal?: AbortSignal },
+): Promise<SearchPage> {
+  const data = await post<SearchPage>(
+    "search",
+    {
+      query,
+      ...(opts?.sort ? { sort: opts.sort } : {}),
+      ...(opts?.cursor ? { cursor: opts.cursor } : {}),
+    },
+    opts?.signal,
+  )
+  // Defensively fill — a misbehaving proxy mustn't crash the render.
+  return {
+    rows: Array.isArray(data.rows) ? data.rows : [],
+    parsed: data.parsed ?? { text: query, filters: {} },
+    cursor: data.cursor ?? null,
+    total: typeof data.total === "number" ? data.total : (data.rows?.length ?? 0),
+    ...(data.degraded ? { degraded: data.degraded } : {}),
+  }
+}

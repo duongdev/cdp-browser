@@ -21,6 +21,7 @@ import {
   PencilEdit02Icon,
   PenToolAddIcon,
   PlusSignIcon,
+  Search01Icon,
   StopIcon,
   Tag01Icon,
   Tick01Icon,
@@ -87,6 +88,8 @@ export interface AssistantPanelProps {
   labelForConv: (convId: string) => string
   /** Open a cited conversation in the main pane: `/chat/c/{convId}?msg={msgId}`. */
   onOpenCitation: (convId: string, msgId: string) => void
+  /** Open the full-screen message search (PSN-115 WS-E) — a search icon at the panel-header top. */
+  onOpenSearch?: () => void
   /** Bumped by "Ask AI about this" so the active session reloads its messages (a context excerpt
    *  was appended server-side). */
   refreshNonce?: number
@@ -333,6 +336,11 @@ export function AssistantPanel(props: AssistantPanelProps) {
           )}
           {!inSession && (
             <IconButton icon={PlusSignIcon} label="New session" onClick={newSession} />
+          )}
+          {/* Search-icon entry to the full-screen message search (PSN-115 WS-E). Always visible
+              so the user can jump out to search from anywhere in the panel. */}
+          {props.onOpenSearch && (
+            <IconButton icon={Search01Icon} label="Search messages" onClick={props.onOpenSearch} />
           )}
           {(!props.narrow || inSession) && (
             <IconButton icon={Cancel01Icon} label="Close assistant" onClick={props.onClose} />

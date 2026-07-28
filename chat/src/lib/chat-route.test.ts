@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parsePath, pathFor } from "./chat-route"
+import { isSearchPath, parsePath, pathFor, pathForSearch } from "./chat-route"
 
 const CONV = "19:abc123@thread.v2"
 
@@ -12,6 +12,10 @@ describe("parsePath", () => {
   it("returns null for an unrelated path", () => {
     expect(parsePath("/")).toBeNull()
     expect(parsePath("/chat/settings")).toBeNull()
+  })
+
+  it("returns null for the search path (handled by isSearchPath)", () => {
+    expect(parsePath("/chat/search")).toBeNull()
   })
 
   it("decodes an encoded conversation id", () => {
@@ -38,5 +42,21 @@ describe("pathFor", () => {
 
   it("round-trips through parsePath", () => {
     expect(parsePath(pathFor(CONV))).toEqual({ convId: CONV })
+  })
+})
+
+describe("isSearchPath / pathForSearch", () => {
+  it("matches the exact search path", () => {
+    expect(isSearchPath("/chat/search")).toBe(true)
+  })
+
+  it("rejects sub-paths and the bare prefix", () => {
+    expect(isSearchPath("/chat/search/")).toBe(false)
+    expect(isSearchPath("/chat/search/foo")).toBe(false)
+    expect(isSearchPath("/chat/")).toBe(false)
+  })
+
+  it("pathForSearch returns the canonical search path", () => {
+    expect(pathForSearch()).toBe("/chat/search")
   })
 })
