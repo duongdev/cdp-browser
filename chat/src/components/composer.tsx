@@ -38,6 +38,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { fetchRoster } from "../lib/chat-client"
+import { shiftEnterAction } from "../lib/composer-keys"
 import { composerLayoutFor } from "../lib/composer-layout"
 import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { pickFiles } from "../lib/image-attach"
@@ -347,7 +348,19 @@ export function Composer({
         if (event.key !== "Enter") return false
         // The mention suggestion owns Enter while open.
         if (mentionOpenRef.current) return false
-        if (event.shiftKey) return false // soft line break (hardBreak)
+        if (event.shiftKey) {
+          // D1: outside a list/code block, Shift+Enter starts a new paragraph so a
+          // subsequent `- ` / `1. ` converts only the new paragraph (the old
+          // HardBreak `<br>` kept everything in one paragraph and the input rule
+          // swallowed the pre-break line). Inside a list item / code block, keep
+          // the native HardBreak / newline.
+          const ed = edRef.current
+          const action = shiftEnterAction(!!ed?.isActive("listItem"), !!ed?.isActive("codeBlock"))
+          if (action === "native") return false
+          event.preventDefault()
+          ed?.chain().focus().splitBlock().run()
+          return true
+        }
         if (event.metaKey || event.ctrlKey) {
           doSendRef.current()
           return true
@@ -653,6 +666,7 @@ export function Composer({
                     aria-label="Attach file"
                     className="text-muted-foreground"
                     onClick={() => fileRef.current?.click()}
+                    onMouseDown={(e) => e.preventDefault()}
                     size="icon-sm"
                     variant="ghost"
                   >
@@ -846,6 +860,7 @@ export function Composer({
                   aria-label="Formatting"
                   className={cn("text-muted-foreground", formatOpen && "bg-accent text-foreground")}
                   onClick={() => setFormatOpen((v) => !v)}
+                  onMouseDown={(e) => e.preventDefault()}
                   size="icon-sm"
                   variant="ghost"
                 >
