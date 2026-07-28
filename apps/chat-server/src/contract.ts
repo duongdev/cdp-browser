@@ -370,6 +370,10 @@ export interface SearchHit {
   sender: string
   /** Resolved conversation title (DM/group compose) so the left rail shows a name, not an id. */
   convTitle: string | null
+  /** Conversation kind, when known locally — lets the FE build an honest placeholder (never
+   *  hardcode "group") for a hit whose conversation hasn't been listed/opened yet. Null when the
+   *  hit references a conversation this server has never ingested (a substrate-only reference). */
+  convKind: ChatConversation["kind"] | null
   /** Short text excerpt with the match highlighted/trimmed by the owning lane. */
   snippet: string
   source: "local" | "substrate"
