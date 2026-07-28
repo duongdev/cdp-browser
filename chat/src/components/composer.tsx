@@ -90,17 +90,20 @@ function FmtButton({
   icon,
   label,
   onRun,
+  active = false,
 }: {
   icon: IconSvgElement
   label: string
   onRun: () => void
+  active?: boolean
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
           aria-label={label}
-          className="text-muted-foreground"
+          aria-pressed={active}
+          className={cn("text-muted-foreground", active && "bg-accent text-foreground")}
           onClick={onRun}
           onMouseDown={(e) => e.preventDefault()}
           size="icon-sm"
@@ -401,6 +404,10 @@ export function Composer({
       setTick((t) => t + 1)
     },
     onSelectionUpdate: () => setTick((t) => t + 1),
+    // A mark/block toggle with an empty selection is a mark-only transaction — fires neither
+    // onUpdate nor onSelectionUpdate — so the BIUS chips + block-format highlights would stay stale
+    // until the caret moves. Re-render on every transaction so active state reflects immediately.
+    onTransaction: () => setTick((t) => t + 1),
     onFocus: () => onFocusChange(true),
     onBlur: () => onFocusChange(false),
   })
@@ -535,27 +542,32 @@ export function Composer({
       </ToggleGroup>
       <div className="mx-1 h-4 w-px bg-border" />
       <FmtButton
+        active={!!editor?.isActive("code")}
         icon={CodeIcon}
         label="Inline code"
         onRun={() => focusChain()?.toggleCode().run()}
       />
       <FmtButton
+        active={!!editor?.isActive("codeBlock")}
         icon={SourceCodeIcon}
         label="Code block"
         onRun={() => focusChain()?.toggleCodeBlock().run()}
       />
       <FmtButton
+        active={!!editor?.isActive("blockquote")}
         icon={QuoteUpIcon}
         label="Quote"
         onRun={() => focusChain()?.toggleBlockquote().run()}
       />
       <div className="mx-1 h-4 w-px bg-border" />
       <FmtButton
+        active={!!editor?.isActive("bulletList")}
         icon={LeftToRightListBulletIcon}
         label="Bulleted list"
         onRun={() => focusChain()?.toggleBulletList().run()}
       />
       <FmtButton
+        active={!!editor?.isActive("orderedList")}
         icon={LeftToRightListNumberIcon}
         label="Numbered list"
         onRun={() => focusChain()?.toggleOrderedList().run()}
