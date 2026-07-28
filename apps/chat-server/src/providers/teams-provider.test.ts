@@ -71,4 +71,19 @@ describe("TeamsProvider over HTTP (mock upstream)", () => {
     const none = new TeamsProvider({ baseUrl: upstream.url, secret: "" })
     await expect(none.listConversations()).rejects.toMatchObject({ status: 403 })
   })
+
+  test("searchMessages maps {hits,total} → ProviderSearchPage over HTTP", async () => {
+    const page = await provider.searchMessages("deploy")
+    expect(page.cursor).toBeNull()
+    expect(page.total).toBeGreaterThan(0)
+    expect(page.rows.length).toBe(page.total)
+    // Field shape — proves the route's hit array survives the JSON round-trip intact.
+    const sample = page.rows[0]
+    expect(sample).toHaveProperty("convId")
+    expect(sample).toHaveProperty("msgId")
+    expect(sample).toHaveProperty("preview")
+    expect(sample).toHaveProperty("sender")
+    expect(sample).toHaveProperty("ts")
+    expect(sample).toHaveProperty("itemClass")
+  })
 })

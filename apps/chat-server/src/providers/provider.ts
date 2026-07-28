@@ -44,6 +44,31 @@ export interface UploadResult {
   msgId: string
 }
 
+/**
+ * One raw provider-level search hit (PSN-115 WS-A). This is the *upstream-native* shape straight
+ * from the provider's search API (Teams Substrate today). The BFF's `/api/chat/search` route is
+ * responsible for fusing these with local FTS rows and producing the merged `SearchHit` in
+ * `contract.ts` (which adds `source`/`hydrated`/`convTitle`/`snippet`). Keep them distinct so the
+ * provider never has to know about local DB state.
+ */
+export interface ProviderSearchHit {
+  convId: string
+  msgId: string
+  preview: string
+  sender: string
+  ts: number
+  subject: string
+  /** Provider-native class discriminator (Teams `IPM.SkypeTeams.Message`). Useful for diagnostics. */
+  itemClass?: string
+}
+
+/** One page of provider-level search results. `cursor` is opaque to the caller; null = end. */
+export interface ProviderSearchPage {
+  rows: ProviderSearchHit[]
+  cursor: string | null
+  total: number
+}
+
 /** A typed provider failure carrying the upstream error `code` (e.g. `invalid_auth`) + HTTP status.
  *  Routes surface `code` to the FE unchanged, matching today's Teams error contract. */
 export class ProviderError extends Error {
@@ -84,6 +109,17 @@ export interface ChatProvider {
   profile(userId: string): Promise<ChatProfile>
   avatar(userId: string, size?: string): Promise<AvatarResult>
   media(url: string): Promise<MediaBytes>
+  /**
+   * Server-side search via the provider's native search API (PSN-115 WS-A — Teams Substrate today).
+   * Returns raw provider-level hits; the BFF's `/api/chat/search` route (WS-D) is responsible for
+   * fusing these with local FTS rows + scope filters + conv-title hydration before surfacing to the
+   * FE. `sort` is a hint — a provider that doesn't distinguish sorts still returns its native order.
+   * `cursor` is opaque to the caller; null/undefined = first page, null back = end.
+   */
+  searchMessages(
+    query: string,
+    opts?: { sort?: "relevance" | "recent"; cursor?: string | null },
+  ): Promise<ProviderSearchPage>
 }
 
 /** Re-export the contract row types callers touch, so a provider consumer imports from one place. */

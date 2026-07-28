@@ -23,6 +23,8 @@ import type {
   AvatarResult,
   ChatProvider,
   MediaBytes,
+  ProviderSearchHit,
+  ProviderSearchPage,
   UploadImage,
   UploadResult,
 } from "./provider.ts"
@@ -197,6 +199,31 @@ export class TeamsProvider implements ChatProvider {
     return {
       contentType: out.ct || "application/octet-stream",
       body: decodeBase64(out.base64 || ""),
+    }
+  }
+
+  /**
+   * Substrate search (PSN-115 WS-A). Cursor is a string-encoded `from` offset (the substrate API
+   * uses from/size pagination; a real cursor token isn't exposed today). `sort` is accepted but not
+   * forwarded yet — the live-verified body has no sort field; it'll wire onto the request body when
+   * we adopt SortOrderSource. The route returns `{hits,total}` with no next-cursor, so this always
+   * reports `cursor:null` (single page per call).
+   */
+  async searchMessages(
+    query: string,
+    opts?: { sort?: "relevance" | "recent"; cursor?: string | null },
+  ): Promise<ProviderSearchPage> {
+    void opts?.sort // reserved for when the body grows a SortOrderSource field
+    const from = Number(opts?.cursor) || 0
+    const out = await this.call<{ hits?: ProviderSearchHit[]; total?: number }>("search", {
+      query,
+      from,
+      size: 25,
+    })
+    return {
+      rows: (out.hits ?? []).map((h) => ({ ...h })),
+      cursor: null,
+      total: Number(out.total ?? out.hits?.length ?? 0),
     }
   }
 }

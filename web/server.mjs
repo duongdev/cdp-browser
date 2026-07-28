@@ -70,6 +70,11 @@ import {
   upsertMessages as teamsUpsertMessages,
   upsertUsers as teamsUpsertUsers,
 } from "../core/teams-store.js"
+import {
+  buildSubstrateQuery,
+  mapHttpError as mapSubstrateHttpError,
+  parseSubstrateHits,
+} from "../core/teams-substrate.js"
 import { isClientDead, shouldSkipClient } from "../core/ws-backpressure.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -1676,6 +1681,91 @@ async function teamsAvatar(rawOid, size) {
   return { ct: out.ct || "image/jpeg", buf: Buffer.from(out.dataUrl.slice(comma + 1), "base64") }
 }
 
+// ---- Teams substrate search (PSN-115 WS-A) --------------------------------
+// Microsoft Teams' server-side Substrate Search (https://substrate.office.com/search/api/v2/query)
+// reaches chat history the local `chat.db` has never synced — the whole epic's reason for being.
+// CA-proof like the rest: the fetch rides IN-PAGE from a live Teams tab; the cached substrate
+// MSAL token (`substratesearch-internal.readwrite` audience `substrate.office.com`) is read from
+// localStorage with the same key-scan the Graph/profile paths use. On 401 the script tries
+// `window.msal.acquireTokenSilent` once for the substrate scope, then retries. The body shape +
+// header mask are built by the pure `core/teams-substrate.js` so this route never hardcodes them.
+async function teamsSearch({ query, from = 0, size = 25 }) {
+  const cvid = crypto.randomUUID()
+  // The placeholder Authorization is swapped in-page for the real bearer. UPN is decoded from the
+  // JWT claims on the same page (the substrate API routes per-mailbox, so it needs the user's UPN).
+  const built = buildSubstrateQuery({ query, upn: "<upn>", cvid, from, size })
+  const script = `(async () => {
+    const SUBSTRATE_SCOPE = "https://substrate.office.com/substratesearch-internal.readwrite"
+    const readToken = () => {
+      for (const k of Object.keys(localStorage)) {
+        if (!k.startsWith("msal.") || !k.includes("accesstoken")) continue
+        if (!k.includes("substrate.office.com") || !k.includes("substratesearch")) continue
+        try {
+          const tok = (JSON.parse(localStorage.getItem(k)) || {}).secret
+          if (tok) return tok
+        } catch (e) {}
+      }
+      return ""
+    }
+    const decodeUpn = (jwt) => {
+      try {
+        const payload = JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")))
+        return payload.upn || payload.preferred_username || ""
+      } catch (e) { return "" }
+    }
+    const doFetch = (tok, upn) => fetch(${JSON.stringify(built.url)}, {
+      method: "POST",
+      headers: {
+        ...${JSON.stringify({ ...built.headers, Authorization: undefined })},
+        Authorization: "Bearer " + tok,
+        "X-AnchorMailbox": upn,
+        "X-RoutingParameter-SessionKey": upn,
+      },
+      body: ${JSON.stringify(JSON.stringify(built.body))},
+    })
+    try {
+      let tok = readToken()
+      if (!tok) {
+        try {
+          const r = await window.msal.acquireTokenSilent({ scopes: [SUBSTRATE_SCOPE] })
+          tok = r && r.accessToken || ""
+        } catch (e) { tok = "" }
+      }
+      if (!tok) return { status: 401 }
+      let upn = decodeUpn(tok)
+      let resp = await doFetch(tok, upn)
+      if (resp.status === 401) {
+        // Cached token stale — silent-acquire ONCE, then retry.
+        try {
+          const r = await window.msal.acquireTokenSilent({ scopes: [SUBSTRATE_SCOPE] })
+          tok = r && r.accessToken || ""
+        } catch (e) { tok = "" }
+        if (!tok) return { status: 401 }
+        upn = decodeUpn(tok)
+        resp = await doFetch(tok, upn)
+      }
+      const body = await resp.text()
+      return { status: resp.status, body }
+    } catch (e) {
+      return { status: 0, body: "" }
+    }
+  })()`
+  const result = await notificationCenter.runInTeamsPage(script)
+  if (!result) return { error: "no_teams_tab" }
+  if (result.status === 0) return { error: "fetch_failed" }
+  if (result.status === 401) return { error: "auth" }
+  if (result.status === 429) return { error: "rate_limited" }
+  if (result.status >= 400) return { error: mapSubstrateHttpError(result.status) }
+  let parsed = null
+  try {
+    parsed = JSON.parse(result.body || "{}")
+  } catch {
+    parsed = {}
+  }
+  const { hits, total } = parseSubstrateHits(parsed)
+  return { hits, total }
+}
+
 // ---- Teams user profile (t166) --------------------------------------------
 // Full profile card via Graph `/v1.0/users/{oid}?$select=…`, fetched IN-PAGE with the page's own
 // MSAL Graph bearer (same pattern as avatars/getByIds — CA-proof). Fields are the standard org-
@@ -2865,6 +2955,19 @@ const server = http.createServer(async (req, res) => {
         const hit = await teamsMedia(mediaUrl)
         if (hit.error) return ijson(res, { error: hit.error })
         return ijson(res, { ct: hit.ct, base64: hit.buf.toString("base64") })
+      }
+      if (iop === "search" && POST) {
+        const { query, from, size } = await ibody(req)
+        const codeByStatus = { auth: 401, rate_limited: 429 }
+        const out = await teamsSearch({
+          query: String(query ?? ""),
+          from: Number(from ?? 0) || 0,
+          size: Number(size ?? 25) || 25,
+        })
+        if (out.error) {
+          return ijson(res, out, codeByStatus[out.error] ?? 502)
+        }
+        return ijson(res, { hits: out.hits, total: out.total })
       }
       return ijson(res, { error: "not_found" }, 404)
     }

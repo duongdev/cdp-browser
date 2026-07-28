@@ -19,6 +19,8 @@ import type {
   AvatarResult,
   ChatProvider,
   MediaBytes,
+  ProviderSearchHit,
+  ProviderSearchPage,
   UploadImage,
   UploadResult,
 } from "./provider.ts"
@@ -578,4 +580,71 @@ export class MockProvider implements ChatProvider {
   async media(_url: string): Promise<MediaBytes> {
     return { contentType: "image/png", body: PLACEHOLDER_PNG }
   }
+
+  /**
+   * Mock substrate search (PSN-115 WS-A). Returns a deterministic fixture list filtered by the
+   * query substring (case-insensitive). The list mixes:
+   *   - hits whose convId+msgId ARE seeded above (the hydrate pipeline can fully resolve them), and
+   *   - hits for conversations/messages the mock DB has NEVER seen — the whole epic's reason for
+   *     being: substrate reaches chat history the local store has never synced.
+   * `sort` and `cursor` are accepted to satisfy the interface but don't change the result — the
+   * fixture set is small enough that paging is a non-concern.
+   */
+  async searchMessages(
+    query: string,
+    opts?: { sort?: "relevance" | "recent"; cursor?: string | null },
+  ): Promise<ProviderSearchPage> {
+    void opts?.sort
+    void opts?.cursor
+    const q = query.trim().toLowerCase()
+    if (!q) return { rows: [], cursor: null, total: 0 }
+    const matches = SEARCH_FIXTURES.filter((f) => f.preview.toLowerCase().includes(q))
+    return { rows: matches.map((h) => ({ ...h })), cursor: null, total: matches.length }
+  }
 }
+
+/**
+ * Fixed search hits — indexed by preview substring. Some reference seeded conversations
+ * (`19:group@thread.v2`/`19:rich@thread.v2`) so the hydrate path can fully resolve them; others
+ * reference conv ids the mock DB has never seen (`19:lost@thread.tacv2`, `19:archive@thread.tacv2`)
+ * to demonstrate the gap substrate search closes. Deterministic so unit tests can pin them.
+ */
+const SEARCH_FIXTURES: readonly ProviderSearchHit[] = [
+  {
+    convId: "19:group@thread.v2",
+    msgId: "3002",
+    preview: "on it — reviewing the deploy plan now",
+    sender: "You",
+    ts: ago(242),
+    subject: "",
+    itemClass: "IPM.SkypeTeams.Message",
+  },
+  {
+    convId: "19:rich@thread.v2",
+    msgId: "6002",
+    preview: "PSN-105 ticket — please look before standup",
+    sender: "Other Person",
+    ts: ago(28),
+    subject: "",
+    itemClass: "IPM.SkypeTeams.Message",
+  },
+  // Two hits the local DB has NEVER seeded — substrate reaches past the synced window.
+  {
+    convId: "19:lost@thread.tacv2",
+    msgId: "9001",
+    preview: "deploy rollback runbook from last quarter",
+    sender: "Third Person",
+    ts: ago(60_000),
+    subject: "",
+    itemClass: "IPM.SkypeTeams.Message",
+  },
+  {
+    convId: "19:archive@thread.tacv2",
+    msgId: "9002",
+    preview: "old standup notes mentioning deploy",
+    sender: "Other Person",
+    ts: ago(90_000),
+    subject: "",
+    itemClass: "IPM.SkypeTeams.Message",
+  },
+]
