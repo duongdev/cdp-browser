@@ -745,6 +745,16 @@ function shapeMessage(r: MsgRow): StoredMessage {
   }
 }
 
+/** Existence check — `true` iff a row exists for this (service, convId, msgId). Cheaper than
+ *  `getMessage` for the hydrate pipeline's idempotent fast path, which fires per substrate hit and
+ *  doesn't need the row's contents. (PSN-115 WS-B.) */
+export function hasMessage(db: Db, service: string, convId: string, id: string): boolean {
+  const r = db
+    .prepare("SELECT 1 FROM messages WHERE service = ? AND conv_id = ? AND id = ? LIMIT 1")
+    .get(service, convId, id) as { 1?: number } | undefined
+  return r !== undefined
+}
+
 /** One stored message by id, or null. Used by the push sweep to read the last message's sender name
  *  and `mentionsMe` (the conversation row alone doesn't carry them). */
 export function getMessage(
