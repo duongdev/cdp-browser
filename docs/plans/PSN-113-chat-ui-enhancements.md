@@ -2,6 +2,10 @@
 
 Plan-only until the label flips to `build`. Same issue, same branch (`chat-ui-enhancements`), ONE PR.
 
+## Status (built 2026-07-28)
+
+All four workstreams (A–D) shipped on PR #41, commits `9665de1..d25108f`. Two bugs the e2e pass caught, both fixed in-range: (1) the group-sender prefix was initially gated on `memberIds.length > 2` — flipped to `kind === "group"` because `memberIds` is capped to the first few non-self oids (t161), so a count threshold mis-gates large groups; (2) the bubble→bar bridge `<span>` initially overflowed the viewport horizontally on a narrow self bubble — bounded to the bubble box (`inset-x-0`).
+
 ## Goal
 
 Four targeted fixes on the `/chat` surface, each a daily-driver-felt papercut:

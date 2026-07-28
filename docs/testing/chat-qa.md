@@ -119,6 +119,10 @@ ones pass.
 | V-07 | Hover "Message actions" ⋯ button → tooltip appears; click to open menu; Escape | No tooltip text visible after Escape |
 | V-08 | Hover "+" on the reaction bar → tooltip; click to open picker; Escape | No tooltip text visible after Escape |
 | V-09 | Close the profile dialog while the avatar lightbox is open | Lightbox does not re-open on the next profile you view |
+| V-10 | Hover a message to open its reaction bar, then move the cursor in a straight line from the bubble to the bar (crossing the gap) | Bar stays open through the transit (close is cancelled on bar `mouseenter`); no flicker |
+| V-11 | Hover message A (bar opens), then while A's bar is still open, brush message B's box (a quick `mouseenter` on B) | A's bar is NOT instantly evicted; B does not steal ownership until its own `openDelay` fires. A closes on its own 300ms grace after the cursor leaves A's region |
+| V-12 | Two stacked bubbles: hover the lower one, then move the mouse up across the upper bubble's box toward the lower one's bar | Lower bar stays open; upper bar does NOT open (waits `openDelay`, doesn't yank ownership) |
+| V-13 | Inspect the bridge element between a bubble and its open reaction bar | A transparent `<span>` (`aria-hidden`) spans the bubble→bar gap; `getBoundingClientRect` is bounded to the bubble box (no horizontal overflow past the viewport) |
 
 ### 5. Composer
 
@@ -134,7 +138,11 @@ ones pass.
 | C-08 | Open emoji picker, pick 😀, send | Message contains the emoji |
 | C-09 | Click GIF button | Picker opens (grid load requires `GIPHY_API_KEY` — button presence is sufficient here) |
 | C-10 | Type a long message, Enter to send | Message appears in thread optimistically; no crash |
-| C-11 | Shift+Enter in the composer | Newline inserted; message not sent |
+| C-11 | Shift+Enter in the composer (outside a list/code-block) | New paragraph created (`splitBlock`); message not sent; typing `- item` on the new line wraps ONLY that paragraph into a bullet list |
+| C-12 | Inside a bullet list, Shift+Enter | HardBreak line-break within the same list item (no new paragraph, no new list item) |
+| C-13 | Click the Aa / Formatting toggle, then the Attach button, without moving the caret | Editor keeps focus both times (`.ProseMirror` is still `document.activeElement`) |
+| C-14 | With an empty selection, click each BIUS chip (B / I / U / S) | Chip's `data-state` flips to `on` immediately (no caret move needed); `editor.isActive('bold'\|'italic'\|'underline'\|'strike')` returns true right after the click |
+| C-15 | Click each block-format button (inline code, code-block, quote, bullet list, numbered list), then move the caret into/out of that block | Button carries `aria-pressed="true"` + accent bg while the caret is inside the block; flips to `aria-pressed="false"` when the caret leaves |
 
 ### 6. Assistant panel
 
@@ -181,6 +189,11 @@ ones pass.
 | CL-12 | Press `⌘K` | Command palette opens |
 | CL-13 | Press Escape | Palette closes; no DOM remnants (`[role="dialog"]` = 0 visible) |
 | CL-14 | Switch between 3 conversations rapidly | No crash; last selected conversation renders |
+| CL-15 | In a group conv (≥3 members, kind==="group"), have another member send `pnpm chat:mock:say`; read the sidebar row preview + the `chat:notify` / web `Notification` body | Both the row preview and the notification body start with `"FirstName: "` (first name only, regardless of name-display pref) |
+| CL-16 | Send a message yourself in the same group conv (last message is from-me) | Row preview has NO sender prefix (no "You:") |
+| CL-17 | In a 1:1 DM, have the other person send | Row preview has NO sender prefix (1:1 never prefixed) |
+| CL-18 | In a group conv whose last-message row isn't swept yet (unknown sender) | Row preview degrades to no prefix (no `"undefined:"`) |
+| CL-19 | `GET /api/chat/conversations` on a group conv | Response row carries `lastMessageSender` (the sender's name from the `messages` JOIN) |
 
 ### 9. Core regression
 
