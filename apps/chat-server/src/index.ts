@@ -108,6 +108,13 @@ app.route(
   "/api/chat/assistant",
   createAssistantRoutes({
     db,
+    search:
+      assistantService && hydrates.get(assistantService)
+        ? {
+            provider: assistantProvider,
+            hydrate: hydrates.get(assistantService) as import("./hydrate.ts").HydrateEngine,
+          }
+        : undefined,
     vision:
       assistantService && assistantProvider && assistantCaptioner
         ? {
