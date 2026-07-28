@@ -14,6 +14,7 @@
 import {
   Alert02Icon,
   ArrowLeft01Icon,
+  Cancel01Icon,
   InboxIcon,
   ReloadIcon,
   Search01Icon,
@@ -22,16 +23,32 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
-import { ChatApiError, type SearchHit, type SearchPage, searchMessages } from "../lib/chat-client"
+import {
+  ChatApiError,
+  type ParsedQuery,
+  type SearchHit,
+  type SearchPage,
+  searchMessages,
+} from "../lib/chat-client"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { relativeTime } from "../lib/conversation-view"
 import {
   addRecentSearch,
   applyHydrated,
+  DEFAULT_SCOPE_KIND,
+  DEFAULT_SORT,
+  filterChips,
   highlightSegments,
   loadRecentSearchs,
+  parseSort,
   RECENT_SEARCHES_KEY,
+  SCOPE_KINDS,
+  type ScopeKind,
+  SEARCH_SORT_KEY,
+  type SearchSort,
+  SORTS,
   serializeRecentSearchs,
 } from "../lib/search-view"
 import type { TeamsConversation } from "../lib/teams-client"
@@ -73,6 +90,21 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
   })
   const [focusedIndex, setFocusedIndex] = useState(0)
 
+  // Sort + scope (WS-F). Sort persists across sessions (chat-scoped localStorage, like recent
+  // searches). Scope is session-only for v1 — a persistent default would mask new DMs silently.
+  const [sort, setSort] = useState<SearchSort>(() => {
+    try {
+      return parseSort(localStorage.getItem(SEARCH_SORT_KEY))
+    } catch {
+      return DEFAULT_SORT
+    }
+  })
+  const [scopeKind, setScopeKind] = useState<ScopeKind>(DEFAULT_SCOPE_KIND)
+
+  // The last successfully-landed parsed query — keeps chips visible while the next query is in
+  // flight (so toggling sort/scope or removing a chip doesn't blank the bar mid-request).
+  const [parsed, setParsed] = useState<ParsedQuery | null>(null)
+
   const activeThreadRef = useRef<ThreadHandle | null>(null)
 
   // The running query is the debounced `query`. We track the in-flight request via an
@@ -90,12 +122,17 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
     const q = debounced.trim()
     if (!q) {
       setState({ status: "idle" })
+      setParsed(null)
       return
     }
     const mySeq = ++reqSeq.current
     const ac = new AbortController()
     setState({ status: "loading" })
-    searchMessages(q, { signal: ac.signal })
+    searchMessages(q, {
+      sort,
+      scope: { kind: scopeKind },
+      signal: ac.signal,
+    })
       .then((page) => {
         if (mySeq !== reqSeq.current) return
         setState({
@@ -104,6 +141,7 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
           total: page.total,
           ...(page.degraded ? { degraded: page.degraded } : {}),
         })
+        setParsed(page.parsed ?? { text: q, filters: {} })
         setFocusedIndex(0)
         // Persist the query as a recent search only on a successful page land.
         setRecent((list) => {
@@ -129,7 +167,16 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
         setState({ status: "error", message })
       })
     return () => ac.abort()
-  }, [debounced])
+  }, [debounced, sort, scopeKind])
+
+  const onSortChange = useCallback((next: SearchSort) => {
+    setSort(next)
+    try {
+      localStorage.setItem(SEARCH_SORT_KEY, next)
+    } catch {
+      // storage disabled — in-memory sort still works this session
+    }
+  }, [])
 
   // Hydrate-live-flip: subscribe to the WS hub and flip hydrated:false rows when their message
   // arrives in a `messages-upsert` delta (the BFF's existing push, no new transport).
@@ -250,6 +297,14 @@ export function SearchView({ convById, onBack, namePref }: SearchViewProps) {
             />
           </div>
         </div>
+        <FilterBar
+          onRemoveChip={(remove) => setQuery(remove(query))}
+          onScopeChange={setScopeKind}
+          onSortChange={onSortChange}
+          parsed={parsed}
+          scopeKind={scopeKind}
+          sort={sort}
+        />
         <div className="min-h-0 flex-1 overflow-y-auto">
           {state.status === "idle" ? (
             recent.length > 0 ? (
@@ -361,6 +416,101 @@ function stubFor(convId: string): TeamsConversation {
   }
 }
 
+// ---- WS-F: filter bar (chips + sort + scope) -------------------------------
+
+function FilterBar({
+  parsed,
+  sort,
+  scopeKind,
+  onRemoveChip,
+  onSortChange,
+  onScopeChange,
+}: {
+  parsed: ParsedQuery | null
+  sort: SearchSort
+  scopeKind: ScopeKind
+  onRemoveChip: (remove: (currentQuery: string) => string) => void
+  onSortChange: (next: SearchSort) => void
+  onScopeChange: (next: ScopeKind) => void
+}) {
+  // ponytail: chips render from the LAST landed parsed query so they stay visible while the next
+  // query is in flight. Hidden in idle/empty states — no parsed yet, and default sort+scope means
+  // nothing to surface.
+  const chips = parsed ? filterChips(parsed) : []
+  const hasNonDefault = sort !== DEFAULT_SORT || scopeKind !== DEFAULT_SCOPE_KIND
+  if (chips.length === 0 && !hasNonDefault) return null
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1 border-border border-b px-2 py-1.5">
+      {chips.length > 0 && (
+        <ul aria-label="Active filters" className="flex flex-wrap items-center gap-1">
+          {chips.map((chip) => (
+            <li key={chip.key}>
+              <span className="inline-flex items-center gap-1 rounded-md bg-accent px-1.5 py-0.5 text-foreground text-xs">
+                <span className="truncate">{chip.label}</span>
+                <button
+                  aria-label={`Remove filter ${chip.label}`}
+                  className="flex size-3.5 items-center justify-center rounded-full text-muted-foreground hover:bg-background hover:text-foreground"
+                  onClick={() => onRemoveChip(chip.removeQuery)}
+                  type="button"
+                >
+                  <HugeiconsIcon className="size-3" icon={Cancel01Icon} />
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="ml-auto flex items-center gap-1">
+        <ToggleGroup
+          aria-label="Sort results"
+          className="gap-0.5"
+          onValueChange={(v) => {
+            if (v === "relevance" || v === "recent") onSortChange(v)
+          }}
+          size="sm"
+          type="single"
+          value={sort}
+        >
+          {SORTS.map((s) => (
+            <ToggleGroupItem
+              aria-label={s === "relevance" ? "Sort by relevance" : "Sort by recent"}
+              className="data-[state=on]:bg-accent data-[state=on]:text-foreground text-muted-foreground text-xs"
+              key={s}
+              value={s}
+            >
+              {s === "relevance" ? "Relevance" : "Recent"}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <div aria-hidden className="h-4 w-px bg-border" />
+        <ToggleGroup
+          aria-label="Scope"
+          className="gap-0.5"
+          onValueChange={(v) => {
+            if (v === "all" || v === "dm" || v === "group") onScopeChange(v)
+          }}
+          size="sm"
+          type="single"
+          value={scopeKind}
+        >
+          {SCOPE_KINDS.map((k) => (
+            <ToggleGroupItem
+              aria-label={`Scope: ${k}`}
+              className="data-[state=on]:bg-accent data-[state=on]:text-foreground text-muted-foreground text-xs capitalize"
+              // ponytail: folder/label scope needs a picker over conversation_prefs and is a
+              // declared WS-F follow-up — only the 3 structural kinds are surfaced here.
+              key={k}
+              value={k}
+            >
+              {k === "dm" ? "DMs" : k === "group" ? "Groups" : "All"}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+    </div>
+  )
+}
+
 function ResultRow({
   hit,
   focused,
@@ -377,7 +527,7 @@ function ResultRow({
 }) {
   const segs = useMemo(() => highlightSegments(hit.snippet, parseText), [hit.snippet, parseText])
   return (
-    <div aria-selected={focused} role="option">
+    <div aria-selected={focused} role="option" tabIndex={-1}>
       <button
         className={cn(
           "flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-accent",

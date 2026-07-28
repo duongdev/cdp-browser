@@ -480,23 +480,31 @@ export type {
   ParsedQuery,
   SearchHit,
   SearchPage,
+  SearchScope,
 } from "../../../apps/chat-server/src/contract"
 
-import type { SearchPage } from "../../../apps/chat-server/src/contract"
+import type { SearchPage, SearchScope } from "../../../apps/chat-server/src/contract"
 
 export type SearchSort = "relevance" | "recent"
 
 /** Run a global message search. `query` is raw KQL — the server parses. Empty query returns an
- *  empty page without erroring (the FE shows the empty state). */
+ *  empty page without erroring (the FE shows the empty state). `scope` defaults to `{kind:"all"}`;
+ *  omit it on the wire so the server keeps its own default. */
 export async function searchMessages(
   query: string,
-  opts?: { sort?: SearchSort; cursor?: string | null; signal?: AbortSignal },
+  opts?: {
+    sort?: SearchSort
+    scope?: SearchScope
+    cursor?: string | null
+    signal?: AbortSignal
+  },
 ): Promise<SearchPage> {
   const data = await post<SearchPage>(
     "search",
     {
       query,
       ...(opts?.sort ? { sort: opts.sort } : {}),
+      ...(opts?.scope && opts.scope.kind !== "all" ? { scope: opts.scope } : {}),
       ...(opts?.cursor ? { cursor: opts.cursor } : {}),
     },
     opts?.signal,

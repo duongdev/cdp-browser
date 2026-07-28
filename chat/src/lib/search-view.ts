@@ -1,11 +1,12 @@
-// Pure helpers for the full-screen message search surface (PSN-115 WS-E).
-// Snippet highlighting (wrap matched free-text in <mark>), recent-search persistence, and the
-// hydrate-flip reducer that lets a `messages-upsert` WS delta flip `hydrated:false` rows in place.
+// Pure helpers for the full-screen message search surface (PSN-115 WS-E + WS-F).
+// Snippet highlighting (wrap matched free-text in <mark>), recent-search persistence, the
+// hydrate-flip reducer that lets a `messages-upsert` WS delta flip `hydrated:false` rows in place,
+// and the parsed-query → filter-chip reducer + sort/scope constants for the filter bar (WS-F).
 //
 // No React, no I/O except localStorage (injected for tests). Pure so the reducer + chip render
 // are unit-testable in isolation.
 
-import type { SearchHit } from "./chat-client"
+import type { ParsedQuery, SearchHit } from "./chat-client"
 
 /** Split `snippet` into segments around case-insensitive matches of `term`. Returns `null` when
  *  `term` is blank or not found — the caller renders the snippet verbatim in that case. The
@@ -91,4 +92,157 @@ export function applyHydrated(
     return { ...row, hydrated: true }
   })
   return changed ? next : rows
+}
+
+// ---- filter chips (WS-F) ---------------------------------------------------
+// The parsed query → chip reducer. Each chip carries a `removeQuery(currentQuery)` that returns the
+// raw query string with that operator token removed; the component calls `setQuery` with the result
+// and the existing debounce effect re-runs the search. Free-text and other operators are preserved.
+//
+// `stripOperator` is regex-based rather than re-tokenising: the parser already validated the token,
+// so we know it exists in one of the two handled shapes (`op:value` or `op:"quoted value"`). The
+// ponytail: a malicious query like `from:foo from:foo` collapses to one filter (parser keeps the
+// last), so removing the chip leaves the second token intact — but that's a degenerate input and
+// the resulting search still has no `from` filter (parser dedupes again on re-parse), so the
+// observable behaviour is correct. Upgrade path: re-tokenise via the shared parser and re-emit.
+
+/** Escape RegExp metacharacters in a literal value so it can be embedded in a `RegExp`. */
+function reEscape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Remove the first `op:value` token from `query` (case-insensitive on the operator), accepting
+ * either the bare or the double-quoted value form. Collapses the trailing whitespace so we don't
+ * leave a double-space. Returns the trimmed result; never returns empty padding.
+ */
+export function stripOperator(query: string, op: string, value: string): string {
+  if (!op || !value) return query
+  const escValue = reEscape(value)
+  const re = new RegExp(`\\s*\\b${reEscape(op)}:\\s*(?:"${escValue}"|${escValue})(?=\\s|$)`, "i")
+  return query.replace(re, "").trim()
+}
+
+/** Format an epoch-ms timestamp as the chip label. UTC YYYY-MM-DD — matches the parser's date
+ *  interpretation (bare year and ISO dates are parsed in UTC by `parseDate`). */
+export function formatDateChip(ts: number): string {
+  if (!Number.isFinite(ts)) return ""
+  return new Date(ts).toISOString().slice(0, 10)
+}
+
+export interface FilterChip {
+  /** Stable identity for React `key` — `${op}:${value}`. */
+  key: string
+  /** Human label, e.g. `from: Ann`, `after: 2026-07-01`, `has: link`, `mentions: me`. */
+  label: string
+  /** Strip this operator from the raw query string; the component feeds the result to `setQuery`. */
+  removeQuery: (currentQuery: string) => string
+}
+
+/** Reduce a parsed query's filters to a list of removable chips. Free text has no chip — it stays
+ *  in the input. Each `has:` entry becomes its own chip (Slack-style). */
+export function filterChips(parsed: ParsedQuery): FilterChip[] {
+  const f = parsed.filters
+  const chips: FilterChip[] = []
+  if (f.from) {
+    const value = f.from
+    chips.push({
+      key: `from:${value}`,
+      label: `from: ${value}`,
+      removeQuery: (q) => stripOperator(q, "from", value),
+    })
+  }
+  if (f.in) {
+    const value = f.in
+    chips.push({
+      key: `in:${value}`,
+      label: `in: ${value}`,
+      removeQuery: (q) => stripOperator(q, "in", value),
+    })
+  }
+  if (typeof f.afterTs === "number") {
+    const value = formatDateChip(f.afterTs)
+    if (value) {
+      chips.push({
+        key: `after:${value}`,
+        label: `after: ${value}`,
+        // The parser keeps only the last `after:` token, so there's exactly one to remove —
+        // strip the first `after:<...>` token regardless of how the user spelled the date
+        // (the chip label is the normalised YYYY-MM-DD, which may differ from their input).
+        removeQuery: (q) => stripFirstToken(q, "after"),
+      })
+    }
+  }
+  if (typeof f.beforeTs === "number") {
+    const value = formatDateChip(f.beforeTs)
+    if (value) {
+      chips.push({
+        key: `before:${value}`,
+        label: `before: ${value}`,
+        removeQuery: (q) => stripFirstToken(q, "before"),
+      })
+    }
+  }
+  if (Array.isArray(f.has)) {
+    for (const h of f.has) {
+      const value = h
+      chips.push({
+        key: `has:${value}`,
+        label: `has: ${value}`,
+        removeQuery: (q) => stripOperator(q, "has", value),
+      })
+    }
+  }
+  if (f.mentionsMe) {
+    chips.push({
+      key: "mentions:me",
+      label: "mentions: me",
+      removeQuery: (q) => stripOperator(q, "mentions", "me"),
+    })
+  }
+  return chips
+}
+
+/** True when the parsed query has at least one filter (any chip would render). */
+export function hasFilters(parsed: ParsedQuery | undefined | null): boolean {
+  if (!parsed) return false
+  const f = parsed.filters
+  return Boolean(
+    f.from ||
+      f.in ||
+      typeof f.afterTs === "number" ||
+      typeof f.beforeTs === "number" ||
+      (Array.isArray(f.has) && f.has.length > 0) ||
+      f.mentionsMe,
+  )
+}
+
+/** Strip the first `op:<token>` token (any value, quoted or bare). Used by date chips where the
+ *  user's original spelling isn't recoverable from the parsed ts — there is only ever one such
+ *  token (parser keeps the last), so first-match-wins is correct. Returns trimmed query. */
+function stripFirstToken(query: string, op: string): string {
+  const re = new RegExp(`\\s*\\b${reEscape(op)}:\\s*(?:"[^"]+"|[^\\s]+)`, "i")
+  return query.replace(re, "").trim()
+}
+
+// ---- sort + scope (WS-F) ---------------------------------------------------
+
+export type SearchSort = "relevance" | "recent"
+
+/** Sort order options, in toggle order. */
+export const SORTS: readonly SearchSort[] = ["relevance", "recent"]
+export const DEFAULT_SORT: SearchSort = "relevance"
+
+/** localStorage key for the persisted sort choice (chat-scoped). */
+export const SEARCH_SORT_KEY = "chat:search-sort"
+
+/** Structural scope kinds surfaced as a segmented control. `folder`/`label` need a picker
+ *  (conversation_prefs) and are deferred — the chip row only shows these three for v1. */
+export const SCOPE_KINDS = ["all", "dm", "group"] as const
+export type ScopeKind = (typeof SCOPE_KINDS)[number]
+export const DEFAULT_SCOPE_KIND: ScopeKind = "all"
+
+/** Tolerant parse of a stored sort value. Falls back to the default on anything unexpected. */
+export function parseSort(raw: string | null | undefined): SearchSort {
+  return raw === "recent" || raw === "relevance" ? raw : DEFAULT_SORT
 }
