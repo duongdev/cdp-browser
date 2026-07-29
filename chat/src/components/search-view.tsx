@@ -1024,7 +1024,6 @@ function DateSuggestionPopover({
   return (
     <div className="absolute top-full left-0 z-30 mt-1 w-auto overflow-hidden rounded-lg border border-border bg-popover p-1 shadow-md">
       <Calendar
-        captionLayout="dropdown"
         disabled={kind === "before" ? { after: today } : undefined}
         mode="single"
         numberOfMonths={1}
