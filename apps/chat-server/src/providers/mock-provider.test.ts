@@ -99,4 +99,35 @@ describe("MockProvider", () => {
     await expect(p.fetchHistory("nope")).rejects.toBeInstanceOf(ProviderError)
     await expect(p.fetchHistory("nope")).rejects.toMatchObject({ code: "not_found", status: 404 })
   })
+
+  describe("searchMessages", () => {
+    test("returns fixture hits whose preview matches the query (case-insensitive)", async () => {
+      const page = await p.searchMessages("deploy")
+      expect(page.cursor).toBeNull()
+      // Three fixtures mention "deploy" — one hydrated (group), two not (lost/archive).
+      expect(page.total).toBe(3)
+      expect(page.rows.map((h) => h.msgId).sort()).toEqual(["3002", "9001", "9002"])
+    })
+
+    test("includes hits the local DB has never seeded — the substrate gap the epic closes", async () => {
+      const page = await p.searchMessages("rollback")
+      expect(page.total).toBe(1)
+      const [hit] = page.rows
+      expect(hit.convId).toBe("19:lost@thread.tacv2") // not in seed()
+      expect(hit.msgId).toBe("9001")
+      expect(hit.itemClass).toBe("IPM.SkypeTeams.Message")
+    })
+
+    test("returns no rows for an empty/whitespace query", async () => {
+      expect(await p.searchMessages("")).toEqual({ rows: [], cursor: null, total: 0 })
+      expect(await p.searchMessages("   ")).toEqual({ rows: [], cursor: null, total: 0 })
+    })
+
+    test("accepts sort/cursor opts without changing the result (single page per call)", async () => {
+      const a = await p.searchMessages("deploy", { sort: "recent", cursor: null })
+      const b = await p.searchMessages("deploy", { sort: "relevance", cursor: "0" })
+      expect(a.total).toBe(b.total)
+      expect(a.rows.map((h) => h.msgId).sort()).toEqual(b.rows.map((h) => h.msgId).sort())
+    })
+  })
 })

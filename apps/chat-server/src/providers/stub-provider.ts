@@ -30,6 +30,7 @@ export function stubProvider(
     profile: throwUnused as ChatProvider["profile"],
     avatar: async () => ({ miss: true as const }),
     media: throwUnused as ChatProvider["media"],
+    searchMessages: async () => ({ rows: [], cursor: null, total: 0 }),
   }
   return { ...base, ...over }
 }

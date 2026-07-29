@@ -745,6 +745,16 @@ function shapeMessage(r: MsgRow): StoredMessage {
   }
 }
 
+/** Existence check — `true` iff a row exists for this (service, convId, msgId). Cheaper than
+ *  `getMessage` for the hydrate pipeline's idempotent fast path, which fires per substrate hit and
+ *  doesn't need the row's contents. (PSN-115 WS-B.) */
+export function hasMessage(db: Db, service: string, convId: string, id: string): boolean {
+  const r = db
+    .prepare("SELECT 1 FROM messages WHERE service = ? AND conv_id = ? AND id = ? LIMIT 1")
+    .get(service, convId, id) as { 1?: number } | undefined
+  return r !== undefined
+}
+
 /** One stored message by id, or null. Used by the push sweep to read the last message's sender name
  *  and `mentionsMe` (the conversation row alone doesn't carry them). */
 export function getMessage(
@@ -994,6 +1004,24 @@ export function upsertUsers(
       stmt.run({ service, id: u.id, display_name: u.displayName, updated_at: now })
   })
   run(rows)
+}
+
+/** The most-recently-seen cached display names, newest first. Backs the search box's bare `from:`
+ *  starter list (PSN-115) — `resolvePerson` is a matcher and returns nothing for an empty needle,
+ *  so an un-typed operator would otherwise render an empty dropdown. */
+export function listRecentUsers(
+  db: Db,
+  service: string,
+  limit = 8,
+): { id: string; displayName: string }[] {
+  const rows = db
+    .prepare(
+      `SELECT id, display_name FROM users
+       WHERE service = ? AND display_name IS NOT NULL AND display_name <> ''
+       ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(service, Math.max(1, limit)) as { id: string; display_name: string }[]
+  return rows.map((r) => ({ id: r.id, displayName: r.display_name }))
 }
 
 /** Cached names for a set of ids → Map(id → displayName). Only hits present (caller diffs for

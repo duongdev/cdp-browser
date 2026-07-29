@@ -118,6 +118,12 @@ export async function startMockUpstream(opts = {}) {
           const m = await provider.media(b.url)
           return send({ ct: m.contentType, base64: Buffer.from(m.body).toString("base64") })
         }
+        case "search": {
+          const page = await provider.searchMessages(b.query ?? "", {
+            cursor: b.cursor ?? null,
+          })
+          return send({ hits: page.rows, total: page.total })
+        }
         default:
           return send({ error: "not_found" }, 404)
       }

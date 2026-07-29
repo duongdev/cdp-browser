@@ -17,6 +17,7 @@ import { createAssistantRoutes } from "./assistant/routes.ts"
 import { createBackfillEngine } from "./backfill.ts"
 import { type Captioner, createCaptioner, downscaleImage } from "./caption.ts"
 import type { ChatService } from "./contract.ts"
+import { createHydrateEngine } from "./hydrate.ts"
 import { resolveCaptionModel } from "./llm.ts"
 import { findByObjectId } from "./media-store.ts"
 import { MOCK_PREFS, MockProvider } from "./providers/mock-provider.ts"
@@ -24,7 +25,7 @@ import type { ChatProvider } from "./providers/provider.ts"
 import { ProviderError } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
 import { createPushSender } from "./push.ts"
-import { type BackfillAccessor, createRoutes, statusOf } from "./routes.ts"
+import { type BackfillAccessor, createRoutes, type HydrateAccessor, statusOf } from "./routes.ts"
 import { migrate, setPrefs } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
 import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
@@ -66,6 +67,14 @@ for (const [service, provider] of providers) {
   backfills.set(service, createBackfillEngine({ db, provider, service, broadcast }))
 }
 
+// A hydrate engine per provider (PSN-115 WS-B); the search route (WS-D) fires it for substrate hits
+// not yet in chat.db. The engine itself is optional on RoutesDeps — its absence only means
+// substrate rows stay `hydrated:false` until a sweep picks them up.
+const hydrates = new Map<ChatService, HydrateAccessor>()
+for (const [service, provider] of providers) {
+  hydrates.set(service, createHydrateEngine({ db, provider, service, broadcast }))
+}
+
 // Image transcription (PSN-104): one worker per provider, draining the `message_media` rows
 // `upsertMessages` leaves behind. The assistant's `view_image` and the lightbox's caption endpoint
 // share the worker, so an image is fetched + transcribed once no matter who asks first.
@@ -99,6 +108,13 @@ app.route(
   "/api/chat/assistant",
   createAssistantRoutes({
     db,
+    search:
+      assistantService && hydrates.get(assistantService)
+        ? {
+            provider: assistantProvider,
+            hydrate: hydrates.get(assistantService) as import("./hydrate.ts").HydrateEngine,
+          }
+        : undefined,
     vision:
       assistantService && assistantProvider && assistantCaptioner
         ? {
@@ -145,6 +161,7 @@ app.route(
     db,
     providers,
     backfills,
+    hydrates,
     captioners,
     vapidPublicKey: VAPID_PUBLIC_KEY,
     // null when no sweep engine is running — the route turns that into a real error status so the

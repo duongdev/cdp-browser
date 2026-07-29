@@ -3,6 +3,7 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   ReloadIcon,
+  Search01Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -17,6 +18,7 @@ import { ConnectionStatus } from "./components/connection-status"
 import { ConversationList, ListFilterPills } from "./components/conversation-list"
 import { ProfileDialog, type ProfileTarget } from "./components/profile-dialog"
 import { PromptDialog, prompt } from "./components/prompt-dialog"
+import { SearchView } from "./components/search-view"
 import { SettingsSheet } from "./components/settings-sheet"
 import { ShortcutOverlay } from "./components/shortcut-overlay"
 import { type ThreadFocus, type ThreadHandle, ThreadView } from "./components/thread-view"
@@ -37,7 +39,7 @@ import {
 } from "./lib/assistant-client"
 import { markRead, markUnread } from "./lib/chat-client"
 import { routeKey } from "./lib/chat-keys"
-import { parsePath, pathFor } from "./lib/chat-route"
+import { isSearchPath, parsePath, pathFor, pathForSearch } from "./lib/chat-route"
 import { DEFAULT_CHAT_SETTINGS } from "./lib/chat-settings"
 import { chatShell } from "./lib/chat-shell"
 import { useChatWs } from "./lib/chat-ws-context"
@@ -110,6 +112,7 @@ function HeaderButton({
 function AppHeader({
   onOpenSettings,
   onToggleAi,
+  onOpenSearch,
   canBack,
   canForward,
   filter,
@@ -117,6 +120,10 @@ function AppHeader({
 }: {
   onOpenSettings: () => void
   onToggleAi: () => void
+  /** Always-visible search entry (PSN-115). The AI-rail search icon only exists once that panel
+   *  is open, and it's collapsed by default — without this button, search had NO discoverable
+   *  entry point besides memorizing ⌘K. */
+  onOpenSearch: () => void
   canBack: boolean
   canForward: boolean
   filter: ListFilter
@@ -135,6 +142,7 @@ function AppHeader({
           the bar (PSN-99 regression — the Electron nav cluster drifted left toward the traffic lights). */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5">
+          <HeaderButton icon={Search01Icon} label="Search messages (⌘K)" onClick={onOpenSearch} />
           <HeaderButton icon={AiChipIcon} label="AI assistant (⌘⌥B)" onClick={onToggleAi} />
           <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
           {shell && (
@@ -378,13 +386,29 @@ export function ChatApp() {
     // Stamp the base entry so popstate can read a position back to it.
     window.history.replaceState({ idx: 0 }, "")
   }, [])
+  // Full-screen message search route (PSN-115 WS-E). The path `/chat/search` is a separate surface
+  // that hides the list+thread+AI columns and shows SearchView instead. `searchOpen` mirrors the
+  // URL so pushPath + popstate stay in sync. Lazy-init reads the boot path so a cold reload of
+  // `/chat/search` lands on the search surface.
+  const [searchOpen, setSearchOpen] = useState(() => isSearchPath(window.location.pathname))
   const pushPath = useCallback((path: string) => {
     if (window.location.pathname === path) return
     navIdx.current += 1
     navMax.current = navIdx.current
     window.history.pushState({ idx: navIdx.current }, "", path)
     setCanNav({ back: navIdx.current > 0, forward: false })
+    // A non-search push closes the search surface (e.g. opening a conversation from Cmd+K while
+    // search is on screen). The search push itself flips it open below.
+    setSearchOpen(isSearchPath(path))
   }, [])
+  const openSearch = useCallback(() => {
+    setSearchOpen(true)
+    pushPath(pathForSearch())
+  }, [pushPath])
+  const backFromSearch = useCallback(() => {
+    setSearchOpen(false)
+    pushPath("/chat/")
+  }, [pushPath])
 
   // The URL is the state (t150): `/chat/c/{id}` is an open conversation, `/chat/` is the list.
   // A user-driven open pushes; a popstate-driven one replays history without re-pushing.
@@ -468,15 +492,20 @@ export function ChatApp() {
   // Boot from the URL + follow browser back/forward (t150). On boot, a `/chat/c/{id}` path opens
   // that conversation (ThreadView fetches by id alone, with its own error state for a gone id).
   // popstate replays whatever the current path encodes: an id opens its thread, the list path
-  // pops back — on phone that back-swipe returns to the list.
+  // pops back — on phone that back-swipe returns to the list. A `/chat/search` path leaves the
+  // list alone and surfaces the full-screen SearchView (PSN-115 WS-E).
   useEffect(() => {
-    const route = parsePath(window.location.pathname)
-    if (route) openConversationById(route.convId, false)
+    if (!isSearchPath(window.location.pathname)) {
+      const route = parsePath(window.location.pathname)
+      if (route) openConversationById(route.convId, false)
+    }
     const onPop = (e: PopStateEvent) => {
       // Track position from the stamped index so the header's back/forward can enable correctly.
       const idx = (e.state as { idx?: number } | null)?.idx ?? 0
       navIdx.current = idx
       setCanNav({ back: idx > 0, forward: idx < navMax.current })
+      setSearchOpen(isSearchPath(window.location.pathname))
+      if (isSearchPath(window.location.pathname)) return
       const r = parsePath(window.location.pathname)
       if (r) openConversationById(r.convId, false)
       else setPhoneView("list")
@@ -851,6 +880,7 @@ export function ChatApp() {
       onInsertToComposer={insertDraftToComposer}
       onOpenCitation={openCitation}
       onOpenRef={openRef}
+      onOpenSearch={openSearch}
       onSessionChange={setAiSession}
       pendingPrompt={aiPrompt}
       scopes={aiScopes}
@@ -899,6 +929,13 @@ export function ChatApp() {
     })
     return buildActions([
       { id: "go-inbox", label: "Go to inbox", group: "Navigation", keys: "g i", run: backToList },
+      {
+        id: "open-search",
+        label: "Search messages",
+        group: "Navigation",
+        keys: "⌘K",
+        run: openSearch,
+      },
       {
         id: "focus-next",
         label: "Focus next",
@@ -1249,6 +1286,7 @@ export function ChatApp() {
     conversations,
     openConversation,
     backToList,
+    openSearch,
     view,
     moveListFocus,
     patchConvRead,
@@ -1488,6 +1526,24 @@ export function ChatApp() {
     </>
   )
 
+  // Full-screen message search (PSN-115 WS-E): hides list+thread+AI. Wide-only this workstream —
+  // phone shell is WS-F/G.
+  if (searchOpen) {
+    return (
+      <div className="flex h-[var(--app-h,100dvh)] w-full flex-col bg-background">
+        <SearchView
+          convById={convById}
+          listWidth={listWidth}
+          namePref={namePref}
+          onBack={backFromSearch}
+          onResetWidth={resetListWidth}
+          onResizeDown={onListResizeDown}
+        />
+        {palette}
+      </div>
+    )
+  }
+
   if (isWide) {
     return (
       <div className="flex h-[var(--app-h,100dvh)] w-full bg-background">
@@ -1500,6 +1556,7 @@ export function ChatApp() {
             canForward={canNav.forward}
             filter={listFilter}
             onFilterChange={setListFilter}
+            onOpenSearch={openSearch}
             onOpenSettings={() => setSettingsOpen(true)}
             onToggleAi={toggleAi}
           />
@@ -1570,6 +1627,7 @@ export function ChatApp() {
           canForward={canNav.forward}
           filter={listFilter}
           onFilterChange={setListFilter}
+          onOpenSearch={openSearch}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggleAi={toggleAi}
         />

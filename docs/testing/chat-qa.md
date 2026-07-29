@@ -6,12 +6,19 @@ a row. How a run is dispatched (subagents, real input events, long-and-short con
 stacks) lives in [docs/conventions/e2e-verification.md](../conventions/e2e-verification.md);
 `/regression` runs it.
 
-**Last run:** 2026-07-28 · commit `da7051b`
+**Last run:** 2026-07-28 · commit `23ffa6f`
 QE1 (8 defects found — DEF-1 blank-body data loss, DEF-2 delete timestamp, DEF-3 last-sync never
 advancing, DEF-4 deferred conversations never retried, DEF-5 truncated off-by-one, DEF-6 dead error
 path, DEF-7 Node version, DEF-8 mock 500-not-404; all since fixed). QE2: all areas PASS. QE3:
 32 PASS / 1 inconclusive (TC-25 profile→lightbox, since verified by hand) / network-dependent cases
-skipped.
+skipped. QE4 (PSN-115 global search): Area 10 SB-01..SB-30 — 28 PASS, 2 BLOCKED (SB-15 shared-
+browser keystroke theft from concurrent subagents, not an app defect; SB-21 the mock provider has
+no rate-limit-trigger hook — the degraded path is unit-tested, just not drivable live). Smoke
+D/A/C/R: all PASS after a contention-caused BLOCKED batch was re-run on a dedicated isolated stack
+(`pnpm test` 2181/2181 green on Node 24). Also live-probed the deployed preview
+(preview-cdp-browser-app-1yrpdy-s8slux.dp.dustin.one, serving this same commit) against real Teams
+data — search, sort/scope-always-visible, URL restore, result→thread jump, and dark theme all PASS,
+zero search-related console errors.
 
 ---
 
@@ -211,6 +218,45 @@ ones pass.
 | R-10 | `pnpm test` | All tests pass (currently 1992/1992) |
 | R-11 | `pnpm typecheck` | Clean |
 | R-12 | `BIOME_SINCE=origin/main pnpm check:changed` | Clean |
+
+---
+
+### 10. Global message search (PSN-115)
+
+Proactive backfilling + full-screen search. Local FTS is the fast path; substrate (Teams server-side search) fills gaps; hits hydrate into `chat.db` and the WS `messages-upsert` delta flips `hydrated:false` rows live. Deep plan: [`PSN-115-search-e2e-plan.md`](PSN-115-search-e2e-plan.md).
+
+| ID | Steps | Must happen |
+|----|-------|-------------|
+| SB-01 | From `/chat/`, hit `⌘K` → "Search messages" | Route changes to `/chat/search`; AI + conversation-list columns hidden; left rail = search input, middle = placeholder |
+| SB-02 | Click the search icon at the top of the AI-assistant rail | Same `/chat/search` surface opens |
+| SB-03 | Type a term that exists in seeded messages (e.g. `deploy`) | Debounced (~250ms); result rows populate: sender · convTitle, snippet, relative time |
+| SB-04 | Row 1 | The matched term is wrapped in a yellow `<mark>` highlight (readable in light + dark) |
+| SB-05 | Click a result | Middle ThreadView opens that conversation scrolled to the message; `msg-jump-flash` ring appears |
+| SB-06 | A substrate hit whose message is NOT in `chat.db` (mock fixture: gap hit) | Row shows a muted "fetching context…" pill; after the WS `messages-upsert` delta lands, the pill disappears (hydrated flip) |
+| SB-07 | Click that un-hydrated substrate hit | ThreadView fetches the window and renders the message (not a permanent `missing`) |
+| SB-08 | Clear the query | Empty state: "No messages" + hint + icon; FilterBar hidden |
+| SB-09 | Type a nonsense term | Empty state (not an error) |
+| SB-10 | Kill the BFF mid-query, retry | Error state with a Retry button; no crash |
+| SB-11 | Type `from:alice deploy` | FilterBar shows a `from: alice` chip (removable ×) + the free-text runs the query; `parsed` echo drives the chips |
+| SB-12 | Click the × on the `from:` chip | Operator stripped from the query; search re-runs with the free text only |
+| SB-13 | Toggle sort Relevance ⇄ Recent | First-row identity changes; choice persists across reloads (`chat:search-sort`) |
+| SB-14 | Toggle scope DMs / Groups / All | Result set filters by conversation kind; All = unfiltered |
+| SB-15 | Keyboard: focus the listbox, `j` / `k` | Selection moves; `Enter` opens the focused row; `Esc` returns to `/chat/` |
+| SB-16 | Run two searches; reload | Recent searches (≤5) persist; click a recent to re-run |
+| SB-17 | Long/short: type a 1-char query, then a 300-char query | Result rows + FilterBar don't overflow; snippet wraps, no horizontal scroll |
+| SB-18 | Long/short: a hit whose convTitle is 200 chars mixed-script (VN/CJK) | Row truncates cleanly; no layout shift |
+| SB-19 | Dark scheme, populated + empty | No contrast/clipping; highlight + pill readable |
+| SB-20 | `POST /api/chat/search {service:"teams",query:"deploy"}` direct | 200; `rows` merge local + substrate; `parsed` echo present; `degraded` absent |
+| SB-21 | Mock provider returns 0 hits + `degraded:"rate_limited"` | Response carries `degraded`; UI shows the yellow "local results only" banner |
+| SB-22 | `pnpm test` (chat-server + chat FE) | Search/hydrate/parser unit + integration suites green |
+| SB-23 | `pnpm typecheck` + `BIOME_SINCE=origin/main pnpm check:changed` | Clean |
+| SB-24 | Search a term whose match sits at index 0 of a snippet (e.g. every seed message starts with it) | `<mark>` highlights the correct word, not the text after it (regression: parity bug had this backwards) |
+| SB-25 | Search a plain string, zero KQL operators | Sort (Relevance/Recent) + scope (All/DMs/Groups) toggles still visible (regression: FilterBar used to hide entirely with no chips) |
+| SB-26 | Load `/chat/search?q=deploy&sort=recent&scope=group`, no typing | Query, sort, and scope all restore from the URL |
+| SB-27 | Drag the seam between the search left rail and the middle pane; double-click it | Resizes live; double-click resets to default; same width reflected on `/chat/`'s conversation list (shared `listWidth`) |
+| SB-28 | With 2+ recent searches, click one row's × , then "Clear all" | Only that row disappears first; "Clear all" empties the rest |
+| SB-29 | Open a search result whose conversation isn't in the local list yet (substrate-only hit) | Middle pane's stub conversation reflects the hit's real `convKind` (no hardcoded "Group chat" for what's actually a DM) |
+| SB-30 | From `/chat/`, click the search icon in the main app header (top bar, not inside the AI panel) | Opens `/chat/search` — the entry point that exists even when the AI panel (closed by default) has never been opened |
 
 ---
 

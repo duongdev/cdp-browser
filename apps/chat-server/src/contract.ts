@@ -339,3 +339,65 @@ export interface AssistantCitation {
   convId: string
   msgId: string
 }
+
+// ---- Search (PSN-115) -----------------------------------------------------
+// Two layers: the PROVIDER-level hit (raw substrate shape, lives on the ChatProvider interface in
+// providers/provider.ts) vs the MERGED SearchHit the BFF's `/api/chat/search` route returns after
+// fusing local FTS + substrate rows, deduping by (convId,msgId) and hydrating conv titles/snippets.
+
+// `ParsedQuery` is the parsed-KQL echo the FE renders filter chips from. Defined in
+// search-query.ts (pure parser, no contract deps) and re-exported here so the FE imports the whole
+// search contract from one place.
+export type { ParsedFilters, ParsedQuery } from "./search-query.ts"
+
+/** A scope filter the user applies in the search surface. `all`/`dm`/`group` are structural kinds;
+ *  `folder`/`label` reference a BFF-local organisation the provider never sees (`conversation_prefs`
+ *  in the store — `listScopes`/`resolveScope` over `prefs`). */
+export type SearchScope =
+  | { kind: "all" }
+  | { kind: "dm" }
+  | { kind: "group" }
+  | { kind: "folder"; name: string }
+  | { kind: "label"; name: string }
+
+/** One merged search result row. `source` says where it came from; `hydrated` says whether the
+ *  matched window has been pulled into `chat.db` yet (a substrate-only hit starts `false` and the
+ *  background hydrate pipeline flips it in place via a `messages-upsert` WS delta). */
+export interface SearchHit {
+  convId: string
+  msgId: string
+  ts: number
+  sender: string
+  /** Resolved conversation title (DM/group compose) so the left rail shows a name, not an id. */
+  convTitle: string | null
+  /** Conversation kind, when known locally — lets the FE build an honest placeholder (never
+   *  hardcode "group") for a hit whose conversation hasn't been listed/opened yet. Null when the
+   *  hit references a conversation this server has never ingested (a substrate-only reference). */
+  convKind: ChatConversation["kind"] | null
+  /** Short text excerpt with the match highlighted/trimmed by the owning lane. */
+  snippet: string
+  source: "local" | "substrate"
+  hydrated: boolean
+}
+
+/** `POST /api/chat/search` body (PSN-115 WS-D). `query` is raw KQL; `sort` defaults to relevance. */
+export interface SearchRequest {
+  service: ChatService
+  query: string
+  sort?: "relevance" | "recent"
+  scope?: SearchScope
+  cursor?: string | null
+}
+
+/** A page of search results. `parsed` echoes the parsed KQL so the FE can render filter chips
+ *  server-side; `degraded` is set when substrate 401/429'd and the page is local-only (honest
+ *  signal, never a silent failure). */
+export interface SearchPage {
+  rows: SearchHit[]
+  /** The parsed query echo — chips render from this. Always present. */
+  parsed: import("./search-query.ts").ParsedQuery
+  cursor: string | null
+  total: number
+  /** Present when substrate was unreachable / rate-limited and the page is local-only. */
+  degraded?: "auth" | "rate_limited" | "upstream_error"
+}

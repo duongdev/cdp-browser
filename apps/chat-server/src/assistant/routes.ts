@@ -27,6 +27,7 @@ import {
   createAssistantTools,
   createImageBuffer,
   runAgentTurn,
+  type SearchFallback,
   type VisionAccess,
 } from "./loop.ts"
 import {
@@ -58,6 +59,9 @@ export interface AssistantDeps {
   /** Image access for `view_image` (PSN-104). Absent → the assistant answers from transcriptions
    *  only, which is also what a text-only model gets. */
   vision?: Omit<VisionAccess, "buffer">
+  /** Provider + hydrate for `search_messages` substrate fallback (PSN-115 WS-C). Absent → the tool
+   *  stays local-only, identical to its pre-WS-C behaviour (hermetic assistant tests rely on this). */
+  search?: SearchFallback
 }
 
 function errorCodeOf(err: unknown): string {
@@ -252,6 +256,7 @@ export function createAssistantRoutes(deps: AssistantDeps) {
       service,
       (convId, msgId) => surfaced.add(citationKey({ convId, msgId })),
       canSee && deps.vision ? { ...deps.vision, buffer: imageBuffer } : undefined,
+      deps.search,
     )
     const modelMessages = await convertToModelMessages(
       live.map((m) => ({ role: m.role, parts: sanitizePartsForModel(m.parts) })) as Omit<

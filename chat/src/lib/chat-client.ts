@@ -137,6 +137,23 @@ export async function fetchPrefs(signal?: AbortSignal): Promise<PrefsResponse | 
   }
 }
 
+/** Global people suggestions for the search box's `from:` operator (PSN-115). Returns the
+ *  display-name cache (everyone the BFF has seen), fold-matched server-side. Best-effort: a
+ *  network/error returns an empty list so the suggestion popover just closes — never blocks
+ *  typing. */
+export async function fetchPeople(q: string, signal?: AbortSignal): Promise<PersonSuggestion[]> {
+  try {
+    const res = await fetch(`/api/chat/people?service=${SERVICE}&q=${encodeURIComponent(q)}`, {
+      signal,
+    })
+    if (!res.ok) return []
+    const data = (await res.json()) as { people?: PersonSuggestion[] }
+    return Array.isArray(data.people) ? data.people : []
+  } catch {
+    return []
+  }
+}
+
 /** Fetch one user's profile card. Throws ChatApiError with the server's typed code. */
 export async function fetchProfile(userId: string, signal?: AbortSignal): Promise<TeamsProfile> {
   const res = await fetch(
@@ -468,5 +485,61 @@ export async function getBackfillStatus(): Promise<
     return (await res.json()) as BackfillStatus & { history?: BackfillRun[] }
   } catch {
     return null
+  }
+}
+
+// ---- search (PSN-115 WS-E) -------------------------------------------------
+
+// Mirror the server contract (`apps/chat-server/src/contract.ts`) for the FE. Field-identical —
+// re-exported so component imports come from one place. Same raw-import pattern as BackfillStatus.
+export type {
+  ParsedFilters,
+  ParsedQuery,
+  SearchHit,
+  SearchPage,
+  SearchScope,
+} from "../../../apps/chat-server/src/contract"
+
+/** A people-suggestion row for the search box's `from:` operator (PSN-115). Mirrors the server's
+ *  `PersonCandidate` (`apps/chat-server/src/search.ts`) without importing it — keeps the FE
+ *  boundary clean. */
+export interface PersonSuggestion {
+  id: string
+  displayName: string
+}
+
+import type { SearchPage, SearchScope } from "../../../apps/chat-server/src/contract"
+
+export type SearchSort = "relevance" | "recent"
+
+/** Run a global message search. `query` is raw KQL — the server parses. Empty query returns an
+ *  empty page without erroring (the FE shows the empty state). `scope` defaults to `{kind:"all"}`;
+ *  omit it on the wire so the server keeps its own default. */
+export async function searchMessages(
+  query: string,
+  opts?: {
+    sort?: SearchSort
+    scope?: SearchScope
+    cursor?: string | null
+    signal?: AbortSignal
+  },
+): Promise<SearchPage> {
+  const data = await post<SearchPage>(
+    "search",
+    {
+      query,
+      ...(opts?.sort ? { sort: opts.sort } : {}),
+      ...(opts?.scope && opts.scope.kind !== "all" ? { scope: opts.scope } : {}),
+      ...(opts?.cursor ? { cursor: opts.cursor } : {}),
+    },
+    opts?.signal,
+  )
+  // Defensively fill — a misbehaving proxy mustn't crash the render.
+  return {
+    rows: Array.isArray(data.rows) ? data.rows : [],
+    parsed: data.parsed ?? { text: query, filters: {} },
+    cursor: data.cursor ?? null,
+    total: typeof data.total === "number" ? data.total : (data.rows?.length ?? 0),
+    ...(data.degraded ? { degraded: data.degraded } : {}),
   }
 }
