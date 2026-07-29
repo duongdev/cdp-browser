@@ -23,8 +23,10 @@ import {
   UserCircleIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
+import { parseISO } from "date-fns"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
 import { Input } from "@/components/ui/input"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
@@ -61,6 +63,14 @@ import {
 } from "../lib/search-view"
 import type { TeamsConversation } from "../lib/teams-client"
 import { type ThreadHandle, ThreadView } from "./thread-view"
+
+/** Best-effort YYYY-MM-DD → Date for the date picker's initial selection. Invalid → null. */
+const parseDate = (raw: string): Date | null => {
+  const v = raw.trim()
+  if (!v) return null
+  const d = parseISO(v)
+  return Number.isNaN(d.getTime()) ? null : d
+}
 
 const DEBOUNCE_MS = 250
 /** Idle window before a query is written to search history. Longer than DEBOUNCE_MS so the
@@ -131,16 +141,28 @@ export function SearchView({
     if (!partial) return ranked.slice(0, 8)
     return ranked.filter((c) => c.label.toLowerCase().includes(partial)).slice(0, 8)
   }, [suggestion, convById])
+  // `has:` offers the parser's known value set (link/file/attachment) — a small fixed list.
+  const hasSuggestions = useMemo(() => {
+    if (!suggestion || suggestion.kind !== "has") return []
+    const partial = suggestion.partial.trim().toLowerCase()
+    const all = ["link", "file", "attachment"].map((v) => ({ id: v, label: v }))
+    return partial ? all.filter((v) => v.label.includes(partial)) : all
+  }, [suggestion])
   const sugItems =
     suggestion?.kind === "in"
       ? convSuggestions
-      : people.map((p) => ({ id: p.id, label: p.displayName }))
+      : suggestion?.kind === "has"
+        ? hasSuggestions
+        : people.map((p) => ({ id: p.id, label: p.displayName }))
+  // `after:`/`before:` show a calendar instead of a list — flagged so the popover + keyboard nav
+  // switch modes (the calendar owns its own arrow/enter handling).
+  const dateMode = suggestion?.kind === "after" || suggestion?.kind === "before"
   // Fetch people only when a `from:` token is open.
   useEffect(() => {
-    if (!suggestion || suggestion.kind !== "in") {
-      if (suggestion?.kind !== "from") setPeople([])
+    if (suggestion?.kind !== "from") {
+      setPeople([])
+      return
     }
-    if (!suggestion || suggestion.kind !== "from") return
     const ac = new AbortController()
     const t = setTimeout(() => {
       fetchPeople(suggestion.partial, ac.signal)
@@ -171,6 +193,18 @@ export function SearchView({
       })
     },
     [query, suggestion],
+  )
+  // `after:`/`before:` — a date pick formats as YYYY-MM-DD (the parser's accepted form) and is
+  // applied the same way a list pick is.
+  const applyDate = useCallback(
+    (date: Date) => {
+      if (!suggestion) return
+      const yyyy = date.getFullYear()
+      const mm = String(date.getMonth() + 1).padStart(2, "0")
+      const dd = String(date.getDate()).padStart(2, "0")
+      applyPick(`${yyyy}-${mm}-${dd}`)
+    },
+    [applyPick, suggestion],
   )
   const [recent, setRecent] = useState<string[]>(() => {
     try {
@@ -447,8 +481,10 @@ export function SearchView({
               }}
               onKeyDown={(e) => {
                 // The suggestion dropdown owns navigation while open — mirrors the composer
-                // @-mention picker: Arrow/Enter/Tab pick, Esc closes, else falls through.
-                if (suggestion && sugItems.length > 0) {
+                // @-mention picker: Arrow/Enter/Tab pick, Esc closes, else falls through. Date
+                // mode (after:/before:) is skipped here — the calendar owns its own arrow/enter
+                // handling and these keys must reach it.
+                if (suggestion && sugItems.length > 0 && !dateMode) {
                   if (e.key === "ArrowDown") {
                     e.preventDefault()
                     setSugIndex((i) => (i + 1) % sugItems.length)
@@ -501,13 +537,20 @@ export function SearchView({
               ref={inputRef}
               value={query}
             />
-            {suggestion && sugItems.length > 0 && (
+            {suggestion && !dateMode && sugItems.length > 0 && (
               <SuggestionPopover
                 id="search-suggest-list"
                 index={sugIndex}
                 items={sugItems}
                 kind={suggestion.kind}
                 onPick={applyPick}
+              />
+            )}
+            {suggestion && dateMode && (
+              <DateSuggestionPopover
+                kind={suggestion.kind === "after" ? "after" : "before"}
+                onPick={applyDate}
+                partial={suggestion.partial}
               />
             )}
           </div>
@@ -885,9 +928,9 @@ function EmptyState({ icon, title, hint }: { icon: React.ReactNode; title: strin
   )
 }
 
-// The KQL suggestion dropdown (PSN-115 follow-up): people for `from:`, conversations for `in:`.
-// Anchored under the search input; keyboard nav is driven by the input's onKeyDown (this just
-// renders + reports a click). Mirrors the composer @-mention picker's look.
+// The KQL suggestion dropdown (PSN-115 follow-up): people for `from:`, conversations for `in:`,
+// fixed values for `has:`. Anchored under the search input; keyboard nav is driven by the input's
+// onKeyDown (this just renders + reports a click). Mirrors the composer @-mention picker's look.
 function SuggestionPopover({
   id,
   kind,
@@ -896,11 +939,12 @@ function SuggestionPopover({
   onPick,
 }: {
   id: string
-  kind: "from" | "in"
+  kind: SuggestionRange["kind"]
   items: { id: string; label: string }[]
   index: number
   onPick: (label: string) => void
 }) {
+  const heading = kind === "from" ? "People" : kind === "in" ? "Conversations" : "Has"
   return (
     <div
       className="absolute top-full left-0 z-30 mt-1 w-full overflow-hidden rounded-lg border border-border bg-popover shadow-md"
@@ -908,7 +952,7 @@ function SuggestionPopover({
       role="listbox"
     >
       <div className="border-border border-b px-2.5 py-1 text-[10px] tracking-wide text-muted-foreground uppercase">
-        {kind === "from" ? "People" : "Conversations"}
+        {heading}
       </div>
       <ul className="max-h-60 overflow-y-auto py-1">
         {items.map((item, i) => (
@@ -959,6 +1003,37 @@ function CenteredState({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
       {children}
+    </div>
+  )
+}
+
+// The `after:`/`before:` date picker (PSN-115 follow-up). A shadcn Calendar in a popover anchored
+// under the search input; selecting a day formats it as YYYY-MM-DD and applies it like any list
+// pick. `before:` caps the selectable range at today (no future dates); `after:` is unrestricted.
+function DateSuggestionPopover({
+  kind,
+  partial,
+  onPick,
+}: {
+  kind: "after" | "before"
+  partial: string
+  onPick: (date: Date) => void
+}) {
+  const initial = parseDate(partial)
+  const today = new Date()
+  return (
+    <div className="absolute top-full left-0 z-30 mt-1 w-auto overflow-hidden rounded-lg border border-border bg-popover p-1 shadow-md">
+      <Calendar
+        captionLayout="dropdown"
+        disabled={kind === "before" ? { after: today } : undefined}
+        mode="single"
+        numberOfMonths={1}
+        onSelect={(day) => {
+          if (day) onPick(day)
+        }}
+        selected={initial ?? undefined}
+        today={today}
+      />
     </div>
   )
 }

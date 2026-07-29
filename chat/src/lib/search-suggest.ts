@@ -1,18 +1,19 @@
 // Pure helpers for the search-box KQL suggestion dropdown (PSN-115 follow-up). The search input is
 // a plain `<input>`, not Tiptap, so the composer's Mention-suggestion plugin can't be reused —
-// these detect the `from:`/`in:` token under the caret and rewrite the query when a suggestion is
-// picked. Pure (no React, no I/O) so the caret math + the rewrite are unit-testable in isolation.
-//
-// Supported operators: `from:` (people), `in:` (conversations). `after:`/`before:`/`has:`/
-// `mentions:me` stay type-it-yourself for v1 — dates and the fixed `has:` value set are a
-// follow-up.
+// these detect the operator token under the caret (`from`/`in`/`after`/`before`/`has`) and rewrite
+// the query when a suggestion is picked. Pure (no React, no I/O) so the caret math + the rewrite
+// are unit-testable in isolation.
+
+/** The operators that get a suggestion dropdown. `mentions:me` is a flag (no value) so it's
+ *  excluded. */
+export const SUGGESTIBLE_OPS = ["from", "in", "after", "before", "has"] as const
 
 /** The active suggestion: which operator, the partial text typed after its colon, and the
  *  [start, end) range in the query string to replace when a suggestion is picked. */
 export interface SuggestionRange {
-  kind: "from" | "in"
-  /** The partial text after `from:`/`in:`, minus any opening quote (so "from:an" → "an",
-   *  `from:"an` → "an"). Used to filter the suggestion list. */
+  kind: (typeof SUGGESTIBLE_OPS)[number]
+  /** The partial text after `op:`, minus any opening quote (so "from:an" → "an", `from:"an` → "an").
+   *  Used to filter the suggestion list, or to seed the date picker. */
   partial: string
   /** Replace [start, end) in the query with the picked value (built by `applySuggestion`). */
   start: number
@@ -21,22 +22,22 @@ export interface SuggestionRange {
   quoted: boolean
 }
 
-/** Scan `query` up to `caret` for an open `from:`/`in:` token whose value is still being typed.
+/** Scan `query` up to `caret` for an open operator token whose value is still being typed.
  *  Returns null when the caret isn't inside one, or the token was already closed (a bare value
  *  ended by a space, or a quoted value ended by its closing quote). A quoted value stays open
  *  across spaces until the closing quote lands. The caret is clamped to [0, length]. */
 export function detectSuggestion(query: string, caret: number): SuggestionRange | null {
   const c = Math.max(0, Math.min(caret, query.length))
   const before = query.slice(0, c)
-  // The last `from:`/`in:` preceded by start-of-string or whitespace (so `join:` doesn't match).
-  const m = /(?:^|\s)(from|in):/.exec(before)
+  // The last suggestible `op:` preceded by start-of-string or whitespace (so `join:` doesn't match).
+  const m = /(?:^|\s)(from|in|after|before|has):/.exec(before)
   if (!m) return null
-  const kind = m[1] as "from" | "in"
+  const kind = m[1] as SuggestionRange["kind"]
   const opStart = m.index === 0 ? 0 : (m.index ?? 0) + 1
-  const valueStart = opStart + kind.length + 1 // past the `from:`/`in:`
+  const valueStart = opStart + kind.length + 1 // past the `op:`
   const value = before.slice(valueStart)
   if (value === "") {
-    // Bare `from:` with nothing after yet — open, empty partial.
+    // Bare `op:` with nothing after yet — open, empty partial.
     return { kind, partial: "", start: opStart, end: c, quoted: false }
   }
   if (value.startsWith('"')) {

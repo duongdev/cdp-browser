@@ -49,9 +49,14 @@ describe("detectSuggestion", () => {
     expect(detectSuggestion("join:foo", 8)).toBeNull()
   })
 
-  it("ignores other operators (after:/has:/mentions:)", () => {
-    expect(detectSuggestion("after:2026", 10)).toBeNull()
-    expect(detectSuggestion("has:link", 9)).toBeNull()
+  it("detects after:/before:/has: tokens too", () => {
+    expect(detectSuggestion("after:2026", "after:2026".length)?.kind).toBe("after")
+    expect(detectSuggestion("before:2026-01", "before:2026-01".length)?.kind).toBe("before")
+    expect(detectSuggestion("has:li", "has:li".length)?.kind).toBe("has")
+    expect(detectSuggestion("has:li", "has:li".length)?.partial).toBe("li")
+  })
+
+  it("still ignores mentions: (a flag, no value)", () => {
     expect(detectSuggestion("mentions:me", 11)).toBeNull()
   })
 
