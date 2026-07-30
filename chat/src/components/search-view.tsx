@@ -40,6 +40,7 @@ import {
   searchMessages,
 } from "../lib/chat-client"
 import { parseSearchUrlState, pathForSearch } from "../lib/chat-route"
+import { chatShell } from "../lib/chat-shell"
 import { useChatWsFrames } from "../lib/chat-ws-context"
 import { relativeTime } from "../lib/conversation-view"
 import { applySuggestion, detectSuggestion, type SuggestionRange } from "../lib/search-suggest"
@@ -90,6 +91,9 @@ export interface SearchViewProps {
   convById: Record<string, TeamsConversation>
   /** Back to the chat list: returns the user to `/chat/`. */
   onBack: () => void
+  /** Exit search and open a conversation in the normal list view (`/chat/c/{convId}`). Surfaced as
+   *  an "Open in chat" action once a hit is selected. */
+  onOpenInList: (convId: string) => void
   /** Name-display preference threaded through to ThreadView. */
   namePref?: import("../lib/display-name").NamePref
   /** Left-rail width, synced with the conversation list's own drag-resizable width (`settings.
@@ -102,6 +106,7 @@ export interface SearchViewProps {
 export function SearchView({
   convById,
   onBack,
+  onOpenInList,
   namePref,
   listWidth,
   onResizeDown,
@@ -122,6 +127,7 @@ export function SearchView({
     msgId: string
     nonce: number
     convKind: SearchHit["convKind"]
+    convTitle: SearchHit["convTitle"]
   } | null>(null)
 
   // ---- KQL suggestion dropdown (from:/in:) — mirrors the composer @-mention picker ---------
@@ -379,6 +385,7 @@ export function SearchView({
       msgId: hit.msgId,
       nonce: Date.now(),
       convKind: hit.convKind,
+      convTitle: hit.convTitle,
     })
   }, [])
 
@@ -442,7 +449,7 @@ export function SearchView({
   // The selected conversation's metadata. A substrate hit may reference a conversation not in the
   // list — fall back to a stub so ThreadView can still fetch history by id.
   const selectedConv = selected
-    ? (convById[selected.convId] ?? stubFor(selected.convId, selected.convKind))
+    ? (convById[selected.convId] ?? stubFor(selected.convId, selected.convKind, selected.convTitle))
     : null
 
   return (
@@ -459,7 +466,12 @@ export function SearchView({
           >
             <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />
           </Button>
-          <span className="px-1 font-heading font-semibold text-foreground text-sm">Search</span>
+          {/* Hidden on the Electron shell: the frameless titlebar puts the macOS traffic lights
+              top-left, which clip a title here (mirrors chat-app's Electron-title handling). Web/PWA
+              has no traffic lights, so the label stays. */}
+          {!chatShell() && (
+            <span className="px-1 font-heading font-semibold text-foreground text-sm">Search</span>
+          )}
         </header>
         <div className="shrink-0 px-3 pt-3 pb-2">
           <div className="relative">
@@ -630,6 +642,12 @@ export function SearchView({
                     onClick={() => select(hit)}
                     onEnter={() => select(hit)}
                     parseText={parsed?.text ?? debounced.trim()}
+                    resolvedTitle={
+                      // A substrate-only hit may carry a null convTitle even when the conversation
+                      // IS listed locally — fall back to the listed row's resolved title so the
+                      // result reads a real name, not the raw id / "Group chat".
+                      hit.convTitle ?? convById[hit.convId]?.title ?? null
+                    }
                   />
                 ))}
               </div>
@@ -650,15 +668,30 @@ export function SearchView({
           title="Drag to resize · double-click to reset"
         />
         {selectedConv ? (
-          <ThreadView
-            conversation={selectedConv}
-            jumpTarget={selected ? { id: selected.msgId, nonce: selected.nonce } : undefined}
-            key={selectedConv.id}
-            namePref={namePref}
-            onBack={onBack}
-            ref={activeThreadRef}
-            visible
-          />
+          <>
+            {/* Exit search → open the conversation in the normal list view (`/chat/c/{id}`). A
+                search hit reads in context here, but the user often wants the full chat: this
+                escapes the search surface entirely. Floating top-right so it never covers the
+                thread header's title. */}
+            <Button
+              className="absolute top-2 right-3 z-20 gap-1.5 shadow-sm"
+              onClick={() => onOpenInList(selectedConv.id)}
+              size="sm"
+              variant="secondary"
+            >
+              <HugeiconsIcon className="size-4" icon={BubbleChatIcon} />
+              Open in chat
+            </Button>
+            <ThreadView
+              conversation={selectedConv}
+              jumpTarget={selected ? { id: selected.msgId, nonce: selected.nonce } : undefined}
+              key={selectedConv.id}
+              namePref={namePref}
+              onBack={onBack}
+              ref={activeThreadRef}
+              visible
+            />
+          </>
         ) : (
           <CenteredState>
             <HugeiconsIcon className="size-10 text-muted-foreground/40" icon={Search01Icon} />
@@ -676,10 +709,18 @@ export function SearchView({
 // `kind` comes from the hit itself when known (server has this conv locally); a substrate-only
 // reference the server never ingested has no kind — "group" is the least-wrong guess there (a
 // bare DM ThreadView header degrades to "Direct message" either way once real data lands).
-function stubFor(convId: string, kind: TeamsConversation["kind"] | null): TeamsConversation {
+function stubFor(
+  convId: string,
+  kind: TeamsConversation["kind"] | null,
+  title: string | null,
+): TeamsConversation {
   return {
     id: convId,
     kind: kind ?? "group",
+    // The substrate hit already carries the server-resolved conversation title (member names for a
+    // topic-less DM/group), so surface it here — without it ThreadView's header reads "Group chat"
+    // until real data lands. Absent = truly unresolved.
+    ...(title ? { title } : {}),
     topic: null,
     lastMessageId: null,
     lastMessageVersion: 0,
@@ -794,6 +835,7 @@ function ResultRow({
   onClick,
   onEnter,
   parseText,
+  resolvedTitle,
 }: {
   hit: SearchHit
   focused: boolean
@@ -803,6 +845,8 @@ function ResultRow({
   onEnter: () => void
   /** The free-text portion of the query (operators stripped) to highlight in the snippet. */
   parseText: string
+  /** Conversation title resolved by the parent (hit.convTitle, else the listed row's title). */
+  resolvedTitle: string | null
 }) {
   const segs = useMemo(() => highlightSegments(hit.snippet, parseText), [hit.snippet, parseText])
   return (
@@ -824,7 +868,7 @@ function ResultRow({
           <span className="min-w-0 truncate text-foreground text-sm">
             <span className="font-semibold">{hit.sender || "Unknown"}</span>
             <span className="text-muted-foreground"> · </span>
-            <span className="text-muted-foreground">{hit.convTitle ?? hit.convId}</span>
+            <span className="text-muted-foreground">{resolvedTitle ?? hit.convId}</span>
           </span>
           <span className="shrink-0 font-mono text-muted-foreground text-xs">
             {relativeTime(hit.ts)}

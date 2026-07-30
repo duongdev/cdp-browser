@@ -352,7 +352,7 @@ function ChatMessageRow({
         // here would (and did) zero the newest message's leader gap, gluing a reply to the bubble above
         // it (PSN-92). The margin-top is the gap ABOVE each message; the oldest sits under a date
         // separator, so no top trim is needed.
-        showMeta ? "mt-4" : "mt-1",
+        showMeta ? "mt-3" : "mt-1",
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
@@ -387,7 +387,7 @@ function ChatMessageRow({
               userId={message.senderId}
             />
             <DisplayName
-              className="font-semibold text-foreground text-xs"
+              className="font-medium text-muted-foreground text-xs"
               name={message.senderName ?? ""}
               pref={namePref}
             />
@@ -400,7 +400,7 @@ function ChatMessageRow({
               userId={message.senderId}
             />
             <DisplayName
-              className="font-semibold text-foreground text-xs"
+              className="font-medium text-muted-foreground text-xs"
               name={message.senderName ?? ""}
               pref={namePref}
             />
@@ -614,7 +614,7 @@ function ChatMessageRow({
                     className={cn(
                       // Softer filled pill, tighter padding, subtle ring for "mine" (B3). Reference:
                       // Slack/iMessage reaction pills — no hard border, count in a quieter weight.
-                      "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs leading-none transition-colors",
+                      "inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[11px] leading-none transition-colors",
                       r.mine
                         ? "bg-primary/15 text-foreground ring-1 ring-primary/60"
                         : "bg-muted/70 text-muted-foreground hover:bg-muted",

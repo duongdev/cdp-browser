@@ -62,7 +62,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
     return (
       <button
         className={cn(
-          "conv-row flex w-full flex-col rounded-lg px-3 py-2.5 text-left transition-colors",
+          "conv-row flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors",
           "hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
           active && "bg-muted",
           focused && "ring-2 ring-ring/70 ring-inset",
@@ -162,7 +162,7 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         {/* Third row: labels. Indented past the avatar (size-10 + gap-3 = 3.25rem) so they align
             under the title/preview text column, not under the avatar. */}
         {labels.length > 0 && (
-          <span className="mt-1 flex flex-wrap gap-1 pl-13">
+          <span className="mt-0.5 flex flex-wrap gap-1 pl-13">
             {labels.map((l) => (
               <span
                 className="shrink-0 rounded-full border border-border/70 px-1.5 py-px font-medium text-[10px] text-muted-foreground"

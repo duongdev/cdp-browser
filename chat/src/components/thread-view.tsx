@@ -4,6 +4,7 @@ import {
   ArrowLeft01Icon,
   ArrowUp01Icon,
   InboxIcon,
+  InformationCircleIcon,
   ReloadIcon,
 } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -183,6 +184,10 @@ interface ThreadViewProps {
   /** Jump-to-message (t175): land on this message (DB-served window + highlight). `nonce` bumps so
    *  a repeat jump to the same id re-fires. */
   jumpTarget?: { id: string; nonce: number } | null
+  /** Toggle the chat info / details panel (PSN-116 WS-C). Renders an info button on the right of the
+   *  header; absent → no button (e.g. the search-view's embedded thread). `infoOpen` highlights it. */
+  onToggleInfo?: () => void
+  infoOpen?: boolean
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
@@ -201,6 +206,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     onDraftReply,
     onSummarizeConv,
     jumpTarget,
+    onToggleInfo,
+    infoOpen,
   },
   ref,
 ) {
@@ -1202,6 +1209,21 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             </>
           )}
         </span>
+        {onToggleInfo && (
+          <Button
+            aria-label="Chat details"
+            aria-pressed={infoOpen}
+            className={cn(
+              "shrink-0 text-muted-foreground",
+              infoOpen && "bg-accent text-foreground",
+            )}
+            onClick={onToggleInfo}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <HugeiconsIcon className="size-4" icon={InformationCircleIcon} />
+          </Button>
+        )}
       </header>
 
       {state.status === "loading" ? (
@@ -1375,7 +1397,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
 function DateSeparator({ label }: { label: string }) {
   return (
     <div className="flex justify-center pt-4 pb-2" data-thread-sep={label}>
-      <span className="rounded-full bg-muted/60 px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground">
+      <span className="px-2.5 py-0.5 font-medium text-[11px] text-muted-foreground/60 uppercase tracking-wide">
         {label}
       </span>
     </div>
