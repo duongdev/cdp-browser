@@ -28,11 +28,11 @@ import {
 // Dynamic import also keeps test files that stub the pure fns from forcing the SDK onto the import
 // graph at typecheck time.
 async function loadSdk() {
-  const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js")
+  const { McpServer, ResourceTemplate } = await import("@modelcontextprotocol/sdk/server/mcp.js")
   const { WebStandardStreamableHTTPServerTransport } = await import(
     "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
   )
-  return { McpServer, WebStandardStreamableHTTPServerTransport }
+  return { McpServer, ResourceTemplate, WebStandardStreamableHTTPServerTransport }
 }
 
 type Db = BetterSqlite3.Database
@@ -208,6 +208,103 @@ export async function createMcpServer({
       },
     )
   }
+
+  // ---- resources (D5): addressable chat data the agent can browse / reference by URI ----------
+  const { ResourceTemplate } = await loadSdk()
+  server.registerResource(
+    "conversations",
+    "chat://conversations",
+    {
+      description:
+        "All synced conversations (newest first). Each entry's id is the convId the other tools take.",
+      mimeType: "application/json",
+    },
+    async () => ({
+      contents: [
+        {
+          uri: "chat://conversations",
+          mimeType: "application/json",
+          text: text(listConversationsByQuery(db, service, {})),
+        },
+      ],
+    }),
+  )
+  server.registerResource(
+    "conversation",
+    new ResourceTemplate("chat://conversation/{convId}", { list: undefined }),
+    {
+      description:
+        "A recent-messages window of one conversation, by convId. Use get_context for paging or reply-chain walks.",
+      mimeType: "application/json",
+    },
+    async (_uri, { convId }) => ({
+      contents: [
+        {
+          uri: `chat://conversation/${convId}`,
+          mimeType: "application/json",
+          text: text(getContextWindow(db, service, { convId: String(convId) })),
+        },
+      ],
+    }),
+  )
+
+  // ---- prompts (D5): canned templates pointing at the read-only tools -------------------------
+  server.registerPrompt(
+    "catch-up-on-unread",
+    { description: "Summarise what the user missed across unread conversations." },
+    async () => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: "Read my unread conversations (call get_unread_overview), then give a terse catch-up: per conversation, who + the gist. Lead with anything that needs a response. Skip muted noise.",
+          },
+        },
+      ],
+    }),
+  )
+  server.registerPrompt(
+    "summarize-conversation",
+    {
+      description: "Summarise one conversation by id.",
+      argsSchema: {
+        convId: z
+          .string()
+          .min(1)
+          .describe("Conversation id (from list_conversations or chat://conversations)"),
+      },
+    },
+    async ({ convId }) => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Read conversation ${convId} (call get_context with that convId, page older with beforeTs if needed) and summarise: what's decided, what's open, who owes what. Plain prose, no filler.`,
+          },
+        },
+      ],
+    }),
+  )
+  server.registerPrompt(
+    "find-decision",
+    {
+      description: "Find a decision made in chat about a topic.",
+      argsSchema: { topic: z.string().min(1).describe("What to look for") },
+    },
+    async ({ topic }) => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Search chats for a decision about "${topic}" (call search_messages with the key terms; follow reply chains via get_context's aroundMsgId where it matters). Report the decision, who made it, and the message id. Say plainly if nothing was decided.`,
+          },
+        },
+      ],
+    }),
+  )
 
   return server
 }

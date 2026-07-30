@@ -184,6 +184,33 @@ describe("MCP server over HTTP (L3, real client)", () => {
     expect(out).toMatchObject({ error: expect.stringContaining("no images") })
   })
 
+  test("resources: chat://conversations lists seeded convs", async () => {
+    const res = await client.listResources()
+    expect(res.resources.map((r) => r.name)).toContain("conversations")
+    const rd = await client.readResource({ uri: "chat://conversations" })
+    const rows = JSON.parse((rd.contents as Array<{ text: string }>)[0].text) as Array<{
+      id: string
+    }>
+    expect(rows.map((r) => r.id)).toContain("c1")
+  })
+
+  test("resources: chat://conversation/{convId} returns the thread", async () => {
+    const rd = await client.readResource({ uri: "chat://conversation/c1" })
+    const msgs = JSON.parse((rd.contents as Array<{ text: string }>)[0].text) as Array<{
+      msgId: string
+    }>
+    expect(msgs.map((m) => m.msgId)).toEqual(["m1", "m2"])
+  })
+
+  test("prompts: 3 templates registered, find-decision carries the topic", async () => {
+    const list = await client.listPrompts()
+    expect(list.prompts.map((p) => p.name).sort()).toEqual(
+      ["catch-up-on-unread", "find-decision", "summarize-conversation"].sort(),
+    )
+    const got = await client.getPrompt({ name: "find-decision", arguments: { topic: "deploy" } })
+    expect((got.messages[0].content as { text: string }).text).toContain("deploy")
+  })
+
   test("stateless: no Mcp-Session-Id returned on initialize", async () => {
     // A second, independent client initializes without sending any session id and succeeds —
     // stateless servers must not require one.
