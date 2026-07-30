@@ -145,7 +145,9 @@ async function answerTeamsMint(
 ) {
   const tid = opts.tid ?? "TENANT-1"
   const oid = opts.oid ?? "USER-1"
-  const bearerExp = opts.bearerExp ?? 1_750_000_000
+  // Relative to now, not a fixed epoch: parseMsalBearer rejects an already-expired MSAL row
+  // (PSN-121), so a fixture bearer has to be live for the mint path to run at all.
+  const bearerExp = opts.bearerExp ?? Math.floor(Date.now() / 1000) + 3600
   const dumpSend = [...ws.sent]
     .reverse()
     .find(
