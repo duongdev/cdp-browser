@@ -19,6 +19,7 @@ import { type Captioner, createCaptioner, downscaleImage } from "./caption.ts"
 import type { ChatService } from "./contract.ts"
 import { createHydrateEngine } from "./hydrate.ts"
 import { resolveCaptionModel } from "./llm.ts"
+import { mountMcp } from "./mcp.ts"
 import { findByObjectId } from "./media-store.ts"
 import { MOCK_PREFS, MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
@@ -96,6 +97,27 @@ for (const [service, provider] of providers) {
 const [assistantService, assistantProvider] = providers.entries().next().value ?? []
 const assistantCaptioner = assistantService ? captioners.get(assistantService) : undefined
 
+// Shared image-fetch path for the in-app assistant + the MCP `view_image` tool (PSN-114). Both
+// resolve an AMS object id → provider.media bytes → downscaled, captioning lazily on demand.
+const assistantVision =
+  assistantService && assistantProvider && assistantCaptioner
+    ? {
+        async fetchImage(objectId: string) {
+          const row = findByObjectId(db, assistantService, objectId)[0]
+          if (!row) return null
+          try {
+            const media = await assistantProvider.media(row.url)
+            if ("miss" in media) return null
+            return await downscaleImage(media.body, media.contentType)
+          } catch (e) {
+            console.warn(`[assistant] image fetch failed: ${(e as Error)?.message ?? e}`)
+            return null
+          }
+        },
+        captionImage: (objectId: string) => assistantCaptioner.captionObject(objectId),
+      }
+    : undefined
+
 const app = new Hono()
 // Routes mounted directly on the root app (the mock harness) get the same typed error mapping as
 // /api/chat — a ProviderError("not_found", 404) must read as 404, not as a bare 500 (QE DEF-8).
@@ -104,6 +126,10 @@ app.onError((err, c) => {
   return c.json({ error: (err as Error)?.message || "internal_error" }, 500)
 })
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
+// Read-only MCP server at /mcp (PSN-114, ADR-0023). Streamable HTTP, stateless, localhost-only.
+// The Origin gate lives in mountMcp; the route is mounted before /api/chat but on a distinct path.
+if (assistantService)
+  await mountMcp(app, { db, service: assistantService, vision: assistantVision })
 app.route(
   "/api/chat/assistant",
   createAssistantRoutes({
@@ -115,24 +141,7 @@ app.route(
             hydrate: hydrates.get(assistantService) as import("./hydrate.ts").HydrateEngine,
           }
         : undefined,
-    vision:
-      assistantService && assistantProvider && assistantCaptioner
-        ? {
-            async fetchImage(objectId) {
-              const row = findByObjectId(db, assistantService, objectId)[0]
-              if (!row) return null
-              try {
-                const media = await assistantProvider.media(row.url)
-                if ("miss" in media) return null
-                return await downscaleImage(media.body, media.contentType)
-              } catch (e) {
-                console.warn(`[assistant] image fetch failed: ${(e as Error)?.message ?? e}`)
-                return null
-              }
-            },
-            captionImage: (objectId) => assistantCaptioner.captionObject(objectId),
-          }
-        : undefined,
+    vision: assistantVision,
   }),
 )
 // Sweep engines created before routes so getSyncLog can be wired at startup.
