@@ -249,7 +249,19 @@ export async function sendReply(
     text,
     ...(html ? { html } : {}),
     ...(quotes?.length ? { quotes } : {}),
-    ...(mentions?.length ? { mentions } : {}),
+    // The BFF contract names the mentioned user `id` (Teams mri → contract id; PSN-93) while the FE
+    // type + the composer carry `mri` — the mirror of the fetchRoster normalization above. Without
+    // this the provider read `m.id` off an `mri`-shaped entry, so EVERY outgoing properties.mentions
+    // entry lost its mri and Teams stored mention-shaped markup that mentioned nobody (PSN-120).
+    ...(mentions?.length
+      ? {
+          mentions: mentions.map((m) => ({
+            itemid: m.itemid,
+            id: m.mri,
+            displayName: m.displayName,
+          })),
+        }
+      : {}),
   })
 }
 

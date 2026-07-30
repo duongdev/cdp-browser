@@ -21,8 +21,15 @@ describe("otherMrisFromId", () => {
   // self must still be dropped via oid normalization, in either id order.
   it("drops self from a real bare-oid 1:1 id (either order)", () => {
     const self = "8:orgid:AAA"
-    expect(otherMrisFromId("19:AAA_BBB@unq.gbl.spaces", self)).toEqual(["BBB"])
-    expect(otherMrisFromId("19:BBB_AAA@unq.gbl.spaces", self)).toEqual(["BBB"])
+    expect(otherMrisFromId("19:AAA_BBB@unq.gbl.spaces", self)).toEqual([OTHER])
+    expect(otherMrisFromId("19:BBB_AAA@unq.gbl.spaces", self)).toEqual([OTHER])
+  })
+
+  // The output is always a real MRI, never the id's bare-oid segment — the 1:1 roster publishes it
+  // verbatim as RosterMember.mri, and a bare oid in an outgoing properties.mentions entry mentions
+  // nobody (live-verified, PSN-120).
+  it("always returns a prefixed 8:orgid: MRI, never a bare oid", () => {
+    expect(otherMrisFromId("19:AAA_BBB@unq.gbl.spaces", "8:orgid:AAA")).toEqual(["8:orgid:BBB"])
   })
 
   it("returns [] for a group-DM id (roster comes from the members fetch)", () => {

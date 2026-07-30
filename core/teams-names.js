@@ -12,6 +12,12 @@
 // regardless of which format the id or `selfMri` carries — a raw `!== selfMri` misses when the id
 // is bare-oid and `selfMri` is `8:orgid:…`, leaving self in and mislabeling the DM. Split on `_`
 // (an oid/orgid MRI has no underscore). A group-DM (`…@thread.v2`) has no members in its id → [].
+//
+// The RETURN is always a real `8:orgid:` MRI, never the id's bare-oid segment. Name resolution
+// strips the prefix anyway, so this looked cosmetic — but the 1:1 roster publishes these verbatim as
+// `RosterMember.mri`, and a bare oid in an outgoing `properties.mentions` entry is silently NOT a
+// mention (live-verified, PSN-120). It also keeps the `users` name cache single-keyed per person
+// instead of one bare-oid row from the 1:1 path and one MRI row from the group path.
 function otherMrisFromId(convId, selfMri) {
   if (typeof convId !== "string" || !convId.includes("@unq.gbl.spaces")) return []
   const inner = convId.split("@")[0].replace(/^19:/, "")
@@ -20,6 +26,7 @@ function otherMrisFromId(convId, selfMri) {
     .split("_")
     .filter(Boolean)
     .filter((m) => oidFromMri(m) !== selfOid)
+    .map((m) => `8:orgid:${oidFromMri(m)}`)
 }
 
 // Graph's getByIds keys objects by the AAD object id, which is the MRI minus its `8:orgid:`
