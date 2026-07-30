@@ -45,6 +45,7 @@ import {
 } from "../core/slack-workspaces.js"
 import { createSweepScheduler } from "../core/sweep-scheduler.js"
 import { buildAmsImageContent, buildAmsImageContentMulti } from "../core/teams-ams.js"
+import { MSAL_TOKEN_READER_JS } from "../core/teams-creds.js"
 import { isValidTeamsCursor } from "../core/teams-cursor.js"
 import { buildTeamsFilePayload } from "../core/teams-files.js"
 import { rewriteMediaHtml } from "../core/teams-media.js"
@@ -1181,15 +1182,11 @@ async function resolveTeamsNamesInPage(oids) {
   // The in-page script returns { ok: true, names: {...} } on success or { ok: false, reason } on
   // any failure, so the host side can log a useful reason and decide whether to retry.
   const script = `(async () => {
+    ${MSAL_TOKEN_READER_JS}
     try {
-      let key = null
-      for (const k of Object.keys(localStorage)) {
-        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
-      }
-      if (!key) return { ok: false, reason: "no_token" }
-      let bearer = ""
-      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { ok: false, reason: "no_token" } }
-      if (!bearer) return { ok: false, reason: "no_token" }
+      const hit = __msalToken((k) => k.includes("graph.microsoft.com"))
+      if (!hit) return { ok: false, reason: "no_token" }
+      const bearer = hit.entry.secret
       const r = await fetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", {
         method: "POST",
         headers: { Authorization: "Bearer " + bearer, "Content-Type": "application/json" },
@@ -1623,15 +1620,11 @@ function teamsAvatarSize(raw) {
 async function fetchTeamsAvatarInPage(oid, size) {
   // The bearer is a localStorage read (CA doesn't apply); 404 = no photo (negative-cached by the BFF).
   const script = `(async () => {
+    ${MSAL_TOKEN_READER_JS}
     try {
-      let key = null
-      for (const k of Object.keys(localStorage)) {
-        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
-      }
-      if (!key) return { error: "no_bearer" }
-      let bearer = ""
-      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { error: "no_bearer" } }
-      if (!bearer) return { error: "no_bearer" }
+      const hit = __msalToken((k) => k.includes("graph.microsoft.com"))
+      if (!hit) return { error: "no_bearer" }
+      const bearer = hit.entry.secret
       // Try the requested size, then fall back to the default photo (/photo/$value = largest
       // available). Graph 404s a size it didn't pre-generate, so a 240/648 request would otherwise
       // miss for a user who DOES have a (smaller) photo — the "photo → initials" bug (PSN-99).
@@ -1695,17 +1688,13 @@ async function teamsSearch({ query, from = 0, size = 25 }) {
   // JWT claims on the same page (the substrate API routes per-mailbox, so it needs the user's UPN).
   const built = buildSubstrateQuery({ query, upn: "<upn>", cvid, from, size })
   const script = `(async () => {
+    ${MSAL_TOKEN_READER_JS}
     const SUBSTRATE_SCOPE = "https://substrate.office.com/substratesearch-internal.readwrite"
+    // Freshest live row only — an expired duplicate used to be able to win the scan and burn the
+    // one silent-acquire retry below on a token that was never going to work (PSN-121).
     const readToken = () => {
-      for (const k of Object.keys(localStorage)) {
-        if (!k.startsWith("msal.") || !k.includes("accesstoken")) continue
-        if (!k.includes("substrate.office.com") || !k.includes("substratesearch")) continue
-        try {
-          const tok = (JSON.parse(localStorage.getItem(k)) || {}).secret
-          if (tok) return tok
-        } catch (e) {}
-      }
-      return ""
+      const hit = __msalToken((k) => k.includes("substrate.office.com") && k.includes("substratesearch"))
+      return hit ? hit.entry.secret : ""
     }
     const decodeUpn = (jwt) => {
       try {
@@ -1726,6 +1715,10 @@ async function teamsSearch({ query, from = 0, size = 25 }) {
     try {
       let tok = readToken()
       if (!tok) {
+        // ponytail: on Teams v2 window.msal is just { clientIds } — acquireTokenSilent does NOT
+        // exist there, so this arm always throws into the catch (verified live, PSN-121). Kept
+        // because it costs nothing and may hold on another build; do not rely on it to renew a
+        // token. Real renewal needs the page's own MSAL instance, which isn't exposed.
         try {
           const r = await window.msal.acquireTokenSilent({ scopes: [SUBSTRATE_SCOPE] })
           tok = r && r.accessToken || ""
@@ -1780,15 +1773,11 @@ async function teamsProfile(rawOid) {
   const oid = teamsNormalizeUserOid(rawOid)
   if (!oid) return { error: "not_found" }
   const script = `(async () => {
+    ${MSAL_TOKEN_READER_JS}
     try {
-      let key = null
-      for (const k of Object.keys(localStorage)) {
-        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("graph.microsoft.com")) { key = k; break }
-      }
-      if (!key) return { error: "no_bearer" }
-      let bearer = ""
-      try { bearer = (JSON.parse(localStorage.getItem(key)) || {}).secret || "" } catch (e) { return { error: "no_bearer" } }
-      if (!bearer) return { error: "no_bearer" }
+      const hit = __msalToken((k) => k.includes("graph.microsoft.com"))
+      if (!hit) return { error: "no_bearer" }
+      const bearer = hit.entry.secret
       const r = await fetch("https://graph.microsoft.com/v1.0/users/${oid}?$select=${TEAMS_PROFILE_SELECT}", {
         headers: { Authorization: "Bearer " + bearer },
       })
@@ -2202,19 +2191,17 @@ const TEAMS_AMS_CLIENT_VERSION = "1415/26061118216"
 // 401 on create/upload → invalid_auth (the caller drives one re-authz + retry, like teamsReply).
 async function createTeamsAmsObjectInPage(convId, filename, base64) {
   const script = `(async () => {
+    ${MSAL_TOKEN_READER_JS}
     try {
       // The AMS auth (ic3) + the bearer to mint sk/base/amsV2 (api.spaces) both live in the page's
-      // MSAL cache — a localStorage read, not a network call, so CA doesn't apply.
-      let sb = null, ic3 = null
-      for (const k of Object.keys(localStorage)) {
-        if (k.startsWith("msal.") && k.includes("accesstoken") && k.includes("ic3.teams.office.com")) {
-          try { const j = JSON.parse(localStorage.getItem(k)); if (j && j.secret) ic3 = j.secret } catch (e) {}
-        }
-        if (k.startsWith("msal.") && k.includes("accesstoken") && k.toLowerCase().includes("api.spaces.skype.com")) {
-          try { const j = JSON.parse(localStorage.getItem(k)); if (j && j.secret) sb = j.secret } catch (e) {}
-        }
-      }
-      if (!ic3 || !sb) return { error: "invalid_auth" }
+      // MSAL cache — a localStorage read, not a network call, so CA doesn't apply. __msalToken skips
+      // expired duplicate rows: taking an arbitrary key-order match read the rotted double-slash
+      // ic3 row and 401'd every upload (PSN-121).
+      const ic3e = __msalToken((k) => k.includes("ic3.teams.office.com"))
+      const sbe = __msalToken((k) => k.toLowerCase().includes("api.spaces.skype.com"))
+      if (!ic3e || !sbe) return { error: "invalid_auth" }
+      const ic3 = ic3e.entry.secret
+      const sb = sbe.entry.secret
       const az = await (await fetch("https://teams.microsoft.com/api/authsvc/v1.0/authz", {
         method: "POST",
         headers: { Authorization: "Bearer " + sb, "Content-Type": "application/json" },
@@ -2367,20 +2354,16 @@ async function teamsUploadImagesMulti({ convId, images, text }) {
 // token or a 401 on any SharePoint call → invalid_auth (the caller drives one re-authz + retry).
 async function uploadTeamsFileInPage(filename, base64) {
   const script = `(async () => {
+    ${MSAL_TOKEN_READER_JS}
     try {
       // The SharePoint bearer + host live in the page's MSAL cache — a localStorage read, not a
-      // network call, so CA doesn't apply. The token's target scope names the -my.sharepoint.com host.
-      let sp = null, myHost = null
+      // network call, so CA doesn't apply. The token's target scope names the -my.sharepoint.com
+      // host. Freshest-row pick, so an expired duplicate can't shadow the live token (PSN-121).
       const rx = /https?:\\/\\/([a-z0-9-]+-my\\.sharepoint\\.com)/
-      for (const k of Object.keys(localStorage)) {
-        if (!(k.startsWith("msal.") && k.includes("accesstoken"))) continue
-        try {
-          const j = JSON.parse(localStorage.getItem(k))
-          const m = j && j.target && String(j.target).match(rx)
-          if (m && j.secret) { sp = j.secret; myHost = m[1]; break }
-        } catch (e) {}
-      }
-      if (!sp || !myHost) return { error: "invalid_auth" }
+      const spe = __msalToken((_k, e) => rx.test(String(e.target || "")))
+      if (!spe) return { error: "invalid_auth" }
+      const sp = spe.entry.secret
+      const myHost = String(spe.entry.target).match(rx)[1]
       const bearer = { Authorization: "Bearer " + sp }
       // me/drive → webUrl carries /personal/{userPath}/Documents; pull the {userPath} segment out.
       const drv = await fetch("https://" + myHost + "/_api/v2.0/me/drive", {
