@@ -2,14 +2,16 @@
 
 Plan-only until the label flips to `build`. Same issue, same branch (`chat-expose-chats-as-mcp-server`), ONE PR.
 
-> **Status (2026-07-28): HALTED on PSN-115.** Build was started, then halted. PSN-115's locked plan
-> (PR #43, `docs/plans/PSN-115-proactive-backfilling.md`) declares a sequencing dependency: land
-> PSN-115's search seam (WS-A substrate provider + WS-B hydrate + WS-D `/api/chat/search`) **before**
-> PSN-114 wires its MCP tools. PSN-114's MCP `search_messages` (and `list_conversations`) must reuse
-> PSN-115's data plane so an MCP query reaches all Teams history, not just the local `chat.db`
-> subset. A `chat.db`-only MCP search would ship the wrong contract and be rewritten when PSN-115
-> lands. See D10. The WIP scaffold (`mcp.ts` transport/mount/Origin-gate + 6 stable tools) is
-> drafted in the worktree but **uncommitted** — resume from it once PSN-115's seam is in.
+> **Status (2026-07-30): SHIPPED.** Resumed after PSN-115 landed; all three workstreams (A/B/C)
+> shipped on PR #42. `search_messages` rides PSN-115's hybrid data plane via the shared
+> `assistant/search-fallback.ts` `runSearch` (D10); the other 6 tools + scaffold + 2 resources + 3
+> prompts + ADR-0024 (`docs/adr/0024-chat-mcp-server.md`) are in. 337 chat-server tests green,
+> biome clean. L4 (real Claude Code turn over the mock stack) is the operator's manual gate
+> (`docs/testing/chat-qa.md` Area 11).
+
+> **Earlier (2026-07-28): HALTED on PSN-115.** Build started, then halted because PSN-115's locked
+> plan declares a sequencing dependency (land PSN-115's search seam before PSN-114 wires its MCP
+> `search_messages`). See D10.
 
 ## Goal
 
