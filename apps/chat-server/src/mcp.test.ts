@@ -10,8 +10,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import Database from "better-sqlite3"
 import { Hono } from "hono"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
+import type { HydrateEngine } from "./hydrate.ts"
 import { mountMcp } from "./mcp.ts"
-import { migrate, upsertConversations, upsertMessages } from "./store.ts"
+import type { ChatProvider, ProviderSearchHit, ProviderSearchPage } from "./providers/provider.ts"
+import { migrate, upsertConversations, upsertMessages, upsertUsers } from "./store.ts"
 
 function freshDb() {
   const db = new Database(":memory:")
@@ -41,6 +43,37 @@ function seed(db: Database.Database) {
       body: "<p>confirmed, see <a href='https://x/y'>plan</a></p>",
     },
   ])
+  upsertUsers(db, "teams", [
+    { id: "u-bob", displayName: "Bob Zhang" },
+    { id: "u-anh", displayName: "Anh Tran" },
+  ])
+}
+
+// A substrate hit NOT in the local db — exercises the PSN-115 fallback path through the MCP tool.
+const SUBSTRATE_HIT: ProviderSearchHit = {
+  convId: "c2",
+  msgId: "m9",
+  preview: "standup notes from tuesday",
+  sender: "Carol",
+  ts: 5000,
+  subject: "",
+}
+
+function fakeSearch(): { provider: ChatProvider; hydrate: HydrateEngine } {
+  const provider = {
+    async searchMessages(query: string): Promise<ProviderSearchPage> {
+      const q = query.trim().toLowerCase()
+      const rows = [SUBSTRATE_HIT].filter((h) => h.preview.toLowerCase().includes(q))
+      return { rows, cursor: null, total: rows.length }
+    },
+  } as Pick<ChatProvider, "searchMessages">
+  const hydrate = {
+    // No-op: leave the substrate row un-hydrated so it ships as substrate:true.
+    async hydrateHits() {
+      return []
+    },
+  } as Pick<HydrateEngine, "hydrateHits">
+  return { provider: provider as ChatProvider, hydrate: hydrate as HydrateEngine }
 }
 
 describe("originAllowed (L1, pure)", () => {
@@ -76,6 +109,7 @@ describe("MCP server over HTTP (L3, real client)", () => {
       db,
       service: "teams",
       vision: { fetchImage: async () => null, captionImage: async () => null },
+      search: fakeSearch(),
     })
     await new Promise<void>((resolve) => {
       server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, (info) => {
@@ -116,11 +150,18 @@ describe("MCP server over HTTP (L3, real client)", () => {
     return text ? JSON.parse(text) : null
   }
 
-  test("search_messages finds a seeded hit (Vietnamese-safe fold)", async () => {
-    const rows = await call("search_messages", { query: "deploy" })
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ convId: "c1", msgId: "m1", sender: "Bob" })
-    expect(rows[0].snippet).toContain("deploy")
+  test("search_messages finds a seeded local hit (Vietnamese-safe fold)", async () => {
+    const out = await call("search_messages", { query: "deploy" })
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]).toMatchObject({ convId: "c1", msgId: "m1", sender: "Bob" })
+    expect(out.rows[0].snippet).toContain("deploy")
+    expect(out.fallbackRan).toBe(true) // local < limit → substrate consulted (no match here)
+  })
+
+  test("search_messages falls back to substrate when local is empty (PSN-115 data plane)", async () => {
+    const out = await call("search_messages", { query: "standup" })
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]).toMatchObject({ convId: "c2", msgId: "m9", substrate: true })
   })
 
   test("get_context returns the seeded thread", async () => {
@@ -161,8 +202,12 @@ describe("MCP Origin gate (L2, raw fetch)", () => {
   beforeAll(async () => {
     const app = new Hono()
     await mountMcp(app, { db: freshDb(), service: "teams" })
-    server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" })
-    url = `http://127.0.0.1:${(server.address() as { port: number }).port}/mcp`
+    await new Promise<void>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, (info) => {
+        url = `http://127.0.0.1:${info.port}/mcp`
+        resolve()
+      })
+    })
   })
   afterAll(() => server.close())
 

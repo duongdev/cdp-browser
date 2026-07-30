@@ -3,13 +3,16 @@
 // MCP Streamable HTTP. Same pure fns, different adapter — see D9: the in-app assistant keeps its
 // own ai-SDK tool defs (citation tracking + the ai-sdk image-buffer hack can't ride MCP).
 //
-// Stateless (no Mcp-Session-Id), localhost-only. Per the MCP SDK contract, stateless mode REQUIRES
-// a fresh transport per request — reusing one causes message-ID collisions across clients. The
-// McpServer is shared (tools registered once); the transport is cheap and per-request.
+// Stateless (no Mcp-Session-Id), localhost-only. Per the MCP SDK contract + its own
+// simpleStatelessStreamableHttp example, stateless mode builds a FRESH McpServer + transport PER
+// REQUEST — reusing either corrupts internal state / causes message-id collisions across clients.
+// Construction is cheap (tool registration, no I/O); the pure fns + db/vision/search deps the
+// tools close over are shared.
 
 import type BetterSqlite3 from "better-sqlite3"
 import type { Hono } from "hono"
 import { z } from "zod"
+import { runSearch, type SearchFallback } from "./assistant/search-fallback.ts"
 import { getUnreadOverview } from "./assistant/unread-overview.ts"
 import { listMessageImages } from "./media-store.ts"
 import {
@@ -18,7 +21,6 @@ import {
   listScopes,
   resolvePerson,
   resolveScope,
-  searchMessages,
 } from "./search.ts"
 
 // Lazy imports — the MCP SDK is a chat-server-only dep (not in the Electron allowlist), so pulling
@@ -46,15 +48,17 @@ const text = (s: unknown) => JSON.stringify(s)
 const textContent = (body: unknown) => ({ content: [{ type: "text" as const, text: text(body) }] })
 
 /** Build the read-only MCP server: the 8 retrieval tools. Pure registration — no I/O of its own
- *  beyond the injected `db` + optional `vision`. Reused across every /mcp request. */
+ *  beyond the injected `db` + optional `vision`/`search`. Reused across every /mcp request. */
 export async function createMcpServer({
   db,
   service,
   vision,
+  search,
 }: {
   db: Db
   service: string
   vision?: McpVision
+  search?: SearchFallback
 }) {
   const { McpServer } = await loadSdk()
   const server = new McpServer({ name: "cdp-chats", version: "0.1.0" })
@@ -63,7 +67,7 @@ export async function createMcpServer({
     "search_messages",
     {
       description:
-        "Full-text search over all synced chat messages. Vietnamese-safe: ASCII queries match diacritic text. Short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, or time range (ms epoch). For 'who mentioned me' set mentionsMe:true — do NOT search the user's own name (matches people talking about them, misses mentions under other display names).",
+        "Full-text search over all synced chat messages, with a live upstream fallback so a query reaches ALL Teams history, not just what's synced locally. Vietnamese-safe: ASCII queries match diacritic text. Short keyword queries; filter by sender id (resolve names via resolve_person first), conversation, or time range (ms epoch). For 'who mentioned me' set mentionsMe:true — do NOT search the user's own name (matches people talking about them, misses mentions under other display names). Rows carry `substrate:true` when they came from upstream but aren't hydrated yet (a preview); `degraded:true` + `note` when upstream was unavailable.",
       inputSchema: {
         query: z.string().min(1),
         sender: z.string().optional(),
@@ -75,20 +79,7 @@ export async function createMcpServer({
         limit: z.number().int().min(1).max(50).optional(),
       },
     },
-    async (input) => {
-      const hits = searchMessages(db, { ...input, service })
-      return textContent(
-        hits.map((h) => ({
-          convId: h.convId,
-          msgId: h.msgId,
-          sender: h.senderName || h.senderId || "?",
-          ts: h.ts,
-          snippet: h.snippet,
-          ...(h.quotes?.length ? { repliesTo: h.quotes } : {}),
-          ...(h.images?.length ? { images: h.images } : {}),
-        })),
-      )
-    },
+    async (input) => textContent(await runSearch(db, service, input, search)),
   )
 
   server.registerTool(
@@ -238,14 +229,17 @@ function originAllowed(origin: string | null | undefined): boolean {
  *  from `index.ts`'s full boot so tests mount it alone on an ephemeral port. */
 export async function mountMcp(
   app: Hono,
-  opts: { db: Db; service: string; vision?: McpVision },
+  opts: { db: Db; service: string; vision?: McpVision; search?: SearchFallback },
 ): Promise<void> {
-  const server = await createMcpServer(opts)
   app.all("/mcp", async (c) => {
     if (!originAllowed(c.req.header("origin")))
       return c.json({ jsonrpc: "2.0", error: { code: -32600, message: "forbidden origin" } }, 403)
     const { WebStandardStreamableHTTPServerTransport } = await loadSdk()
-    // Fresh transport per request — stateless mode requires it (SDK source: reusing causes id collisions).
+    // Stateless mode = a fresh server + fresh transport PER REQUEST (per the SDK's own
+    // simpleStatelessStreamableHttp example): reusing either across requests corrupts internal
+    // state / causes message-id collisions. Construction is cheap (tool registration, no I/O); the
+    // pure fns + db/search deps it closes over are shared.
+    const server = await createMcpServer(opts)
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     })

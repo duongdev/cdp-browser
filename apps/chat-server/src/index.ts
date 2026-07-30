@@ -118,6 +118,17 @@ const assistantVision =
       }
     : undefined
 
+// Shared substrate-search data plane (PSN-115 WS-C) for the in-app assistant + the MCP
+// `search_messages` tool (PSN-114 D10): provider substrate search + the hydrate pipeline. Absent
+// only when no hydrate engine is registered for this service (a misconfigured provider).
+const assistantSearch =
+  assistantService && hydrates.get(assistantService) && assistantProvider
+    ? {
+        provider: assistantProvider,
+        hydrate: hydrates.get(assistantService) as import("./hydrate.ts").HydrateEngine,
+      }
+    : undefined
+
 const app = new Hono()
 // Routes mounted directly on the root app (the mock harness) get the same typed error mapping as
 // /api/chat — a ProviderError("not_found", 404) must read as 404, not as a bare 500 (QE DEF-8).
@@ -129,18 +140,17 @@ app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
 // Read-only MCP server at /mcp (PSN-114, ADR-0023). Streamable HTTP, stateless, localhost-only.
 // The Origin gate lives in mountMcp; the route is mounted before /api/chat but on a distinct path.
 if (assistantService)
-  await mountMcp(app, { db, service: assistantService, vision: assistantVision })
+  await mountMcp(app, {
+    db,
+    service: assistantService,
+    vision: assistantVision,
+    search: assistantSearch,
+  })
 app.route(
   "/api/chat/assistant",
   createAssistantRoutes({
     db,
-    search:
-      assistantService && hydrates.get(assistantService)
-        ? {
-            provider: assistantProvider,
-            hydrate: hydrates.get(assistantService) as import("./hydrate.ts").HydrateEngine,
-          }
-        : undefined,
+    search: assistantSearch,
     vision: assistantVision,
   }),
 )
