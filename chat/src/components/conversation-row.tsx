@@ -62,7 +62,10 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
     return (
       <button
         className={cn(
-          "conv-row flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors",
+          // Vertical padding, the avatar↔text gap, avatar size, title/preview leading and the labels
+          // indent are all density tokens in chat/src/index.css — a Tailwind utility here would be
+          // invisible to [data-density] and silently dead in compact.
+          "conv-row flex w-full flex-col rounded-lg px-3 text-left transition-colors",
           "hover:bg-muted focus-visible:bg-muted focus-visible:outline-none",
           active && "bg-muted",
           focused && "ring-2 ring-ring/70 ring-inset",
@@ -80,16 +83,15 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
         {/* Avatar + the first two text rows (title, preview). The avatar is centered over these two
             rows only (items-center here) — a third labels row below sits outside this flex, so the
             avatar keeps its position instead of re-centering over three rows. */}
-        <span className="flex w-full items-center gap-3">
+        <span className="conv-row-main flex w-full items-center">
           {/* Avatar-anchored unread indicator (t168, unified t170): one badge on the avatar corner —
               a plain coral dot for unread, the same badge grown into a numbered pill when there are
               unread @mentions (a local floor — only synced pages count). Same spot for single +
               facepile so it never shifts row layout. The wrapper is an explicitly sized block (t170
               fix): a bare inline span collapsed and let the facepile circles spill across rows. */}
-          {/* `conv-row-avatar` is the density hook: the avatar — not the padding — sets this row's
-              height floor, so compact re-sizes it in CSS (chat/src/index.css) alongside the text
-              line-heights. Tightening padding alone moves nothing. */}
-          <span className="conv-row-avatar relative block size-10 shrink-0">
+          {/* The avatar — not the padding — sets this row's height floor, so its size is a density
+              token (chat/src/index.css). Tightening padding alone moves nothing. */}
+          <span className="conv-row-avatar relative block shrink-0">
             {/* `conv-avatar-box` marks the avatar itself, so compact's re-size can't also catch the
                 unread dot / mention pill that share this wrapper as siblings. */}
             {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
@@ -172,10 +174,11 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
             </span>
           </span>
         </span>
-        {/* Third row: labels. Indented past the avatar (size-10 + gap-3 = 3.25rem) so they align
-            under the title/preview text column, not under the avatar. */}
+        {/* Third row: labels, aligned under the text column. The indent is DERIVED from the avatar
+            + gap tokens (chat/src/index.css) — a hardcoded pl-13 assumed the comfortable avatar and
+            mis-aligned as soon as compact shrank it. */}
         {labels.length > 0 && (
-          <span className="mt-0.5 flex flex-wrap gap-1 pl-13">
+          <span className="conv-row-labels flex flex-wrap gap-1">
             {labels.map((l) => (
               <span
                 className="shrink-0 rounded-full border border-border/70 px-1.5 py-px font-medium text-[10px] text-muted-foreground"

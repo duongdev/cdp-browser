@@ -668,20 +668,29 @@ export function SearchView({
           title="Drag to resize · double-click to reset"
         />
         {selectedConv ? (
-          // Exit search → open this conversation in the normal list view (`/chat/c/{id}`). This IS
-          // the thread's own back button rather than a second floating control: leaving the search
-          // surface for the chat you're reading is exactly what "back" means here, and the left rail
-          // already owns plain back-to-list. One affordance, no overlay covering the header.
-          <ThreadView
-            backLabel="Open in chat"
-            conversation={selectedConv}
-            jumpTarget={selected ? { id: selected.msgId, nonce: selected.nonce } : undefined}
-            key={selectedConv.id}
-            namePref={namePref}
-            onBack={() => onOpenInList(selectedConv.id)}
-            ref={activeThreadRef}
-            visible
-          />
+          <>
+            {/* Exit search → open this conversation in the normal list view (`/chat/c/{id}`). Its own
+                labelled control, not the thread's back arrow: a bare arrow here reads as "back to the
+                result list", which is the opposite of what it does. Floating top-right so it never
+                covers the thread header's title. */}
+            <Button
+              className="absolute top-2 right-3 z-20 gap-1.5 shadow-sm"
+              onClick={() => onOpenInList(selectedConv.id)}
+              size="sm"
+            >
+              <HugeiconsIcon className="size-4" icon={BubbleChatIcon} />
+              Open in chat
+            </Button>
+            <ThreadView
+              conversation={selectedConv}
+              jumpTarget={selected ? { id: selected.msgId, nonce: selected.nonce } : undefined}
+              key={selectedConv.id}
+              namePref={namePref}
+              onBack={onBack}
+              ref={activeThreadRef}
+              visible
+            />
+          </>
         ) : (
           <CenteredState>
             <HugeiconsIcon className="size-10 text-muted-foreground/40" icon={Search01Icon} />

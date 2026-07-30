@@ -344,17 +344,15 @@ function ChatMessageRow({
   return (
     <div
       className={cn(
-        // `msg-row` + data-leader are the density hooks: the gap below is a Tailwind margin, which the
-        // compact block can't see, so compact re-states both margins in CSS (chat/src/index.css).
         "msg-row flex flex-col gap-0.5 rounded-2xl",
         self ? "items-end" : "items-start",
-        // Vertical rhythm (t158): a group leader opens with a larger gap (≈16px) so distinct groups
-        // read as blocks; a follower hugs the prior bubble (≈4px) for a tight Slack-style run. NOTE:
-        // the list is flex-col-reverse, so the NEWEST message is the FIRST DOM child — a `first:mt-0`
-        // here would (and did) zero the newest message's leader gap, gluing a reply to the bubble above
-        // it (PSN-92). The margin-top is the gap ABOVE each message; the oldest sits under a date
+        // Vertical rhythm (t158): a group leader opens with a larger gap so distinct groups read as
+        // blocks; a follower hugs the prior bubble for a tight run. Both margins are density tokens
+        // keyed off `data-leader` below (chat/src/index.css) — as Tailwind classes they were
+        // invisible to [data-density]. NOTE: the list is flex-col-reverse, so the NEWEST message is
+        // the FIRST DOM child — a `first:mt-0` here would (and did) zero the newest message's leader
+        // gap, gluing a reply to the bubble above it (PSN-92). The oldest sits under a date
         // separator, so no top trim is needed.
-        showMeta ? "mt-3" : "mt-1",
         // Keyboard focus ring (t152): only paints once the user drives with the keyboard (chat-app
         // sets `focused`), so touch/mouse use never shows it. Uses the coral --ring token.
         focused && "-mx-1 px-1 ring-2 ring-ring/70 ring-offset-2 ring-offset-background",
@@ -472,9 +470,10 @@ function ChatMessageRow({
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: image-tap enhancement; the lightbox is Esc-dismissable */}
                 <div
                   className={cn(
-                    // Radius comes from CSS (.teams-message-body + data-pos/data-side, t169) so compact
-                    // density can shrink it and grouped runs get asymmetric corners without class soup.
-                    "teams-message-body w-full min-w-0 px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]",
+                    // Padding + radius come from CSS (.teams-message-body + data-pos/data-side, t169)
+                    // so density can shrink them and grouped runs get asymmetric corners without
+                    // class soup.
+                    "teams-message-body w-full min-w-0 text-sm leading-snug [overflow-wrap:anywhere]",
                     // Self bubble (B6): solid coral fill in light; in dark, a near-transparent fill with a
                     // coral border + foreground text (low glare). The dark treatment lives in the CSS
                     // .teams-self-bubble rule so it can override the primary utilities under .dark.
