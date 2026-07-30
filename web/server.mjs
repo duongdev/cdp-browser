@@ -1922,7 +1922,24 @@ async function teamsReply(convId, text, html, quoteRefs = [], mentions = []) {
   }
   // @mentions ride as a JSON-STRING `properties.mentions` (per-token, live-verified) so recipients
   // get a real mention (PSN-92 D). Teams' own wire keeps this as a string, not a nested array.
-  if (mentions.length) properties.mentions = JSON.stringify(mentions)
+  //
+  // `@type` + `mentionType` are LOAD-BEARING, not decoration: native Teams stamps both on every
+  // entry, and an entry missing either is stored fine (201) yet mentions nobody — Teams renders the
+  // raw per-token spans and never fans the message into the recipient's mention feed. Proven live
+  // (PSN-120, scripts/mention-spike.mjs) against `48:mentions`, the service-side oracle: entries with
+  // an mri alone did NOT register; entries carrying all three did. Same for a bare-oid `mri` — it
+  // must be the full `8:orgid:{oid}` MRI.
+  if (mentions.length) {
+    properties.mentions = JSON.stringify(
+      mentions.map((m) => ({
+        "@type": "http://schema.skype.com/Mention",
+        itemid: m.itemid,
+        mri: m.mri,
+        mentionType: "person",
+        displayName: m.displayName,
+      })),
+    )
+  }
   let out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
