@@ -86,11 +86,24 @@ export const ConversationRow = forwardRef<HTMLButtonElement, ConversationRowProp
               unread @mentions (a local floor — only synced pages count). Same spot for single +
               facepile so it never shifts row layout. The wrapper is an explicitly sized block (t170
               fix): a bare inline span collapsed and let the facepile circles spill across rows. */}
-          <span className="relative block size-10 shrink-0">
+          {/* `conv-row-avatar` is the density hook: the avatar — not the padding — sets this row's
+              height floor, so compact re-sizes it in CSS (chat/src/index.css) alongside the text
+              line-heights. Tightening padding alone moves nothing. */}
+          <span className="conv-row-avatar relative block size-10 shrink-0">
+            {/* `conv-avatar-box` marks the avatar itself, so compact's re-size can't also catch the
+                unread dot / mention pill that share this wrapper as siblings. */}
             {conversation.kind === "group" && (conversation.memberIds?.length ?? 0) >= 2 ? (
-              <FacepileAvatar label={avatarName} memberIds={conversation.memberIds ?? []} />
+              <FacepileAvatar
+                className="conv-avatar-box"
+                label={avatarName}
+                memberIds={conversation.memberIds ?? []}
+              />
             ) : (
-              <UserAvatar label={avatarName} userId={conversation.avatarUserId} />
+              <UserAvatar
+                className="conv-avatar-box"
+                label={avatarName}
+                userId={conversation.avatarUserId}
+              />
             )}
             {mentions > 0 ? (
               <span

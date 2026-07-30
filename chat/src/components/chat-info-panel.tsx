@@ -23,10 +23,14 @@ export function ChatInfoPanel({
   conversation,
   namePref = FULL_NAME,
   onClose,
+  onOpenProfile,
 }: {
   conversation: TeamsConversation
   namePref?: NamePref
   onClose: () => void
+  /** Open a member's profile card — the same target shape a message sender header uses, so both
+   *  entry points land in the one ProfileDialog chat-app owns. */
+  onOpenProfile?: (target: { userId: string; name: string }) => void
 }) {
   const [state, setState] = useState<RosterState>({ status: "loading" })
   const [retry, setRetry] = useState(0)
@@ -85,7 +89,12 @@ export function ChatInfoPanel({
         </div>
 
         {isGroup && (
-          <MemberSection namePref={namePref} onRetry={() => setRetry((n) => n + 1)} state={state} />
+          <MemberSection
+            namePref={namePref}
+            onOpenProfile={onOpenProfile}
+            onRetry={() => setRetry((n) => n + 1)}
+            state={state}
+          />
         )}
       </div>
     </div>
@@ -96,10 +105,12 @@ function MemberSection({
   state,
   namePref,
   onRetry,
+  onOpenProfile,
 }: {
   state: RosterState
   namePref: NamePref
   onRetry: () => void
+  onOpenProfile?: (target: { userId: string; name: string }) => void
 }) {
   if (state.status === "loading") {
     return (
@@ -130,17 +141,36 @@ function MemberSection({
         {members.length} {members.length === 1 ? "member" : "members"}
       </p>
       <ul className="flex flex-col">
-        {members.map((m) => (
-          <li className="flex items-center gap-2 rounded-lg px-1 py-1.5" key={m.mri}>
-            <UserAvatar className="size-8 text-xs" label={m.name} userId={m.mri} />
-            <DisplayName
-              className="min-w-0 truncate text-foreground text-sm"
-              name={m.name}
-              pref={namePref}
-            />
-            {m.self && <span className="shrink-0 text-muted-foreground text-xs">(you)</span>}
-          </li>
-        ))}
+        {members.map((m) => {
+          const row = (
+            <>
+              <UserAvatar className="size-8 text-xs" label={m.name} userId={m.mri} />
+              <DisplayName
+                className="min-w-0 truncate text-foreground text-sm"
+                name={m.name}
+                pref={namePref}
+              />
+              {m.self && <span className="shrink-0 text-muted-foreground text-xs">(you)</span>}
+            </>
+          )
+          // A member with a resolvable id opens the same profile card as their message header; one
+          // without stays static text rather than a button that would do nothing on click.
+          return (
+            <li key={m.mri}>
+              {onOpenProfile && m.mri ? (
+                <button
+                  className="flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-left transition-colors hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none"
+                  onClick={() => onOpenProfile({ userId: m.mri, name: m.name })}
+                  type="button"
+                >
+                  {row}
+                </button>
+              ) : (
+                <span className="flex items-center gap-2 rounded-lg px-1 py-1.5">{row}</span>
+              )}
+            </li>
+          )
+        })}
       </ul>
     </>
   )

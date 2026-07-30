@@ -344,7 +344,9 @@ function ChatMessageRow({
   return (
     <div
       className={cn(
-        "flex flex-col gap-0.5 rounded-2xl",
+        // `msg-row` + data-leader are the density hooks: the gap below is a Tailwind margin, which the
+        // compact block can't see, so compact re-states both margins in CSS (chat/src/index.css).
+        "msg-row flex flex-col gap-0.5 rounded-2xl",
         self ? "items-end" : "items-start",
         // Vertical rhythm (t158): a group leader opens with a larger gap (≈16px) so distinct groups
         // read as blocks; a follower hugs the prior bubble (≈4px) for a tight Slack-style run. NOTE:
@@ -361,6 +363,7 @@ function ChatMessageRow({
         // with no bubble (chips only) still flashes here — there's nothing else to point at.
         highlighted && !hasBody && "msg-jump-flash",
       )}
+      data-leader={showMeta ? "true" : "false"}
       data-msg-id={message.id}
       ref={rowRef}
     >

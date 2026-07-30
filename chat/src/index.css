@@ -350,10 +350,34 @@
   padding-bottom: 0.3rem;
   gap: 0.6rem;
 }
+/* A conversation row's height is max(avatar, text stack), and at comfortable both land on ~40px —
+   so trimming padding alone changes NOTHING (measured: 40px avatar + 2×4.8px padding = the whole
+   49.7px row). Compact has to shrink both sides of that max together: the avatar box, and the
+   title/preview line-heights. The facepile circles follow the box as a percentage so there's no
+   second hardcoded size to keep in sync. */
+[data-density="compact"] .conv-row-avatar,
+[data-density="compact"] .conv-avatar-box {
+  width: 2rem;
+  height: 2rem;
+}
+[data-density="compact"] .conv-row-avatar .facepile-circle {
+  width: 65%;
+  height: 65%;
+}
 [data-density="compact"] .thread-messages {
   gap: 0.2rem;
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
+}
+/* The message gap is a Tailwind margin on the row (mt-3 leader / mt-1 follower), which this block
+   can't see — at compact that left a 15.2px leader gap, wider than the bubbles it separates.
+   Re-state both here so density owns the rhythm. The 2.5× leader:follower ratio is deliberate:
+   below ~2× the grouping stops reading as groups. */
+[data-density="compact"] .msg-row {
+  margin-top: 0.15rem;
+}
+[data-density="compact"] .msg-row[data-leader="true"] {
+  margin-top: 0.55rem;
 }
 /* Compact density is PADDING-ONLY (PSN-99 B4): same font-size, line-height, and paragraph spacing as
    comfortable — only the bubble padding, inter-message gap, and radius tighten. The font-scale slider
@@ -449,6 +473,15 @@
 }
 .conv-row-preview {
   font-size: calc(0.75rem * var(--chat-font-scale, 1));
+}
+/* The other half of the compact row-height fix (see the density block above): the text stack shares
+   the row's height floor with the avatar, so its leading tightens too. Declared here, after the base
+   rules, so specificity ascends down the file. */
+[data-density="compact"] .conv-row-title {
+  line-height: 1.2;
+}
+[data-density="compact"] .conv-row-preview {
+  line-height: 1.25;
 }
 /* Tiptap placeholder (PSN-94): the empty editor's first paragraph shows "Type a message…" via the
    @tiptap/extension-placeholder attr, mirroring the old contenteditable's empty:before hint. */

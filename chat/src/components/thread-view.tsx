@@ -160,6 +160,10 @@ interface ThreadViewProps {
   conversation: TeamsConversation
   /** Back to the list — shown on the phone (stacked), hidden in the wide two-pane. */
   onBack?: () => void
+  /** Label for the back button. Defaults to "Back to conversations"; the search surface passes
+   *  "Open in chat", where back means "leave search for this conversation" (PSN-116). A custom label
+   *  also marks it as a deliberate action, so it renders in the accent colour instead of muted. */
+  backLabel?: string
   /** Whether this pane is the on-screen one (t132). Inactive panes stay mounted (fetch + scroll
    *  preserved) but hidden via display:none, so switching conversations is instant. Defaults true. */
   visible?: boolean
@@ -197,6 +201,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   {
     conversation,
     onBack,
+    backLabel,
     visible = true,
     onFocusChange,
     namePref,
@@ -1169,10 +1174,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       <header className="titlebar flex h-12 shrink-0 items-center gap-1 border-border border-b px-2">
         {onBack && (
           <Button
-            aria-label="Back to conversations"
-            className="text-muted-foreground"
+            aria-label={backLabel ?? "Back to conversations"}
+            className={backLabel ? "text-primary" : "text-muted-foreground"}
             onClick={onBack}
             size="icon-sm"
+            title={backLabel}
             variant="ghost"
           >
             <HugeiconsIcon className="size-4" icon={ArrowLeft01Icon} />

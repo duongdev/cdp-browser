@@ -1673,6 +1673,7 @@ export function ChatApp() {
               conversation={convById[keepAlive.active]}
               namePref={namePref}
               onClose={() => setInfoOpen(false)}
+              onOpenProfile={setProfileTarget}
             />
           )}
         </aside>
