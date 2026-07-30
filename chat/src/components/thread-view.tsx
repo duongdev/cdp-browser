@@ -18,6 +18,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
@@ -51,7 +52,7 @@ import {
 import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
 import type { MentionRef, ReplyRef, TeamsConversation, TeamsMessage } from "../lib/teams-client"
-import { selectReplyTarget } from "../lib/teams-reply"
+import { partialSendMessage, selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
 import { shouldShowUnreadJump } from "../lib/unread-jump"
 import { BodyNameTooltip } from "./body-name-tooltip"
@@ -805,6 +806,19 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         // Build the chain: images first, then non-image files sequentially.
         const buildChain = async (): Promise<string> => {
           let firstId: string | null = null
+          // A per-file failure must not vanish. When at least one file lands, the chain RESOLVES —
+          // the bubble reads as sent and can't be retried without re-sending what already arrived —
+          // so the only place the user can learn a sibling was dropped is a toast (PSN-121: this was
+          // a console.warn, which is how "only the first image arrived" looked like a clean send).
+          const failed: string[] = []
+          const note = (file: File, e: unknown, fallbackName: string) => {
+            failed.push(file.name || fallbackName)
+            console.warn(
+              `[chat] upload failed for ${file.name || fallbackName}: ${
+                e instanceof ChatApiError ? e.message : "Send failed"
+              }`,
+            )
+          }
 
           if (imageFiles.length > 0) {
             // Try combined multi-image send; fall back to sequential on any error.
@@ -825,10 +839,8 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                   const r = await uploadImage(convId, imageFiles[i], i === 0 ? out.text : undefined)
                   if (firstId === null) firstId = r.msgId
                 } catch (e) {
-                  const name = imageFiles[i].name || "image"
-                  const msg = e instanceof ChatApiError ? e.message : "Send failed"
                   // Report per-file but keep going (the spec: remaining files keep sending).
-                  console.warn(`[chat] upload failed for ${name}: ${msg}`)
+                  note(imageFiles[i], e, "image")
                 }
               }
             }
@@ -840,13 +852,12 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               const r = await uploadFile(convId, file, !firstId ? out.text : undefined)
               if (firstId === null) firstId = r.msgId
             } catch (e) {
-              const name = file.name || "file"
-              const msg = e instanceof ChatApiError ? e.message : "Send failed"
-              console.warn(`[chat] upload failed for ${name}: ${msg}`)
+              note(file, e, "file")
             }
           }
 
           if (firstId === null) throw new ChatApiError("all_failed", 0)
+          if (failed.length > 0) toast.error(partialSendMessage(failed))
           return firstId
         }
         op = buildChain()
