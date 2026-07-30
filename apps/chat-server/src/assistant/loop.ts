@@ -7,38 +7,23 @@
 import { type LanguageModel, stepCountIs, streamText, type ToolSet, tool } from "ai"
 import type BetterSqlite3 from "better-sqlite3"
 import { z } from "zod"
-import type { HydrateEngine } from "../hydrate.ts"
 import { listMessageImages } from "../media-store.ts"
-import type { ChatProvider, ProviderSearchHit } from "../providers/provider.ts"
 import {
   getContextWindow,
   listConversationsByQuery,
   listScopes,
   resolvePerson,
   resolveScope,
-  type SearchHit,
-  searchMessages,
 } from "../search.ts"
+import { runSearch, type SearchFallback } from "./search-fallback.ts"
 import { type ContextRef, isScopeRef } from "./session-store.ts"
 import { getUnreadOverview } from "./unread-overview.ts"
+
+export type { SearchFallback }
 
 type Db = BetterSqlite3.Database
 
 export const STEP_CAP = 8
-
-/** Cap on how long `search_messages` waits for the hydrate pipeline to land substrate rows in
- *  chat.db before re-querying. The assistant benefits from real rows (full snippet + sender id +
- *  FTS relevance) but a slow keeper tab can't stall the turn. Substrate-only rows still go to the
- *  model as best-effort after the wait. */
-const HYDRATE_WAIT_MS = 3000
-
-/** When wired, `search_messages` falls back to the provider's substrate search + hydrate pipeline
- *  on a thin/zero local page (PSN-115 WS-C). Either field without the other is meaningless, so they
- *  travel as a pair. */
-export interface SearchFallback {
-  provider: ChatProvider
-  hydrate: HydrateEngine
-}
 
 /** Read-only retrieval tools. `onSurfaced` receives every (convId, msgId) a tool result exposes —
  *  the citation validator's allow set. */
@@ -65,68 +50,13 @@ export function createAssistantTools(
         limit: z.number().int().min(1).max(50).optional(),
       }),
       execute: async (input) => {
-        const limit = input.limit ?? 20
-        const localHits = searchMessages(db, { ...input, service, limit })
-        for (const h of localHits) onSurfaced(h.convId, h.msgId)
-
-        // Fast path: no substrate search wired, or local FTS already filled the page — identical to
-        // the pre-WS-C tool, returning the plain array the existing tests + mock model expect.
-        if (!search || localHits.length >= limit) {
-          return localHits.map(hitRow)
-        }
-
-        // Thin/zero local → one substrate call. A failure (auth/rate-limit/shape drift) degrades
-        // honestly to local-only instead of crashing the turn.
-        let substrateHits: ProviderSearchHit[] = []
-        let degraded = false
-        try {
-          const page = await search.provider.searchMessages(input.query, { sort: "relevance" })
-          substrateHits = page.rows
-        } catch {
-          degraded = true
-        }
-        if (degraded) {
-          return {
-            rows: localHits.map(hitRow),
-            note: "upstream search unavailable; showing synced results only",
-          }
-        }
-
-        // Hydrate substrate hits that aren't local yet, then re-query FTS so the model sees real
-        // rows (full snippet, sender id, FTS relevance). The wait is bounded — substrate-only rows
-        // still go to the model best-effort after it.
-        const have = new Set(localHits.map((h) => `${h.convId}\n${h.msgId}`))
-        const missing = substrateHits.filter((h) => !have.has(`${h.convId}\n${h.msgId}`))
-        if (missing.length) {
-          await Promise.race([
-            search.hydrate.hydrateHits(missing).catch(() => {}),
-            new Promise<void>((r) => setTimeout(r, HYDRATE_WAIT_MS)),
-          ])
-        }
-
-        // Re-query on the same filters; widen the net so freshly-hydrated rows beyond the original
-        // `limit` still surface (relevance order keeps the best ones on top).
-        const reLocal = searchMessages(db, { ...input, service, limit: Math.max(limit, 20) })
-        const reHave = new Set(reLocal.map((h) => `${h.convId}\n${h.msgId}`))
-        for (const h of reLocal) onSurfaced(h.convId, h.msgId)
-
-        const rows: ReturnType<typeof hitRow>[] = reLocal.map(hitRow)
-        // Substrate-only rows (didn't hydrate in time) still go in — they're citable because the
-        // surfaced set was just updated. Marked `substrate:true` so the model knows it's a preview.
-        for (const h of substrateHits) {
-          if (rows.length >= limit) break
-          if (reHave.has(`${h.convId}\n${h.msgId}`)) continue
-          rows.push({
-            convId: h.convId,
-            msgId: h.msgId,
-            sender: h.sender,
-            ts: h.ts,
-            snippet: h.preview,
-            substrate: true,
-          })
-          onSurfaced(h.convId, h.msgId)
-        }
-        return { rows: rows.slice(0, limit) }
+        const result = await runSearch(db, service, input, search)
+        for (const r of result.rows) onSurfaced(r.convId, r.msgId)
+        // Preserve the pre-WS-C tool contract: a plain array on the pure-local fast path; `{rows}`
+        // (plus `note` when degraded) once the substrate fallback actually ran.
+        if (result.degraded) return { rows: result.rows, note: result.note }
+        if (result.fallbackRan) return { rows: result.rows }
+        return result.rows
       },
     }),
     get_context: tool({
@@ -301,22 +231,6 @@ function viewImageTool(
       return { attached: true, note: "the image is attached below — describe what you see" }
     },
   })
-}
-
-/** Local FTS row → the compact tool-result shape the model consumes. Pure, shared by the fast and
- *  fallback paths so the row shape never drifts between them. */
-function hitRow(h: SearchHit) {
-  return {
-    convId: h.convId,
-    msgId: h.msgId,
-    sender: h.senderName || h.senderId || "?",
-    ts: h.ts,
-    snippet: h.snippet,
-    // What this message replies to, when it quotes one (Teams inlines the parent). The parent's
-    // msgId is real — read it with get_context({aroundMsgId}) before relying on it.
-    ...(h.quotes?.length ? { repliesTo: h.quotes } : {}),
-    ...(h.images?.length ? { images: h.images } : {}),
-  }
 }
 
 /** How the assistant TALKS to this user (PSN-104 steering) — the same three rule sets he runs on his

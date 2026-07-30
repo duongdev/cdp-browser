@@ -260,6 +260,29 @@ Proactive backfilling + full-screen search. Local FTS is the fast path; substrat
 
 ---
 
+## Area 11 — MCP server (PSN-114, ADR-0024)
+
+Read-only MCP server at `/mcp` on the BFF. Unit + contract + real-client e2e are hermetic
+(`apps/chat-server/src/mcp.test.ts`, runs in `pnpm test`); the cases below are the manual /
+mock-stack gates.
+
+| ID | Steps | Expected |
+|----|-------|----------|
+| MCP-01 | `pnpm chat:mock` (Node 24) → `claude mcp add --transport http chats http://localhost:7910/mcp` → `claude mcp list` | `chats` listed, connected |
+| MCP-02 | In a Claude Code session: "list my conversations" | `list_conversations` called; fixture conversations returned |
+| MCP-03 | "Search for `<seeded term>`" | `search_messages` returns the seeded hit with `(convId,msgId)` |
+| MCP-04 | "What's in `<convId>`?" | `get_context` returns the seeded thread |
+| MCP-05 | "What did I miss?" | `get_unread_overview` called; unread fixture row surfaced |
+| MCP-06 | Ask about a term only Substrate would have (mock provider's substrate fixture) | `search_messages` returns the row `substrate:true` (PSN-115 data plane reach) |
+| MCP-07 | `pnpm chat:mock:say -d '{"text":"ping"}'` mid-session, then re-ask "anything new?" | Agent sees the new message (live data) |
+| MCP-08 | `curl -X POST <host>/mcp -H 'Origin: https://evil.example' …` | `403` (DNS-rebinding gate) |
+| MCP-09 | Read `chat://conversations` and `chat://conversation/<convId>` resources | Seeded conv list + thread |
+| MCP-10 | Invoke the `catch-up-on-unread` / `summarize-conversation` / `find-decision` prompts | Each returns a tool-pointing prompt |
+
+The view_image image-bytes happy path needs mock-provider media; the no-images error path is unit-covered. A real Claude Code turn (MCP-02..07) is the operator's L4 gate — not CI.
+
+---
+
 ## Cannot be verified locally
 
 | Area | Why |
