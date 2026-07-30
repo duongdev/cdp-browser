@@ -45,13 +45,15 @@ export function FacepileAvatar({
       className={cn("relative block size-10 shrink-0", className)}
       role="img"
     >
+      {/* `facepile-circle` is the density hook: compact re-sizes the box in CSS, and the circles
+          follow as a percentage of it rather than a second hardcoded px pair (chat/src/index.css). */}
       <UserAvatar
-        className="absolute top-0 right-0 size-[26px] text-[10px]"
+        className="facepile-circle absolute top-0 right-0 size-[26px] text-[10px]"
         label={label.split(",")[0]?.trim() || label}
         userId={a}
       />
       <UserAvatar
-        className="absolute bottom-0 left-0 size-[26px] text-[10px] ring-2 ring-background"
+        className="facepile-circle absolute bottom-0 left-0 size-[26px] text-[10px] ring-2 ring-background"
         label={label.split(",")[1]?.trim() || label}
         userId={b}
       />

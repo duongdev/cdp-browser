@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { AssistantPanel } from "./components/ai/assistant-panel"
+import { ChatInfoPanel } from "./components/chat-info-panel"
 import { CommandPalette } from "./components/command-palette"
 import { ConnectionStatus } from "./components/connection-status"
 import { ConversationList, ListFilterPills } from "./components/conversation-list"
@@ -142,9 +143,9 @@ function AppHeader({
           the bar (PSN-99 regression — the Electron nav cluster drifted left toward the traffic lights). */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5">
-          <HeaderButton icon={Search01Icon} label="Search messages (⌘K)" onClick={onOpenSearch} />
+          <HeaderButton icon={Search01Icon} label="Search messages" onClick={onOpenSearch} />
           <HeaderButton icon={AiChipIcon} label="AI assistant (⌘⌥B)" onClick={onToggleAi} />
-          <HeaderButton icon={Settings02Icon} label="Settings" onClick={onOpenSettings} />
+          <HeaderButton icon={Settings02Icon} label="Settings (⌘,)" onClick={onOpenSettings} />
           {shell && (
             <>
               <HeaderButton icon={ReloadIcon} label="Refresh" onClick={() => shell.reload()} />
@@ -642,6 +643,9 @@ export function ChatApp() {
   const [aiWidth, setAiWidth] = useState(settings.aiPanelWidth)
   useEffect(() => setAiWidth(settings.aiPanelWidth), [settings.aiPanelWidth])
   const aiOpen = settings.aiPanelOpen
+  // Chat info / details panel (PSN-116 WS-C): shares the right column with the AI panel and is
+  // mutually exclusive with it. Ephemeral (not persisted) — a transient inspector, not a mode.
+  const [infoOpen, setInfoOpen] = useState(false)
   // Conversation-list column width (steering): drag-resizable like the cdp-browser sidebar,
   // persisted per device on release.
   const [listWidth, setListWidth] = useState(settings.listWidth)
@@ -669,7 +673,18 @@ export function ChatApp() {
   }, [updateSettings])
 
   const toggleAi = useCallback(() => {
+    // AI + info share the right column — opening AI closes info.
+    setInfoOpen(false)
     updateSettings({ aiPanelOpen: !settings.aiPanelOpen })
+  }, [settings.aiPanelOpen, updateSettings])
+
+  // Info toggle: opening it closes the AI panel (they share the right column).
+  const toggleInfo = useCallback(() => {
+    setInfoOpen((v) => {
+      const next = !v
+      if (next && settings.aiPanelOpen) updateSettings({ aiPanelOpen: false })
+      return next
+    })
   }, [settings.aiPanelOpen, updateSettings])
 
   const setAiSession = useCallback(
@@ -1433,6 +1448,36 @@ export function ChatApp() {
     if (chatShell()) document.documentElement.classList.add("is-electron")
   }, [])
 
+  // GIF pause on window blur (PSN-116 WS-D). `document.hidden` already freezes GIFs when the tab is
+  // backgrounded, but a visible-yet-unfocused window (another app on top) keeps them looping and
+  // burning CPU. Nulling an animated image's `src` stops the browser loop; restoring it repaints
+  // from cache (frame 0), so refocus is instant with no network refetch. Covers Teams AnimatedImage
+  // (`itemtype`) + public-CDN `.gif` (Giphy/sticker).
+  useEffect(() => {
+    const SELECTOR = 'img[itemtype*="AnimatedImage"], .teams-message-body img[src*=".gif"]'
+    const freeze = () => {
+      for (const el of document.querySelectorAll<HTMLImageElement>(SELECTOR)) {
+        if (el.dataset.gifSrc || !el.src) continue
+        el.dataset.gifSrc = el.src
+        el.removeAttribute("src")
+      }
+    }
+    const thaw = () => {
+      for (const el of document.querySelectorAll<HTMLImageElement>("img[data-gif-src]")) {
+        const src = el.dataset.gifSrc
+        if (src) el.src = src
+        delete el.dataset.gifSrc
+      }
+    }
+    window.addEventListener("blur", freeze)
+    window.addEventListener("focus", thaw)
+    return () => {
+      window.removeEventListener("blur", freeze)
+      window.removeEventListener("focus", thaw)
+      thaw()
+    }
+  }, [])
+
   // Report the current SPA path to the Electron shell so the next launch reopens this conversation.
   useEffect(() => {
     chatShell()?.routeChanged(keepAlive.active ? pathFor(keepAlive.active) : "/chat/")
@@ -1485,6 +1530,7 @@ export function ChatApp() {
     return (
       <ThreadView
         conversation={conv}
+        infoOpen={isActive && infoOpen}
         jumpTarget={jumpTarget && jumpTarget.convId === id ? jumpTarget : undefined}
         key={id}
         namePref={namePref}
@@ -1495,6 +1541,7 @@ export function ChatApp() {
         onNameResolved={onNameResolved}
         onOpenProfile={setProfileTarget}
         onSummarizeConv={summarizeConvAction}
+        onToggleInfo={isActive && isWide ? toggleInfo : undefined}
         ref={isActive ? activeThreadRef : undefined}
         visible={isActive && (isWide || phoneView === "thread")}
       />
@@ -1536,6 +1583,7 @@ export function ChatApp() {
           listWidth={listWidth}
           namePref={namePref}
           onBack={backFromSearch}
+          onOpenInList={openConversationById}
           onResetWidth={resetListWidth}
           onResizeDown={onListResizeDown}
         />
@@ -1603,7 +1651,10 @@ export function ChatApp() {
         </section>
         <aside
           className="relative shrink-0 border-border border-l"
-          style={{ width: aiOpen ? aiWidth : 0, display: aiOpen ? undefined : "none" }}
+          style={{
+            width: aiOpen || infoOpen ? aiWidth : 0,
+            display: aiOpen || infoOpen ? undefined : "none",
+          }}
         >
           {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-drag resize handle */}
           <div
@@ -1612,7 +1663,19 @@ export function ChatApp() {
             onPointerDown={onAiResizeDown}
             title="Drag to resize · double-click to reset"
           />
-          {aiPanel}
+          {/* AI panel stays mounted (draft/scroll preserved) but hides under the info panel when it's
+              open — the two share the column and are mutually exclusive. */}
+          <div className="h-full" style={{ display: infoOpen ? "none" : undefined }}>
+            {aiPanel}
+          </div>
+          {infoOpen && keepAlive.active && convById[keepAlive.active] && (
+            <ChatInfoPanel
+              conversation={convById[keepAlive.active]}
+              namePref={namePref}
+              onClose={() => setInfoOpen(false)}
+              onOpenProfile={setProfileTarget}
+            />
+          )}
         </aside>
         {palette}
       </div>
