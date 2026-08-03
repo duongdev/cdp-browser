@@ -12,7 +12,9 @@ import {
   QuoteUpIcon,
   SmileIcon,
   SourceCodeIcon,
+  SparklesIcon,
   StickerIcon,
+  StopIcon,
   TextBoldIcon,
   TextClearIcon,
   TextFontIcon,
@@ -80,6 +82,16 @@ interface ComposerProps {
   convId?: string
   /** Name display preference (t161) — the visible text of a mention pill respects it. */
   namePref?: NamePref
+  /** Ask an agent for reply suggestions (ADR-0027). Absent → no button. Sits left of Send because
+   *  that is where the user's eye already is when he is deciding what to say. */
+  onSuggest?: (regenerate: boolean) => void
+  /** Stop waiting on the in-flight request. The button becomes a stop control while pending, so a
+   *  request against a dead producer costs one click instead of the full timeout. */
+  onCancelSuggest?: () => void
+  /** Spins the suggest button while a producer is working. */
+  suggestPending?: boolean
+  /** True when a batch is already on screen — the button then means "regenerate". */
+  hasSuggestions?: boolean
 }
 
 // Breakpoint constants live in composer-layout.ts; re-exported from there for test coverage.
@@ -212,6 +224,10 @@ export function Composer({
   onEscape,
   convId,
   namePref = FULL_NAME,
+  onSuggest,
+  onCancelSuggest,
+  suggestPending,
+  hasSuggestions,
 }: ComposerProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -430,7 +446,11 @@ export function Composer({
       openFilePicker: () => fileRef.current?.click(),
       insertText: (text: string) => {
         editor?.commands.focus()
-        editor?.commands.insertContent(text)
+        // A plain string is parsed as an HTML fragment by insertContent, so markup in a suggestion
+        // becomes real formatting (and, with the Link extension, real anchors) in a message the user
+        // never typed. Suggestions come from an agent over an unauthenticated route — insert the
+        // node explicitly so the text stays literal.
+        editor?.commands.insertContent({ type: "text", text })
       },
     }),
     [editor],
@@ -883,6 +903,44 @@ export function Composer({
             </Tooltip>
           )}
           <div className="flex-1" />
+          {onSuggest && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={
+                    suggestPending
+                      ? "Stop generating suggestions"
+                      : hasSuggestions
+                        ? "Regenerate suggestions"
+                        : "Suggest replies"
+                  }
+                  className="text-muted-foreground"
+                  // Never disabled: while pending it becomes a STOP control, so a request aimed at a
+                  // producer that is not running costs one click instead of the full timeout.
+                  // Deliberately NOT a send either way — it asks an agent for candidate replies; the
+                  // user still picks one and presses Send (ADR-0027 decision 6).
+                  onClick={() =>
+                    suggestPending ? onCancelSuggest?.() : onSuggest(!!hasSuggestions)
+                  }
+                  onMouseDown={(e) => e.preventDefault()}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  <HugeiconsIcon
+                    className={cn("size-4", suggestPending && "text-foreground")}
+                    icon={suggestPending ? StopIcon : SparklesIcon}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {suggestPending
+                  ? "Stop"
+                  : hasSuggestions
+                    ? "Regenerate suggestions"
+                    : "Suggest replies"}
+              </TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

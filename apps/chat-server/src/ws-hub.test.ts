@@ -182,3 +182,108 @@ describe("attachWsHub (live socket)", () => {
     ws.close()
   })
 })
+
+describe("suggest-request relay (ADR-0027)", () => {
+  test("reaches the other clients and is never echoed to the sender", () => {
+    const hub = new HubState(freshDb())
+    const asker = fakeSocket()
+    const producer = fakeSocket()
+    const bystander = fakeSocket()
+    for (const s of [asker, producer, bystander]) hub.add(s)
+    // add() sends a snapshot; only count what arrives after this point
+    const before = { producer: producer.sent.length, bystander: bystander.sent.length }
+    const askerBefore = asker.sent.length
+
+    expect(hub.onMessage(asker, JSON.stringify({ type: "suggest-request", convId: "c1" }))).toBe(
+      true,
+    )
+
+    expect(asker.sent.length).toBe(askerBefore) // sender must not answer its own request
+    for (const [sock, n] of [
+      [producer, before.producer],
+      [bystander, before.bystander],
+    ] as const) {
+      expect(sock.sent.length).toBe(n + 1)
+      expect(JSON.parse(sock.sent[n])).toEqual({
+        type: "suggest-request",
+        convId: "c1",
+        regenerate: false,
+      })
+    }
+  })
+
+  test("carries the regenerate flag — a retry must not re-roll the same thing", () => {
+    const hub = new HubState(freshDb())
+    const asker = fakeSocket()
+    const producer = fakeSocket()
+    hub.add(asker)
+    hub.add(producer)
+    const n = producer.sent.length
+    hub.onMessage(
+      asker,
+      JSON.stringify({ type: "suggest-request", convId: "c1", regenerate: true }),
+    )
+    expect(JSON.parse(producer.sent[n]).regenerate).toBe(true)
+  })
+
+  test("a non-boolean regenerate is normalised, not passed through", () => {
+    const hub = new HubState(freshDb())
+    const asker = fakeSocket()
+    const producer = fakeSocket()
+    hub.add(asker)
+    hub.add(producer)
+    const n = producer.sent.length
+    hub.onMessage(
+      asker,
+      JSON.stringify({ type: "suggest-request", convId: "c1", regenerate: "yes please" }),
+    )
+    expect(JSON.parse(producer.sent[n]).regenerate).toBe(false)
+  })
+
+  test("a request without a usable convId is dropped, not relayed", () => {
+    const hub = new HubState(freshDb())
+    const asker = fakeSocket()
+    const producer = fakeSocket()
+    hub.add(asker)
+    hub.add(producer)
+    const n = producer.sent.length
+    for (const bad of [
+      { type: "suggest-request" },
+      { type: "suggest-request", convId: "" },
+      { type: "suggest-request", convId: 42 },
+    ]) {
+      expect(hub.onMessage(asker, JSON.stringify(bad))).toBe(false)
+    }
+    expect(producer.sent.length).toBe(n)
+  })
+
+  test("focus still works — adding a frame type did not break the existing one", () => {
+    const hub = new HubState(freshDb())
+    const sock = fakeSocket()
+    hub.add(sock)
+    expect(hub.onMessage(sock, JSON.stringify({ type: "focus", convId: "c9" }))).toBe(true)
+    expect(sock.focus).toBe("c9")
+    expect(hub.getFocusedConvIds()).toEqual(["c9"])
+  })
+
+  test("garbage and unknown frames are ignored, the socket survives", () => {
+    const hub = new HubState(freshDb())
+    const sock = fakeSocket()
+    hub.add(sock)
+    for (const raw of ["{not json", "null", '"a string"', '{"type":"who-knows"}', "[]"]) {
+      expect(hub.onMessage(sock, raw)).toBe(false)
+    }
+    expect(hub.clients.has(sock)).toBe(true)
+  })
+
+  test("an over-buffered client is skipped by the relay, like broadcast", () => {
+    const hub = new HubState(freshDb())
+    const asker = fakeSocket()
+    const slow = fakeSocket({ bufferedAmount: 999_999_999 })
+    hub.add(asker)
+    hub.add(slow)
+    const n = slow.sent.length
+    hub.onMessage(asker, JSON.stringify({ type: "suggest-request", convId: "c1" }))
+    expect(slow.sent.length).toBe(n)
+  })
+})

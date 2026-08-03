@@ -16,6 +16,8 @@ import type {
   ChatConversation,
   ChatMessage,
   ChatService,
+  ChatWsServerMessage,
+  ReplySuggestionBatch,
   SearchHit,
   SearchPage,
   SearchScope,
@@ -82,6 +84,10 @@ export interface RoutesDeps {
   /** Sync log accessor — wired by index.ts when a sweep engine exists. `null` means no engine is
    *  running, which the route reports as a real failure, not an empty log. */
   getSyncLog?: () => import("./sweep.ts").SyncLogData | null
+  /** WS fan-out (ADR-0027). Injected like sweep's and backfill's rather than imported from the hub
+   *  singleton, so route tests observe frames without booting a server. Absent → the routes still
+   *  work, clients just fall back to the `GET /suggestions` hydrate. */
+  broadcast?: (msg: ChatWsServerMessage) => void
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -160,13 +166,26 @@ export function createRoutes(deps: RoutesDeps) {
 
   app.post("/reply", async (c) => {
     const b = await readBody(c)
-    const { provider } = pick(deps, b.service)
+    const { service, provider } = pick(deps, b.service)
     if (!b.convId) throw new ProviderError("missing_conv", 400)
     const result = await provider.sendReply(b.convId, b.text ?? "", {
       html: b.html ?? null,
       quotes: b.quotes,
       mentions: b.mentions,
     })
+    // PSN-145: if a suggestion was picked in this conversation just before this send, pair the two.
+    // AFTER the provider accepted, never before (ADR-0022): a failed send must not record a sent
+    // message that does not exist. Attribution is best-effort — a throw here would fail a reply the
+    // provider already delivered, which is a far worse bug than a missing metric.
+    try {
+      const batch = store.attributeSend(deps.db, service, b.convId, {
+        msgId: result.ts,
+        text: b.text ?? "",
+      })
+      if (batch) deps.broadcast?.({ type: "reply-suggestions", service, convId: b.convId, batch })
+    } catch {
+      // swallowed on purpose — see above
+    }
     return c.json(result)
   })
 
@@ -628,6 +647,86 @@ export function createRoutes(deps: RoutesDeps) {
     const ts = Number(b.ts) || 0
     await provider.markUnread(b.convId, ts)
     store.markConversationUnread(deps.db, service, b.convId, ts)
+    return c.json({ ok: true })
+  })
+
+  // ---- reply suggestions (ADR-0027) ---------------------------------------
+  // Candidate replies an agent wrote. Purely local: nothing here reaches the provider. The user
+  // picks one, it lands in his composer, and HE presses send — there is deliberately no route in
+  // this block that sends anything (ADR-0027 decision 6).
+  //
+  // Deliberately REST, not MCP tools: ADR-0026's write tools mutate Teams, these do not. Same
+  // reason `/prefs` is not an MCP tool.
+
+  app.get("/suggestions", (c) => {
+    const service = c.req.query("service") || DEFAULT_SERVICE
+    const convId = c.req.query("convId")
+    if (!convId) throw new ProviderError("missing_conv", 400)
+    // The WS carries deltas only, so a client that connects after a batch was written has no other
+    // way to learn about it. This is that way.
+    return c.json({ batch: store.getSuggestions(deps.db, service, convId) })
+  })
+
+  // PSN-145. The reason the table exists: batches where he sent something OTHER than what was
+  // suggested. Read-only and unpaginated beyond `limit` — this is an inspection endpoint for
+  // judging suggestion quality, not a UI feed.
+  // ponytail: no aggregation/scoring here on purpose. Build that once there is enough data to
+  // know what is worth scoring; a similarity metric picked today would be a guess.
+  app.get("/suggestions/diverged", (c) => {
+    const service = c.req.query("service") || DEFAULT_SERVICE
+    const raw = Number(c.req.query("limit"))
+    const limit = Number.isInteger(raw) && raw > 0 ? Math.min(raw, 500) : 100
+    return c.json({ batches: store.listDivergedSends(deps.db, service, limit) })
+  })
+
+  app.post("/suggestions", async (c) => {
+    const b = await readBody(c)
+    const { service } = pick(deps, b.service)
+    if (!b.convId) throw new ProviderError("missing_conv", 400)
+    if (!Array.isArray(b.texts)) throw new ProviderError("missing_texts", 400)
+    let batch: ReplySuggestionBatch
+    try {
+      batch = store.writeSuggestions(deps.db, service, {
+        convId: b.convId,
+        texts: b.texts,
+        producer: String(b.producer || "unknown"),
+        forMsgId: b.forMsgId ?? null,
+      })
+    } catch (e) {
+      // The store rejects an empty batch and a missing producer. Both are the caller's fault, so
+      // answer 400 rather than letting a store invariant surface as a 500.
+      throw new ProviderError(e instanceof Error ? e.message : "bad_suggestions", 400)
+    }
+    deps.broadcast?.({ type: "reply-suggestions", service, convId: b.convId, batch })
+    return c.json({ ok: true, batch })
+  })
+
+  app.post("/suggestions/choose", async (c) => {
+    const b = await readBody(c)
+    const { service } = pick(deps, b.service)
+    const id = Number(b.id)
+    if (!Number.isInteger(id)) throw new ProviderError("missing_id", 400)
+    let batch: ReplySuggestionBatch | null
+    try {
+      batch = store.chooseSuggestion(deps.db, service, id, Number(b.idx))
+    } catch (e) {
+      throw new ProviderError(e instanceof Error ? e.message : "bad_choice", 400)
+    }
+    if (!batch) throw new ProviderError("unknown_batch", 404)
+    deps.broadcast?.({ type: "reply-suggestions", service, convId: batch.convId, batch })
+    return c.json({ ok: true, batch })
+  })
+
+  app.post("/suggestions/dismiss", async (c) => {
+    const b = await readBody(c)
+    const { service } = pick(deps, b.service)
+    const id = Number(b.id)
+    if (!Number.isInteger(id)) throw new ProviderError("missing_id", 400)
+    const cur = store.getSuggestionById(deps.db, service, id)
+    if (!cur) throw new ProviderError("unknown_batch", 404)
+    store.dismissSuggestions(deps.db, service, id)
+    // null batch = "clear the strip"; the row survives, the UI does not show it.
+    deps.broadcast?.({ type: "reply-suggestions", service, convId: cur.convId, batch: null })
     return c.json({ ok: true })
   })
 

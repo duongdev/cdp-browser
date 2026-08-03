@@ -258,13 +258,36 @@ Proactive backfilling + full-screen search. Local FTS is the fast path; substrat
 | SB-29 | Open a search result whose conversation isn't in the local list yet (substrate-only hit) | Middle pane's stub conversation reflects the hit's real `convKind` (no hardcoded "Group chat" for what's actually a DM) |
 | SB-30 | From `/chat/`, click the search icon in the main app header (top bar, not inside the AI panel) | Opens `/chat/search` — the entry point that exists even when the AI panel (closed by default) has never been opened |
 
+### 12. Reply suggestions (PSN-140, ADR-0027)
+
+Candidate replies an agent writes into the composer. Nothing here sends — the user picks one, edits
+it, and presses Send himself. Needs a connected producer (the Hermes cdp-chat plugin) for the
+happy path; the no-producer cases run with it stopped.
+
+| ID | Steps | Must happen |
+|----|-------|-------------|
+| RS-01 | Open a conversation, click the generate button left of Send | Button shows activity; a strip of candidates appears when the producer answers |
+| RS-02 | Click generate, then click the same button again while pending | It acts as stop: spinner clears in ~1s, no wait for the 30s timeout |
+| RS-03 | Stop the producer, click generate, wait | After `SUGGEST_TIMEOUT_MS` the spinner clears with "No producer answered" — it does not spin forever |
+| RS-04 | Disconnect the WS, click generate | "Not connected" error, no spinner |
+| RS-05 | Click a candidate | Text lands in the composer, editable; **nothing is sent** |
+| RS-06 | Edit the inserted text, send it, then `GET /api/chat/suggestions/diverged` | Batch lists with `sentText` ≠ `texts[chosenIdx]` (the edit is the signal) |
+| RS-07 | Pick a candidate, wait past `ATTRIBUTION_WINDOW_MS` (10 min), then send | No attribution — a send that late is not evidence about the suggestion |
+| RS-08 | Generate in conv A, switch to conv B | B shows its own batch (or none); A's candidates do not leak across |
+| RS-09 | Generate a batch, reload the page, reopen the conversation | Batch is still there (hydrated over REST, not just the WS delta) |
+| RS-10 | Two browser tabs on the same conversation; generate in one | Both show the batch; the requesting tab does not receive its own request back |
+| RS-11 | A candidate containing `<b>bold</b>` and a `<blockquote>` | Inserted as literal text in the composer — never rendered as formatting |
+| RS-12 | `POST /api/chat/suggestions` with 11 texts, then one text of 2001 chars | `400` each — batch rejected, not silently truncated |
+| RS-13 | Dismiss a strip | Strip clears; a later generate still works |
+
 ---
 
-## Area 11 — MCP server (PSN-114, ADR-0024)
+## Area 11 — MCP server (PSN-114, ADR-0024/0026)
 
-Read-only MCP server at `/mcp` on the BFF. Unit + contract + real-client e2e are hermetic
-(`apps/chat-server/src/mcp.test.ts`, runs in `pnpm test`); the cases below are the manual /
-mock-stack gates.
+MCP server at `/mcp` on the BFF: 8 read tools plus 6 write tools (ADR-0026). Unit + contract +
+real-client e2e are hermetic (`apps/chat-server/src/mcp.test.ts`, runs in `pnpm test`); the cases
+below are the manual / mock-stack gates. **Run the write cases against the mock stack only** — those
+tools reach the real service when the BFF is pointed at one.
 
 | ID | Steps | Expected |
 |----|-------|----------|
@@ -278,6 +301,11 @@ mock-stack gates.
 | MCP-08 | `curl -X POST <host>/mcp -H 'Origin: https://evil.example' …` | `403` (DNS-rebinding gate) |
 | MCP-09 | Read `chat://conversations` and `chat://conversation/<convId>` resources | Seeded conv list + thread |
 | MCP-10 | Invoke the `catch-up-on-unread` / `summarize-conversation` / `find-decision` prompts | Each returns a tool-pointing prompt |
+| MCP-11 | Mock stack: "reply to `<convId>` with `hello`" | `send_reply` called, returns a `msgId`; the message appears in the thread |
+| MCP-12 | Follow up: "edit that to `hi`" then "delete it" | `edit_message` / `delete_message` address the returned `msgId`; thread reflects both |
+| MCP-13 | "mark `<convId>` read" | `mark_read` called; unread badge clears; local row matches |
+| MCP-14 | Boot the BFF with no provider (read-only build) and list tools | Exactly the 8 read tools; no write tool offered |
+| MCP-15 | `curl -X POST <host>/mcp -H 'Origin: http://localhost.evil.com' …` | `403` — the loopback gate matches the host exactly, not by prefix |
 
 The view_image image-bytes happy path needs mock-provider media; the no-images error path is unit-covered. A real Claude Code turn (MCP-02..07) is the operator's L4 gate — not CI.
 

@@ -25,6 +25,9 @@ interface ChatWsContextValue {
   subscribe(handler: FrameHandler): () => void
   /** Steer the server fast-sweep to the open thread (null = none). */
   setFocus(convId: string | null): void
+  /** Ask a connected producer for reply suggestions (ADR-0027). Returns false when the socket is
+   *  not open — the caller shows "not connected" instead of spinning on a request never sent. */
+  requestSuggestions(convId: string, regenerate: boolean): boolean
   /** online ⇄ reconnecting — drives the banner + the poll fallback gate. */
   status: ChatWsStatus
 }
@@ -59,6 +62,9 @@ export function ChatWsProvider({ children }: { children: ReactNode }) {
       setFocus(convId) {
         clientRef.current?.setFocus(convId)
       },
+      requestSuggestions(convId, regenerate) {
+        return clientRef.current?.requestSuggestions(convId, regenerate) ?? false
+      },
       status,
     }),
     [status],
@@ -81,10 +87,18 @@ export function useChatWsFrames(handler: FrameHandler): ChatWsStatus {
 }
 
 /** Steer the server fast-sweep + read the connection status without subscribing to frames. */
-export function useChatWs(): { setFocus(convId: string | null): void; status: ChatWsStatus } {
+export function useChatWs(): {
+  setFocus(convId: string | null): void
+  requestSuggestions(convId: string, regenerate: boolean): boolean
+  status: ChatWsStatus
+} {
   const ctx = useContext(ChatWsCtx)
   return {
     setFocus: (convId) => ctx?.setFocus(convId),
+    // No provider → false, which the caller renders as "not connected". Silently reporting success
+    // would leave the user waiting for a batch nothing is producing.
+    requestSuggestions: (convId, regenerate) =>
+      ctx?.requestSuggestions(convId, regenerate) ?? false,
     status: ctx?.status ?? "online",
   }
 }

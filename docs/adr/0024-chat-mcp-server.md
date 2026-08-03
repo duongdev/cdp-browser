@@ -1,6 +1,6 @@
 # ADR-0024: Chat read-only MCP server
 
-- **Status:** Accepted
+- **Status:** Accepted — decision 6 (security posture) amended by ADR-0025; decision 3 (read-only) amended by ADR-0026
 - **Date:** 2026-07-30
 
 ## Context

@@ -27,7 +27,7 @@ import { ProviderError } from "./providers/provider.ts"
 import { TeamsProvider } from "./providers/teams-provider.ts"
 import { createPushSender } from "./push.ts"
 import { type BackfillAccessor, createRoutes, type HydrateAccessor, statusOf } from "./routes.ts"
-import { migrate, setPrefs } from "./store.ts"
+import { markConversationRead, markConversationUnread, migrate, setPrefs } from "./store.ts"
 import { createSweepEngine } from "./sweep.ts"
 import { attachWsHub, broadcast, getFocusedConvIds } from "./ws-hub.ts"
 
@@ -137,14 +137,25 @@ app.onError((err, c) => {
   return c.json({ error: (err as Error)?.message || "internal_error" }, 500)
 })
 app.get("/health", (c) => c.json({ ok: true, service: "chat-server" }))
-// Read-only MCP server at /mcp (PSN-114, ADR-0023). Streamable HTTP, stateless, localhost-only.
-// The Origin gate lives in mountMcp; the route is mounted before /api/chat but on a distinct path.
+// MCP server at /mcp (PSN-114, ADR-0023/0024). Streamable HTTP, stateless. The Origin gate lives in
+// mountMcp; the route is mounted before /api/chat but on a distinct path. Write tools (ADR-0026)
+// are wired only when a provider exists for the assistant service; they reuse that provider and the
+// same store fns /mark-read uses, so there is one write path, not an MCP-specific one.
 if (assistantService)
   await mountMcp(app, {
     db,
     service: assistantService,
     vision: assistantVision,
     search: assistantSearch,
+    write: assistantProvider
+      ? {
+          provider: assistantProvider,
+          markConversationRead: (convId, ts) =>
+            markConversationRead(db, assistantService, convId, ts),
+          markConversationUnread: (convId, ts) =>
+            markConversationUnread(db, assistantService, convId, ts),
+        }
+      : undefined,
   })
 app.route(
   "/api/chat/assistant",
@@ -186,6 +197,8 @@ app.route(
     // null when no sweep engine is running — the route turns that into a real error status so the
     // client can say "unreachable" instead of rendering it as an empty log (QE DEF-6).
     getSyncLog: () => sweepEngines.values().next().value?.getSyncLog() ?? null,
+    // Suggestion batches fan out to every client (ADR-0027) — same hub the sweep pushes deltas on.
+    broadcast,
   }),
 )
 

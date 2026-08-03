@@ -265,11 +265,41 @@ export interface SyncEventPayload {
 }
 
 /**
+ * One batch of candidate replies for a conversation (ADR-0027). The batch — not the individual
+ * text — is the unit: the entries are alternatives to each other, so `chosenIdx` only carries
+ * meaning while they are stored together.
+ *
+ * `sentText` is what the user ACTUALLY sent after picking `chosenIdx`, which is usually not
+ * `texts[chosenIdx]` — he edits in the composer first. That difference is the point of recording
+ * it. Note the attribution is a heuristic (see `attributeSend` in store.ts).
+ */
+export interface ReplySuggestionBatch {
+  id: number
+  convId: string
+  /** Message that prompted this batch. `null` for a manual generate. Drives the stale check. */
+  forMsgId: string | null
+  /** Who produced it — `hermes` today. Present so a second producer is a filter, not a migration. */
+  producer: string
+  createdAt: number
+  status: "open" | "chosen" | "dismissed" | "superseded"
+  texts: string[]
+  chosenIdx: number | null
+  chosenAt: number | null
+  sentMsgId: string | null
+  sentText: string | null
+  sentAt: number | null
+}
+
+/**
  * WS protocol — `/api/chat/ws` (same origin, auth-less). The client sends `{ focus: convId | null }`
  * to steer the fast-sweep; the server pushes a snapshot on connect then deltas. Every server frame
  * is one of these tagged kinds.
  */
-export type ChatWsClientMessage = { type: "focus"; convId: string | null }
+export type ChatWsClientMessage =
+  | { type: "focus"; convId: string | null }
+  /** Ask any connected producer for a fresh batch (ADR-0027 decision 3). Relayed to other clients,
+   *  never echoed to the sender. `regenerate` says the last batch was not good enough. */
+  | { type: "suggest-request"; convId: string; regenerate?: boolean }
 
 export type ChatWsServerMessage =
   | { type: "conversation-upsert"; service: ChatService; conversations: ChatConversation[] }
@@ -298,6 +328,15 @@ export type ChatWsServerMessage =
    *  an application-level frame is the only signal a client can use to tell a live socket from a
    *  half-open one. Carries nothing but its send time. */
   | { type: "ping"; ts: number }
+  /** A conversation's candidate-reply batch changed (ADR-0027). `batch: null` means the batch was
+   *  dismissed or superseded with nothing to replace it — the UI clears its strip. Deltas only, so
+   *  a client that connects afterwards hydrates via `GET /api/chat/suggestions`. */
+  | {
+      type: "reply-suggestions"
+      service: ChatService
+      convId: string
+      batch: ReplySuggestionBatch | null
+    }
 
 /**
  * Assistant contract (t173, ADR-0021). Sessions live under `/api/chat/assistant`:

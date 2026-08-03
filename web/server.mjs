@@ -2675,6 +2675,14 @@ const server = http.createServer(async (req, res) => {
     return proxyChatHttp(req, res, p, url.search)
   }
 
+  // Read-only MCP server (ADR-0024), reachable on the tailnet origin per ADR-0025. Same verbatim
+  // pass-through as the chat surface and the same placement — above the E2E decode, so the JSON-RPC
+  // body arrives plaintext. Off-host MCP clients (Hermes, Claude Code) reach it here; the DNS-
+  // rebinding `Origin` gate in mcp.ts is what makes that safe, and header pass-through keeps it live.
+  if (p === "/mcp") {
+    return proxyChatHttp(req, res, p, url.search)
+  }
+
   if (p === "/api/events") {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",

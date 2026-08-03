@@ -1,14 +1,20 @@
 import Database from "better-sqlite3"
 import { beforeEach, describe, expect, test } from "vitest"
 import {
+  attributeSend,
+  chooseSuggestion,
   deletePushSub,
+  dismissSuggestions,
   finishBackfillRun,
   getAllPrefs,
   getFolderOrder,
   getReadState,
+  getSuggestionById,
+  getSuggestions,
   getUsers,
   listBackfillRuns,
   listConversations,
+  listDivergedSends,
   listMessageEdits,
   listMessages,
   listMessagesAfter,
@@ -16,6 +22,8 @@ import {
   listMessagesBefore,
   listPushSubs,
   MAX_BACKFILL_RUNS,
+  MAX_SUGGESTION_TEXT_CHARS,
+  MAX_SUGGESTION_TEXTS,
   markConversationRead,
   markConversationUnread,
   migrate,
@@ -27,6 +35,7 @@ import {
   upsertConversations,
   upsertMessages,
   upsertUsers,
+  writeSuggestions,
 } from "./store.ts"
 
 function freshDb() {
@@ -598,5 +607,250 @@ describe("backfill run history (PSN-105 N)", () => {
     expect(runs[0].startedAt).toBeGreaterThan(runs[1].startedAt) // newest first
     expect(runs.some((r) => r.id === bad)).toBe(false) // the oldest fell off the cap
     expect(listBackfillRuns(db, "other")).toHaveLength(1) // another service is untouched
+  })
+})
+
+describe("reply suggestions (ADR-0027)", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+  })
+
+  const write = (convId = "c1", texts = ["one", "two", "three"], forMsgId: string | null = "m9") =>
+    writeSuggestions(db, "teams", { convId, texts, producer: "hermes", forMsgId })
+
+  test("stores a batch and reads it back as the live one", () => {
+    const b = write()
+    expect(b.texts).toEqual(["one", "two", "three"])
+    expect(b.status).toBe("open")
+    expect(b.producer).toBe("hermes")
+    expect(b.forMsgId).toBe("m9")
+    expect(b.chosenIdx).toBeNull()
+    expect(getSuggestions(db, "teams", "c1")).toEqual(b)
+  })
+
+  test("a new batch supersedes the live one — never two live at once", () => {
+    const first = write("c1", ["a"])
+    const second = write("c1", ["b"])
+    expect(getSuggestionById(db, "teams", first.id)?.status).toBe("superseded")
+    expect(getSuggestions(db, "teams", "c1")?.id).toBe(second.id)
+    const live = db
+      .prepare(
+        "SELECT COUNT(*) n FROM reply_suggestions WHERE conv_id = 'c1' AND status IN ('open','chosen')",
+      )
+      .get() as { n: number }
+    expect(live.n).toBe(1)
+  })
+
+  test("supersede is scoped to the conversation and the service", () => {
+    const other = write("c2", ["keep me"])
+    const otherService = writeSuggestions(db, "slack", {
+      convId: "c1",
+      texts: ["different service"],
+      producer: "hermes",
+    })
+    write("c1", ["new"])
+    expect(getSuggestionById(db, "teams", other.id)?.status).toBe("open")
+    expect(getSuggestionById(db, "slack", otherService.id)?.status).toBe("open")
+  })
+
+  test("choosing records the index without touching the texts", () => {
+    const b = write()
+    const after = chooseSuggestion(db, "teams", b.id, 2)
+    expect(after?.status).toBe("chosen")
+    expect(after?.chosenIdx).toBe(2)
+    expect(after?.chosenAt).toBeGreaterThan(0)
+    expect(after?.texts).toEqual(b.texts)
+    // still live: chosen batches stay readable so a send can be attributed to them later
+    expect(getSuggestions(db, "teams", "c1")?.id).toBe(b.id)
+  })
+
+  test("re-choosing overwrites — inserted one, changed his mind, inserted another", () => {
+    const b = write()
+    chooseSuggestion(db, "teams", b.id, 0)
+    expect(chooseSuggestion(db, "teams", b.id, 1)?.chosenIdx).toBe(1)
+  })
+
+  test("an out-of-range index throws instead of storing a dangling pointer", () => {
+    const b = write("c1", ["only one"])
+    expect(() => chooseSuggestion(db, "teams", b.id, 1)).toThrow(/out of range/)
+    expect(() => chooseSuggestion(db, "teams", b.id, -1)).toThrow(/out of range/)
+    expect(getSuggestionById(db, "teams", b.id)?.chosenIdx).toBeNull()
+  })
+
+  test("choosing an unknown batch returns null rather than throwing", () => {
+    expect(chooseSuggestion(db, "teams", 9999, 0)).toBeNull()
+  })
+
+  test("dismiss retires the batch but keeps the row — a dismissal is itself a signal", () => {
+    const b = write()
+    dismissSuggestions(db, "teams", b.id)
+    expect(getSuggestions(db, "teams", "c1")).toBeNull()
+    expect(getSuggestionById(db, "teams", b.id)?.status).toBe("dismissed")
+  })
+
+  test("empty or blank-only texts are rejected — an empty strip is unactionable", () => {
+    expect(() => write("c1", [])).toThrow(/at least one/)
+    expect(() => write("c1", ["", "   "])).toThrow(/at least one/)
+  })
+
+  test("blank entries are dropped, real ones trimmed", () => {
+    expect(write("c1", ["  hello  ", "", "world"]).texts).toEqual(["hello", "world"])
+  })
+
+  test("a producer is required — an unattributed batch is untraceable", () => {
+    expect(() =>
+      writeSuggestions(db, "teams", { convId: "c1", texts: ["x"], producer: "  " }),
+    ).toThrow(/producer/)
+  })
+
+  // /api/chat/* is unauthenticated, and an accepted batch is broadcast to every connected client.
+  // Without ceilings one POST costs memory on all of them plus a permanent oversized row.
+  test(`rejects more than ${MAX_SUGGESTION_TEXTS} texts`, () => {
+    const many = Array.from({ length: MAX_SUGGESTION_TEXTS + 1 }, (_, i) => `s${i}`)
+    expect(() => write("c1", many)).toThrow(/at most/)
+    expect(write("c1", many.slice(0, MAX_SUGGESTION_TEXTS)).texts).toHaveLength(
+      MAX_SUGGESTION_TEXTS,
+    )
+  })
+
+  test(`rejects a text longer than ${MAX_SUGGESTION_TEXT_CHARS} chars`, () => {
+    expect(() => write("c1", ["ok", "x".repeat(MAX_SUGGESTION_TEXT_CHARS + 1)])).toThrow(/<=/)
+    expect(write("c1", ["x".repeat(MAX_SUGGESTION_TEXT_CHARS)]).texts[0]).toHaveLength(
+      MAX_SUGGESTION_TEXT_CHARS,
+    )
+  })
+
+  test("manual generate stores a null forMsgId", () => {
+    expect(write("c1", ["x"], null).forMsgId).toBeNull()
+  })
+
+  test("a corrupt texts blob degrades to an empty batch, it does not throw", () => {
+    const b = write()
+    db.prepare("UPDATE reply_suggestions SET texts = ? WHERE id = ?").run("{not json", b.id)
+    expect(getSuggestionById(db, "teams", b.id)?.texts).toEqual([])
+  })
+
+  test("no batch for an untouched conversation", () => {
+    expect(getSuggestions(db, "teams", "never-seen")).toBeNull()
+  })
+})
+
+describe("send attribution (PSN-145)", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+  })
+
+  const write = (convId = "c1", texts = ["one", "two", "three"]) =>
+    writeSuggestions(db, "teams", { convId, texts, producer: "hermes", forMsgId: "m9" })
+
+  test("choose then send records the sent text against the batch", () => {
+    const b = write()
+    chooseSuggestion(db, "teams", b.id, 1)
+    const after = attributeSend(db, "teams", "c1", { msgId: "sent-1", text: "two, but edited" })
+    expect(after?.sentMsgId).toBe("sent-1")
+    expect(after?.sentText).toBe("two, but edited")
+    expect(after?.sentAt).toBeGreaterThan(0)
+    // The pair is the point: what was offered vs what actually went out.
+    expect(after?.texts[after.chosenIdx as number]).toBe("two")
+  })
+
+  test("only the FIRST send attributes — a follow-up message is a different message", () => {
+    const b = write()
+    chooseSuggestion(db, "teams", b.id, 0)
+    attributeSend(db, "teams", "c1", { msgId: "sent-1", text: "first" })
+    expect(attributeSend(db, "teams", "c1", { msgId: "sent-2", text: "second" })).toBeNull()
+    expect(getSuggestionById(db, "teams", b.id)?.sentText).toBe("first")
+  })
+
+  test("a send with no chosen batch records nothing and does not throw", () => {
+    write() // open, never chosen
+    expect(attributeSend(db, "teams", "c1", { msgId: "s", text: "typed from scratch" })).toBeNull()
+    expect(getSuggestions(db, "teams", "c1")?.sentAt).toBeNull()
+  })
+
+  test("status is the gate, not the timestamp — an open row with a chosen_at still refuses", () => {
+    // Pins WHY both guards exist. An `open` batch normally has a null `chosen_at`, so the window
+    // check would refuse this anyway (`at - null` is huge) — which means a mutation that deletes
+    // the status check survives unless the two are separated. Hand-set the timestamp to separate
+    // them: status is the decision, the timestamp only bounds it.
+    const b = write()
+    db.prepare("UPDATE reply_suggestions SET chosen_at = ? WHERE id = ?").run(Date.now(), b.id)
+    expect(getSuggestionById(db, "teams", b.id)?.status).toBe("open")
+    expect(attributeSend(db, "teams", "c1", { msgId: "s", text: "never picked" })).toBeNull()
+  })
+
+  test("a send into a conversation that never had suggestions is a no-op", () => {
+    expect(attributeSend(db, "teams", "never-seen", { msgId: "s", text: "hi" })).toBeNull()
+  })
+
+  test("a dismissed batch does not attribute — he rejected it, then wrote his own", () => {
+    const b = write()
+    chooseSuggestion(db, "teams", b.id, 0)
+    dismissSuggestions(db, "teams", b.id)
+    expect(attributeSend(db, "teams", "c1", { msgId: "s", text: "mine" })).toBeNull()
+  })
+
+  test("a send outside the window does not attribute — a morning choice is not an evening send", () => {
+    const b = write()
+    chooseSuggestion(db, "teams", b.id, 0)
+    const chosenAt = getSuggestionById(db, "teams", b.id)?.chosenAt as number
+    const late = chosenAt + 11 * 60 * 1000
+    expect(
+      attributeSend(db, "teams", "c1", { msgId: "s", text: "much later", at: late }),
+    ).toBeNull()
+    const early = chosenAt + 9 * 60 * 1000
+    expect(
+      attributeSend(db, "teams", "c1", { msgId: "s", text: "in time", at: early }),
+    ).not.toBeNull()
+  })
+
+  test("attribution is scoped to the conversation", () => {
+    const b = write("c1")
+    chooseSuggestion(db, "teams", b.id, 0)
+    expect(attributeSend(db, "teams", "c2", { msgId: "s", text: "other thread" })).toBeNull()
+    expect(getSuggestionById(db, "teams", b.id)?.sentAt).toBeNull()
+  })
+
+  test("attribution is scoped to the service", () => {
+    const b = write("c1")
+    chooseSuggestion(db, "teams", b.id, 0)
+    expect(attributeSend(db, "slack", "c1", { msgId: "s", text: "wrong service" })).toBeNull()
+    expect(getSuggestionById(db, "teams", b.id)?.sentAt).toBeNull()
+  })
+
+  test("an attributed batch is frozen — re-choosing cannot rewrite the pair", () => {
+    const b = write()
+    chooseSuggestion(db, "teams", b.id, 0)
+    attributeSend(db, "teams", "c1", { msgId: "s", text: "went out" })
+    expect(chooseSuggestion(db, "teams", b.id, 2)?.chosenIdx).toBe(0)
+  })
+
+  test("diverged list returns only the batches where sent != suggested", () => {
+    const exact = write("c1", ["same text"])
+    chooseSuggestion(db, "teams", exact.id, 0)
+    attributeSend(db, "teams", "c1", { msgId: "s1", text: "same text" })
+
+    const edited = write("c2", ["draft version"])
+    chooseSuggestion(db, "teams", edited.id, 0)
+    attributeSend(db, "teams", "c2", { msgId: "s2", text: "draft version, but reworded" })
+
+    const rows = listDivergedSends(db, "teams")
+    expect(rows.map((r) => r.convId)).toEqual(["c2"])
+    expect(rows[0].sentText).toBe("draft version, but reworded")
+  })
+
+  test("diverged list ignores batches that were never sent", () => {
+    const b = write("c1")
+    chooseSuggestion(db, "teams", b.id, 0)
+    expect(listDivergedSends(db, "teams")).toEqual([])
+  })
+
+  test("diverged list is scoped to the service", () => {
+    const b = write("c1", ["a"])
+    chooseSuggestion(db, "teams", b.id, 0)
+    attributeSend(db, "teams", "c1", { msgId: "s", text: "b" })
+    expect(listDivergedSends(db, "slack")).toEqual([])
   })
 })

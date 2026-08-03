@@ -12,7 +12,7 @@ import { createRequire } from "node:module"
 import type { Duplex } from "node:stream"
 import type BetterSqlite3 from "better-sqlite3"
 import { type WebSocket, WebSocketServer } from "ws"
-import type { ChatService, ChatWsServerMessage } from "./contract.ts"
+import type { ChatService, ChatWsClientMessage, ChatWsServerMessage } from "./contract.ts"
 import * as store from "./store.ts"
 
 const require = createRequire(import.meta.url)
@@ -76,8 +76,11 @@ export class HubState {
     for (const frame of buildSnapshot(this.db)) trySend(sock, frame)
   }
 
-  /** A client `{type:"focus",convId}` message → set its focus. Ignores anything else. Returns true
-   *  when it was a valid focus message. */
+  /** A client message → act on it. Returns true when it was a frame this hub understands.
+   *
+   *  Two kinds today: `focus` (steers the sweep's fast lane) and `suggest-request` (ADR-0027 —
+   *  relayed to the other clients so a connected producer can answer it). Anything else is ignored
+   *  rather than rejected: an older or newer client must not be able to break the socket. */
   onMessage(sock: HubSocket, raw: string, now: number = Date.now()): boolean {
     sock.lastSeenAt = now
     let msg: unknown
@@ -86,12 +89,42 @@ export class HubState {
     } catch {
       return false
     }
-    if (msg && typeof msg === "object" && (msg as { type?: string }).type === "focus") {
+    if (!msg || typeof msg !== "object") return false
+    const type = (msg as { type?: string }).type
+    if (type === "focus") {
       const convId = (msg as { convId?: string | null }).convId
       sock.focus = typeof convId === "string" ? convId : null
       return true
     }
+    if (type === "suggest-request") {
+      const { convId, regenerate } = msg as { convId?: unknown; regenerate?: unknown }
+      if (typeof convId !== "string" || !convId) return false
+      this.relay(sock, {
+        type: "suggest-request",
+        convId,
+        regenerate: regenerate === true,
+      })
+      return true
+    }
     return false
+  }
+
+  /**
+   * Pass a client frame on to every OTHER client. Used for `suggest-request`: the producer that
+   * answers it (the Hermes plugin) is itself a client of this hub, so the request only has to reach
+   * the other end of the same socket set — no second transport (ADR-0027 decision 3).
+   *
+   * The sender is skipped: a browser asking for suggestions must not receive its own request back
+   * and try to answer it. The answer arrives separately as a `reply-suggestions` broadcast once a
+   * producer writes the batch, which is why request and response carry no correlation id — the
+   * batch is conversation state, not a reply addressed to one caller.
+   */
+  relay(from: HubSocket, msg: ChatWsClientMessage): void {
+    for (const sock of this.clients) {
+      if (sock === from) continue
+      if (shouldSkipClient(sock.bufferedAmount ?? 0, BUFFER_CAP)) continue
+      trySend(sock, msg)
+    }
   }
 
   /** The distinct set of conversation ids clients are focused on — the sweep's fast-lane input. */
@@ -123,7 +156,9 @@ export class HubState {
   }
 }
 
-function trySend(sock: HubSocket, msg: ChatWsServerMessage): void {
+/** Relayed client frames go out on the same socket as server frames (see `relay`), so the union
+ *  covers both directions. */
+function trySend(sock: HubSocket, msg: ChatWsServerMessage | ChatWsClientMessage): void {
   try {
     sock.send(JSON.stringify(msg))
   } catch {}
