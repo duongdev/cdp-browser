@@ -5,7 +5,7 @@ import type { ChatService } from "./contract.ts"
 import { MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
 import { createRoutes } from "./routes.ts"
-import { listConversations, listMessages, migrate } from "./store.ts"
+import { HISTORY_PAGE_MAX, listConversations, listMessages, migrate } from "./store.ts"
 
 const SERVICE = "mock"
 const GROUP = "19:group@thread.v2"
@@ -45,6 +45,51 @@ describe("read routes persist + return", () => {
     const page = (await res.json()) as any
     expect(page.messages.length).toBeGreaterThan(0)
     expect(listMessages(ctx.db, SERVICE, GROUP).length).toBe(page.messages.length)
+  })
+
+  // The mock provider pages 2 at a time; walk its cursor so the store holds a real thread.
+  async function seedThread(ctx: ReturnType<typeof makeApp>) {
+    let cursor: string | null = null
+    for (let i = 0; i < 10; i++) {
+      const res = await post(ctx.app, "history", { service: SERVICE, convId: GROUP, cursor })
+      const page = (await res.json()) as any
+      cursor = page.cursor ?? null
+      if (!cursor) break
+    }
+    return listMessages(ctx.db, SERVICE, GROUP)
+  }
+
+  test("history honours limit on the paged branches", async () => {
+    const all = await seedThread(ctx)
+    expect(all.length).toBeGreaterThan(2)
+    const newestTs = Math.max(...all.map((m) => m.ts ?? 0))
+
+    const res = await post(ctx.app, "history", {
+      service: SERVICE,
+      convId: GROUP,
+      beforeTs: newestTs,
+      limit: 2,
+    })
+    expect(res.status).toBe(200)
+    const page = (await res.json()) as any
+    // Before the fix `limit` was accepted and dropped, so this came back as the full page.
+    expect(page.messages.length).toBe(2)
+  })
+
+  test("history clamps an absurd limit instead of scanning everything", async () => {
+    const all = await seedThread(ctx)
+    const newestTs = Math.max(...all.map((m) => m.ts ?? 0))
+    for (const limit of [999999, -1, 0, "abc", null]) {
+      const res = await post(ctx.app, "history", {
+        service: SERVICE,
+        convId: GROUP,
+        beforeTs: newestTs,
+        limit,
+      })
+      expect(res.status).toBe(200)
+      const page = (await res.json()) as any
+      expect(page.messages.length).toBeLessThanOrEqual(HISTORY_PAGE_MAX)
+    }
   })
 })
 

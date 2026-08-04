@@ -133,8 +133,17 @@ export function createRoutes(deps: RoutesDeps) {
     // DB-served jump windows (t175): around a target / after a ts / before a ts — no provider
     // cursor walk, the store already holds the cited message. `missing: true` is the honest
     // target-not-synced fallback.
+    // `limit` was accepted-and-ignored before: callers asking for a deeper window silently got
+    // the default page. Honour it, clamped at the store so no caller can ask for a full scan.
+    const historyLimit = store.clampHistoryLimit(b.limit)
     if (b.aroundMsgId) {
-      const win = store.listMessagesAround(deps.db, service, b.convId, String(b.aroundMsgId))
+      const win = store.listMessagesAround(
+        deps.db,
+        service,
+        b.convId,
+        String(b.aroundMsgId),
+        historyLimit,
+      )
       if (!win) return c.json({ messages: [], missing: true, hasOlder: false, hasNewer: false })
       return c.json({
         messages: win.messages.map((m) => toChatMessage(service, m)),
@@ -143,14 +152,26 @@ export function createRoutes(deps: RoutesDeps) {
       })
     }
     if (Number.isFinite(b.afterTs)) {
-      const page2 = store.listMessagesAfter(deps.db, service, b.convId, Number(b.afterTs))
+      const page2 = store.listMessagesAfter(
+        deps.db,
+        service,
+        b.convId,
+        Number(b.afterTs),
+        historyLimit,
+      )
       return c.json({
         messages: page2.messages.map((m) => toChatMessage(service, m)),
         hasNewer: page2.hasNewer,
       })
     }
     if (Number.isFinite(b.beforeTs)) {
-      const page2 = store.listMessagesBefore(deps.db, service, b.convId, Number(b.beforeTs))
+      const page2 = store.listMessagesBefore(
+        deps.db,
+        service,
+        b.convId,
+        Number(b.beforeTs),
+        historyLimit,
+      )
       return c.json({
         messages: page2.messages.map((m) => toChatMessage(service, m)),
         hasOlder: page2.hasOlder,

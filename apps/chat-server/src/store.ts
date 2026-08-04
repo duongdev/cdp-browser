@@ -677,6 +677,17 @@ export function listMessages(
 // A citation deep-link lands on a message far older than the live newest page. The DB already
 // holds it, so the window is served locally — provider cursors untouched.
 
+/** Page size, clamped at the store so no caller can ask for an unbounded scan. Non-numeric and
+ *  out-of-range values fall back to the default rather than erroring: paging is a read path, and
+ *  a bad page size is not worth a 400 to the caller. */
+export const HISTORY_PAGE_DEFAULT = 30
+export const HISTORY_PAGE_MAX = 200
+export function clampHistoryLimit(raw: unknown): number {
+  const n = Math.floor(Number(raw))
+  if (!Number.isFinite(n) || n <= 0) return HISTORY_PAGE_DEFAULT
+  return Math.min(n, HISTORY_PAGE_MAX)
+}
+
 /** A window centered on a target message. Null when the target isn't stored (never synced /
  *  deleted-before-sync) — the caller falls back honestly. Messages oldest→newest. */
 export function listMessagesAround(
@@ -684,7 +695,7 @@ export function listMessagesAround(
   service: string,
   convId: string,
   targetId: string,
-  limit = 30,
+  limit = HISTORY_PAGE_DEFAULT,
 ): { messages: StoredMessage[]; hasOlder: boolean; hasNewer: boolean } | null {
   const target = db
     .prepare("SELECT ts FROM messages WHERE service = ? AND conv_id = ? AND id = ?")
@@ -721,7 +732,7 @@ export function listMessagesAfter(
   service: string,
   convId: string,
   afterTs: number,
-  limit = 30,
+  limit = HISTORY_PAGE_DEFAULT,
 ): { messages: StoredMessage[]; hasNewer: boolean } {
   const rows = db
     .prepare(`
@@ -739,7 +750,7 @@ export function listMessagesBefore(
   service: string,
   convId: string,
   beforeTs: number,
-  limit = 30,
+  limit = HISTORY_PAGE_DEFAULT,
 ): { messages: StoredMessage[]; hasOlder: boolean } {
   const rows = db
     .prepare(`

@@ -77,7 +77,13 @@ export function createCaptioner(deps: CaptionDeps): Captioner {
       ],
       abortSignal: AbortSignal.timeout(120_000),
     })
-    return out.text.trim() || null
+    const text = out.text.trim()
+    // An empty completion is a failure, not an empty caption. A vision-incapable model (or one the
+    // router silently downgrades) answers every image with "" — returning null here left the row
+    // `pending`, so the worker re-picked the same BATCH forever and no other image was ever
+    // captioned. Throwing marks it `failed` and lets the queue advance.
+    if (!text) throw new Error("empty_caption")
+    return text
   }
 
   async function captionObject(objectId: string): Promise<string | null> {
@@ -90,7 +96,10 @@ export function createCaptioner(deps: CaptionDeps): Captioner {
     const job = (async () => {
       try {
         const caption = await transcribe(rows[0])
-        if (!caption) return null
+        if (!caption) {
+          setCaptionError(db, service, objectId, "empty_caption", now())
+          return null
+        }
         for (const t of setCaption(db, service, objectId, caption, now())) {
           reindexMessage(db, service, t.convId, t.msgId)
           deps.onCaption?.({ ...t, objectId, caption })

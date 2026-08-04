@@ -279,6 +279,9 @@ happy path; the no-producer cases run with it stopped.
 | RS-11 | A candidate containing `<b>bold</b>` and a `<blockquote>` | Inserted as literal text in the composer — never rendered as formatting |
 | RS-12 | `POST /api/chat/suggestions` with 11 texts, then one text of 2001 chars | `400` each — batch rejected, not silently truncated |
 | RS-13 | Dismiss a strip | Strip clears; a later generate still works |
+| RS-14 | `POST /api/chat/history` with `beforeTs` and `limit: 5` | Exactly 5 messages back — `limit` is honoured, not accepted-and-ignored |
+| RS-15 | Same call with `limit: 999999`, `0`, `-1`, or a non-number | Capped at `HISTORY_PAGE_MAX` (200) / defaulted to 30; never a full-table scan, never a 400 |
+| RS-16 | Point the captioner at a model that returns an empty completion, then queue two images | Both rows end `failed`, not stuck `pending` — the second image is still attempted |
 
 ---
 

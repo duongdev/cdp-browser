@@ -127,6 +127,26 @@ describe("captioner", () => {
     })
   })
 
+  test("an empty completion marks the row failed so the queue advances", async () => {
+    // A vision-incapable model answers every image with "". Left pending, the worker re-picks the
+    // same BATCH forever and nothing else in the queue is ever captioned.
+    const db = migrate(new Database(":memory:"))
+    upsertMessages(db, "teams", "c1", [{ id: "m1", ts: 1, body: `<img src="${PROXIED}">` }])
+    const captioner = createCaptioner({
+      db,
+      service: "teams",
+      provider: {
+        media: async () => ({ body: new Uint8Array([1, 2, 3]), contentType: "image/png" }),
+      },
+      getModel: () => stubModel("   "),
+    })
+    await expect(captioner.tick()).resolves.toBeUndefined()
+    expect(listMessageImages(db, "teams", "c1", "m1")[0]).toMatchObject({
+      status: "failed",
+      caption: null,
+    })
+  })
+
   test("downscale degrades to the original bytes for a non-image or an undecodable blob", async () => {
     const body = new Uint8Array([9, 9, 9])
     expect(await downscaleImage(body, "application/pdf")).toEqual({
