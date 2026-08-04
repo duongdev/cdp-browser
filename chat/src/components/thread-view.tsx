@@ -1403,7 +1403,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
           composer exists — suggesting a reply into a pane that cannot send one is noise. */}
       {showSuggestions && composer && (
         <SuggestionStrip
-          latestMsgId={state.status === "ready" ? (state.messages.at(-1)?.id ?? null) : null}
+          latestMsgId={
+            state.status === "ready"
+              ? (state.messages[state.messages.length - 1]?.id ?? null)
+              : null
+          }
           onInsert={(text) => composerRef.current?.insertText(text)}
           suggestions={suggestions}
         />
