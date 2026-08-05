@@ -41,6 +41,25 @@ CHAT_INTERNAL_SECRET=<openssl rand -hex 32>
 Everything else the BFF needs (`DATA_DIR`, `CHAT_DB_PATH`, `CHAT_SERVER_PORT`, `CHAT_SERVER_URL`,
 `TEAMS_UPSTREAM_URL`) is baked into the Dockerfile.
 
+**Hermes agent backend (ADR-0028) — optional, both or neither:**
+
+```
+HERMES_API_URL=http://100.93.30.127:8642
+HERMES_API_KEY=<the API_SERVER_KEY from the gateway host's ~/.hermes/.env>
+```
+
+With both set, the assistant panel's turn route runs on the Hermes agent. With either unset,
+chat-server's own loop serves turns exactly as before — an empty value is a clean fallback, not an
+outage, so this is safe to roll out and safe to roll back by blanking one var.
+
+The URL must be the gateway's **tailnet** address. The gateway binds `100.93.30.127` only; a LAN or
+public address will not connect. Container→tailnet egress is already proven by `CDP_HOST`.
+
+> 🔴 `HERMES_API_KEY` is not an ordinary API key. Hermes runs its terminal tool unsandboxed as the
+> gateway host's user, so this value is remote shell access to that machine. It stays in
+> `web/server.mjs` and is never sent to the browser. Keep it in Dokploy's env — never in git, never
+> in `previewEnv` unless you accept that a preview build reaches the same host.
+
 **Why it is required, not optional**: `/internal/teams/*` is served on the *public* origin
 (`portal.dp.dustin.one/internal/teams/...`), guarded only by the `x-internal-secret` header. With
 the var unset, both processes fall back to the literal `dev-internal-secret` — a value published in

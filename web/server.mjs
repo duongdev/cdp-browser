@@ -20,6 +20,10 @@ import endpoints from "../core/cdp-endpoints.js"
 import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
 import { createFrameThrottle } from "../core/frame-throttle.js"
+import { createHermesClient } from "../core/hermes-agent-client.js"
+import { buildContextSystemMessage, fetchSessionRefs } from "../core/hermes-context.js"
+import { hermesTurnSessionId } from "../core/hermes-route.js"
+import { createHermesTranslator } from "../core/hermes-sse-translator.js"
 import { recordVisit as historyRecord, visitsFromTabs } from "../core/history-store.js"
 import { createLineSplitter } from "../core/line-splitter.js"
 import { muteKey, unreadExcluding } from "../core/notif-mutes.js"
@@ -2663,11 +2667,126 @@ function reqLog(req, res, p) {
   })
 }
 
+// Hermes agent backend for the assistant panel (PSN-133, ADR-0028). Opt-in: with
+// HERMES_API_URL + HERMES_API_KEY set, the panel's turn route is served by the Hermes
+// agent instead of chat-server's own `streamText` loop. Unset => the BFF path below
+// handles it exactly as before, so a missing env is a clean fallback, not an outage.
+//
+// The key lives ONLY here. Hermes's terminal tool runs unsandboxed as the host user, so a
+// key that reached the browser would be a shell on Dustin's machine handed to any tab.
+// That is the entire reason this is a server-side proxy and not a direct fetch.
+const HERMES_API_URL = process.env.HERMES_API_URL || ""
+const HERMES_API_KEY = process.env.HERMES_API_KEY || ""
+const hermesClient =
+  HERMES_API_URL && HERMES_API_KEY
+    ? createHermesClient({ baseUrl: HERMES_API_URL, apiKey: HERMES_API_KEY })
+    : null
+if (hermesClient) console.log(`[hermes] assistant turns routed to ${HERMES_API_URL}`)
+
+// Only the turn route (`POST /api/chat/assistant/:sessionId`) is diverted. Session CRUD,
+// context refs, prefs and message history stay on chat-server — Hermes has no idea those
+// exist, and the panel still needs them. The matching itself lives in core/hermes-route.js
+// (tested there) because it runs ahead of the BFF proxy and both failure directions are silent.
+
+// Run one assistant turn against Hermes, translating its SSE into AI SDK frames on the fly.
+async function proxyHermesTurn(req, res, sessionId) {
+  let reqBody
+  try {
+    reqBody = await ibody(req)
+  } catch {
+    return res
+      .writeHead(400, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: "bad_request" }))
+  }
+
+  // Client-abort cancellation: a dropped socket does NOT stop a Hermes turn (measured —
+  // the run was still alive 8s after the client vanished), so the abort has to be
+  // forwarded explicitly or Stop just hides a turn that keeps burning tokens.
+  //
+  // The signal is `close` on the RESPONSE, not the request. Node fires request-`close`
+  // as soon as the request body is fully read — at 0ms here, before a single byte is
+  // streamed back — so watching the request aborts our own turn instantly and returns
+  // an empty 200. Response-`close` is the one that means the client actually left.
+  const ac = new AbortController()
+  const translator = createHermesTranslator()
+  let clientGone = false
+  res.on("close", () => {
+    if (res.writableEnded) return
+    clientGone = true
+    ac.abort()
+    hermesClient.stopRun(translator.runId())
+  })
+
+  // The attach tray lives in chat-server's DB and Hermes has never heard of it, so the
+  // refs are fetched and handed over as `system_message` (pointers only — the agent
+  // reads real content through /mcp). Best-effort: a failed lookup costs the user the
+  // attachments, not the turn. Also carries the browser's timezone, which the BFF path
+  // used to fold into its own prompt (PSN-104) and would otherwise be lost.
+  const refs = await fetchSessionRefs(CHAT_SERVER_URL, sessionId)
+  const contextBlock = buildContextSystemMessage(refs)
+  const tz = typeof reqBody?.timeZone === "string" ? reqBody.timeZone : ""
+  const systemMessage = [tz ? `The user's timezone is ${tz}.` : "", contextBlock]
+    .filter(Boolean)
+    .join("\n\n")
+
+  let upstream
+  try {
+    upstream = await hermesClient.streamTurn({
+      sessionId,
+      body: reqBody,
+      systemMessage: systemMessage || undefined,
+      signal: ac.signal,
+    })
+  } catch (e) {
+    if (clientGone) return
+    console.log(`[err] hermes turn ${sessionId}: ${e?.message || e}`)
+    return res
+      .writeHead(502, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: "hermes_unreachable" }))
+  }
+
+  // AI SDK's `useChat` needs this exact header set to treat the body as a UI message
+  // stream; `x-vercel-ai-ui-message-stream: v1` is the version handshake and
+  // X-Accel-Buffering keeps nginx from buffering the whole turn into one chunk.
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    "x-vercel-ai-ui-message-stream": "v1",
+  })
+
+  try {
+    for await (const chunk of upstream) {
+      // Passed as raw bytes on purpose: the translator owns a streaming UTF-8 decoder.
+      // `chunk.toString()` here would stringify the Uint8Array into char codes.
+      for (const line of translator.push(chunk)) res.write(`${line}\n\n`)
+    }
+  } catch (e) {
+    // Mid-stream failure: the headers are already sent, so the only honest signal left
+    // is an error frame the panel can render.
+    if (!clientGone) {
+      res.write(
+        `data: ${JSON.stringify({ type: "error", errorText: String(e?.message || e) })}\n\n`,
+      )
+    }
+  }
+  if (!res.writableEnded) res.end()
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x")
   const p = url.pathname
   const POST = req.method === "POST"
   reqLog(req, res, p)
+
+  // Assistant turns go to Hermes when it's configured (ADR-0028). Matched BEFORE the
+  // generic chat proxy because this path is a subset of `/api/chat/*` — the order is
+  // load-bearing, and it returns null when Hermes is unconfigured so the BFF still wins.
+  const hermesSession = hermesTurnSessionId(p, req.method, !!hermesClient)
+  if (hermesSession) {
+    return proxyHermesTurn(req, res, hermesSession)
+  }
 
   // Chat BFF proxy — matched before the E2E body decode + the /api/ 404, so it stays plaintext and
   // reaches apps/chat-server untouched (WS upgrades are handled in the `upgrade` listener below).
