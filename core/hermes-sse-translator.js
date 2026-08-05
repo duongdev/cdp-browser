@@ -56,6 +56,15 @@ function createHermesTranslator() {
   // teardown to interrupt a run the client walked away from.
   let runId = null
 
+  // The assistant's answer, accumulated as it streams (t179). The proxy writes this back
+  // into chat-server after the turn, because on the Hermes path chat-server never sees the
+  // reply and the panel loads its thread from chat-server — unrecorded reads as lost.
+  // Accumulated here rather than re-parsed by the caller: this is the only place the frames
+  // are already decoded and assembled.
+  let answer = ""
+  let sawDelta = false
+  let interrupted = false
+
   function toolKey(data) {
     return `${data.message_id || ""}\n${data.tool_name || ""}`
   }
@@ -80,6 +89,8 @@ function createHermesTranslator() {
       case "assistant.delta": {
         const id = data.message_id
         if (!id || !data.delta) return []
+        answer += data.delta
+        sawDelta = true
         // Defensive: a delta without a preceding message.started would produce
         // an unbracketed text block, which AI SDK drops silently.
         const out = []
@@ -94,6 +105,15 @@ function createHermesTranslator() {
       case "assistant.completed": {
         const id = data.message_id
         const out = []
+        if (data.interrupted) interrupted = true
+        // Non-streaming turns arrive as one `assistant.completed` with the whole answer and
+        // no deltas at all, so the recorded text has to come from `content` in that case.
+        // Only when nothing streamed: otherwise `content` repeats what the deltas already
+        // built, and the thread would reload showing the answer twice. An interrupted turn's
+        // `content` is the interrupt notice, not a reply, so it is never recorded as one.
+        if (!sawDelta && !data.interrupted && typeof data.content === "string") {
+          answer += data.content
+        }
         // A stopped turn carries the interrupt notice in `content` and is NOT a
         // model reply — surfacing it as text would render "Operation
         // interrupted: ..." as if the assistant said it. Close the block and
@@ -192,6 +212,13 @@ function createHermesTranslator() {
     /** The gateway run id, once `run.started` has been seen. Null before that. */
     runId() {
       return runId
+    },
+
+    /** The assistant text seen so far, and whether the turn was interrupted (t179). Read
+     *  after the stream ends — or after the client leaves mid-turn, where a partial answer
+     *  is exactly what must be recorded so the thread is not silently empty. */
+    answer() {
+      return { text: answer, interrupted }
     },
 
     /**

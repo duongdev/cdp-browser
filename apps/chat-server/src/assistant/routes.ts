@@ -52,6 +52,11 @@ const DEFAULT_SERVICE = "teams"
 /** Hard ceiling for one assistant turn (tool loop included). Past this the stream aborts. */
 const TURN_TIMEOUT_MS = 180_000
 
+/** Ceiling on one proxy-recorded message. The recording route is reachable by anything that can
+ *  reach chat-server, and an unbounded body would let a single POST bloat the session file and
+ *  every subsequent reload of that thread. Generous next to a real turn (~10k chars of answer). */
+const MAX_RECORDED_PARTS_CHARS = 256_000
+
 export interface AssistantDeps {
   db: Db
   /** Injectable for tests (mock LanguageModel). Default resolves from env per request. */
@@ -146,6 +151,47 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     const session = getSession(db, c.req.param("id"))
     if (!session) return c.json({ error: "not_found" }, 404)
     return c.json({ session, messages: loadMessages(db, session.id) })
+  })
+
+  // Persist one message on behalf of a turn that did NOT run here (t179).
+  //
+  // When HERMES_API_URL is set the turn executes on the Hermes agent and this route never
+  // runs, so every side effect the turn route owns inline — persisting the exchange, naming
+  // the session, compaction — was silently skipped: measured 0 rows and title=null after two
+  // turns through the proxy, meaning a panel reload read back an empty thread while Hermes
+  // still held the history. The proxy calls this instead of reimplementing any of it.
+  //
+  // `maintain` is set on the closing assistant write so title + compaction fire exactly once
+  // per exchange, on the same code path the BFF path uses.
+  app.post("/sessions/:id/messages", async (c) => {
+    const session = getSession(db, c.req.param("id"))
+    if (!session) return c.json({ error: "not_found" }, 404)
+    const b = await body(c)
+    const msg = b.message
+    // A bad row here is permanent: it lands in history and reloads forever. Reject rather
+    // than store something the panel cannot render.
+    if (!msg || typeof msg.id !== "string" || !msg.id) return c.json({ error: "bad_message" }, 400)
+    if (msg.role !== "user" && msg.role !== "assistant" && msg.role !== "system")
+      return c.json({ error: "bad_role" }, 400)
+    if (!Array.isArray(msg.parts)) return c.json({ error: "bad_parts" }, 400)
+    if (JSON.stringify(msg.parts).length > MAX_RECORDED_PARTS_CHARS)
+      return c.json({ error: "parts_too_large" }, 413)
+
+    appendMessage(db, session.id, {
+      id: msg.id,
+      role: msg.role,
+      parts: msg.parts,
+      metadata: msg.metadata,
+    })
+
+    if (b.maintain) {
+      // Same definition the turn route uses: the just-persisted user message is included,
+      // so a first exchange is the one where exactly one user message exists.
+      const isFirstExchange =
+        loadMessages(db, session.id).filter((m) => m.role === "user").length <= 1
+      afterTurnMaintenance(db, session.id, getModel, isFirstExchange).catch(() => {})
+    }
+    return c.json({ ok: true })
   })
 
   // ---- context refs (the attach tray) -------------------------------------
@@ -244,7 +290,12 @@ export function createAssistantRoutes(deps: AssistantDeps) {
     const isFirstExchange = stored.filter((m) => m.role === "user").length <= 1
 
     // Compaction separates sent from stored: only messages past the watermark go to the model.
-    const live = stored.slice(session.summaryUptoIdx)
+    // Marker rows (a model switch) are notes FOR THE USER, not conversation — sending them would
+    // read to the model as an instruction it was given, so they are stored and rendered but never
+    // sent. Filtered after the slice so they still count toward the watermark's indices.
+    const live = stored
+      .slice(session.summaryUptoIdx)
+      .filter((m) => m.role === "user" || m.role === "assistant")
     const surfaced = surfacedIdsFromMessages(stored)
     // `view_image` only exists for a model that takes image input — a text-only model calling it
     // would 400 mid-turn (or silently drop the image and confidently describe nothing).

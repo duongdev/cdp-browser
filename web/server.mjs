@@ -20,9 +20,16 @@ import endpoints from "../core/cdp-endpoints.js"
 import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
 import { createFrameThrottle } from "../core/frame-throttle.js"
-import { createHermesClient } from "../core/hermes-agent-client.js"
+import { createHermesClient, extractUserText } from "../core/hermes-agent-client.js"
 import { buildContextSystemMessage, fetchSessionRefs } from "../core/hermes-context.js"
-import { hermesTurnSessionId } from "../core/hermes-route.js"
+import { applyModelLock, fetchModelCatalogue, fetchSessionModel } from "../core/hermes-model.js"
+import {
+  assistantMessageFrom,
+  modelChangeMessage,
+  recordMessage,
+  userMessageFrom,
+} from "../core/hermes-record.js"
+import { hermesStopSessionId, hermesTurnSessionId } from "../core/hermes-route.js"
 import { createHermesTranslator } from "../core/hermes-sse-translator.js"
 import { recordVisit as historyRecord, visitsFromTabs } from "../core/history-store.js"
 import { createLineSplitter } from "../core/line-splitter.js"
@@ -2683,12 +2690,28 @@ const hermesClient =
     : null
 if (hermesClient) console.log(`[hermes] assistant turns routed to ${HERMES_API_URL}`)
 
+// Live turns, keyed by session id, so an explicit Stop can resolve to a run id — that id
+// only ever appears in the `run.started` frame, so it has to be sniffed out of the stream
+// and held somewhere the stop route can reach.
+const hermesRunsBySession = new Map()
+
+// What each session is currently locked to. A cache, not a source of truth: chat-server owns
+// the pick and Hermes owns the lock. It exists so a steady-state turn does not re-POST a lock
+// that is already in place, and it is allowed to be wrong after a restart — the worst case is
+// one redundant lock, which the gateway accepts idempotently.
+const hermesModelBySession = new Map()
+
 // Only the turn route (`POST /api/chat/assistant/:sessionId`) is diverted. Session CRUD,
 // context refs, prefs and message history stay on chat-server — Hermes has no idea those
 // exist, and the panel still needs them. The matching itself lives in core/hermes-route.js
 // (tested there) because it runs ahead of the BFF proxy and both failure directions are silent.
 
 // Run one assistant turn against Hermes, translating its SSE into AI SDK frames on the fly.
+//
+// The turn is also RECORDED back into chat-server (t179). chat-server's own turn route never
+// executes on this path, and with it went every side effect it owns inline: persisting the
+// exchange, naming the session, compaction. Measured on preview before this: two turns left 0
+// rows and title=null, so a reload showed an empty thread while Hermes still held the history.
 async function proxyHermesTurn(req, res, sessionId) {
   let reqBody
   try {
@@ -2699,22 +2722,16 @@ async function proxyHermesTurn(req, res, sessionId) {
       .end(JSON.stringify({ error: "bad_request" }))
   }
 
-  // Client-abort cancellation: a dropped socket does NOT stop a Hermes turn (measured —
-  // the run was still alive 8s after the client vanished), so the abort has to be
-  // forwarded explicitly or Stop just hides a turn that keeps burning tokens.
-  //
-  // The signal is `close` on the RESPONSE, not the request. Node fires request-`close`
-  // as soon as the request body is fully read — at 0ms here, before a single byte is
-  // streamed back — so watching the request aborts our own turn instantly and returns
-  // an empty 200. Response-`close` is the one that means the client actually left.
-  const ac = new AbortController()
+  // A dropped socket does NOT stop the turn (Dustin's call, t179). Hermes keeps generating,
+  // the proxy keeps reading, and the answer is recorded when it finishes — so a user who
+  // navigates away and comes back finds the reply waiting instead of a question with no
+  // answer and no explanation. Only an explicit Stop cancels, and that arrives out-of-band
+  // on its own route, because `res.close` cannot tell "user pressed Stop" from "tab closed".
   const translator = createHermesTranslator()
   let clientGone = false
   res.on("close", () => {
     if (res.writableEnded) return
     clientGone = true
-    ac.abort()
-    hermesClient.stopRun(translator.runId())
   })
 
   // The attach tray lives in chat-server's DB and Hermes has never heard of it, so the
@@ -2729,13 +2746,55 @@ async function proxyHermesTurn(req, res, sessionId) {
     .filter(Boolean)
     .join("\n\n")
 
+  // Apply the panel's model pick before the turn starts. The panel stores it on chat-server
+  // and the selector renders it; nothing used to forward it, so the label and the model that
+  // answered were unrelated. A confirmed switch also leaves a visible row in the thread
+  // (Dustin's ask) — written only after the gateway confirms, so the thread can never claim
+  // a switch that did not take.
+  const sessionState = await fetchSessionModel(CHAT_SERVER_URL, sessionId)
+  const catalogue = await fetchModelCatalogue(CHAT_SERVER_URL)
+  const wanted = sessionState.model || catalogue.defaultId
+  const lock = await applyModelLock({
+    client: hermesClient,
+    sessionId,
+    wanted,
+    previous: hermesModelBySession.get(sessionId) || null,
+    catalogue: catalogue.ids,
+    log: (line) => console.log(line),
+  })
+  if (lock.model) hermesModelBySession.set(sessionId, lock.model)
+  if (lock.announce) {
+    await recordMessage(
+      {
+        bffUrl: CHAT_SERVER_URL,
+        sessionId,
+        message: modelChangeMessage(lock.from, lock.model, () => nodeCrypto.randomUUID()),
+      },
+      (line) => console.log(`[err] hermes ${line}`),
+    )
+  }
+
+  // Record the question BEFORE the answer exists. If the turn dies, is stopped, or the
+  // process restarts mid-flight, the thread still shows what was asked instead of dropping
+  // it silently — the pending state Dustin asked for.
+  const userText = extractUserText(reqBody)
+  if (userText) {
+    await recordMessage(
+      {
+        bffUrl: CHAT_SERVER_URL,
+        sessionId,
+        message: userMessageFrom(reqBody, userText, () => nodeCrypto.randomUUID()),
+      },
+      (line) => console.log(`[err] hermes ${line}`),
+    )
+  }
+
   let upstream
   try {
     upstream = await hermesClient.streamTurn({
       sessionId,
       body: reqBody,
       systemMessage: systemMessage || undefined,
-      signal: ac.signal,
     })
   } catch (e) {
     if (clientGone) return
@@ -2744,6 +2803,10 @@ async function proxyHermesTurn(req, res, sessionId) {
       .writeHead(502, { "Content-Type": "application/json" })
       .end(JSON.stringify({ error: "hermes_unreachable" }))
   }
+
+  // Registered so an explicit Stop can find the run id, which only ever appears in the
+  // `run.started` frame and therefore has to be sniffed out of the stream.
+  hermesRunsBySession.set(sessionId, translator)
 
   // AI SDK's `useChat` needs this exact header set to treat the body as a UI message
   // stream; `x-vercel-ai-ui-message-stream: v1` is the version handshake and
@@ -2760,7 +2823,11 @@ async function proxyHermesTurn(req, res, sessionId) {
     for await (const chunk of upstream) {
       // Passed as raw bytes on purpose: the translator owns a streaming UTF-8 decoder.
       // `chunk.toString()` here would stringify the Uint8Array into char codes.
-      for (const line of translator.push(chunk)) res.write(`${line}\n\n`)
+      const lines = translator.push(chunk)
+      // Keep draining after the client leaves: the read is what carries the turn to
+      // completion so the answer can be recorded. Writing to a dead socket would throw.
+      if (clientGone) continue
+      for (const line of lines) res.write(`${line}\n\n`)
     }
   } catch (e) {
     // Mid-stream failure: the headers are already sent, so the only honest signal left
@@ -2770,8 +2837,40 @@ async function proxyHermesTurn(req, res, sessionId) {
         `data: ${JSON.stringify({ type: "error", errorText: String(e?.message || e) })}\n\n`,
       )
     }
+  } finally {
+    hermesRunsBySession.delete(sessionId)
+  }
+
+  // Record the answer and let chat-server do its post-turn work (title, compaction) on the
+  // same code path the BFF path uses. A partial answer from a stopped turn is recorded too,
+  // flagged interrupted — an unrecorded partial is indistinguishable from a turn that never ran.
+  const { text, interrupted } = translator.answer()
+  if (text || interrupted) {
+    await recordMessage(
+      {
+        bffUrl: CHAT_SERVER_URL,
+        sessionId,
+        message: assistantMessageFrom(text, { interrupted, model: lock.model }, () =>
+          nodeCrypto.randomUUID(),
+        ),
+        maintain: true,
+      },
+      (line) => console.log(`[err] hermes ${line}`),
+    )
   }
   if (!res.writableEnded) res.end()
+}
+
+// Explicit Stop, out-of-band (t179). A socket close alone can no longer mean "cancel" — a
+// turn now survives the tab on purpose — so the panel says so on its own route and the proxy
+// resolves the session to the live run.
+async function handleHermesStop(res, sessionId) {
+  const translator = hermesRunsBySession.get(sessionId)
+  const runId = translator?.runId()
+  if (runId) await hermesClient.stopRun(runId)
+  res
+    .writeHead(200, { "Content-Type": "application/json" })
+    .end(JSON.stringify({ ok: true, stopped: !!runId }))
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2786,6 +2885,13 @@ const server = http.createServer(async (req, res) => {
   const hermesSession = hermesTurnSessionId(p, req.method, !!hermesClient)
   if (hermesSession) {
     return proxyHermesTurn(req, res, hermesSession)
+  }
+
+  // Explicit Stop (t179). Matched before the turn's own path would be, and before the BFF
+  // proxy, for the same subset reason.
+  const hermesStop = hermesStopSessionId(p, req.method, !!hermesClient)
+  if (hermesStop) {
+    return handleHermesStop(res, hermesStop)
   }
 
   // Chat BFF proxy — matched before the E2E body decode + the /api/ 404, so it stays plaintext and

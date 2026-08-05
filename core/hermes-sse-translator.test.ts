@@ -297,3 +297,75 @@ describe("createHermesTranslator", () => {
     expect(out).toEqual([{ type: "start" }, { type: "start-step" }])
   })
 })
+
+/**
+ * The proxy records the answer back into chat-server, because chat-server never sees a turn
+ * that ran on Hermes. The text is accumulated here — the only place the frames are already
+ * decoded and assembled — so the caller does not re-parse the stream it just forwarded.
+ */
+describe("answer accumulation (t179)", () => {
+  it("collects streamed deltas in order", () => {
+    const t = createHermesTranslator()
+    run(t, frame("run.started", { run_id: RUN, seq: 1 }))
+    run(t, frame("message.started", { message_id: MSG, seq: 2 }))
+    run(t, frame("assistant.delta", { message_id: MSG, delta: "Hello ", seq: 3 }))
+    run(t, frame("assistant.delta", { message_id: MSG, delta: "world", seq: 4 }))
+    run(t, frame("assistant.completed", { message_id: MSG, seq: 5 }))
+
+    expect(t.answer()).toEqual({ text: "Hello world", interrupted: false })
+  })
+
+  it("falls back to content when a turn never streamed", () => {
+    // A non-streaming turn arrives as one assistant.completed with the whole answer and no
+    // deltas at all. Without this the recorded row would be empty and the thread would reload
+    // showing a question with no reply.
+    const t = createHermesTranslator()
+    run(t, frame("run.started", { run_id: RUN, seq: 1 }))
+    run(t, frame("assistant.completed", { message_id: MSG, content: "whole answer", seq: 2 }))
+
+    expect(t.answer().text).toBe("whole answer")
+  })
+
+  it("does not double-count content that was already streamed", () => {
+    // assistant.completed repeats the full text. Appending it after deltas would store the
+    // answer twice, and the duplicate only shows up after a reload.
+    const t = createHermesTranslator()
+    run(t, frame("message.started", { message_id: MSG, seq: 1 }))
+    run(t, frame("assistant.delta", { message_id: MSG, delta: "one", seq: 2 }))
+    run(t, frame("assistant.completed", { message_id: MSG, content: "one", seq: 3 }))
+
+    expect(t.answer().text).toBe("one")
+  })
+
+  it("flags an interrupted turn and keeps the partial text", () => {
+    const t = createHermesTranslator()
+    run(t, frame("message.started", { message_id: MSG, seq: 1 }))
+    run(t, frame("assistant.delta", { message_id: MSG, delta: "half", seq: 2 }))
+    run(t, frame("assistant.completed", { message_id: MSG, interrupted: true, seq: 3 }))
+
+    expect(t.answer()).toEqual({ text: "half", interrupted: true })
+  })
+
+  it("never records an interrupt notice as the answer", () => {
+    // A stopped turn puts "Operation interrupted: ..." in `content`. Recording that would put
+    // words in the assistant's mouth in the persisted thread.
+    const t = createHermesTranslator()
+    run(t, frame("run.started", { run_id: RUN, seq: 1 }))
+    run(
+      t,
+      frame("assistant.completed", {
+        message_id: MSG,
+        content: "Operation interrupted: user requested stop",
+        interrupted: true,
+        seq: 2,
+      }),
+    )
+
+    expect(t.answer().text).toBe("")
+    expect(t.answer().interrupted).toBe(true)
+  })
+
+  it("starts empty", () => {
+    expect(createHermesTranslator().answer()).toEqual({ text: "", interrupted: false })
+  })
+})

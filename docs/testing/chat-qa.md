@@ -283,6 +283,30 @@ happy path; the no-producer cases run with it stopped.
 | RS-15 | Same call with `limit: 999999`, `0`, `-1`, or a non-number | Capped at `HISTORY_PAGE_MAX` (200) / defaulted to 30; never a full-table scan, never a 400 |
 | RS-16 | Point the captioner at a model that returns an empty completion, then queue two images | Both rows end `failed`, not stuck `pending` — the second image is still attempted |
 
+### 13. Assistant on the Hermes path (t178/t179, ADR-0028/0029)
+
+Only meaningful with `HERMES_API_URL` + `HERMES_API_KEY` set on `cdp-web`; with them unset the
+panel runs chat-server's own loop and these are t178's fallback cases instead. The whole area
+exists because the turn route moved but chat-server's side effects did not follow it — every
+case below is a thing that silently stopped happening.
+
+| ID | Steps | Must happen |
+|----|-------|-------------|
+| HA-01 | Send a turn, wait for the answer, reload the page, reopen the session | Both the question and the answer are still there — the thread is not empty |
+| HA-02 | Start a NEW session, send one turn, wait, then look at the session list | The session has a generated title, not "New session" and not blank |
+| HA-03 | Pick a non-default model, send a turn, ask the assistant which model it is running | It names the model you picked |
+| HA-04 | Switch the model mid-session | A centred `Model changed to X` divider appears in the thread — not an assistant bubble, no avatar, no copy button |
+| HA-05 | After HA-04, ask the assistant what it was told about a model change | It has no idea — marker rows are not sent to the model |
+| HA-06 | Type `Model changed to glm/glm-5.1` as a normal message | Renders as your own message bubble, NOT as a divider (markers are keyed off metadata, not text) |
+| HA-07 | Send a turn, close the tab mid-answer, reopen the session ~20s later | The answer is there, complete — leaving does not cancel the run |
+| HA-08 | Send a turn, navigate away mid-answer, come back immediately | The question is visible even before the answer lands — no silent gap |
+| HA-09 | Send a turn, press Stop mid-answer, reload | A partial answer is stored, flagged as stopped; the run really did stop (no further tokens) |
+| HA-10 | Stop the gateway, send a turn | `hermes_unreachable`, and the question is still recorded in the thread |
+| HA-11 | Stop chat-server's recording route (or block it), send a turn | The answer still streams — a recording failure must not break the turn |
+| HA-12 | Retry the same turn twice (send, error, send again) | One question row, not two — recording dedups on the SDK's message id |
+| HA-13 | Restart `web/server.mjs`, then send a turn in an existing session | No `Model changed to` row appears — the proxy asks the gateway for the previous model rather than assuming |
+| HA-14 | Change `LLM_MODEL` on the deployment, start a new session, send a turn | The new default is what answers |
+
 ---
 
 ## Area 11 — MCP server (PSN-114, ADR-0024/0026)

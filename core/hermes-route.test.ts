@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 // @ts-expect-error -- shared CJS core, no types (ADR-0008)
-import { hermesTurnSessionId } from "./hermes-route.js"
+import { hermesStopSessionId, hermesTurnSessionId } from "./hermes-route.js"
 
 /**
  * This predicate sits AHEAD of the `/api/chat/*` BFF proxy in web/server.mjs's
@@ -92,5 +92,44 @@ describe("hermesTurnSessionId", () => {
 
   it("decodes a percent-encoded id", () => {
     expect(turn("/api/chat/assistant/a%20b")).toBe("a b")
+  })
+
+  it("does not swallow the stop route", () => {
+    // `/:id/stop` is one segment deeper. If the turn pattern matched it, pressing Stop would
+    // start a SECOND turn instead of cancelling the running one.
+    expect(turn("/api/chat/assistant/abc/stop")).toBeNull()
+  })
+})
+
+describe("hermesStopSessionId", () => {
+  const stop = (p: string) => hermesStopSessionId(p, "POST", true)
+
+  it("matches a stop for a session", () => {
+    expect(stop("/api/chat/assistant/abc-123/stop")).toBe("abc-123")
+  })
+
+  it("ignores the turn route", () => {
+    expect(stop("/api/chat/assistant/abc-123")).toBeNull()
+  })
+
+  it("stays off when hermes is unconfigured", () => {
+    // Without a client there is no run to stop, and the path must fall through to the BFF
+    // rather than 200 with a lie.
+    expect(hermesStopSessionId("/api/chat/assistant/abc/stop", "POST", false)).toBeNull()
+  })
+
+  it("is POST-only", () => {
+    expect(hermesStopSessionId("/api/chat/assistant/abc/stop", "GET", true)).toBeNull()
+  })
+
+  it("rejects a structural character in the id", () => {
+    // Same reasoning as the turn route: the id is interpolated into an upstream URL, so `?`
+    // would silently retarget the request instead of failing.
+    expect(stop("/api/chat/assistant/a%3Fx=1/stop")).toBeNull()
+    expect(stop("/api/chat/assistant/a%2Fb/stop")).toBeNull()
+  })
+
+  it("rejects a deeper path", () => {
+    expect(stop("/api/chat/assistant/a/b/stop")).toBeNull()
   })
 })

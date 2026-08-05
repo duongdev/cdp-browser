@@ -120,12 +120,61 @@ function createHermesClient({ baseUrl, apiKey, fetchImpl }) {
     },
 
     /**
+     * What model this session is currently pinned to, as the gateway sees it. Empty string when
+     * the session does not exist yet.
+     *
+     * The gateway PERSISTS the lock, so this is the authoritative previous value. Asking is what
+     * keeps a proxy restart from writing a "Model changed to X" row into a thread where nothing
+     * changed: an in-process cache alone reports every session as unlocked after a restart.
+     *
+     * Never throws — an unreadable session just means "no opinion", and the caller re-locks,
+     * which the gateway accepts idempotently.
+     */
+    async sessionModel(sessionId) {
+      try {
+        const res = await doFetch(`${root}/api/sessions/${sessionId}`, { headers })
+        if (!res.ok) return ""
+        const body = await res.json()
+        const model = body?.session?.model ?? body?.model
+        return typeof model === "string" ? model : ""
+      } catch {
+        return ""
+      }
+    },
+
+    /**
+     * Pin a session to a model. Returns true when the gateway confirms the lock.
+     *
+     * A lock rather than a per-request `model` field because Hermes precedence is
+     * lock > session override > session row > per-request: once a session carries any
+     * lock, a per-request model is silently ignored (measured — a turn sent with
+     * `{model: glm/glm-4.7}` still ran the locked `glm/glm-5.1`). Forwarding per-request
+     * would have looked correct on a fresh session and quietly stopped working after the
+     * first switch, which is the bug this fixes, one layer deeper.
+     *
+     * Never throws: a failed lock means the turn runs on the previous model, which the
+     * caller reports honestly instead of failing the whole turn.
+     */
+    async lockModel(sessionId, model) {
+      if (!model) return false
+      try {
+        const res = await doFetch(`${root}/api/sessions/${sessionId}/model`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model }),
+        })
+        return res.ok
+      } catch {
+        return false
+      }
+    },
+
+    /**
      * Interrupt a run. Best-effort and never throws.
      *
-     * Required because a dropped SSE socket does NOT cancel a Hermes turn
-     * (verified against a live gateway: the run was still stoppable 8s after the
-     * client vanished). Without this, pressing Stop closes the browser stream
-     * while the agent keeps running tools and spending tokens invisibly.
+     * Note this is NOT called when the client merely disconnects (t179): a turn that
+     * survives the tab is what lets the user come back to a finished answer. It is called
+     * only for an explicit Stop, which the panel signals out-of-band.
      *
      * The `run_id` comes from the `run.started` frame — it is the only place it
      * appears, so the proxy has to sniff the stream to learn it.

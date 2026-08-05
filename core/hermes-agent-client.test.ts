@@ -266,3 +266,75 @@ describe("createHermesClient config", () => {
     })
   })
 })
+
+describe("lockModel / sessionModel (t179)", () => {
+  it("posts the lock to the session's model route", async () => {
+    const { impl, calls } = fakeFetch([jsonRes(200, { object: "hermes.session.model_lock" })])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+
+    expect(await c.lockModel("s1", "glm/glm-5.1")).toBe(true)
+    expect(calls[0].url).toBe(`${BASE}/api/sessions/s1/model`)
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ model: "glm/glm-5.1" })
+  })
+
+  it("reports a refused lock instead of throwing", async () => {
+    // The turn still runs, on the previous model. Throwing would fail a turn over a preference.
+    const { impl } = fakeFetch([jsonRes(400, { error: "unknown model" })])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.lockModel("s1", "nope")).toBe(false)
+  })
+
+  it("survives a network failure on lock", async () => {
+    const { impl } = fakeFetch([new Error("ECONNREFUSED")])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.lockModel("s1", "fwd-sonnet")).toBe(false)
+  })
+
+  it("does not call the gateway without a model", async () => {
+    const { impl, calls } = fakeFetch([])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.lockModel("s1", "")).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it("reads the session's currently pinned model", async () => {
+    // This is what keeps a proxy restart from announcing a switch that never happened: the
+    // gateway persists the lock, so it is the authoritative previous value.
+    const { impl, calls } = fakeFetch([jsonRes(200, { session: { model: "glm/glm-5.1" } })])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+
+    expect(await c.sessionModel("s1")).toBe("glm/glm-5.1")
+    expect(calls[0].url).toBe(`${BASE}/api/sessions/s1`)
+  })
+
+  it("returns empty for an unknown session", async () => {
+    // 404 is normal: the proxy asks before the session's first turn has created it. The body is
+    // deliberately unparseable, which is what a real error response looks like — a fake that
+    // returns clean JSON on a 404 lets a missing status check pass.
+    const notFound = {
+      ok: false,
+      status: 404,
+      json: async () => {
+        throw new SyntaxError("Unexpected token in JSON")
+      },
+    }
+    const { impl } = fakeFetch([notFound])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.sessionModel("s1")).toBe("")
+  })
+
+  it("survives a network failure on read", async () => {
+    const { impl } = fakeFetch([new Error("down")])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.sessionModel("s1")).toBe("")
+  })
+
+  it("ignores a session body returned with an error status", async () => {
+    // The status check is not redundant with the try/catch. A 5xx whose body still parses —
+    // a proxy error page carrying a cached payload, a gateway mid-restart — would otherwise be
+    // read as authoritative, and the proxy would skip a lock it actually needs to apply.
+    const { impl } = fakeFetch([jsonRes(500, { session: { model: "glm/glm-5.1" } })])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.sessionModel("s1")).toBe("")
+  })
+})
