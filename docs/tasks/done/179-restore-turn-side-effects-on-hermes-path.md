@@ -1,6 +1,6 @@
 # 179 — restore the turn's side effects on the Hermes path
 
-- **Status:** in-progress
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 0.5d
 - **Depends on:** t178
@@ -89,7 +89,7 @@ same sentence, and filtered out of what is sent to the model.
 - [x] A stopped turn is recorded as interrupted, not dropped
 - [x] Recording failures degrade the record, never the answer
 - [x] Reply suggestions use the deployment's default model (adapter, out of repo)
-- [ ] Verified on deployed preview
+- [x] Verified on deployed preview
 
 ## Verification
 
@@ -119,6 +119,40 @@ switch on its next turn. The gateway persists the lock, so it is now asked for t
 value when the cache is cold.
 
 Adapter (outside this repo, `~/.hermes/plugins/cdp-chat/`): 12 checks, 5/5 mutants killed.
+
+### Deployed preview
+
+21/21 (`/tmp/e2e_t179.py`), every request over the public origin — NPM, Traefik, container,
+tailnet, real gateway. No stub anywhere in the path.
+
+History survives a reload (question + answer both stored), a new session is auto-named, the
+gateway reports `route_source: session_model_lock` for the picked model, a switch writes exactly
+one marker row carrying `{kind, from, to}`, typing the marker's text produces a normal user
+message, a retried turn leaves one question row, and a turn whose client hangs up 2s in still
+completes and records its answer.
+
+Stop measured separately (`/tmp/stop_t179.py`) against a 60-line count as a control:
+
+| | control | stopped ~3s in |
+|---|---|---|
+| lines recorded | 60 | 1 |
+| `stopped` from the route | — | `true` |
+| `metadata.interrupted` | absent | `true` |
+
+**Two E2E failures were the test's fault, not the code's**, and both are worth keeping:
+
+1. "Ask the agent which model it is" failed against a working lock — the agent answered
+   `hermes-default` while the gateway reported `session_model_lock` on the same session. An
+   agent's self-report about its own runtime is not evidence; the check now reads the gateway.
+2. "No marker row" failed because the check patched the model and ran the session's *first*
+   turn — a first lock, not a switch, which is suppressed on purpose. Fixed by running a turn on
+   the old model first.
+
+**One real bug was found only here**, invisible to a green unit suite: `lockModel` POSTed to a
+session the gateway had never created (`ensureSession` lived inside `streamTurn`, which runs
+after), so the lock 404'd on every first turn and the picker went on displaying a model that was
+not running. Fixed in `c70fbd3`, with the create moved inside `lockModel` so the invariant is
+unit-testable rather than dependent on statement order.
 
 ## Out of scope
 
