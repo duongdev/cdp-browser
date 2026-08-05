@@ -268,24 +268,44 @@ describe("createHermesClient config", () => {
 })
 
 describe("lockModel / sessionModel (t179)", () => {
-  it("posts the lock to the session's model route", async () => {
-    const { impl, calls } = fakeFetch([jsonRes(200, { object: "hermes.session.model_lock" })])
+  it("creates the session before locking it", async () => {
+    // Found on deployed preview, invisible to every unit test that existed: locking an id the
+    // gateway has never seen returns 404 `session_not_found`, and on a first turn that is EVERY
+    // session. The lock failed silently, the turn ran on the default model, and the picker went
+    // on displaying the model the user had chosen — the exact bug this feature fixes.
+    const { impl, calls } = fakeFetch([
+      jsonRes(201, { session: { id: "s1" } }),
+      jsonRes(200, { object: "hermes.session.model_lock" }),
+    ])
     const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
 
     expect(await c.lockModel("s1", "glm/glm-5.1")).toBe(true)
-    expect(calls[0].url).toBe(`${BASE}/api/sessions/s1/model`)
-    expect(JSON.parse(calls[0].init.body as string)).toEqual({ model: "glm/glm-5.1" })
+    expect(calls.map((x) => x.url)).toEqual([
+      `${BASE}/api/sessions`,
+      `${BASE}/api/sessions/s1/model`,
+    ])
+    expect(JSON.parse(calls[1].init.body as string)).toEqual({ model: "glm/glm-5.1" })
+  })
+
+  it("locks an already-existing session", async () => {
+    // 409 from the create is the normal steady state, not a failure.
+    const { impl } = fakeFetch([
+      jsonRes(409, { error: "session_exists" }),
+      jsonRes(200, { object: "hermes.session.model_lock" }),
+    ])
+    const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
+    expect(await c.lockModel("s1", "glm/glm-5.1")).toBe(true)
   })
 
   it("reports a refused lock instead of throwing", async () => {
     // The turn still runs, on the previous model. Throwing would fail a turn over a preference.
-    const { impl } = fakeFetch([jsonRes(400, { error: "unknown model" })])
+    const { impl } = fakeFetch([jsonRes(409, {}), jsonRes(400, { error: "unknown model" })])
     const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
     expect(await c.lockModel("s1", "nope")).toBe(false)
   })
 
   it("survives a network failure on lock", async () => {
-    const { impl } = fakeFetch([new Error("ECONNREFUSED")])
+    const { impl } = fakeFetch([jsonRes(409, {}), new Error("ECONNREFUSED")])
     const c = createHermesClient({ baseUrl: BASE, apiKey: KEY, fetchImpl: impl })
     expect(await c.lockModel("s1", "fwd-sonnet")).toBe(false)
   })

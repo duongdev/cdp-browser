@@ -158,6 +158,13 @@ function createHermesClient({ baseUrl, apiKey, fetchImpl }) {
     async lockModel(sessionId, model) {
       if (!model) return false
       try {
+        // The session has to exist first: locking an id the gateway has never seen returns
+        // 404 `session_not_found`, and on a first turn that is EVERY session. This failed
+        // silently in review — the lock 404'd, the turn ran on the default model, and the
+        // picker kept displaying the model the user chose. Idempotent (409 on a repeat), so
+        // the cost on later turns is one round-trip, and it keeps the invariant next to the
+        // call that needs it rather than in the proxy's statement order.
+        await this.ensureSession(sessionId)
         const res = await doFetch(`${root}/api/sessions/${sessionId}/model`, {
           method: "POST",
           headers,
