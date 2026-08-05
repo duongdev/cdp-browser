@@ -57,6 +57,22 @@ PSN-138 (delete `assistant/`, ~3070 lines) is blocked on this.
 
 n/a — no main-process or IPC code touched.
 
+### Layer 2b — Deployed preview (end-to-end, no stubs)
+
+Run against `preview-cdp-browser-app-1yrpdy-xfnygc.dp.dustin.one`, i.e. through the real
+NPM → Traefik → container → tailnet path.
+
+- [x] Turn returns 200 `text/event-stream` with `x-vercel-ai-ui-message-stream: v1`
+- [x] Frame order `start → start-step → text-start → text-delta → text-end → finish → [DONE]`
+- [x] Agent answer arrives through the proxy; no `text-delta` references an unopened block
+- [x] Response really streams — first chunk at 0.07s, 6 chunks over 2.8s (not one buffered blob)
+- [x] `timeZone` from the request body reaches the agent (PSN-104 behaviour preserved)
+- [x] History persists across turns in a session, and a fresh session sees none of it
+- [x] Sibling routes, deeper paths and a URL-structural id are all left on the BFF
+- [x] Attached conversation + label refs reach the agent by name; empty tray yields none
+- [x] Refs stay pointers — the agent confirms it received no message text, only ids
+- [x] Client abort stops the run: an abandoned turn persists 1 message, a completed turn 2
+
 ### Layer 3 — Visual review
 
 - [ ] Panel screenshots against a deployed preview: streaming text, a tool call, Stop mid-turn,
@@ -102,7 +118,7 @@ dropped SSE socket does NOT cancel a Hermes run (still stoppable 8s later)
 - [x] `pnpm check` clean on the new files
 - [x] `pnpm typecheck` clean
 - [x] `pnpm test` green (181 files / 2399 tests)
-- [ ] `pnpm dev` boots cleanly and the changed surface works end-to-end in the browser
+- [x] `pnpm dev` boots cleanly and the changed surface works end-to-end in the browser
 - [x] CLAUDE.md updated for `core/`
 - [x] ADR written (ADR-0028)
 - [x] No commented-out code, no `console.log` debris, no AI attribution
