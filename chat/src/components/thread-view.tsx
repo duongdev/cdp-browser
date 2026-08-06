@@ -56,9 +56,11 @@ import type { MentionRef, ReplyRef, TeamsConversation, TeamsMessage } from "../l
 import { partialSendMessage, selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
 import { shouldShowUnreadJump } from "../lib/unread-jump"
+import { useReplySuggestions } from "../lib/use-reply-suggestions"
 import { BodyNameTooltip } from "./body-name-tooltip"
 import { Composer, type ComposerHandle } from "./composer"
 import { MessageRow, type RowCommand } from "./message-row"
+import { SuggestionStrip } from "./suggestion-strip"
 
 // Live sync (t135, poll-first): cadence for re-fetching the newest history page while this pane is
 // the visible one and the tab is foregrounded.
@@ -188,6 +190,9 @@ interface ThreadViewProps {
    *  header; absent → no button (e.g. the search-view's embedded thread). `infoOpen` highlights it. */
   onToggleInfo?: () => void
   infoOpen?: boolean
+  /** Show the reply-suggestions strip above the composer (ADR-0027). Off by default so embedded
+   *  threads (search results) stay a plain reader. The strip owns its own WS + fetch. */
+  showSuggestions?: boolean
 }
 
 /** The thread pane (t129, ADR-0019): one conversation's real messages, rendered oldest-first from
@@ -208,6 +213,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     jumpTarget,
     onToggleInfo,
     infoOpen,
+    showSuggestions,
   },
   ref,
 ) {
@@ -745,6 +751,9 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // the composer. The reply target is chosen by the single policy owner (selectReplyTarget).
   const replyTarget = selectReplyTarget(conversation)
   const composerRef = useRef<ComposerHandle>(null)
+  // One controller shared by the strip (renders the batch) and the composer toolbar (renders the
+  // generate button) — two views of the same request, so they can never disagree about pending.
+  const suggestions = useReplySuggestions(convId)
   const coarse = usePointerCoarse()
   // Messages being quoted (PSN-92 B/C): an ordered list — each Reply stacks another quote, and the
   // send prepends one blockquote per target in selection order (Teams' multi-reply). Reset on switch.
@@ -1147,12 +1156,15 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     <Composer
       autoFocus={visible && !coarse}
       convId={convId}
+      hasSuggestions={!!suggestions.batch?.texts.length}
       namePref={namePref ?? FULL_NAME}
+      onCancelSuggest={suggestions.cancel}
       onEscape={() => setQuoteTargets([])}
       onFocusChange={(f) => {
         composerFocusedRef.current = f
       }}
       onSend={onComposerSend}
+      onSuggest={showSuggestions ? suggestions.generate : undefined}
       quotes={quoteTargets.map((m) => ({
         id: m.id,
         authorName: formatName(m.self ? "You" : m.senderName || "Unknown", namePref ?? FULL_NAME),
@@ -1161,6 +1173,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
       }))}
       ref={composerRef}
       resetKey={convId}
+      suggestPending={suggestions.pending}
     />
   ) : null
 
@@ -1385,6 +1398,19 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             </div>
           )}
         </div>
+      )}
+      {/* Above the composer so a picked suggestion lands in the input right below it. Only when the
+          composer exists — suggesting a reply into a pane that cannot send one is noise. */}
+      {showSuggestions && composer && (
+        <SuggestionStrip
+          latestMsgId={
+            state.status === "ready"
+              ? (state.messages[state.messages.length - 1]?.id ?? null)
+              : null
+          }
+          onInsert={(text) => composerRef.current?.insertText(text)}
+          suggestions={suggestions}
+        />
       )}
       {/* Rendered for every state (t159 item 8): loading/error threads still show a live composer. */}
       {composer}

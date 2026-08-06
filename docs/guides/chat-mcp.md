@@ -1,8 +1,10 @@
 # Chat MCP server
 
-The chat BFF (`apps/chat-server`) exposes a **read-only MCP server** at `/mcp`. A local coding agent
-(Claude Code, any MCP client) connects to it to query your own synced Teams chats — search, read a
-thread, list conversations, see unread, look at an inline image. See [ADR-0024](../adr/0024-chat-mcp-server.md).
+The chat BFF (`apps/chat-server`) exposes an MCP server at `/mcp`. A local coding agent
+(Claude Code, any MCP client) connects to it to work with your own synced Teams chats — search, read
+a thread, list conversations, see unread, look at an inline image, and reply on your behalf. See
+[ADR-0024](../adr/0024-chat-mcp-server.md), [ADR-0026](../adr/0026-mcp-write-tools.md) (write tools)
+and [ADR-0025](../adr/0025-mcp-over-tailnet.md) (reachable on the tailnet origin).
 
 It reuses the AI assistant's retrieval surface verbatim, so an agent reaches the same data the
 in-app assistant + global search do — including PSN-115's **hybrid search** (local FTS + Teams
@@ -23,7 +25,7 @@ Remove with `claude mcp remove chats`.
 
 ## What it exposes
 
-**Tools (8, read-only):**
+**Read tools (8):**
 
 | Tool | What it does |
 |---|---|
@@ -35,6 +37,27 @@ Remove with `claude mcp remove chats`.
 | `resolve_person` | Resolve a person's name to sender id candidates. |
 | `get_unread_overview` | Unread conversations: counts + excerpts, muted excluded unless `includeMuted`. Never changes read state. |
 | `view_image` | Look at an inline image (`[image#N]` marker) — returns the bytes inline. |
+
+**Write tools (6)** — registered only when the server is built with a provider. Without one the
+server is exactly the 8 read tools above. Every write goes to Teams first and touches the local row
+only once the service accepts it (ADR-0022), so a failure surfaces as an error instead of the two
+silently diverging.
+
+| Tool | What it does |
+|---|---|
+| `send_reply` | Send a message to a conversation. Returns the new `msgId`, so a follow-up `edit_message` / `delete_message` can address what was just sent. |
+| `react_to_message` | Add or remove a reaction. |
+| `edit_message` | Rewrite one of your own messages. |
+| `delete_message` | Delete one of your own messages. |
+| `mark_read` | Mark a conversation read up to a timestamp — clears the unread badge on your other devices too. |
+| `mark_unread` | Flag a conversation unread from a timestamp on. |
+
+Each carries MCP annotations (`readOnlyHint: false`; `destructiveHint` on edit + delete) so a client
+can prompt before running one.
+
+`quotes` and `mentions` are deliberately absent: a native Teams reply needs the `<blockquote>`
+markup built in the renderer workspace, and a bare reference would post a reply pointer with no
+visible quote.
 
 **Resources (2):**
 
@@ -62,11 +85,14 @@ Then open a Claude Code session and ask about the fixture data. Simulate an inbo
 
 ## Posture
 
-- **Read-only.** No send/react/edit/mark-read tool. The self-chat / no-mutations constraint holds by
-  construction.
-- **Localhost, no auth.** `/mcp` is not reverse-proxied to the public origin, so it never leaves the
-  host. Remote access rides Tailscale (encrypted transport). A per-request `Origin` header check
-  rejects browser cross-origin requests (MCP-spec DNS-rebinding defense).
+- **Writes are real.** `send_reply`, `edit_message` and `delete_message` reach the actual Teams
+  conversation. Point an agent at the mock stack, not a live session, unless you mean it.
+- **Tailnet, no auth.** `/mcp` is reverse-proxied on `portal.dp.dustin.one`, which resolves to a
+  Tailscale CGNAT address — the DNS record is public, the route is not. It sits behind the same
+  boundary as `/api/chat/*`, which has been able to send as you all along. A per-request `Origin`
+  check rejects browser cross-origin requests (MCP-spec DNS-rebinding defense): a request with no
+  `Origin` (every non-browser MCP client) or a loopback one passes, everything else gets 403.
+  **If that origin ever points at a routable IP, `/mcp` must come off the proxy in the same change.**
 - **Stateless.** No `Mcp-Session-Id`; each request is independent.
 - **Single-service.** Teams today; the `service` discriminator keeps a second provider additive.
 

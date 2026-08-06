@@ -1,10 +1,13 @@
-// Read-only MCP server over chat.db (PSN-114, ADR-0023). Exposes the AI assistant's proven
-// retrieval surface (search.ts + unread-overview.ts pure fns) to an external coding agent over
-// MCP Streamable HTTP. Same pure fns, different adapter — see D9: the in-app assistant keeps its
-// own ai-SDK tool defs (citation tracking + the ai-sdk image-buffer hack can't ride MCP).
+// MCP server over chat.db (PSN-114, ADR-0023/0024; write tools added by ADR-0026). Exposes the AI
+// assistant's proven retrieval surface (search.ts + unread-overview.ts pure fns) to an external
+// coding agent over MCP Streamable HTTP. Same pure fns, different adapter — see D9: the in-app
+// assistant keeps its own ai-SDK tool defs (citation tracking + the ai-sdk image-buffer hack can't
+// ride MCP). Writes go through the same ChatProvider methods routes.ts calls, so send/edit
+// semantics have one implementation, not two.
 //
-// Stateless (no Mcp-Session-Id), localhost-only. Per the MCP SDK contract + its own
-// simpleStatelessStreamableHttp example, stateless mode builds a FRESH McpServer + transport PER
+// Stateless (no Mcp-Session-Id); reachable on the tailnet origin per ADR-0025. Per the MCP SDK
+// contract + its own simpleStatelessStreamableHttp example, stateless mode builds a FRESH
+// McpServer + transport PER
 // REQUEST — reusing either corrupts internal state / causes message-id collisions across clients.
 // Construction is cheap (tool registration, no I/O); the pure fns + db/vision/search deps the
 // tools close over are shared.
@@ -15,6 +18,7 @@ import { z } from "zod"
 import { runSearch, type SearchFallback } from "./assistant/search-fallback.ts"
 import { getUnreadOverview } from "./assistant/unread-overview.ts"
 import { listMessageImages } from "./media-store.ts"
+import type { ChatProvider } from "./providers/provider.ts"
 import {
   getContextWindow,
   listConversationsByQuery,
@@ -44,21 +48,37 @@ export interface McpVision {
   captionImage?(objectId: string): Promise<string | null>
 }
 
+/** Write access for the mutating tools (ADR-0026). The same `ChatProvider` methods `routes.ts`
+ *  calls — one implementation of send/edit semantics, not two that can drift. Omit this dep and no
+ *  write tool is registered at all: the read-only server of ADR-0024 stays a reachable state. */
+export interface McpWrite {
+  provider: Pick<
+    ChatProvider,
+    "sendReply" | "react" | "edit" | "delete" | "markRead" | "markUnread"
+  >
+  /** Local read-state mirror, applied only AFTER the provider accepts (ADR-0022 write-through). */
+  markConversationRead(convId: string, ts: number): void
+  markConversationUnread(convId: string, ts: number): void
+}
+
 const text = (s: unknown) => JSON.stringify(s)
 const textContent = (body: unknown) => ({ content: [{ type: "text" as const, text: text(body) }] })
 
-/** Build the read-only MCP server: the 8 retrieval tools. Pure registration — no I/O of its own
- *  beyond the injected `db` + optional `vision`/`search`. Reused across every /mcp request. */
+/** Build the MCP server: the 8 retrieval tools, plus the 6 write tools when `write` is supplied
+ *  (ADR-0026 — omit it and the surface is exactly ADR-0024's read-only one). Pure registration — no
+ *  I/O of its own beyond the injected deps. Rebuilt per request (stateless mode, see above). */
 export async function createMcpServer({
   db,
   service,
   vision,
   search,
+  write,
 }: {
   db: Db
   service: string
   vision?: McpVision
   search?: SearchFallback
+  write?: McpWrite
 }) {
   const { McpServer } = await loadSdk()
   const server = new McpServer({ name: "cdp-chats", version: "0.1.0" })
@@ -209,6 +229,134 @@ export async function createMcpServer({
     )
   }
 
+  // ---- writes (ADR-0026) ----------------------------------------------------------------------
+  // Opt-in: no `write` dep => not one of these is registered, and the server is exactly ADR-0024's.
+  // Each is a thin pass-through to the SAME ChatProvider method routes.ts calls. `readOnlyHint:
+  // false` and the destructive/idempotent hints are the MCP-native channel a client uses to decide
+  // what to confirm with its human — advisory by design, so we publish them and assume nothing.
+  if (write) {
+    const { provider } = write
+
+    server.registerTool(
+      "send_reply",
+      {
+        description:
+          "Send a message to a conversation AS THE USER. Real people see it immediately and it cannot be unsent (only deleted, which leaves a tombstone). Confirm the exact text and the target convId with the user before calling. Returns the new message's `msgId` — pass it to edit_message/delete_message to correct your own send. To answer a specific message, quote it in your own words: native reply-threading and @-mentions are not available here.",
+        inputSchema: {
+          convId: z.string().min(1),
+          text: z.string(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      },
+      // Text only. A native reply (`quotes`) is not just a msgId list: Teams renders it from a
+      // matching `<blockquote itemtype=".../Reply">` that `chat/src/lib/reply-quote.ts` builds in
+      // the RENDERER workspace, and mentions need per-token wire spans in the same html. Passing
+      // bare refs from here would post a message with a reply pointer and no visible quote — worse
+      // than not offering it. Wire them when that builder is shared across the workspace boundary.
+      //
+      // Deliberately does NOT attribute to a reply-suggestion batch (PSN-145), unlike POST /reply.
+      // That column measures what the USER sent after picking a suggestion — his edit is the
+      // signal. A send from here is the agent acting on its own, so pairing it with his choice
+      // would record the agent agreeing with itself and quietly poison the one metric the table
+      // exists for.
+      async ({ convId, text: body }) => {
+        const res = await provider.sendReply(convId, body)
+        // SendResult.ts IS the new message's id (Teams ids are epoch-ms; the mock mirrors that, and
+        // thread-view.tsx uses `r.ts` as the id when reconciling its optimistic bubble). Nothing in
+        // the name says so, so surface it as `msgId` — otherwise an agent that just sent a message
+        // has no way to edit or delete it without re-reading the conversation to guess which is his.
+        return textContent({ ...res, msgId: res.ts })
+      },
+    )
+
+    server.registerTool(
+      "react_to_message",
+      {
+        description:
+          "Add or remove an emoji reaction on a message, as the user. Set remove:true to take a reaction back.",
+        inputSchema: {
+          convId: z.string().min(1),
+          msgId: z.string().min(1),
+          key: z.string().min(1).describe("Reaction key, e.g. 'like', 'heart', 'laugh'."),
+          remove: z.boolean().optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ convId, msgId, key, remove }) => {
+        await provider.react(convId, msgId, key, !!remove)
+        return textContent({ ok: true })
+      },
+    )
+
+    server.registerTool(
+      "edit_message",
+      {
+        description:
+          "Rewrite one of the USER'S OWN already-sent messages. The service marks it edited for everyone. Editing someone else's message will fail at the provider.",
+        inputSchema: {
+          convId: z.string().min(1),
+          msgId: z.string().min(1),
+          text: z.string(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      },
+      async ({ convId, msgId, text: body }) => {
+        await provider.edit(convId, msgId, body)
+        return textContent({ ok: true })
+      },
+    )
+
+    server.registerTool(
+      "delete_message",
+      {
+        description:
+          "Delete one of the USER'S OWN sent messages. IRREVERSIBLE — the content cannot be recovered from here. Always confirm with the user first, and read the message (get_context) before deleting so you are certain of the target.",
+        inputSchema: { convId: z.string().min(1), msgId: z.string().min(1) },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      },
+      async ({ convId, msgId }) => {
+        await provider.delete(convId, msgId)
+        return textContent({ ok: true })
+      },
+    )
+
+    // Read state is written THROUGH to the service (ADR-0022): provider first, local row only once
+    // the service accepted — a failure surfaces as an error instead of the two silently diverging.
+    server.registerTool(
+      "mark_read",
+      {
+        description:
+          "Mark a conversation read up to a timestamp (ms epoch), syncing read state to the service — it clears the unread badge on the user's other devices too.",
+        inputSchema: {
+          convId: z.string().min(1),
+          ts: z.number().describe("Read up to this ms-epoch timestamp."),
+          msgId: z.string().optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ convId, ts, msgId }) => {
+        await provider.markRead(convId, msgId ?? "", ts)
+        write.markConversationRead(convId, ts)
+        return textContent({ ok: true })
+      },
+    )
+
+    server.registerTool(
+      "mark_unread",
+      {
+        description:
+          "Flag a conversation unread from a timestamp (ms epoch) on, syncing to the service. Use to leave something for the user to look at.",
+        inputSchema: { convId: z.string().min(1), ts: z.number() },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ convId, ts }) => {
+        await provider.markUnread(convId, ts)
+        write.markConversationUnread(convId, ts)
+        return textContent({ ok: true })
+      },
+    )
+  }
+
   // ---- resources (D5): addressable chat data the agent can browse / reference by URI ----------
   const { ResourceTemplate } = await loadSdk()
   server.registerResource(
@@ -309,24 +457,41 @@ export async function createMcpServer({
   return server
 }
 
+/** Loopback hosts allowed to drive `/mcp` from a browser. `new URL().hostname` keeps the brackets
+ *  on an IPv6 literal, so `[::1]` is the form to match. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
+
 /** DNS-rebinding gate (MCP spec). A browser-originated request carries `Origin: https://evil`;
- *  a non-browser MCP client (curl, Claude Code's fetch) sends none. Allow absent + localhost,
- *  reject every other origin. */
-function originAllowed(origin: string | null | undefined): boolean {
+ *  a non-browser MCP client (curl, Claude Code's fetch) sends none. Allow absent + loopback,
+ *  reject every other origin.
+ *
+ *  Matches the parsed **hostname**, never a string prefix: `http://localhost.evil.com` starts with
+ *  `http://localhost` but is an attacker's domain, and since ADR-0025 put `/mcp` behind the tailnet
+ *  proxy and ADR-0026 gave it write tools, that bypass would hand a hostile page send/edit/delete. */
+export function originAllowed(origin: string | null | undefined): boolean {
   if (!origin) return true
-  const o = origin.toLowerCase()
-  return (
-    o.startsWith("http://localhost") ||
-    o.startsWith("http://127.0.0.1") ||
-    o.startsWith("http://[::1]")
-  )
+  let host: string
+  try {
+    const url = new URL(origin)
+    if (url.protocol !== "http:") return false
+    host = url.hostname.toLowerCase()
+  } catch {
+    return false // unparseable Origin is not a loopback one
+  }
+  return LOOPBACK_HOSTS.has(host)
 }
 
 /** Mount the MCP endpoint at `/mcp` (stateless streamable HTTP) on an existing Hono app. Splits
  *  from `index.ts`'s full boot so tests mount it alone on an ephemeral port. */
 export async function mountMcp(
   app: Hono,
-  opts: { db: Db; service: string; vision?: McpVision; search?: SearchFallback },
+  opts: {
+    db: Db
+    service: string
+    vision?: McpVision
+    search?: SearchFallback
+    write?: McpWrite
+  },
 ): Promise<void> {
   app.all("/mcp", async (c) => {
     if (!originAllowed(c.req.header("origin")))

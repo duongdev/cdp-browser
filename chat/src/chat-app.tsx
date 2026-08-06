@@ -1543,6 +1543,7 @@ export function ChatApp() {
         onSummarizeConv={summarizeConvAction}
         onToggleInfo={isActive && isWide ? toggleInfo : undefined}
         ref={isActive ? activeThreadRef : undefined}
+        showSuggestions
         visible={isActive && (isWide || phoneView === "thread")}
       />
     )

@@ -258,13 +258,67 @@ Proactive backfilling + full-screen search. Local FTS is the fast path; substrat
 | SB-29 | Open a search result whose conversation isn't in the local list yet (substrate-only hit) | Middle pane's stub conversation reflects the hit's real `convKind` (no hardcoded "Group chat" for what's actually a DM) |
 | SB-30 | From `/chat/`, click the search icon in the main app header (top bar, not inside the AI panel) | Opens `/chat/search` — the entry point that exists even when the AI panel (closed by default) has never been opened |
 
+### 12. Reply suggestions (PSN-140, ADR-0027)
+
+Candidate replies an agent writes into the composer. Nothing here sends — the user picks one, edits
+it, and presses Send himself. Needs a connected producer (the Hermes cdp-chat plugin) for the
+happy path; the no-producer cases run with it stopped.
+
+| ID | Steps | Must happen |
+|----|-------|-------------|
+| RS-01 | Open a conversation, click the generate button left of Send | Button shows activity; a strip of candidates appears when the producer answers |
+| RS-02 | Click generate, then click the same button again while pending | It acts as stop: spinner clears in ~1s, no wait for the 30s timeout |
+| RS-03 | Stop the producer, click generate, wait | After `SUGGEST_TIMEOUT_MS` the spinner clears with "No producer answered" — it does not spin forever |
+| RS-04 | Disconnect the WS, click generate | "Not connected" error, no spinner |
+| RS-05 | Click a candidate | Text lands in the composer, editable; **nothing is sent** |
+| RS-06 | Edit the inserted text, send it, then `GET /api/chat/suggestions/diverged` | Batch lists with `sentText` ≠ `texts[chosenIdx]` (the edit is the signal) |
+| RS-07 | Pick a candidate, wait past `ATTRIBUTION_WINDOW_MS` (10 min), then send | No attribution — a send that late is not evidence about the suggestion |
+| RS-08 | Generate in conv A, switch to conv B | B shows its own batch (or none); A's candidates do not leak across |
+| RS-09 | Generate a batch, reload the page, reopen the conversation | Batch is still there (hydrated over REST, not just the WS delta) |
+| RS-10 | Two browser tabs on the same conversation; generate in one | Both show the batch; the requesting tab does not receive its own request back |
+| RS-11 | A candidate containing `<b>bold</b>` and a `<blockquote>` | Inserted as literal text in the composer — never rendered as formatting |
+| RS-12 | `POST /api/chat/suggestions` with 11 texts, then one text of 2001 chars | `400` each — batch rejected, not silently truncated |
+| RS-13 | Dismiss a strip | Strip clears; a later generate still works |
+| RS-14 | `POST /api/chat/history` with `beforeTs` and `limit: 5` | Exactly 5 messages back — `limit` is honoured, not accepted-and-ignored |
+| RS-15 | Same call with `limit: 999999`, `0`, `-1`, or a non-number | Capped at `HISTORY_PAGE_MAX` (200) / defaulted to 30; never a full-table scan, never a 400 |
+| RS-16 | Point the captioner at a model that returns an empty completion, then queue two images | Both rows end `failed`, not stuck `pending` — the second image is still attempted |
+
+### 13. Assistant on the Hermes path (t178/t179, ADR-0028/0029)
+
+Only meaningful with `HERMES_API_URL` + `HERMES_API_KEY` set on `cdp-web`; with them unset the
+panel runs chat-server's own loop and these are t178's fallback cases instead. The whole area
+exists because the turn route moved but chat-server's side effects did not follow it — every
+case below is a thing that silently stopped happening.
+
+| ID | Steps | Must happen |
+|----|-------|-------------|
+| HA-01 | Send a turn, wait for the answer, reload the page, reopen the session | Both the question and the answer are still there — the thread is not empty |
+| HA-02 | Start a NEW session, send one turn, wait, then look at the session list | The session has a generated title, not "New session" and not blank |
+| HA-03 | Pick a non-default model, send a turn, ask the assistant which model it is running | It names the model you picked |
+| HA-04 | Switch the model mid-session | A centred `Model changed to X` divider appears in the thread — not an assistant bubble, no avatar, no copy button |
+| HA-05 | After HA-04, ask the assistant what it was told about a model change | It has no idea — marker rows are not sent to the model |
+| HA-06 | Type `Model changed to glm/glm-5.1` as a normal message | Renders as your own message bubble, NOT as a divider (markers are keyed off metadata, not text) |
+| HA-07 | Send a turn, close the tab mid-answer, reopen the session ~20s later | The answer is there, complete — leaving does not cancel the run |
+| HA-08 | Send a turn, navigate away mid-answer, come back immediately | The question is visible even before the answer lands — no silent gap |
+| HA-09 | Send a turn, press Stop mid-answer, reload | A partial answer is stored, flagged as stopped; the run really did stop (no further tokens) |
+| HA-10 | Stop the gateway, send a turn | `hermes_unreachable`, and the question is still recorded in the thread |
+| HA-11 | Stop chat-server's recording route (or block it), send a turn | The answer still streams — a recording failure must not break the turn |
+| HA-12 | Retry the same turn twice (send, error, send again) | One question row, not two — recording dedups on the SDK's message id |
+| HA-13 | Restart `web/server.mjs`, then send a turn in an existing session | No `Model changed to` row appears — the proxy asks the gateway for the previous model rather than assuming |
+| HA-14 | Change `LLM_MODEL` on the deployment, start a new session, send a turn | The new default is what answers |
+| HA-15 | With nothing attached, ask "can you send a message to Glory for me?" | The agent declines and says it cannot send — the surface brief reaches the turn even with an empty tray (ADR-0030) |
+| HA-16 | With nothing attached, ask "what can you see here?" | The answer describes reading Teams conversations via its tools, not a generic assistant reply |
+| HA-17 | Ask a question about an attached conversation | The agent reads the conversation before answering rather than inferring from the title — refs are pointers (ADR-0021) |
+| HA-18 | Attach a ref mid-session, then ask another question | Answers stay consistent; the brief is unchanged by the attach (prefix stability, ADR-0030 decision 3) |
+
 ---
 
-## Area 11 — MCP server (PSN-114, ADR-0024)
+## Area 11 — MCP server (PSN-114, ADR-0024/0026)
 
-Read-only MCP server at `/mcp` on the BFF. Unit + contract + real-client e2e are hermetic
-(`apps/chat-server/src/mcp.test.ts`, runs in `pnpm test`); the cases below are the manual /
-mock-stack gates.
+MCP server at `/mcp` on the BFF: 8 read tools plus 6 write tools (ADR-0026). Unit + contract +
+real-client e2e are hermetic (`apps/chat-server/src/mcp.test.ts`, runs in `pnpm test`); the cases
+below are the manual / mock-stack gates. **Run the write cases against the mock stack only** — those
+tools reach the real service when the BFF is pointed at one.
 
 | ID | Steps | Expected |
 |----|-------|----------|
@@ -278,6 +332,11 @@ mock-stack gates.
 | MCP-08 | `curl -X POST <host>/mcp -H 'Origin: https://evil.example' …` | `403` (DNS-rebinding gate) |
 | MCP-09 | Read `chat://conversations` and `chat://conversation/<convId>` resources | Seeded conv list + thread |
 | MCP-10 | Invoke the `catch-up-on-unread` / `summarize-conversation` / `find-decision` prompts | Each returns a tool-pointing prompt |
+| MCP-11 | Mock stack: "reply to `<convId>` with `hello`" | `send_reply` called, returns a `msgId`; the message appears in the thread |
+| MCP-12 | Follow up: "edit that to `hi`" then "delete it" | `edit_message` / `delete_message` address the returned `msgId`; thread reflects both |
+| MCP-13 | "mark `<convId>` read" | `mark_read` called; unread badge clears; local row matches |
+| MCP-14 | Boot the BFF with no provider (read-only build) and list tools | Exactly the 8 read tools; no write tool offered |
+| MCP-15 | `curl -X POST <host>/mcp -H 'Origin: http://localhost.evil.com' …` | `403` — the loopback gate matches the host exactly, not by prefix |
 
 The view_image image-bytes happy path needs mock-provider media; the no-images error path is unit-covered. A real Claude Code turn (MCP-02..07) is the operator's L4 gate — not CI.
 

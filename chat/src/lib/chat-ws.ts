@@ -14,6 +14,7 @@
 // reducers with no conversion.
 
 import { type BackoffState, initialBackoff, nextBackoff } from "@/lib/reconnect-backoff"
+import type { ReplySuggestionBatch } from "./chat-client"
 import type { TeamsConversation, TeamsMessage } from "./teams-client"
 
 /** A server→client frame. Mirrors ChatWsServerMessage with `Teams*` payload shapes. */
@@ -33,6 +34,8 @@ export type ChatWsFrame =
     }
   /** Server liveness heartbeat (PSN-106) — consumed by the watchdog, never forwarded to the app. */
   | { type: "ping"; ts: number }
+  /** A conversation's candidate replies changed (ADR-0027). `batch: null` clears the strip. */
+  | { type: "reply-suggestions"; convId: string; batch: ReplySuggestionBatch | null }
 
 /** The connection state surfaced to the app: `online` when the socket is open + healthy, else
  *  `reconnecting` (drives the banner). A `giveUp` from the backoff schedule stays `reconnecting`
@@ -43,6 +46,13 @@ export interface ChatWsClient {
   /** Steer the server fast-sweep: the currently open thread, or null when none is open. Re-sent on
    *  every (re)connect so a mid-drop focus survives. */
   setFocus(convId: string | null): void
+  /** Ask any connected producer for a fresh suggestion batch (ADR-0027). Fire-and-forget: the
+   *  answer arrives as a `reply-suggestions` frame, not as a return value, because the batch is
+   *  conversation state every client should see — not a reply addressed to this tab.
+   *
+   *  Returns false when the socket is not open, so the caller can say "not connected" instead of
+   *  spinning on a request that was never sent. */
+  requestSuggestions(convId: string, regenerate?: boolean): boolean
   /** Tear the socket down and stop reconnecting. */
   close(): void
 }
@@ -213,6 +223,18 @@ export function createChatWs(deps: ChatWsDeps): ChatWsClient {
       if (focus === convId) return
       focus = convId
       sendFocus()
+    },
+    requestSuggestions(convId: string, regenerate = false): boolean {
+      // Not queued for the next connect on purpose: a request that fires minutes later, after a
+      // reconnect, would answer a question the user has stopped asking. He can press the button
+      // again once the banner says online.
+      if (ws?.readyState !== WsImpl.OPEN) return false
+      try {
+        ws.send(JSON.stringify({ type: "suggest-request", convId, regenerate }))
+        return true
+      } catch {
+        return false
+      }
     },
     close(): void {
       closed = true

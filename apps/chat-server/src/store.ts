@@ -13,7 +13,7 @@ import type BetterSqlite3 from "better-sqlite3"
 type Db = BetterSqlite3.Database
 
 import { migrateAssistant } from "./assistant/session-store.ts"
-import type { ChatConversation, ChatPrefs } from "./contract.ts"
+import type { ChatConversation, ChatPrefs, ReplySuggestionBatch } from "./contract.ts"
 import {
   MAX_VERSIONS_PER_MESSAGE,
   type PrevBody,
@@ -129,6 +129,30 @@ const SCHEMA = [
     updated_at  INTEGER,
     PRIMARY KEY (service, endpoint)
   )`,
+  // Candidate replies an agent wrote for a conversation (ADR-0027). One row per BATCH, not per
+  // suggestion: the texts are alternatives to each other, so `chosen_idx` is only meaningful while
+  // they sit together. `producer` is the whole provider abstraction — a second source is a WHERE
+  // clause, not a migration. `sent_text` is what actually went out after the user edited the
+  // suggestion in the composer; the diff against `texts[chosen_idx]` is the point of the table.
+  `CREATE TABLE IF NOT EXISTS reply_suggestions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    service     TEXT NOT NULL,
+    conv_id     TEXT NOT NULL,
+    for_msg_id  TEXT,
+    producer    TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open',
+    texts       TEXT NOT NULL,
+    chosen_idx  INTEGER,
+    chosen_at   INTEGER,
+    sent_msg_id TEXT,
+    sent_text   TEXT,
+    sent_at     INTEGER
+  )`,
+  // The hot read is "the live batch for this conversation" — status-first so the partial scan stops
+  // at the handful of open/chosen rows instead of walking a conversation's whole history.
+  `CREATE INDEX IF NOT EXISTS reply_suggestions_live
+     ON reply_suggestions (service, conv_id, status, id)`,
 ]
 
 /** Columns added to a table that already shipped. `ADD COLUMN` has no `IF NOT EXISTS`, so each is
@@ -653,6 +677,17 @@ export function listMessages(
 // A citation deep-link lands on a message far older than the live newest page. The DB already
 // holds it, so the window is served locally — provider cursors untouched.
 
+/** Page size, clamped at the store so no caller can ask for an unbounded scan. Non-numeric and
+ *  out-of-range values fall back to the default rather than erroring: paging is a read path, and
+ *  a bad page size is not worth a 400 to the caller. */
+export const HISTORY_PAGE_DEFAULT = 30
+export const HISTORY_PAGE_MAX = 200
+export function clampHistoryLimit(raw: unknown): number {
+  const n = Math.floor(Number(raw))
+  if (!Number.isFinite(n) || n <= 0) return HISTORY_PAGE_DEFAULT
+  return Math.min(n, HISTORY_PAGE_MAX)
+}
+
 /** A window centered on a target message. Null when the target isn't stored (never synced /
  *  deleted-before-sync) — the caller falls back honestly. Messages oldest→newest. */
 export function listMessagesAround(
@@ -660,7 +695,7 @@ export function listMessagesAround(
   service: string,
   convId: string,
   targetId: string,
-  limit = 30,
+  limit = HISTORY_PAGE_DEFAULT,
 ): { messages: StoredMessage[]; hasOlder: boolean; hasNewer: boolean } | null {
   const target = db
     .prepare("SELECT ts FROM messages WHERE service = ? AND conv_id = ? AND id = ?")
@@ -697,7 +732,7 @@ export function listMessagesAfter(
   service: string,
   convId: string,
   afterTs: number,
-  limit = 30,
+  limit = HISTORY_PAGE_DEFAULT,
 ): { messages: StoredMessage[]; hasNewer: boolean } {
   const rows = db
     .prepare(`
@@ -715,7 +750,7 @@ export function listMessagesBefore(
   service: string,
   convId: string,
   beforeTs: number,
-  limit = 30,
+  limit = HISTORY_PAGE_DEFAULT,
 ): { messages: StoredMessage[]; hasOlder: boolean } {
   const rows = db
     .prepare(`
@@ -1331,4 +1366,248 @@ export function listPushSubs(db: Db, service: string): StoredPushSub[] {
 
 export function deletePushSub(db: Db, service: string, endpoint: string): void {
   db.prepare("DELETE FROM push_subs WHERE service = ? AND endpoint = ?").run(service, endpoint)
+}
+
+// ---- reply suggestions (ADR-0027) -----------------------------------------
+// Candidate replies produced by an agent. Local state: nothing here reaches the provider unless the
+// user picks one, edits it in the composer, and presses send himself. Auto-send is out of scope by
+// decision 6 — no function in this section sends anything.
+
+interface SuggestionRow {
+  id: number
+  conv_id: string
+  for_msg_id: string | null
+  producer: string
+  created_at: number
+  status: string
+  texts: string
+  chosen_idx: number | null
+  chosen_at: number | null
+  sent_msg_id: string | null
+  sent_text: string | null
+  sent_at: number | null
+}
+
+const SUGGESTION_COLS =
+  "id, conv_id, for_msg_id, producer, created_at, status, texts, chosen_idx, chosen_at, sent_msg_id, sent_text, sent_at"
+
+/** A batch is live while it can still be acted on: `open` (nothing picked) or `chosen` (picked,
+ *  send not yet attributed). `dismissed`/`superseded` are history. */
+const LIVE_STATUSES = "('open','chosen')"
+
+/** How long after picking a suggestion a send still counts as coming from it (PSN-145).
+ *
+ * 10 minutes: long enough for him to pick an option, get pulled into something else, come back and
+ * finish editing; short enough that a batch chosen before lunch does not claim credit for whatever
+ * he sends after it. The number is a judgement call, not a measurement — if the data shows it is
+ * wrong, this is the one line to change. */
+const ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
+
+function shapeSuggestion(r: SuggestionRow): ReplySuggestionBatch {
+  return {
+    id: r.id,
+    convId: r.conv_id,
+    forMsgId: r.for_msg_id,
+    producer: r.producer,
+    createdAt: r.created_at,
+    // Narrowed on write (`writeSuggestions` only ever stores one of the four), so a row outside the
+    // union means hand-edited SQL — surface it as-is rather than pretending it is `open`.
+    status: r.status as ReplySuggestionBatch["status"],
+    texts: parseTexts(r.texts),
+    chosenIdx: r.chosen_idx,
+    chosenAt: r.chosen_at,
+    sentMsgId: r.sent_msg_id,
+    sentText: r.sent_text,
+    sentAt: r.sent_at,
+  }
+}
+
+/** Defensive: `texts` is written as a JSON string[], but a corrupt row must not take down a thread
+ *  load. An empty batch renders as "no suggestions", which is the honest reading of unparseable. */
+function parseTexts(raw: string): string[] {
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : []
+  } catch {
+    return []
+  }
+}
+
+/** Ceilings on a stored batch. `/api/chat/*` has no auth, so any tailnet caller can POST here, and
+ *  every accepted batch is JSON-encoded into one column AND broadcast to every connected client —
+ *  one oversized request would otherwise cost memory on all of them plus permanent DB bloat.
+ *  The numbers are a UI bound, not a security guess: a strip shows a handful of short replies. */
+export const MAX_SUGGESTION_TEXTS = 10
+export const MAX_SUGGESTION_TEXT_CHARS = 2000
+
+/**
+ * Store a new batch, retiring whatever was live for that conversation.
+ *
+ * Supersede-then-insert runs in ONE transaction: a caller that regenerates twice quickly must never
+ * leave two live batches, or `getSuggestions` has to pick a winner and the UI shows a stale strip.
+ *
+ * Empty `texts` is rejected rather than stored — a producer that returns nothing has failed, and a
+ * zero-length batch would render as an empty strip the user cannot act on or dismiss. Over-long
+ * input is rejected rather than truncated: a silently clipped suggestion is one the user might send
+ * mid-sentence without noticing.
+ */
+export function writeSuggestions(
+  db: Db,
+  service: string,
+  input: { convId: string; texts: string[]; producer: string; forMsgId?: string | null },
+): ReplySuggestionBatch {
+  const texts = input.texts.map((t) => String(t ?? "").trim()).filter(Boolean)
+  if (texts.length === 0) throw new Error("writeSuggestions: texts must contain at least one entry")
+  if (texts.length > MAX_SUGGESTION_TEXTS)
+    throw new Error(`writeSuggestions: at most ${MAX_SUGGESTION_TEXTS} texts`)
+  if (texts.some((t) => t.length > MAX_SUGGESTION_TEXT_CHARS))
+    throw new Error(`writeSuggestions: each text must be <= ${MAX_SUGGESTION_TEXT_CHARS} chars`)
+  const producer = String(input.producer ?? "").trim()
+  if (!producer) throw new Error("writeSuggestions: producer is required")
+
+  const now = Date.now()
+  const insert = db.transaction((): number => {
+    db.prepare(
+      `UPDATE reply_suggestions SET status = 'superseded'
+         WHERE service = ? AND conv_id = ? AND status IN ${LIVE_STATUSES}`,
+    ).run(service, input.convId)
+    const r = db
+      .prepare(
+        `INSERT INTO reply_suggestions
+           (service, conv_id, for_msg_id, producer, created_at, status, texts)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`,
+      )
+      .run(service, input.convId, input.forMsgId ?? null, producer, now, JSON.stringify(texts))
+    return Number(r.lastInsertRowid)
+  })
+  const id = insert()
+  const batch = getSuggestionById(db, service, id)
+  // Unreachable unless the insert above silently failed; better a loud throw than a null batch
+  // broadcast to every client.
+  if (!batch) throw new Error("writeSuggestions: insert did not produce a row")
+  return batch
+}
+
+/** The live batch for a conversation, or null. Newest wins — older live rows should not exist
+ *  (see `writeSuggestions`), but ordering by id means a leaked one can never win. */
+export function getSuggestions(
+  db: Db,
+  service: string,
+  convId: string,
+): ReplySuggestionBatch | null {
+  const r = db
+    .prepare(
+      `SELECT ${SUGGESTION_COLS} FROM reply_suggestions
+         WHERE service = ? AND conv_id = ? AND status IN ${LIVE_STATUSES}
+         ORDER BY id DESC LIMIT 1`,
+    )
+    .get(service, convId) as SuggestionRow | undefined
+  return r ? shapeSuggestion(r) : null
+}
+
+export function getSuggestionById(
+  db: Db,
+  service: string,
+  id: number,
+): ReplySuggestionBatch | null {
+  const r = db
+    .prepare(`SELECT ${SUGGESTION_COLS} FROM reply_suggestions WHERE service = ? AND id = ?`)
+    .get(service, id) as SuggestionRow | undefined
+  return r ? shapeSuggestion(r) : null
+}
+
+/**
+ * Record which suggestion the user picked. Does NOT send it — the caller inserts the text into the
+ * composer and the user presses send (ADR-0027 decision 6).
+ *
+ * Re-choosing within a live batch is allowed (he inserted #1, changed his mind, inserted #3) and
+ * overwrites `chosen_idx`. A batch that already has a send attributed is frozen: rewriting its
+ * choice would break the suggested/sent pair that is the whole reason the row exists.
+ */
+export function chooseSuggestion(
+  db: Db,
+  service: string,
+  id: number,
+  idx: number,
+): ReplySuggestionBatch | null {
+  const cur = getSuggestionById(db, service, id)
+  if (!cur) return null
+  if (cur.sentAt !== null) return cur
+  if (!Number.isInteger(idx) || idx < 0 || idx >= cur.texts.length) {
+    throw new Error(`chooseSuggestion: idx ${idx} out of range for batch of ${cur.texts.length}`)
+  }
+  db.prepare(
+    `UPDATE reply_suggestions SET status = 'chosen', chosen_idx = ?, chosen_at = ?
+       WHERE service = ? AND id = ? AND status IN ${LIVE_STATUSES}`,
+  ).run(idx, Date.now(), service, id)
+  return getSuggestionById(db, service, id)
+}
+
+/**
+ * Link a sent message back to the batch the user picked from (ADR-0027 decision 4, PSN-145).
+ *
+ * THIS ATTRIBUTION IS A HEURISTIC AND MUST BE READ AS ONE. All it knows is "this conversation had
+ * a chosen batch, and then a message went out". It cannot see the composer, so it will sometimes
+ * link a send that had nothing to do with the suggestion: the user inserts a draft, deletes it,
+ * types something unrelated, and sends. That row will claim the suggestion led to the send.
+ *
+ * Fine for a metric — "how often does he send something close to what we drafted" survives some
+ * noise. NOT fine as a training label without a human reading the pair first. If a confidence
+ * score is ever built on this column, the noise has to be measured, not assumed away.
+ *
+ * Two guards keep the noise bounded rather than unbounded:
+ *  - only a `chosen` batch attributes. An `open` batch means he never picked anything, so a send
+ *    cannot be attributed to a choice that did not happen.
+ *  - only within `ATTRIBUTION_WINDOW_MS` of the choice. Without a window, a batch chosen this
+ *    morning would claim credit for a message sent this evening.
+ *
+ * First send wins: the batch is frozen once attributed, so a follow-up message in the same
+ * conversation does not overwrite the pair.
+ *
+ * Returns the updated batch when it attributed, else null (no live chosen batch, or too late).
+ */
+export function attributeSend(
+  db: Db,
+  service: string,
+  convId: string,
+  sent: { msgId: string; text: string; at?: number },
+): ReplySuggestionBatch | null {
+  const cur = getSuggestions(db, service, convId)
+  if (!cur) return null
+  if (cur.status !== "chosen" || cur.chosenAt === null) return null
+  // Already attributed — first send wins, later ones are a different message.
+  if (cur.sentAt !== null) return null
+
+  const at = sent.at ?? Date.now()
+  if (at - cur.chosenAt > ATTRIBUTION_WINDOW_MS) return null
+
+  db.prepare(
+    `UPDATE reply_suggestions SET sent_msg_id = ?, sent_text = ?, sent_at = ?
+       WHERE service = ? AND id = ? AND sent_at IS NULL`,
+  ).run(sent.msgId, sent.text, at, service, cur.id)
+  return getSuggestionById(db, service, cur.id)
+}
+
+/** Batches where the user sent something DIFFERENT from what was suggested — the deliverable of
+ *  PSN-145. This diff, not the raw count, is what a confidence score would eventually learn from. */
+export function listDivergedSends(db: Db, service: string, limit = 100): ReplySuggestionBatch[] {
+  const rows = db
+    .prepare(
+      `SELECT ${SUGGESTION_COLS} FROM reply_suggestions
+         WHERE service = ? AND sent_at IS NOT NULL AND chosen_idx IS NOT NULL
+         ORDER BY sent_at DESC LIMIT ?`,
+    )
+    .all(service, limit) as SuggestionRow[]
+  return rows
+    .map(shapeSuggestion)
+    .filter((b) => b.chosenIdx !== null && b.sentText !== b.texts[b.chosenIdx])
+}
+
+/** Retire a batch the user does not want. Kept as a row (not deleted): a dismissal is a judgement
+ *  on the suggestions, which is exactly the signal this table exists to collect. */
+export function dismissSuggestions(db: Db, service: string, id: number): void {
+  db.prepare(
+    `UPDATE reply_suggestions SET status = 'dismissed'
+       WHERE service = ? AND id = ? AND status IN ${LIVE_STATUSES}`,
+  ).run(service, id)
 }

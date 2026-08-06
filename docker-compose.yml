@@ -32,6 +32,14 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # Hermes agent backend for the assistant panel (ADR-0028). Both must be set for the
+      # panel's turn route to use the agent; with either unset, chat-server's own loop
+      # serves turns exactly as before, so this is safe to leave empty.
+      # HERMES_API_URL is the gateway's TAILNET address — never a public origin.
+      # HERMES_API_KEY grants an unsandboxed shell on the gateway host: it stays in the
+      # server process, is never sent to the browser, and belongs in Dokploy's env, not git.
+      HERMES_API_URL: ${HERMES_API_URL:-}
+      HERMES_API_KEY: ${HERMES_API_KEY:-}
     volumes:
       - cdp-web-data:/data
     # Bridge networking NATs out to the host's LAN, so a LAN CDP_HOST (e.g.

@@ -555,3 +555,56 @@ export async function searchMessages(
     ...(data.degraded ? { degraded: data.degraded } : {}),
   }
 }
+
+// ---- reply suggestions (ADR-0027) -----------------------------------------
+// Candidate replies produced by an agent. Choosing one puts its text in the composer; the user
+// presses send himself. Nothing in this section sends anything.
+
+/** Mirrors the BFF's `ReplySuggestionBatch` (apps/chat-server/src/contract.ts) minus the `service`
+ *  tag, like every other type in this module. */
+export interface ReplySuggestionBatch {
+  id: number
+  convId: string
+  /** The message this batch answers. `null` for a manual generate — nothing to go stale against. */
+  forMsgId: string | null
+  producer: string
+  createdAt: number
+  status: "open" | "chosen" | "dismissed" | "superseded"
+  texts: string[]
+  chosenIdx: number | null
+  chosenAt: number | null
+  sentMsgId: string | null
+  sentText: string | null
+  sentAt: number | null
+}
+
+/** The live batch for a conversation, or null. The WS carries deltas only, so this is how a client
+ *  that connects (or opens a thread) after a batch was written learns about it. */
+export async function fetchSuggestions(
+  convId: string,
+  signal?: AbortSignal,
+): Promise<ReplySuggestionBatch | null> {
+  const res = await fetch(
+    `/api/chat/suggestions?service=${encodeURIComponent(SERVICE)}&convId=${encodeURIComponent(convId)}`,
+    { signal },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    batch?: ReplySuggestionBatch | null
+    error?: string
+  }
+  if (!res.ok || data.error) throw new ChatApiError(data.error || `http_${res.status}`, res.status)
+  return data.batch ?? null
+}
+
+/** Record which suggestion the user picked. Does NOT send it — the caller inserts the text into the
+ *  composer and the user decides (ADR-0027 decision 6). */
+export async function chooseSuggestion(
+  id: number,
+  idx: number,
+): Promise<{ batch: ReplySuggestionBatch }> {
+  return post<{ batch: ReplySuggestionBatch }>("suggestions/choose", { id, idx })
+}
+
+export async function dismissSuggestions(id: number): Promise<void> {
+  await post<{ ok: true }>("suggestions/dismiss", { id })
+}

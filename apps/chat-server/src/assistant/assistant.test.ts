@@ -580,3 +580,202 @@ describe("load order (steering: order wrong on refresh / session load)", () => {
     ])
   })
 })
+
+/**
+ * Recording route (t179). When a turn runs on the Hermes agent, chat-server's own turn route
+ * never executes — so nothing persisted the exchange, named the session or compacted it.
+ * Measured on preview before this existed: two turns left 0 rows and title=null, meaning a
+ * panel reload showed an empty thread while Hermes still held the history.
+ */
+describe("proxy-recorded messages", () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+  })
+
+  test("records a message the panel can read back", async () => {
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db, { title: null, model: null })
+
+    const res = await app.request(`/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: { id: "u-1", role: "user", parts: [{ type: "text", text: "hello" }] },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const stored = loadMessages(db, session.id)
+    expect(stored).toHaveLength(1)
+    expect(stored[0].role).toBe("user")
+  })
+
+  test("dedups on message id so a retry does not duplicate the turn", async () => {
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db, { title: null, model: null })
+    const body = JSON.stringify({
+      message: { id: "u-1", role: "user", parts: [{ type: "text", text: "hello" }] },
+    })
+
+    await app.request(`/sessions/${session.id}/messages`, { method: "POST", body })
+    await app.request(`/sessions/${session.id}/messages`, { method: "POST", body })
+
+    expect(loadMessages(db, session.id)).toHaveLength(1)
+  })
+
+  test("accepts a system marker row", async () => {
+    // The model-change marker is a system row. Rejecting it would leave the model switch
+    // invisible in the thread, which is exactly what Dustin asked to be able to see.
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db, { title: null, model: null })
+
+    const res = await app.request(`/sessions/${session.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: {
+          id: "sys-1",
+          role: "system",
+          parts: [{ type: "text", text: "Model changed to glm/glm-5.1" }],
+          metadata: { kind: "model-change", from: null, to: "glm/glm-5.1" },
+        },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(loadMessages(db, session.id)[0].role).toBe("system")
+  })
+
+  test("rejects a malformed message instead of storing it", async () => {
+    // A bad row here is permanent: it lands in history and breaks every future reload of the
+    // thread. Failing the write is recoverable; storing garbage is not.
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db, { title: null, model: null })
+    const post = (message: unknown) =>
+      app.request(`/sessions/${session.id}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ message }),
+      })
+
+    expect((await post({ role: "user", parts: [] })).status).toBe(400)
+    expect((await post({ id: "x", role: "tool", parts: [] })).status).toBe(400)
+    expect((await post({ id: "x", role: "user", parts: "nope" })).status).toBe(400)
+    expect(loadMessages(db, session.id)).toHaveLength(0)
+  })
+
+  test("rejects an oversized body", async () => {
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db, { title: null, model: null })
+
+    const res = await app.request(`/sessions/${session.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: {
+          id: "big",
+          role: "assistant",
+          parts: [{ type: "text", text: "x".repeat(300_000) }],
+        },
+      }),
+    })
+
+    expect(res.status).toBe(413)
+    expect(loadMessages(db, session.id)).toHaveLength(0)
+  })
+
+  test("404s for an unknown session", async () => {
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const res = await app.request("/sessions/nope/messages", {
+      method: "POST",
+      body: JSON.stringify({ message: { id: "m", role: "user", parts: [] } }),
+    })
+    expect(res.status).toBe(404)
+  })
+
+  test("names the session only when maintain is set", async () => {
+    // Title generation is the side effect the Hermes path lost. Without `maintain` it must not
+    // fire on the opening user write, or the session gets named from half an exchange.
+    const app = createAssistantRoutes({ db, getModel: () => toolCallModel() })
+    const session = createSession(db, { title: null, model: null })
+
+    await app.request(`/sessions/${session.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: { id: "u-1", role: "user", parts: [{ type: "text", text: "deploy question" }] },
+      }),
+    })
+    expect(getSession(db, session.id)?.title).toBeNull()
+
+    await app.request(`/sessions/${session.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        maintain: true,
+        message: { id: "a-1", role: "assistant", parts: [{ type: "text", text: "an answer" }] },
+      }),
+    })
+    await vi.waitFor(() => expect(getSession(db, session.id)?.title).toBeTruthy())
+  })
+})
+
+/** Marker rows are stored and rendered but must never be sent to the model — they are notes
+ *  for the user, and a model reading one would treat it as an instruction it was given. */
+describe("marker rows stay out of the model transcript", () => {
+  test("a stored system row never reaches the model", async () => {
+    const db = freshDb()
+    const seen: unknown[] = []
+    // Capture what the turn route actually hands the model, rather than re-testing the filter
+    // expression — a test that restates the implementation passes even when the wiring is wrong.
+    const spyModel = () =>
+      new MockLanguageModelV3({
+        doStream: async ({ prompt }) => {
+          seen.push(...prompt)
+          return {
+            stream: convertArrayToReadableStream([
+              { type: "stream-start", warnings: [] },
+              { type: "text-start", id: "t1" },
+              { type: "text-delta", id: "t1", delta: "ok" },
+              { type: "text-end", id: "t1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: undefined },
+                usage: {
+                  inputTokens: {
+                    total: 1,
+                    noCache: 1,
+                    cacheRead: undefined,
+                    cacheWrite: undefined,
+                  },
+                  outputTokens: { total: 1, text: 1, reasoning: undefined },
+                  raw: undefined,
+                },
+              },
+            ]),
+          }
+        },
+      })
+
+    const app = createAssistantRoutes({ db, getModel: spyModel })
+    const session = createSession(db, { title: "t", model: null })
+    appendMessage(db, session.id, {
+      id: "sys-1",
+      role: "system",
+      parts: [{ type: "text", text: "Model changed to glm/glm-5.1" }],
+      metadata: { kind: "model-change" },
+    })
+
+    const res = await app.request(`/${session.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: { id: "u-1", role: "user", parts: [{ type: "text", text: "hi" }] },
+      }),
+    })
+    await res.text()
+
+    // Both halves matter. Without the first, this passes vacuously: a system row reaching
+    // `convertToModelMessages` throws AI_InvalidPromptError, the model is never called, and
+    // "the transcript does not contain the marker" is trivially true of an empty transcript.
+    // That is how the reverted filter survived the first mutation run.
+    expect(seen.length).toBeGreaterThan(0)
+    expect(JSON.stringify(seen)).not.toContain("Model changed to")
+  })
+})

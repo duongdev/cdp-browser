@@ -634,6 +634,19 @@ function SessionChatReady({
       transport,
     })
   const [input, setInput] = useState("")
+  // Stop is now an explicit signal, not an inferred one (t179). A Hermes turn deliberately
+  // outlives its socket so a user who navigates away comes back to a finished answer — which
+  // means closing the stream can no longer double as "cancel". `stop()` alone would leave the
+  // agent running invisibly, so the intent is sent out-of-band first, then the local stream
+  // is closed. Fire-and-forget: a failed signal must not leave the UI stuck in `busy`.
+  const stopTurn = useCallback(() => {
+    fetch(`${ASSISTANT_BASE}/${sessionId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).catch(() => {})
+    stop()
+  }, [sessionId, stop])
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // Autofocus on open / new session (steering) — wide pointers only; a phone would pop the keyboard.
@@ -860,7 +873,12 @@ function SessionChatReady({
             {busy ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button aria-label="Stop" onClick={() => stop()} size="icon-sm" variant="outline">
+                  <Button
+                    aria-label="Stop"
+                    onClick={() => stopTurn()}
+                    size="icon-sm"
+                    variant="outline"
+                  >
                     <HugeiconsIcon className="size-4" icon={StopIcon} />
                   </Button>
                 </TooltipTrigger>
@@ -1003,6 +1021,11 @@ function AssistantMessage({
   onInsertToComposer?: (text: string) => void
 }) {
   const isUser = message.role === "user"
+  // Marker rows (a model switch) are notes about the conversation, not turns in it. Everything
+  // below branches on `isUser`, so without this a system row would render as a full assistant
+  // bubble — avatar, copy button, insert-to-composer — and read as something the assistant
+  // said. Keyed off metadata, never the text, so a user cannot forge one by typing it.
+  const marker = (message.metadata as { kind?: string } | undefined)?.kind === "model-change"
   const text = message.parts
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
@@ -1035,6 +1058,18 @@ function AssistantMessage({
     const m = `${citations.length} ${citations.length === 1 ? "message" : "messages"}`
     return `${m} in ${chats} ${chats === 1 ? "chat" : "chats"}`
   }, [citations])
+
+  // A marker row is a divider, not a turn: centred, muted, no avatar and no actions, so it
+  // reads as something that HAPPENED to the conversation rather than something said in it.
+  if (marker) {
+    return (
+      <div className="flex items-center gap-2 self-center py-1 text-muted-foreground text-xs">
+        <span className="h-px w-6 bg-border" />
+        <span>{text}</span>
+        <span className="h-px w-6 bg-border" />
+      </div>
+    )
+  }
 
   // The user bubble is the SAME one the thread renders for your own messages —
   // `teams-message-body` carries the radius/padding and `teams-self-bubble` the low-glare dark-mode
