@@ -36,8 +36,11 @@ test-results/
 test/e2e/playwright-results.json
 playwright-report/
 
-# Visual-review scratch (screenshots)
-.scratch/
+# Visual-review scratch (screenshots).
+# No trailing slash: with `.scratch/` git only ignores a DIRECTORY, so the symlink that
+# e2e-link-worktree.sh drops here was tracked instead of ignored — and it pointed at
+# itself, which stopped electron-builder dead (`ELOOP: too many symbolic links`).
+.scratch
 
 # Web build runtime state (Slack workspace registry + push subscriptions + sweep watermark)
 slack-workspaces.json
