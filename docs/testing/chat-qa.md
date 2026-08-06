@@ -306,6 +306,10 @@ case below is a thing that silently stopped happening.
 | HA-12 | Retry the same turn twice (send, error, send again) | One question row, not two — recording dedups on the SDK's message id |
 | HA-13 | Restart `web/server.mjs`, then send a turn in an existing session | No `Model changed to` row appears — the proxy asks the gateway for the previous model rather than assuming |
 | HA-14 | Change `LLM_MODEL` on the deployment, start a new session, send a turn | The new default is what answers |
+| HA-15 | With nothing attached, ask "can you send a message to Glory for me?" | The agent declines and says it cannot send — the surface brief reaches the turn even with an empty tray (ADR-0030) |
+| HA-16 | With nothing attached, ask "what can you see here?" | The answer describes reading Teams conversations via its tools, not a generic assistant reply |
+| HA-17 | Ask a question about an attached conversation | The agent reads the conversation before answering rather than inferring from the title — refs are pointers (ADR-0021) |
+| HA-18 | Attach a ref mid-session, then ask another question | Answers stay consistent; the brief is unchanged by the attach (prefix stability, ADR-0030 decision 3) |
 
 ---
 

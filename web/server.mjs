@@ -21,7 +21,7 @@ import { deriveKey, open, seal } from "../core/crypto-envelope.js"
 import { createAckGate } from "../core/frame-ack-gate.js"
 import { createFrameThrottle } from "../core/frame-throttle.js"
 import { createHermesClient, extractUserText } from "../core/hermes-agent-client.js"
-import { buildContextSystemMessage, fetchSessionRefs } from "../core/hermes-context.js"
+import { buildSystemMessage, fetchSessionRefs } from "../core/hermes-context.js"
 import { applyModelLock, fetchModelCatalogue, fetchSessionModel } from "../core/hermes-model.js"
 import {
   assistantMessageFrom,
@@ -2737,14 +2737,12 @@ async function proxyHermesTurn(req, res, sessionId) {
   // The attach tray lives in chat-server's DB and Hermes has never heard of it, so the
   // refs are fetched and handed over as `system_message` (pointers only — the agent
   // reads real content through /mcp). Best-effort: a failed lookup costs the user the
-  // attachments, not the turn. Also carries the browser's timezone, which the BFF path
-  // used to fold into its own prompt (PSN-104) and would otherwise be lost.
+  // attachments, not the turn. `buildSystemMessage` fronts the whole thing with the
+  // fixed surface brief (ADR-0030) and folds in the browser's timezone, which the BFF
+  // path used to carry (PSN-104) and would otherwise be lost.
   const refs = await fetchSessionRefs(CHAT_SERVER_URL, sessionId)
-  const contextBlock = buildContextSystemMessage(refs)
   const tz = typeof reqBody?.timeZone === "string" ? reqBody.timeZone : ""
-  const systemMessage = [tz ? `The user's timezone is ${tz}.` : "", contextBlock]
-    .filter(Boolean)
-    .join("\n\n")
+  const systemMessage = buildSystemMessage({ refs, timeZone: tz })
 
   // Apply the panel's model pick before the turn starts. The panel stores it on chat-server
   // and the selector renders it; nothing used to forward it, so the label and the model that

@@ -84,6 +84,54 @@ function buildContextSystemMessage(refs) {
 }
 
 /**
+ * What the agent is told about where it is running, before anything else.
+ *
+ * Hermes' own prompt describes a general assistant. Nothing in it says this turn came
+ * from a panel docked beside a Teams window, that the chat tools read the user's real
+ * work conversations, or that there is no send path at all. Without that the agent
+ * either offers to reply on the user's behalf (it cannot) or ignores tools it has.
+ *
+ * Static by construction: the text ships with the code, not with an env var, so a
+ * change is reviewable in a diff and every session sees the same words.
+ *
+ * It must also stay BYTE-IDENTICAL turn to turn and sit first in the message. Hermes
+ * caches per conversation keyed on the prompt prefix; interpolating anything volatile
+ * here (a date, a ref count, a session id) would miss the cache on every single turn.
+ * That is why this is a constant and not a function.
+ */
+const SURFACE_BRIEF = [
+  "You are answering inside the CDP Chats assistant panel — a sidebar docked next to the",
+  "user's Microsoft Teams conversations. The user is reading those conversations right now",
+  "and is asking you about them.",
+  "",
+  "Your chat tools read that same Teams data: conversations, messages, folders and labels.",
+  "Reach for them before answering from memory, and say so when a lookup turns up nothing",
+  "rather than filling the gap with a guess.",
+  "",
+  "You can only read. This panel has no way to send, reply to, or delete a Teams message,",
+  "so never offer to send one and never imply a message has gone out — the user sends",
+  "everything themselves in Teams.",
+].join("\n")
+
+/**
+ * Assemble the full system message for a proxied turn.
+ *
+ * Order is load-bearing, most stable first:
+ *   1. SURFACE_BRIEF — fixed forever, the cacheable prefix
+ *   2. timezone      — per user, stable across a session
+ *   3. attach tray   — changes whenever the user attaches anything
+ *
+ * Putting the tray first would move the prefix on every attach and defeat the cache.
+ */
+function buildSystemMessage(input) {
+  const { refs, timeZone } = input || {}
+  // `timeZone` arrives in the request body, so it is forgeable; run it through the
+  // same flattener as the ref labels rather than trusting it to be a tz name.
+  const tz = timeZone ? `The user's timezone is ${safeLabel(timeZone)}.` : ""
+  return [SURFACE_BRIEF, tz, buildContextSystemMessage(refs)].filter(Boolean).join("\n\n")
+}
+
+/**
  * Read a session's context refs from chat-server. Never throws: refs are an
  * enhancement, so a failed side-lookup degrades the answer instead of breaking the
  * turn the user is waiting on.
@@ -104,4 +152,10 @@ async function fetchSessionRefs(bffUrl, sessionId, fetchImpl) {
   }
 }
 
-module.exports = { buildContextSystemMessage, fetchSessionRefs, MAX_LISTED_REFS }
+module.exports = {
+  SURFACE_BRIEF,
+  buildContextSystemMessage,
+  buildSystemMessage,
+  fetchSessionRefs,
+  MAX_LISTED_REFS,
+}
