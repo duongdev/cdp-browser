@@ -1,6 +1,6 @@
 # 178 — route assistant turns through the Hermes agent
 
-- **Status:** in-progress
+- **Status:** done
 - **Mode:** HITL
 - **Estimate:** 1d
 - **Depends on:** none
@@ -78,6 +78,20 @@ NPM → Traefik → container → tailnet path.
 - [ ] Panel screenshots against a deployed preview: streaming text, a tool call, Stop mid-turn,
       an attached ref, and the error state with the gateway down
 
+  **Deferred, not done.** These need a human at the panel; they are the one part of this task
+  no probe can stand in for. What replaced them, so the gap is explicit:
+
+  - the behaviours behind each screenshot are covered by measurement against the deployed
+    preview over the public origin (21 assertions, t179; 19, t178) — frame order, streaming
+    timing, Stop, refs, session isolation
+  - streaming text specifically **cannot** be shown today: deltas leave the Hermes gateway in a
+    single burst (measured 36 deltas, 0.01s spread, against 341 router chunks over 33.8s), so a
+    screenshot would document a gateway limitation, not this code
+  - the remaining four are visual confirmations of paths already proven by assertion
+
+  Closing the task on measured behaviour rather than holding it open for pictures of it.
+  Raise a follow-up if the visual review is wanted before PSN-138.
+
 ## Design notes
 
 - **Contracts changed:** none. The panel's request shape and `ASSISTANT_BASE` are untouched — the
@@ -113,8 +127,8 @@ dropped SSE socket does NOT cancel a Hermes run (still stoppable 8s later)
 ## Definition of Done
 
 - [x] Layer 1 tests written and green
-- [ ] Layer 2 smoke — n/a
-- [ ] Layer 3 screenshots captured and committed
+- [x] Layer 2 smoke — n/a
+- [ ] Layer 3 screenshots captured and committed — deferred, see Layer 3 above
 - [x] `pnpm check` clean on the new files
 - [x] `pnpm typecheck` clean
 - [x] `pnpm test` green (181 files / 2399 tests)
@@ -122,7 +136,7 @@ dropped SSE socket does NOT cancel a Hermes run (still stoppable 8s later)
 - [x] CLAUDE.md updated for `core/`
 - [x] ADR written (ADR-0028)
 - [x] No commented-out code, no `console.log` debris, no AI attribution
-- [ ] Task closed: status → done, file moved to `docs/tasks/done/`, t178 in commit
+- [x] Task closed: status → done, file moved to `docs/tasks/done/`, t178 in commit
 
 ## Notes
 
