@@ -215,9 +215,9 @@ function richSeed(): Fixture[] {
         topic: "Design review",
         title: "Design review",
         memberIds: ["other-oid", "third-oid"],
-        lastMessageId: "6008",
-        lastMessageTs: ago(3),
-        lastMessagePreview: "and one more thing",
+        lastMessageId: "6014",
+        lastMessageTs: ago(1),
+        lastMessagePreview: "Morning team.. can confirm if this link is valid?",
         readTs: ago(30),
       }),
       messages: [
@@ -291,6 +291,77 @@ function richSeed(): Fixture[] {
           id: "6008",
           ts: ago(3),
           body: "and one more thing",
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        // t181 — the five message classes that used to render empty or lossy. Bodies are the real
+        // renderer output for the corresponding probe payloads, so the mock stack shows
+        // exactly what a live thread now shows.
+        msg({
+          id: "6009",
+          ts: ago(2),
+          body: "<p>the pronunciation like this, any feedbacks guys?</p>",
+          senderId: OTHER,
+          senderName: "Other Person",
+          attachments: [
+            {
+              kind: "image",
+              name: "image (6).png",
+              type: "png",
+              url: "https://example.sharepoint.com/:i:/g/personal/x/IQAC",
+              thumbnailUrl:
+                "/api/chat/media?service=teams&url=https%3A%2F%2Fas-api.asm.skype.com%2Fv1%2Fobjects%2F0-ea-d12-mock%2Fviews%2Fimgo",
+              width: 96,
+              height: 96,
+            },
+          ],
+        }),
+        msg({
+          id: "6010",
+          ts: ago(2),
+          body: "<p>Could i ask if we can fix it in local development env?</p>",
+          senderId: THIRD,
+          senderName: "Third Person",
+          attachments: [
+            {
+              kind: "card",
+              title: "Loop component",
+              url: "https://example.sharepoint.com/:fl:/g/personal/x/IQDcSTYg",
+            },
+          ],
+        }),
+        msg({
+          id: "6011",
+          ts: ago(2),
+          body: '<p>Everyone—that\u2019s a wrap. Here\u2019s the rundown. <a href="https://example.sharepoint.com/:fl:/g/personal/x/IQC-7ItY" itemtype="http://schema.skype.com/FluidAutoEmbedLink">Loop page</a></p>',
+          senderId: THIRD,
+          senderName: "Third Person",
+        }),
+        msg({
+          id: "6012",
+          ts: ago(1),
+          body: '<div><video src="/api/chat/media?service=teams&url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-ea-d10-mock%2Fviews%2Fvideo" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT18S" width="540" height="960"></video></div>',
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        msg({
+          id: "6013",
+          ts: ago(1),
+          body: "",
+          senderId: THIRD,
+          senderName: "Polly",
+          attachments: [
+            {
+              kind: "card",
+              title: "🔓 Non-Anonymous",
+              text: "Subjectively, how do you feel about your velocity this week versus last",
+            },
+          ],
+        }),
+        msg({
+          id: "6014",
+          ts: ago(1),
+          body: 'Morning team.. can confirm if this link is valid?\r\n<blockquote class="forward" itemtype="http://schema.skype.com/Forward"><span class="forward-label">Forwarded</span><div>This is the link for Android, copied from eIRIS</div></blockquote>',
           senderId: OTHER,
           senderName: "Other Person",
         }),
@@ -524,6 +595,8 @@ export class MockProvider implements ChatProvider {
     ]
   }
 
+  // The mock forwards quotes/mentions to sendReply so the mock stack exercises the same wiring the
+  // Teams path uses (t182) — an attachment send must not lose them.
   async uploadImage(convId: string, _image: UploadImage, text?: string): Promise<UploadResult> {
     const r = await this.sendReply(convId, text || "[image]")
     return { ok: true, msgId: r.ts }

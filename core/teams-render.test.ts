@@ -603,6 +603,329 @@ describe("parseAttachments — call recording / Swift card (URIObject)", () => {
   })
 })
 
+// ---- t181: message types that rendered empty or lossy ---------------------
+// Every fixture below is taken verbatim from a live probe of 1963 raw Teams messages.
+
+describe("parseAttachments — image uploads (t181)", () => {
+  // An image dropped into the compose box arrives with NO <img> in `content`; it is a
+  // properties.files entry whose filePreview.previewUrl is an AMS object. Probe id 1786073725445.
+  const upload = (over = {}) =>
+    JSON.stringify([
+      {
+        "@type": "http://schema.skype.com/File",
+        fileName: "image (6).png",
+        fileType: "png",
+        objectUrl:
+          "https://fwdgroup-my.sharepoint.com/personal/x/Documents/Microsoft%20Teams%20Chat%20Files/image%20(6).png",
+        fileInfo: { shareUrl: "https://fwdgroup-my.sharepoint.com/:i:/g/personal/x/IQAC" },
+        filePreview: {
+          previewUrl:
+            "https://as-api.asm.skype.com/v1/objects/0-ea-d12-ea24405bbb566f8e1c07d87da327661b/views/imgo",
+          previewWidth: 3360,
+          previewHeight: 1848,
+        },
+        ...over,
+      },
+    ])
+  const fileMsg = (files) =>
+    msg({ content: "<p>the pronunciation like this</p>", properties: { files } })
+
+  it("renders an uploaded image inline: kind image, proxied AMS preview, reserved box", () => {
+    expect(parseAttachments(fileMsg(upload()))).toEqual([
+      {
+        kind: "image",
+        name: "image (6).png",
+        type: "png",
+        url: "https://fwdgroup-my.sharepoint.com/:i:/g/personal/x/IQAC",
+        thumbnailUrl:
+          "/api/chat/media?service=teams&url=https%3A%2F%2Fas-api.asm.skype.com%2Fv1%2Fobjects%2F0-ea-d12-ea24405bbb566f8e1c07d87da327661b%2Fviews%2Fimgo",
+        width: 3360,
+        height: 1848,
+      },
+    ])
+  })
+
+  it("keeps a file chip when the preview url is not AMS (the SSRF gate holds)", () => {
+    const files = upload({
+      filePreview: { previewUrl: "https://evil.example.com/v1/objects/x/views/imgo" },
+    })
+    expect(parseAttachments(fileMsg(files))[0].kind).toBe("file")
+  })
+
+  it("keeps a file chip when an image carries no filePreview", () => {
+    const files = upload({ filePreview: undefined })
+    expect(parseAttachments(fileMsg(files))[0].kind).toBe("file")
+  })
+
+  it("leaves a non-image file alone even when it has a preview", () => {
+    const files = upload({
+      fileName: "Results.pdf",
+      fileType: "pdf",
+      filePreview: {
+        previewUrl: "https://as-api.asm.skype.com/v1/objects/0-ea-d1-pdf/views/imgo",
+        previewWidth: 800,
+        previewHeight: 1000,
+      },
+    })
+    expect(parseAttachments(fileMsg(files))[0].kind).toBe("file")
+  })
+
+  it("omits dimensions when the preview carries none", () => {
+    const files = upload({
+      filePreview: {
+        previewUrl: "https://as-api.asm.skype.com/v1/objects/0-ea-d12-nodims/views/imgo",
+      },
+    })
+    const att = parseAttachments(fileMsg(files))[0]
+    expect(att.kind).toBe("image")
+    expect(att.width).toBeUndefined()
+    expect(att.height).toBeUndefined()
+  })
+})
+
+describe("parseAttachments — Swift adaptive card payload (t181)", () => {
+  // 206 of 1963 probed messages are RichText/Media_Card. The <Title> is a generic label ("Card",
+  // "New polly!"); the real content is base64 AdaptiveCard JSON in <Swift b64>. Probe id 1780645848428.
+  const swiftB64 = Buffer.from(
+    JSON.stringify({
+      summary: "New polly!",
+      type: "message/card",
+      attachments: [
+        {
+          contentType: "application/vnd.microsoft.card.adaptive",
+          content: {
+            type: "AdaptiveCard",
+            version: "1.2",
+            body: [
+              { type: "TextBlock", text: "🔓 Non-Anonymous", isSubtle: true },
+              {
+                type: "ColumnSet",
+                columns: [
+                  {
+                    type: "Column",
+                    items: [
+                      {
+                        type: "TextBlock",
+                        text: "Subjectively, how do you feel about your velocity this week versus last",
+                        weight: "bolder",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            actions: [{ type: "Action.Submit", title: "Submit response" }],
+          },
+        },
+      ],
+    }),
+    "utf8",
+  ).toString("base64")
+
+  const swiftMsg = (b64) =>
+    msg({
+      messagetype: "RichText/Media_Card",
+      content:
+        `<URIObject type="SWIFT.1" url_thumbnail="https://urlp.asm.skype.com/v1/url/content?url=card.png">` +
+        `New polly!<Title>New polly!</Title><Swift b64="${b64}" /><Description /></URIObject>`,
+    })
+
+  it("decodes the Swift payload into the card's real title and text", () => {
+    const att = parseAttachments(swiftMsg(swiftB64))[0]
+    expect(att.kind).toBe("card")
+    expect(att.title).toBe("🔓 Non-Anonymous")
+    expect(att.text).toContain(
+      "Subjectively, how do you feel about your velocity this week versus last",
+    )
+  })
+
+  it("never surfaces a card action as body text", () => {
+    const att = parseAttachments(swiftMsg(swiftB64))[0]
+    expect(att.text ?? "").not.toContain("Submit response")
+  })
+
+  it("caps runaway card text", () => {
+    const long = Buffer.from(
+      JSON.stringify({
+        attachments: [
+          {
+            content: {
+              body: [
+                { type: "TextBlock", text: "T" },
+                { type: "TextBlock", text: "x".repeat(2000) },
+              ],
+            },
+          },
+        ],
+      }),
+      "utf8",
+    ).toString("base64")
+    expect(parseAttachments(swiftMsg(long))[0].text.length).toBeLessThanOrEqual(400)
+  })
+
+  it("falls back to the <Title> chip when the payload is malformed, without throwing", () => {
+    expect(parseAttachments(swiftMsg("not-base64-at-all!!"))).toEqual([
+      {
+        kind: "card",
+        title: "New polly!",
+        thumbnailUrl: "https://urlp.asm.skype.com/v1/url/content?url=card.png",
+      },
+    ])
+  })
+
+  it("falls back to the <Title> chip when the decoded payload has no text", () => {
+    const empty = Buffer.from(JSON.stringify({ attachments: [] }), "utf8").toString("base64")
+    expect(parseAttachments(swiftMsg(empty))[0].title).toBe("New polly!")
+  })
+})
+
+describe("parseAttachments — Loop / Fluid embed cards (t181)", () => {
+  // The body holds an EMPTY <span itemtype=…/FluidEmbedCard>; the payload lives in properties.cards.
+  // Probe id 1786006359235 (a reported sample — rendered nothing at all).
+  const componentUrl =
+    "https://fwdgroup-my.sharepoint.com/:fl:/g/personal/x/IQDcSTYgrGK9R5dpZsHDtj6l?nav=cz0lMkZw"
+  const loopMsg = () =>
+    msg({
+      content:
+        "<p>Could i ask if we can fix it in local development env?</p>" +
+        '<span itemtype="http://schema.skype.com/FluidEmbedCard" itemid="be7daae4"></span>',
+      properties: {
+        cards: JSON.stringify([
+          {
+            appId: "FluidEmbedCard",
+            cardClientId: "be7daae4",
+            content: { componentUrl, sourceType: "Compose" },
+            contentType: "application/vnd.microsoft.card.fluidEmbedCard",
+          },
+        ]),
+      },
+    })
+
+  it("surfaces a Loop component as a card chip linking to its componentUrl", () => {
+    expect(parseAttachments(loopMsg())).toEqual([
+      { kind: "card", title: "Loop component", url: componentUrl },
+    ])
+  })
+
+  it("keeps the message text alongside the Loop chip", () => {
+    expect(renderBody(loopMsg())).toContain("local development env")
+  })
+
+  it("ignores a fluid card with no componentUrl", () => {
+    const m = msg({
+      content: "<p>x</p>",
+      properties: {
+        cards: JSON.stringify([
+          { contentType: "application/vnd.microsoft.card.fluidEmbedCard", content: {} },
+        ]),
+      },
+    })
+    expect(parseAttachments(m)).toEqual([])
+  })
+
+  // The chip url becomes an href in the renderer, so a non-http scheme must never survive parsing —
+  // the FE is not the only line of defence.
+  it("drops a componentUrl that is not http(s)", () => {
+    for (const url of [
+      "javascript:alert(1)",
+      "data:text/html,<script>x</script>",
+      "file:///etc/passwd",
+    ]) {
+      const m = msg({
+        content: "<p>x</p>",
+        properties: {
+          cards: JSON.stringify([
+            {
+              contentType: "application/vnd.microsoft.card.fluidEmbedCard",
+              content: { componentUrl: url },
+            },
+          ]),
+        },
+      })
+      expect(parseAttachments(m)).toEqual([])
+    }
+  })
+})
+
+describe("renderBody — FluidAutoEmbedLink (t181)", () => {
+  // A Loop recap link is an <a> with NO text node → renders as an invisible zero-width link.
+  // 12 of 1963 probed messages. Probe id 1786068622115.
+  const href = "https://fwdgroup-my.sharepoint.com/:fl:/g/personal/x/IQC-7ItY?nav=cz0lMkZw"
+
+  it("labels an empty Fluid auto-embed anchor so it is clickable", () => {
+    const content = `<p>Here's the rundown. <a href="${href}" itemid="3b84" itemtype="http://schema.skype.com/FluidAutoEmbedLink"></a></p>`
+    const out = renderBody(msg({ content }))
+    expect(out).toContain(`<a href="${href}"`)
+    expect(out).toMatch(/FluidAutoEmbedLink[^>]*>[^<]+<\/a>/)
+  })
+
+  it("leaves an auto-embed anchor that already has text untouched", () => {
+    const content = `<p><a href="${href}" itemtype="http://schema.skype.com/FluidAutoEmbedLink">Meeting recap</a></p>`
+    expect(renderBody(msg({ content }))).toContain(">Meeting recap</a>")
+  })
+
+  it("does not label an ordinary empty anchor", () => {
+    const content = '<p>see <a href="https://example.com"></a></p>'
+    expect(renderBody(msg({ content }))).toContain('<a href="https://example.com"></a>')
+  })
+})
+
+describe("renderBody — video-only body (t181)", () => {
+  // hasVisibleText only looked for <img>, so a video-only message fell through to the (empty)
+  // attachment chip and rendered a blank bubble. 3 of 1963 probed. Probe id 1785919202430.
+  it("keeps a video-only body instead of rendering an empty bubble", () => {
+    const content =
+      '<div><video src="https://as-prod.asyncgw.teams.microsoft.com/v1/objects/0-ea-d10-49a8/views/video" itemscope="" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT18S" style="width:540px; height:960px">\r\n</video></div>'
+    const out = renderBody(msg({ content }))
+    expect(out).toContain("<video")
+    expect(out).toContain("/api/chat/media?service=teams&url=")
+    expect(out).toContain('width="540"')
+  })
+
+  it("still falls back to the chip for a genuinely empty body", () => {
+    expect(renderBody(msg({ content: "<p>&nbsp;</p>" }))).toBe("")
+  })
+})
+
+describe("renderBody — forwarded blocks (t181)", () => {
+  // A Forward blockquote is visually identical to a Reply quote today. 5 of 1963 probed.
+  // Probe id 1779844125066.
+  it("marks a forwarded blockquote so the renderer can label it", () => {
+    const content =
+      'Morning team..\r\n<blockquote itemtype="http://schema.skype.com/Forward"><div>copied from eIRIS</div></blockquote>'
+    expect(renderBody(msg({ content }))).toContain(
+      '<blockquote class="forward" itemtype="http://schema.skype.com/Forward">',
+    )
+  })
+
+  // The label is a real DOM node, not CSS `content`: generated content is not reliably exposed to
+  // screen readers, so a `::before` label would be sighted-only.
+  it("stamps the label as a DOM node so screen readers reach it", () => {
+    const content =
+      '<blockquote itemtype="http://schema.skype.com/Forward"><div>copied from eIRIS</div></blockquote>'
+    const out = renderBody(msg({ content }))
+    expect(out).toContain('<span class="forward-label">Forwarded</span>')
+    // …and it precedes the forwarded content, so it reads as a heading for it.
+    expect(out.indexOf("forward-label")).toBeLessThan(out.indexOf("copied from eIRIS"))
+  })
+
+  it("labels every forwarded block when a message carries more than one", () => {
+    const content =
+      '<blockquote itemtype="http://schema.skype.com/Forward"><div>one</div></blockquote>' +
+      '<blockquote itemtype="http://schema.skype.com/Forward"><div>two</div></blockquote>'
+    const out = renderBody(msg({ content }))
+    expect(out.match(/forward-label/g)).toHaveLength(2)
+  })
+
+  it("leaves a reply blockquote unmarked", () => {
+    const content =
+      '<blockquote itemtype="http://schema.skype.com/Reply" itemid="1"><p itemprop="preview">hi</p></blockquote>ok'
+    const out = renderBody(msg({ content }))
+    expect(out).not.toContain('class="forward"')
+    expect(out).not.toContain("forward-label")
+  })
+})
+
 describe("renderBody — URIObject blocks (t141)", () => {
   it("renders empty for a call-recording-only body (no garbled inner text)", () => {
     const content =

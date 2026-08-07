@@ -598,8 +598,14 @@ function ChatMessageRow({
       {attachments.length > 0 && (
         <div className="flex max-w-[85%] flex-col gap-1">
           {attachments.map((a, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: attachments are immutable per message, no reorder
-            <AttachmentChip attachment={a} key={i} />
+            <AttachmentChip
+              attachment={a}
+              // biome-ignore lint/suspicious/noArrayIndexKey: attachments are immutable per message, no reorder
+              key={i}
+              onOpenImage={(src) =>
+                setLightboxMedia({ src, kind: "image", convId, msgId: message.id })
+              }
+            />
           ))}
         </div>
       )}
@@ -1049,10 +1055,45 @@ function ChipCopyButton({ url }: { url: string }) {
   )
 }
 
-/** A file / call-recording / card chip below the message body (t141). A file opens SharePoint in a
- *  new tab; recordings/cards show a proxied thumbnail preview (no inline playback). */
-function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
-  if (a.kind === "file") {
+/** A file / image / call-recording / card chip below the message body (t141). A file opens SharePoint
+ *  in a new tab; an uploaded image renders inline and opens the lightbox (t181); recordings/cards
+ *  show a proxied thumbnail preview (no inline playback). */
+function AttachmentChip({
+  attachment: a,
+  onOpenImage,
+}: {
+  attachment: TeamsAttachment
+  onOpenImage?: (src: string) => void
+}) {
+  // An image pasted into compose arrives as a FILE, not inline media (t181) — render the AMS preview
+  // as a real picture rather than a filename chip. `width`/`height` reserve the box before the bytes
+  // land so the thread doesn't jump; the SharePoint `url` stays reachable via the copy affordance.
+  if (a.kind === "image" && a.thumbnailUrl) {
+    const src = a.thumbnailUrl
+    // The button, not the img, is the interactive element, so it needs the accessible name. `alt`
+    // falls back to "" for an unnamed attachment (correct — a decorative img), which would leave
+    // the button announced as just "button".
+    const label = a.name ? `Open image: ${a.name}` : "Open image"
+    return (
+      <button
+        aria-label={label}
+        className="max-w-full cursor-zoom-in overflow-hidden rounded-lg border bg-background/60 p-0 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        onClick={() => onOpenImage?.(src)}
+        type="button"
+      >
+        <img
+          alt={a.name || ""}
+          className="max-h-80 w-auto max-w-full object-contain"
+          height={a.height}
+          loading="lazy"
+          src={src}
+          width={a.width}
+        />
+      </button>
+    )
+  }
+
+  if (a.kind === "file" || a.kind === "image") {
     const inner = (
       <>
         <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={fileIcon(a.type)} />
@@ -1119,8 +1160,8 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
   }
 
   // card
-  return (
-    <span className={cn(CHIP_CLASS, "cursor-default")}>
+  const cardInner = (
+    <>
       {a.thumbnailUrl ? (
         <img
           alt=""
@@ -1131,7 +1172,25 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
       ) : (
         <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={Note01Icon} />
       )}
-      <span className="truncate">{a.title || "Card"}</span>
-    </span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate">{a.title || "Card"}</span>
+        {a.text && <span className="line-clamp-3 text-[11px] text-muted-foreground">{a.text}</span>}
+      </span>
+      {a.url && <ChipCopyButton url={a.url} />}
+    </>
+  )
+  // A Loop/Fluid embed carries a SharePoint componentUrl (t181) → open it like a file chip. A bot
+  // card has no url and stays inert, as before.
+  return a.url ? (
+    <a
+      className={cn(CHIP_CLASS, "group/chip")}
+      href={a.url}
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      {cardInner}
+    </a>
+  ) : (
+    <span className={cn(CHIP_CLASS, "cursor-default")}>{cardInner}</span>
   )
 }

@@ -661,6 +661,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A forwarded block reads identically to a reply quote without a label (t181). The label is a real
+   DOM node (`.forward-label`, stamped by the renderer) rather than CSS `content`, because generated
+   content is not reliably exposed to screen readers — a sighted-only label would leave the meaning
+   undiscoverable to AT. `user-select: none` keeps it out of copied text. */
+.teams-message-body blockquote.forward > .forward-label {
+  display: block;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  margin-bottom: 0.2em;
+  user-select: none;
+}
 .teams-message-body code,
 .teams-message-body kbd,
 .teams-message-body pre {
