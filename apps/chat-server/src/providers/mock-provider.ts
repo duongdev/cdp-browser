@@ -22,6 +22,7 @@ import type {
   ProviderSearchHit,
   ProviderSearchPage,
   UploadImage,
+  UploadOpts,
   UploadResult,
 } from "./provider.ts"
 import { ProviderError } from "./provider.ts"
@@ -215,9 +216,9 @@ function richSeed(): Fixture[] {
         topic: "Design review",
         title: "Design review",
         memberIds: ["other-oid", "third-oid"],
-        lastMessageId: "6014",
+        lastMessageId: "6017",
         lastMessageTs: ago(1),
-        lastMessagePreview: "Morning team.. can confirm if this link is valid?",
+        lastMessagePreview: "Plain link, stays external: the docs",
         readTs: ago(30),
       }),
       messages: [
@@ -362,6 +363,30 @@ function richSeed(): Fixture[] {
           id: "6014",
           ts: ago(1),
           body: 'Morning team.. can confirm if this link is valid?\r\n<blockquote class="forward" itemtype="http://schema.skype.com/Forward"><span class="forward-label">Forwarded</span><div>This is the link for Android, copied from eIRIS</div></blockquote>',
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        // t183 fixtures: message links the app should resolve in place. 6015 targets a message in
+        // THIS conversation (jump without a pane switch); 6016 targets another conversation (pane
+        // switch, then jump); 6017 is an ordinary external link that must stay external.
+        msg({
+          id: "6015",
+          ts: ago(1),
+          body: 'Context is up here: <a href="https://teams.microsoft.com/l/message/19:rich@thread.v2/6002?context=%7B%22contextType%22%3A%22chat%22%7D">the earlier message</a>',
+          senderId: THIRD,
+          senderName: "Third Person",
+        }),
+        msg({
+          id: "6016",
+          ts: ago(1),
+          body: 'Cross-thread: <a href="https://teams.microsoft.com/l/message/19:group@thread.v2/3001?context=%7B%22contextType%22%3A%22chat%22%7D">that message in Project X</a>',
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        msg({
+          id: "6017",
+          ts: ago(1),
+          body: 'Plain link, stays external: <a href="https://example.com/docs">the docs</a>',
           senderId: OTHER,
           senderName: "Other Person",
         }),
@@ -597,22 +622,26 @@ export class MockProvider implements ChatProvider {
 
   // The mock forwards quotes/mentions to sendReply so the mock stack exercises the same wiring the
   // Teams path uses (t182) — an attachment send must not lose them.
-  async uploadImage(convId: string, _image: UploadImage, text?: string): Promise<UploadResult> {
-    const r = await this.sendReply(convId, text || "[image]")
+  async uploadImage(convId: string, _image: UploadImage, opts?: UploadOpts): Promise<UploadResult> {
+    const r = await this.sendReply(convId, opts?.text || "[image]", opts)
     return { ok: true, msgId: r.ts }
   }
 
-  async uploadImages(convId: string, _images: UploadImage[], text?: string): Promise<UploadResult> {
-    const r = await this.sendReply(convId, text || "[images]")
+  async uploadImages(
+    convId: string,
+    _images: UploadImage[],
+    opts?: UploadOpts,
+  ): Promise<UploadResult> {
+    const r = await this.sendReply(convId, opts?.text || "[images]", opts)
     return { ok: true, msgId: r.ts }
   }
 
   async uploadFile(
     convId: string,
     file: { filename: string; base64: string; contentType?: string },
-    text?: string,
+    opts?: UploadOpts,
   ): Promise<UploadResult> {
-    const r = await this.sendReply(convId, text || `[file] ${file.filename}`)
+    const r = await this.sendReply(convId, opts?.text || `[file] ${file.filename}`, opts)
     return { ok: true, msgId: r.ts }
   }
 

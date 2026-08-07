@@ -71,6 +71,7 @@ import {
   quoteAuthorMris as teamsQuoteAuthorMris,
   toReaderMessages as teamsToReaderMessages,
 } from "../core/teams-render.js"
+import { buildSendProperties, captionHtml } from "../core/teams-send-props.js"
 import {
   CLEARED_UNREAD_BOOKMARK,
   getUsers as teamsGetUsers,
@@ -1904,42 +1905,9 @@ async function teamsReply(convId, text, html, quoteRefs = [], mentions = []) {
 
   const content = html || text
   const messagetype = html ? "RichText/Html" : "Text"
-  // A quoted reply carries `qtdMsgs` (+ formatVariant/hasValidMsgReferences) so Teams renders it as a
-  // native reply, not just inline blockquote markup (PSN-92, live-verified against a real reply's wire).
-  const properties = {}
-  if (quoteRefs.length) {
-    properties.qtdMsgs = quoteRefs.map((q) => ({
-      messageId: q.messageId,
-      sender: q.sender,
-      time: q.time,
-      message: null,
-      validationResult: "Valid",
-      sharedRefId: null,
-      replyChainId: null,
-    }))
-    properties.formatVariant = "TEAMS"
-    properties.hasValidMsgReferences = true
-  }
-  // @mentions ride as a JSON-STRING `properties.mentions` (per-token, live-verified) so recipients
-  // get a real mention (PSN-92 D). Teams' own wire keeps this as a string, not a nested array.
-  //
-  // `@type` + `mentionType` are LOAD-BEARING, not decoration: native Teams stamps both on every
-  // entry, and an entry missing either is stored fine (201) yet mentions nobody — Teams renders the
-  // raw per-token spans and never fans the message into the recipient's mention feed. Proven live
-  // (PSN-120, scripts/mention-spike.mjs) against `48:mentions`, the service-side oracle: entries with
-  // an mri alone did NOT register; entries carrying all three did. Same for a bare-oid `mri` — it
-  // must be the full `8:orgid:{oid}` MRI.
-  if (mentions.length) {
-    properties.mentions = JSON.stringify(
-      mentions.map((m) => ({
-        "@type": "http://schema.skype.com/Mention",
-        itemid: m.itemid,
-        mri: m.mri,
-        mentionType: "person",
-        displayName: m.displayName,
-      })),
-    )
-  }
+  // Quote + mention wire shape lives in core/teams-send-props.js — shared with the upload paths so
+  // an attachment send carries them too (t182).
+  const properties = buildSendProperties({ quotes: quoteRefs, mentions })
   let out = await sendTeamsMessageInPage(cred, convId, content, messagetype, properties)
   if (out.error === "invalid_auth") {
     await notificationCenter.markTeamsCredsStale(cred.tenant, "invalid_auth")
@@ -2252,7 +2220,17 @@ async function createTeamsAmsObjectInPage(convId, filename, base64) {
 // Mint/reuse creds → in-page AMS create+upload → build the AMSImage content → in-page send. A 401 on
 // either half drives one re-authz + retry, then a hard typed invalid_auth (mirrors teamsReply).
 // Returns { ok, msgId } (msgId = OriginalArrivalTime, which is the message id/ts).
-async function teamsUploadImage({ convId, filename, base64, width, height, text }) {
+async function teamsUploadImage({
+  convId,
+  filename,
+  base64,
+  width,
+  height,
+  text,
+  html,
+  quotes = [],
+  mentions = [],
+}) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -2260,6 +2238,9 @@ async function teamsUploadImage({ convId, filename, base64, width, height, text 
   }
   if (!cred) return { error: "invalid_auth" }
 
+  // Quotes/mentions ride the same properties payload as a text reply (t182) — before that they were
+  // silently dropped whenever the send carried a file.
+  const properties = buildSendProperties({ quotes, mentions })
   let content = null
   const run = async () => {
     const ams = await createTeamsAmsObjectInPage(convId, filename, base64)
@@ -2270,8 +2251,9 @@ async function teamsUploadImage({ convId, filename, base64, width, height, text 
       width,
       height,
       caption: text,
+      captionHtml: html,
     })
-    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html")
+    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html", properties)
   }
 
   let out = await run()
@@ -2307,7 +2289,7 @@ async function teamsUploadImage({ convId, filename, base64, width, height, text 
 // Each entry in `images` is { filename, base64, width, height }. All AMS uploads run in parallel;
 // if any fails the whole call returns its error. The combined body is ONE RichText/Html message.
 // Falls back to sequential single-image sends in the caller when this returns a non-ok response.
-async function teamsUploadImagesMulti({ convId, images, text }) {
+async function teamsUploadImagesMulti({ convId, images, text, html, quotes = [], mentions = [] }) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -2315,6 +2297,7 @@ async function teamsUploadImagesMulti({ convId, images, text }) {
   }
   if (!cred) return { error: "invalid_auth" }
 
+  const properties = buildSendProperties({ quotes, mentions })
   let content = null
   const run = async () => {
     // Upload all images in parallel — fail fast on the first error.
@@ -2329,8 +2312,8 @@ async function teamsUploadImagesMulti({ convId, images, text }) {
       width: images[i].width,
       height: images[i].height,
     }))
-    content = buildAmsImageContentMulti(imgParams, text)
-    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html")
+    content = buildAmsImageContentMulti(imgParams, text, html)
+    return await sendTeamsMessageInPage(cred, convId, content, "RichText/Html", properties)
   }
 
   let out = await run()
@@ -2428,7 +2411,15 @@ async function uploadTeamsFileInPage(filename, base64) {
 // Mint/reuse creds → in-page SharePoint upload+share → build the file descriptor → in-page send with
 // properties.files. A 401 on either half drives one re-authz + retry, then a hard typed invalid_auth
 // (mirrors teamsUploadImage). Returns { ok, msgId } (msgId = OriginalArrivalTime = the message id/ts).
-async function teamsUploadFile({ convId, filename, base64, text }) {
+async function teamsUploadFile({
+  convId,
+  filename,
+  base64,
+  text,
+  html,
+  quotes = [],
+  mentions = [],
+}) {
   let cred = notificationCenter.listTeamsCreds().find((c) => c.fresh !== false)
   if (!cred) {
     await notificationCenter.refreshTeamsCreds()
@@ -2437,7 +2428,8 @@ async function teamsUploadFile({ convId, filename, base64, text }) {
   if (!cred) return { error: "invalid_auth" }
 
   // A caption rides as the message content (RichText/Html) above the file chip; empty → no bubble.
-  const caption = text && String(text).trim() ? escapeHtml(text).replace(/\n/g, "<br>") : ""
+  // Pre-built HTML wins verbatim so @mention spans survive (t182).
+  const caption = captionHtml({ text, html })
   const run = async () => {
     const up = await uploadTeamsFileInPage(filename, base64)
     if (up.error) return up
@@ -2448,9 +2440,17 @@ async function teamsUploadFile({ convId, filename, base64, text }) {
       shareUrl: up.shareUrl,
       filename,
     })
-    return await sendTeamsMessageInPage(cred, convId, caption, "RichText/Html", {
-      files: JSON.stringify([fileObj]),
-    })
+    return await sendTeamsMessageInPage(
+      cred,
+      convId,
+      caption,
+      "RichText/Html",
+      buildSendProperties({
+        quotes,
+        mentions,
+        extra: { files: JSON.stringify([fileObj]) },
+      }),
+    )
   }
 
   let out = await run()
@@ -3162,8 +3162,11 @@ const server = http.createServer(async (req, res) => {
         return ijson(res, await teamsUploadImage(await ibody(req)))
       }
       if (iop === "upload-images" && POST) {
-        const { convId, images, text } = await ibody(req)
-        return ijson(res, await teamsUploadImagesMulti({ convId, images, text }))
+        const { convId, images, text, html, quotes, mentions } = await ibody(req)
+        return ijson(
+          res,
+          await teamsUploadImagesMulti({ convId, images, text, html, quotes, mentions }),
+        )
       }
       if (iop === "upload-file" && POST) {
         return ijson(res, await teamsUploadFile(await ibody(req)))

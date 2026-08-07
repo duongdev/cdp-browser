@@ -23,6 +23,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
+import type { UploadOpts } from "../lib/chat-client"
 import {
   ChatApiError,
   deleteMessage,
@@ -52,6 +53,7 @@ import {
 } from "../lib/message-merge"
 import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
+import { carriesCaption } from "../lib/send-chain"
 import type { MentionRef, ReplyRef, TeamsConversation, TeamsMessage } from "../lib/teams-client"
 import { partialSendMessage, selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
@@ -819,6 +821,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         // Text-only send.
         op = sendReply(convId, out.text, out.html, quotes, mentions).then((r) => r.ts)
       } else {
+        // An attachment send carries quotes + mentions too (t182). The caption HTML is the composer's
+        // wire body: sent verbatim so per-token mention spans survive. Both ride the FIRST message of
+        // the chain only — the caption sits on that one, so repeating them would mention twice.
+        const first: UploadOpts = { text: out.text, html: out.html, quotes, mentions }
+        const rest: UploadOpts = {}
         // Build the chain: images first, then non-image files sequentially.
         const buildChain = async (): Promise<string> => {
           let firstId: string | null = null
@@ -841,7 +848,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             let combinedOk = false
             if (imageFiles.length > 1) {
               try {
-                const r = await uploadImages(convId, imageFiles, out.text)
+                const r = await uploadImages(convId, imageFiles, first)
                 firstId = r.msgId
                 combinedOk = true
               } catch {
@@ -849,23 +856,27 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               }
             }
             if (!combinedOk) {
-              // Sequential: caption on the first image only.
-              for (let i = 0; i < imageFiles.length; i++) {
+              // Sequential: the caption (and its quotes/mentions) rides the first image that
+              // actually LANDS (carriesCaption), not the first one attempted. Keying on the loop
+              // index would send them with a failing upload and lose them entirely — the exact
+              // class of silent drop t182 exists to remove.
+              for (const image of imageFiles) {
                 try {
-                  const r = await uploadImage(convId, imageFiles[i], i === 0 ? out.text : undefined)
+                  const r = await uploadImage(convId, image, carriesCaption(firstId) ? first : rest)
                   if (firstId === null) firstId = r.msgId
                 } catch (e) {
                   // Report per-file but keep going (the spec: remaining files keep sending).
-                  note(imageFiles[i], e, "image")
+                  note(image, e, "image")
                 }
               }
             }
           }
 
-          // Non-image files always sequential (after the image message).
+          // Non-image files always sequential (after the image message). The caption's quotes and
+          // mentions only ride when no image message claimed them already.
           for (const file of otherFiles) {
             try {
-              const r = await uploadFile(convId, file, !firstId ? out.text : undefined)
+              const r = await uploadFile(convId, file, carriesCaption(firstId) ? first : rest)
               if (firstId === null) firstId = r.msgId
             } catch (e) {
               note(file, e, "file")
@@ -907,17 +918,17 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     (raw: OutgoingMessage, files: File[]) => {
       if (!replyTarget) return
       // A quoted reply (PSN-92 B/C) prepends one Reply blockquote per target; an @mention (PSN-92 D)
-      // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send. A file
-      // send can't carry inline HTML, so quotes/mentions only apply to the text/rich path. The optimistic
-      // bubble uses the DISPLAY body (mentions as one pill) — the poll reconciles to the server render.
-      const hasFiles = files.length > 0
-      const mentions = hasFiles ? [] : (raw.mentions ?? [])
+      // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send.
+      // t182: a FILE send carries them too — the upload paths send the caption as RichText/Html and
+      // thread the same `properties` payload, so quoting/mentioning with an attachment now works
+      // instead of silently dropping both.
+      const mentions = raw.mentions ?? []
       const wireBody = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
       const dispBody = raw.displayHtml ?? wireBody
       let sendHtml: string | null = raw.html
       let optimisticHtml: string = raw.displayHtml ?? raw.html ?? textToHtml(raw.text)
       let quotes: ReplyRef[] = []
-      if (quoteTargets.length > 0 && !hasFiles) {
+      if (quoteTargets.length > 0) {
         const meta = quoteTargets.map((m) => ({
           msgId: m.id,
           authorMri: m.senderId || "",

@@ -38,6 +38,17 @@ export interface UploadImage {
   height?: number
 }
 
+/** Quotes/mentions that ride along with an upload send (t182). Mirrors the reply path's opts so an
+ *  attachment can carry a quoted reply and real @mentions instead of silently dropping both. `html`
+ *  is the composer's pre-built rich caption — it is sent VERBATIM, which is the only way per-token
+ *  mention spans survive to the wire. */
+export interface UploadOpts {
+  text?: string
+  html?: string | null
+  quotes?: ReplyRef[]
+  mentions?: MentionRef[]
+}
+
 /** The result of an upload send: the new message's id (arrival ms as string). */
 export interface UploadResult {
   ok: true
@@ -99,12 +110,12 @@ export interface ChatProvider {
   /** Flag the conversation unread from `ts` on, service-side (PSN-102). */
   markUnread(convId: string, ts: number): Promise<void>
   roster(convId: string): Promise<RosterMember[]>
-  uploadImage(convId: string, image: UploadImage, text?: string): Promise<UploadResult>
-  uploadImages(convId: string, images: UploadImage[], text?: string): Promise<UploadResult>
+  uploadImage(convId: string, image: UploadImage, opts?: UploadOpts): Promise<UploadResult>
+  uploadImages(convId: string, images: UploadImage[], opts?: UploadOpts): Promise<UploadResult>
   uploadFile(
     convId: string,
     file: { filename: string; base64: string; contentType?: string },
-    text?: string,
+    opts?: UploadOpts,
   ): Promise<UploadResult>
   profile(userId: string): Promise<ChatProfile>
   avatar(userId: string, size?: string): Promise<AvatarResult>

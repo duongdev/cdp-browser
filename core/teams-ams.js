@@ -14,28 +14,37 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;")
 }
 
-// Build the RichText/Html message content for an uploaded AMS image. The optional caption is
-// HTML-escaped (newlines → <br>) and prepended before the <img>; the img is tagged as an AMSImage
-// (the `itemtype` the media rewrite/CSS keys on) and points at the `imgo` display view. Width/height
-// are the image's natural dimensions — emitted only when both are positive so the box is reserved.
-function buildAmsImageContent({ host, objId, width, height, caption } = {}) {
+// Build the RichText/Html message content for an uploaded AMS image. The caption is prepended
+// before the <img>; the img is tagged as an AMSImage (the `itemtype` the media rewrite/CSS keys on)
+// and points at the `imgo` display view. Width/height are the image's natural dimensions — emitted
+// only when both are positive so the box is reserved.
+//
+// `captionHtml` (t182) is the composer's pre-built rich body and wins over `caption` when present:
+// it is inserted VERBATIM so @mention spans survive to the wire. `caption` remains the plain-text
+// path and is HTML-escaped (newlines → <br>).
+function buildAmsImageContent({ host, objId, width, height, caption, captionHtml } = {}) {
   const src = `${String(host).replace(/\/$/, "")}/v1/objects/${objId}/views/imgo`
   const w = Number(width) > 0 ? Math.round(Number(width)) : 0
   const h = Number(height) > 0 ? Math.round(Number(height)) : 0
   const dims = w && h ? ` width="${w}" height="${h}"` : ""
   const img = `<img itemtype="http://schema.skype.com/AMSImage" src="${src}" itemscope="itemscope"${dims}>`
-  const cap =
-    caption && String(caption).trim() ? `${escapeHtml(caption).replace(/\n/g, "<br>")}<br>` : ""
-  return cap + img
+  return captionPrefix(caption, captionHtml) + img
+}
+
+// The caption block that precedes uploaded media. Pre-built HTML wins verbatim (mention spans);
+// otherwise plain text is escaped. Either way a trailing <br> separates it from the media.
+function captionPrefix(caption, captionHtml) {
+  if (captionHtml && String(captionHtml).trim()) return `${captionHtml}<br>`
+  if (!caption || !String(caption).trim()) return ""
+  return `${escapeHtml(caption).replace(/\n/g, "<br>")}<br>`
 }
 
 // Build the RichText/Html message content for multiple uploaded AMS images in a single message.
-// Each image in `images` is `{ host, objId, width, height }`. The optional caption is prepended
-// before the first image (HTML-escaped). Emits one <img> per image, separated by a <br>.
-function buildAmsImageContentMulti(images, caption) {
+// Each image in `images` is `{ host, objId, width, height }`. The caption is prepended before the
+// first image (see buildAmsImageContent for the caption/captionHtml split). Emits one <img> per
+// image, separated by a <br>.
+function buildAmsImageContentMulti(images, caption, captionHtml) {
   if (!images || images.length === 0) return ""
-  const cap =
-    caption && String(caption).trim() ? `${escapeHtml(caption).replace(/\n/g, "<br>")}<br>` : ""
   const imgs = images
     .map(({ host, objId, width, height }) => {
       const src = `${String(host).replace(/\/$/, "")}/v1/objects/${objId}/views/imgo`
@@ -45,7 +54,7 @@ function buildAmsImageContentMulti(images, caption) {
       return `<img itemtype="http://schema.skype.com/AMSImage" src="${src}" itemscope="itemscope"${dims}>`
     })
     .join("<br>")
-  return cap + imgs
+  return captionPrefix(caption, captionHtml) + imgs
 }
 
-module.exports = { buildAmsImageContent, buildAmsImageContentMulti, escapeHtml }
+module.exports = { buildAmsImageContent, buildAmsImageContentMulti, captionPrefix, escapeHtml }

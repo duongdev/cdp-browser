@@ -26,6 +26,7 @@ import type {
   ProviderSearchHit,
   ProviderSearchPage,
   UploadImage,
+  UploadOpts,
   UploadResult,
 } from "./provider.ts"
 import { ProviderError } from "./provider.ts"
@@ -160,22 +161,53 @@ export class TeamsProvider implements ChatProvider {
     }))
   }
 
-  async uploadImage(convId: string, image: UploadImage, text?: string): Promise<UploadResult> {
-    const out = await this.call<{ msgId?: string }>("upload-image", { convId, ...image, text })
+  // Mentions cross the internal boundary in Teams-native shape (`mri`), same mapping the reply
+  // path uses. Shared so an upload send carries them too (t182).
+  private uploadWire(opts?: UploadOpts) {
+    return {
+      text: opts?.text,
+      html: opts?.html ?? null,
+      quotes: opts?.quotes ?? [],
+      mentions: (opts?.mentions ?? []).map((m) => ({
+        itemid: m.itemid,
+        mri: m.id,
+        displayName: m.displayName,
+      })),
+    }
+  }
+
+  async uploadImage(convId: string, image: UploadImage, opts?: UploadOpts): Promise<UploadResult> {
+    const out = await this.call<{ msgId?: string }>("upload-image", {
+      convId,
+      ...image,
+      ...this.uploadWire(opts),
+    })
     return { ok: true, msgId: String(out.msgId ?? "") }
   }
 
-  async uploadImages(convId: string, images: UploadImage[], text?: string): Promise<UploadResult> {
-    const out = await this.call<{ msgId?: string }>("upload-images", { convId, images, text })
+  async uploadImages(
+    convId: string,
+    images: UploadImage[],
+    opts?: UploadOpts,
+  ): Promise<UploadResult> {
+    const out = await this.call<{ msgId?: string }>("upload-images", {
+      convId,
+      images,
+      ...this.uploadWire(opts),
+    })
     return { ok: true, msgId: String(out.msgId ?? "") }
   }
 
   async uploadFile(
     convId: string,
     file: { filename: string; base64: string; contentType?: string },
-    text?: string,
+    opts?: UploadOpts,
   ): Promise<UploadResult> {
-    const out = await this.call<{ msgId?: string }>("upload-file", { convId, ...file, text })
+    const out = await this.call<{ msgId?: string }>("upload-file", {
+      convId,
+      ...file,
+      ...this.uploadWire(opts),
+    })
     return { ok: true, msgId: String(out.msgId ?? "") }
   }
 
