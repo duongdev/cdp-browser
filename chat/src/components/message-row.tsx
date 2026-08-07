@@ -41,7 +41,8 @@ import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { elideLinkText } from "../lib/link-label"
-import { buildChatMessageUrl, buildTeamsMessageUrl } from "../lib/message-url"
+import { markMessageLinks } from "../lib/message-link-affordance"
+import { buildChatMessageUrl, buildTeamsMessageUrl, parseMessageUrl } from "../lib/message-url"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -132,6 +133,9 @@ interface MessageRowProps {
   onReply?: (msg: TeamsMessage) => void
   /** Jump to a quoted message when its reply block is clicked (PSN-92 B5). */
   onJumpToMessage?: (msgId: string) => void
+  /** Open a message LINK found in the body — a Teams `/l/message/…` url or this app's own deep
+   *  link — inside the app instead of the Teams web client (t183). Absent → links stay external. */
+  onOpenMessageLink?: (convId: string, msgId: string) => void
   /** Briefly flash this row after a jump landed on it (PSN-92 B5). */
   highlighted?: boolean
   /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
@@ -182,6 +186,7 @@ function ChatMessageRow({
   onDelete,
   onReply,
   onJumpToMessage,
+  onOpenMessageLink,
   highlighted,
   onRetrySend,
   onDiscardSend,
@@ -207,10 +212,19 @@ function ChatMessageRow({
   const coarse = usePointerCoarse()
   // Link hover-copy overlay (PSN-99), shared with the assistant's answers (PSN-104).
   const linkCopy = useLinkHoverCopy(!coarse, convId)
-  // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then long bare-URL links
-  // middle-elided (PSN-99). Memoized so the DOMParser pass runs once per body, not per poll re-render.
+  // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then message links tagged
+  // so an in-app jump doesn't look identical to a link that leaves the app (t183), then long
+  // bare-URL links middle-elided (PSN-99). Order matters: elideLinkText stamps the href as the
+  // title of every anchor that lacks one, so the jump hint must be set BEFORE it runs or it never
+  // wins. Memoized so the DOMParser passes run once per body, not per poll re-render.
   const bodyHtml = useMemo(
-    () => elideLinkText(sanitize(stampReplyIds(formatBodyNames(message.body, namePref)))),
+    () =>
+      elideLinkText(
+        markMessageLinks(
+          sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
+          window.location.origin,
+        ),
+      ),
     [message.body, namePref],
   )
   const attachments = message.attachments ?? []
@@ -318,7 +332,9 @@ function ChatMessageRow({
   }
 
   // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
-  // content image (not an emoji/sticker) or an inline video opens the lightbox with that media.
+  // message link (Teams native or our own deep link) resolves in-app instead of leaving for the
+  // Teams web client (t183); a tap on a content image (not an emoji/sticker) or an inline video
+  // opens the lightbox with that media.
   function onBodyClick(e: MouseEvent<HTMLDivElement>) {
     const el = e.target as HTMLElement
     const quote = el.closest?.("blockquote[data-reply-id]") as HTMLElement | null
@@ -327,6 +343,21 @@ function ChatMessageRow({
       if (id && onJumpToMessage) {
         e.stopPropagation()
         onJumpToMessage(id)
+      }
+      return
+    }
+    const anchor = el.closest?.("a[href]") as HTMLAnchorElement | null
+    if (anchor) {
+      // Modifier clicks keep their browser meaning (new tab/window) — only a plain left click is
+      // reinterpreted as an in-app jump.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const target = onOpenMessageLink
+        ? parseMessageUrl(anchor.getAttribute("href") || "", window.location.origin)
+        : null
+      if (target) {
+        e.preventDefault()
+        e.stopPropagation()
+        onOpenMessageLink?.(target.convId, target.msgId)
       }
       return
     }

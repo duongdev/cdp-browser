@@ -188,6 +188,9 @@ interface ThreadViewProps {
   /** Jump-to-message (t175): land on this message (DB-served window + highlight). `nonce` bumps so
    *  a repeat jump to the same id re-fires. */
   jumpTarget?: { id: string; nonce: number } | null
+  /** Open a message link found in a body (t183). The thread resolves a same-conversation target
+   *  itself; a target in ANOTHER conversation is handed up so the app can switch panes first. */
+  onOpenMessageLink?: (convId: string, msgId: string) => void
   /** Toggle the chat info / details panel (PSN-116 WS-C). Renders an info button on the right of the
    *  header; absent → no button (e.g. the search-view's embedded thread). `infoOpen` highlights it. */
   onToggleInfo?: () => void
@@ -213,6 +216,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     onDraftReply,
     onSummarizeConv,
     jumpTarget,
+    onOpenMessageLink,
     onToggleInfo,
     infoOpen,
     showSuggestions,
@@ -436,6 +440,20 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [state, scrollToMsgSoon, enterJumpMode],
   )
   jumpToMessageRef.current = jumpToMessage
+
+  // A message link in a body (t183). Same conversation → resolve right here, exactly like a reply
+  // quote. Different conversation → hand up so the app can open that pane first; with no handler
+  // the link stays external rather than jumping to an unrelated message that happens to share the id.
+  const openMessageLink = useCallback(
+    (targetConvId: string, msgId: string) => {
+      if (targetConvId === convId) {
+        jumpToMessageRef.current(msgId)
+        return
+      }
+      onOpenMessageLink?.(targetConvId, msgId)
+    },
+    [convId, onOpenMessageLink],
+  )
 
   // Exit jump mode instantly: back to the live newest page (the "Jump to latest" affordance).
   const exitJumpToLatest = useCallback(() => {
@@ -1306,6 +1324,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     onDraftReply={onDraftReply}
                     onEdit={onEdit}
                     onJumpToMessage={jumpToMessage}
+                    onOpenMessageLink={openMessageLink}
                     onOpenProfile={onOpenProfile}
                     onReact={onReact}
                     onReply={onReply}

@@ -1539,6 +1539,7 @@ export function ChatApp() {
         onDraftReply={draftReplyAction}
         onFocusChange={isActive ? setThreadFocus : undefined}
         onNameResolved={onNameResolved}
+        onOpenMessageLink={openCitation}
         onOpenProfile={setProfileTarget}
         onSummarizeConv={summarizeConvAction}
         onToggleInfo={isActive && isWide ? toggleInfo : undefined}

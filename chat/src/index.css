@@ -617,6 +617,21 @@
 .teams-message-body a:hover {
   background: color-mix(in oklab, currentColor 14%, transparent);
 }
+/* A message link resolves to an in-app jump instead of leaving for the Teams web client (t183), so
+   it must not read as an ordinary external link. A dotted underline marks "this stays here"; the
+   `title` (set alongside the class) carries the same meaning for anyone who can't see the change,
+   and the arrow is decorative-only so it never lands in copied text or a screen reader. */
+.teams-message-body a.msg-link {
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1.5px;
+}
+.teams-message-body a.msg-link::after {
+  content: "↩";
+  margin-left: 0.15em;
+  font-size: 0.85em;
+  opacity: 0.7;
+  user-select: none;
+}
 .teams-message-body ul,
 .teams-message-body ol {
   margin: 0.25em 0;
