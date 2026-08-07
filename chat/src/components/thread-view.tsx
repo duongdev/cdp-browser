@@ -77,6 +77,10 @@ const PENDING_REACTION_TTL_MS = 20000
 // past which the rest of the burst lands instantly (a 20-message backlog mustn't take seconds).
 const STAGGER_STEP_S = 0.1
 const STAGGER_CAP = 5
+// How long after a jump we keep correcting the landing as nearby media decodes (t184). Images and
+// videos without a reserved box grow on load and push the target off-screen; matches the settle
+// window the unread-separator jump has always used.
+const MEDIA_SETTLE_MS = 3000
 
 /** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
  *  and when it was fired (for the failed-write timeout). Keyed msgId → key. */
@@ -263,6 +267,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // consumed once history is ready.
   const pendingJumpRef = useRef<string | null>(null)
   const jumpToMessageRef = useRef<(id: string) => void>(() => {})
+  // Cancels the in-flight jump settle window (t184): the media-load re-seat listener plus its
+  // timeout. Held so a newer jump — or unmount — can tear the old one down instead of letting two
+  // settle windows fight over the scroll position.
+  const settleRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => settleRef.current?.(), [])
   // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
   const composerFocusedRef = useRef(false)
 
@@ -377,12 +386,39 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
 
   // Click-to-jump (PSN-92 B5). Scroll a loaded message into view + flash it; ids are numeric so they
   // need no CSS escaping. Returns false when the row isn't in the DOM (→ the caller walks older pages).
+  //
+  // t184: landing is RE-SEATED while nearby media loads. Scrolling the instant the row exists is not
+  // enough — an image or video above the target that has no reserved box grows when it decodes and
+  // shoves the target off-screen, which is why a jump into a media-heavy thread so often missed.
+  // `jumpToUnread` already carried this treatment for the unread separator; the message jump did not.
   const scrollToMsg = useCallback((id: string): boolean => {
-    const el = scrollRef.current?.querySelector(`[data-msg-id="${id}"]`)
-    if (!el) return false
+    const pane = scrollRef.current
+    const el = pane?.querySelector(`[data-msg-id="${id}"]`)
+    if (!pane || !el) return false
     el.scrollIntoView({ block: "center", behavior: "smooth" })
     setHighlightId(id)
     window.setTimeout(() => setHighlightId((c) => (c === id ? null : c)), 1700)
+
+    // Re-seat on every in-pane media load for a short settle window. Instant (not smooth) so the
+    // correction reads as the layout holding still rather than a second animation. A newer jump
+    // cancels this one — otherwise two settle windows fight over the scroll position.
+    if (settleRef.current) settleRef.current()
+    const reseat = (e: Event) => {
+      const t = e.target as HTMLElement | null
+      if (t?.tagName !== "IMG" && t?.tagName !== "VIDEO") return
+      // Re-query: a re-render (or a jump-window swap) can replace the node we captured.
+      pane.querySelector(`[data-msg-id="${id}"]`)?.scrollIntoView({ block: "center" })
+    }
+    pane.addEventListener("load", reseat, true)
+    const stop = window.setTimeout(() => {
+      pane.removeEventListener("load", reseat, true)
+      settleRef.current = null
+    }, MEDIA_SETTLE_MS)
+    settleRef.current = () => {
+      window.clearTimeout(stop)
+      pane.removeEventListener("load", reseat, true)
+      settleRef.current = null
+    }
     return true
   }, [])
 

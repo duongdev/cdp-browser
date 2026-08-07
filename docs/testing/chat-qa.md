@@ -150,6 +150,11 @@ ones pass.
 | C-13 | Click the Aa / Formatting toggle, then the Attach button, without moving the caret | Editor keeps focus both times (`.ProseMirror` is still `document.activeElement`) |
 | C-14 | With an empty selection, click each BIUS chip (B / I / U / S) | Chip's `data-state` flips to `on` immediately (no caret move needed); `editor.isActive('bold'\|'italic'\|'underline'\|'strike')` returns true right after the click |
 | C-15 | Click each block-format button (inline code, code-block, quote, bullet list, numbered list), then move the caret into/out of that block | Button carries `aria-pressed="true"` + accent bg while the caret is inside the block; flips to `aria-pressed="false"` when the caret leaves |
+| C-16 | Compose a message with an @mention AND attach a file, send (t182) | The mention is a real Teams mention on the SENT message — pill renders, `properties.mentions` carries `@type` + full `8:orgid:` mri + `mentionType`. Regression: attaching a file used to silently drop mentions |
+| C-17 | Reply-quote a message, attach a file, send (t182) | The quote survives onto the sent message (`qtdMsgs` present); the bubble renders the quoted parent |
+| C-18 | Attach 2+ images with a caption + mention, send (t182) | Caption + mention ride exactly ONE of the sends, not all of them and not none |
+| C-19 | Same as C-18 but make the FIRST upload fail (t182) | Caption + mention are carried by the next upload that lands — they are not lost with the failed one |
+| C-20 | Attach a file with a caption containing an @mention, inspect the sent body (t182) | The mention renders as a pill, NOT as escaped `&lt;span…&gt;` markup (caption HTML rides verbatim) |
 
 ### 6. Assistant panel
 
@@ -177,6 +182,13 @@ ones pass.
 | L-06 | Hover a link until the copy button appears | Copy button appears at the end of the link's last line |
 | L-07 | Click the copy button | Full URL in clipboard |
 | L-08 | Switch conversations while hovering a link | Copy overlay dismissed |
+| L-09 | Click a Teams `https://teams.microsoft.com/l/message/{convId}/{msgId}` link pointing INTO the open conversation (t183) | Stays in the app — thread jumps to that message with the flash ring; no new tab, no Teams web client |
+| L-10 | Click a message link pointing at a DIFFERENT conversation (t183) | That conversation opens and lands on the message; URL becomes `/chat/c/{convId}?msg={msgId}` |
+| L-11 | Click a plain external link in a message | Still opens in a new tab — the interception is scoped to message links only |
+| L-12 | ⌘-click (or middle-click) an in-app message link | Browser handles it — new tab, no in-app jump (modifier clicks are never swallowed) |
+| L-13 | Compare an in-app message link with an external one in the same bubble (t183) | The in-app one is visually distinguishable (dotted underline + `↩` marker) and its `title` reads as a jump, not the raw href |
+| L-14 | Select and copy a line containing an in-app message link | The `↩` marker is NOT in the copied text (it's a CSS `::after`) |
+| L-15 | Click a message link whose URL contains a malformed `%`-escape | Nothing throws — it falls through as an ordinary external link |
 
 ### 8. Conversation list
 
@@ -218,6 +230,15 @@ ones pass.
 | R-10 | `pnpm test` | All tests pass (currently 1992/1992) |
 | R-11 | `pnpm typecheck` | Clean |
 | R-12 | `BIOME_SINCE=origin/main pnpm check:changed` | Clean |
+| R-13 | Open a thread containing an uploaded image (t181) | The picture renders INLINE, not as a filename chip; it loads through `/api/chat/media` (`naturalWidth > 0`) |
+| R-14 | Click that inline image (t181) | Lightbox opens (`[role="dialog"]`) with the same image source |
+| R-15 | Open a message carrying a Loop / Fluid embed (t181) | A chip renders with a working `href` — pre-t181 this message rendered as an empty bubble |
+| R-16 | Open a message whose only content is a video (t181) | The `<video>` element is present; the bubble is not blank |
+| R-17 | Open a bot message backed by a Swift adaptive card (t181) | The chip shows the card's real title/text, not the bare word "Card" |
+| R-18 | Open a forwarded message (t181) | It reads as forwarded (a "Forwarded" label), visually distinct from a reply quote |
+| R-19 | Feed a Fluid card whose `componentUrl` is a `javascript:` / `data:` URL (t181) | The chip renders with NO href — the scheme guard drops it |
+| R-20 | Jump to a message in a thread full of images that haven't loaded yet (t184) | After the images finish loading the view is STILL on the target message — the landing re-seats for a ~3s settle window instead of drifting |
+| R-21 | Fire a second jump while the first is still inside its settle window (t184) | The newest jump wins; the older one stops re-seating |
 
 ---
 
