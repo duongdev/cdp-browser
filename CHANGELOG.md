@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.5.0](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.4.1...cdp-browser-v0.5.0) (2026-08-08)
+
+
+### Features
+
+* **chat:** AI assistant (PSN-104) ([#39](https://github.com/duongdev/cdp-browser/issues/39)) ([0574889](https://github.com/duongdev/cdp-browser/commit/057488905ba484d211171af490f9172f6dfef123))
+* **chat:** bff + persist db (PSN-93) ([9a29d5f](https://github.com/duongdev/cdp-browser/commit/9a29d5fa19d05fd7e5709aae30394aeaf72030eb))
+* **chat:** chat enhancements epic (PSN-105 + PSN-106) ([#40](https://github.com/duongdev/cdp-browser/issues/40)) ([5395632](https://github.com/duongdev/cdp-browser/commit/53956326a019f1bfa8e2114a292d89678d411278))
+* **chat:** expose chats as mcp server ([#42](https://github.com/duongdev/cdp-browser/issues/42)) ([33fb065](https://github.com/duongdev/cdp-browser/commit/33fb0655caeff096c62923416a8a9aaf6fceae19))
+* **chat:** labels/folders persistence, reload fix, notification sounds (PSN-98) ([623d44a](https://github.com/duongdev/cdp-browser/commit/623d44a3bf9616b8ba69772be965815880ec0e37))
+* **chat:** mcp write tools and reply suggestions ([#47](https://github.com/duongdev/cdp-browser/issues/47)) ([1f1b0b9](https://github.com/duongdev/cdp-browser/commit/1f1b0b9e3ba18137584ce819d3c74c7b80b4875e))
+* **chat:** native chat UI enhancements epic (t149-t157) ([#25](https://github.com/duongdev/cdp-browser/issues/25)) ([09cf3fb](https://github.com/duongdev/cdp-browser/commit/09cf3fbc260a216baba92c14f4eb1415b0f4a8c9))
+* **chat:** reply & mention feature (PSN-92) ([#27](https://github.com/duongdev/cdp-browser/issues/27)) ([88c7a7d](https://github.com/duongdev/cdp-browser/commit/88c7a7d77fec69b28ad43a5fbb36fcfaf9e79e86))
+* **chat:** standalone Electron app for /chat + dual install ([#28](https://github.com/duongdev/cdp-browser/issues/28)) ([820415a](https://github.com/duongdev/cdp-browser/commit/820415a4fdcd066fcfcf4091c9c3c79b3f45e6cf))
+* **chat:** sync read status bidirectionally with native Teams (PSN-102) ([54239d8](https://github.com/duongdev/cdp-browser/commit/54239d8bb292537883aff19663e2242bfa41eb74))
+* **chat:** teams message type coverage, attachment mentions, in-app message links (t181-t184) ([#49](https://github.com/duongdev/cdp-browser/issues/49)) ([511a466](https://github.com/duongdev/cdp-browser/commit/511a4661bebaf89decee4d35630455694fe1f1aa))
+* **chat:** UI enhancements part 2 (PSN-95) ([492c9f2](https://github.com/duongdev/cdp-browser/commit/492c9f2e2aa138f0c01155f1bd70e8ef7ecbd592))
+* **chat:** UI enhancements pt3 (PSN-99) ([dbcfeca](https://github.com/duongdev/cdp-browser/commit/dbcfecab927a4d0dd26963f845d10dde7eaca872))
+* **chat:** UI enhancements v3 (PSN-96) ([b332108](https://github.com/duongdev/cdp-browser/commit/b33210871d24c1ebeae0c038bb91db61215a4c7b))
+* **chat:** ui polish — compact density, info panel, gif pause, search fixes ([#46](https://github.com/duongdev/cdp-browser/issues/46)) ([f5ff962](https://github.com/duongdev/cdp-browser/commit/f5ff962b174650d42f825835a896b2ca18fe29c7))
+* native teams chat app served at /chat (t127-t148) ([01e6a78](https://github.com/duongdev/cdp-browser/commit/01e6a78071a9d37a46680894bc2db2e2d887bd95))
+
+
+### Bug Fixes
+
+* **chat:** DM shows "Direct message" instead of the real name (PSN-103) ([#37](https://github.com/duongdev/cdp-browser/issues/37)) ([7b37d27](https://github.com/duongdev/cdp-browser/commit/7b37d27978fc7b47db0f97ff63bb2de64fb2159a))
+* **chat:** electron push notification not working ([#32](https://github.com/duongdev/cdp-browser/issues/32)) ([8cb6b34](https://github.com/duongdev/cdp-browser/commit/8cb6b349c6f6d60d3fe93a2eabc92a0c17d9158f))
+* **chat:** image and file sending broken by a stale duplicate msal token ([#45](https://github.com/duongdev/cdp-browser/issues/45)) ([6355482](https://github.com/duongdev/cdp-browser/commit/6355482b1dc28206ee8348343cdbc348667de3ef))
+* **chat:** mentions now send as real teams mentions ([#44](https://github.com/duongdev/cdp-browser/issues/44)) ([d36562b](https://github.com/duongdev/cdp-browser/commit/d36562bce2ad322eab8717733db883df6e76de79))
+
 ## [0.4.1](https://github.com/duongdev/cdp-browser/compare/cdp-browser-v0.4.0...cdp-browser-v0.4.1) (2026-07-13)
 
 
