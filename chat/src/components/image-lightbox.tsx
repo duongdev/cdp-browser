@@ -274,6 +274,7 @@ function LightboxSurface({ media, onClose }: { media: LightboxMedia; onClose: ()
                     className="max-h-full max-w-full rounded-md"
                     controls
                     onClick={(e) => e.stopPropagation()}
+                    preload="auto"
                     src={media.src}
                   />
                 ) : (

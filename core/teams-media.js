@@ -53,14 +53,24 @@ const SRC_RE = /(\bsrc\s*=\s*)(["'])([\s\S]*?)\2/i
 // (`/api/teams/media?url=…`), so the client loads authenticated media through the CA-proof endpoint
 // and the browser caches it normally (no giant data URLs in the DOM). Public-CDN and malformed srcs
 // are left untouched. The AMS src is HTML-entity-decoded before validation/encoding so a query-param
-// `&amp;` round-trips as a real `&`.
+// `&amp;` round-trips as a real `&`. For `<video>` tags whose src ends in `/views/video`, a `poster`
+// attribute is added pointing at the `/views/imgo` (thumbnail) view so the element shows a frame
+// before the user taps to open the lightbox (t185).
 function rewriteMediaHtml(html) {
   if (typeof html !== "string" || !html) return html
   const rewritten = html.replace(TAG_RE, (tag) =>
     tag.replace(SRC_RE, (full, pre, q, raw) => {
       const decoded = raw.replace(/&amp;/g, "&")
       if (!isValidAmsUrl(decoded)) return full
-      return `${pre}${q}${mediaProxyUrl(decoded)}${q}`
+      const proxy = mediaProxyUrl(decoded)
+      // A video object's poster: the same AMS id with /views/imgo instead of /views/video.
+      if (tag.startsWith("<video") || tag.startsWith("<VIDEO")) {
+        const thumbUrl = decoded.replace(/\/views\/video\/?$/, "/views/imgo")
+        if (thumbUrl !== decoded && !/poster\s*=/i.test(tag)) {
+          return `${pre}${q}${proxy}${q} poster="${mediaProxyUrl(thumbUrl)}"`
+        }
+      }
+      return `${pre}${q}${proxy}${q}`
     }),
   )
   return ensureMediaDimensions(rewritten)
