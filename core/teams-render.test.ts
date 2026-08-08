@@ -801,9 +801,9 @@ describe("parseAttachments — Loop / Fluid embed cards (t181)", () => {
       },
     })
 
-  it("surfaces a Loop component as a card chip linking to its componentUrl", () => {
+  it("surfaces a Loop component as a loop attachment with componentUrl", () => {
     expect(parseAttachments(loopMsg())).toEqual([
-      { kind: "card", title: "Loop component", url: componentUrl },
+      { kind: "loop", title: "Loop component", url: componentUrl },
     ])
   })
 

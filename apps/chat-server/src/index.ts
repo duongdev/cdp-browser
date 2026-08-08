@@ -20,6 +20,7 @@ import type { ChatService } from "./contract.ts"
 import { createHydrateEngine } from "./hydrate.ts"
 import { resolveCaptionModel } from "./llm.ts"
 import { mountMcp } from "./mcp.ts"
+import { MediaCache } from "./media-cache.ts"
 import { findByObjectId } from "./media-store.ts"
 import { MOCK_PREFS, MockProvider } from "./providers/mock-provider.ts"
 import type { ChatProvider } from "./providers/provider.ts"
@@ -129,6 +130,16 @@ const assistantSearch =
       }
     : undefined
 
+// Disk LRU cache for proxied AMS media (t185). Objects are immutable, so caching is permanent
+// until evicted by size. Default 500MB, configurable via CHAT_MEDIA_CACHE_MB.
+const mediaCacheDir =
+  process.env.CHAT_MEDIA_CACHE_DIR ||
+  (process.env.DATA_DIR ? `${process.env.DATA_DIR}/media-cache` : "media-cache")
+const mediaCache = new MediaCache({
+  dir: mediaCacheDir,
+  maxBytes: (Number(process.env.CHAT_MEDIA_CACHE_MB) || 500) * 1024 * 1024,
+})
+
 const app = new Hono()
 // Routes mounted directly on the root app (the mock harness) get the same typed error mapping as
 // /api/chat — a ProviderError("not_found", 404) must read as 404, not as a bare 500 (QE DEF-8).
@@ -199,6 +210,7 @@ app.route(
     getSyncLog: () => sweepEngines.values().next().value?.getSyncLog() ?? null,
     // Suggestion batches fan out to every client (ADR-0027) — same hub the sweep pushes deltas on.
     broadcast,
+    mediaCache,
   }),
 )
 

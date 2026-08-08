@@ -41,6 +41,9 @@ const ALLOWED_ATTR = [
   "height",
   "controls",
   "data-duration",
+  // The thumbnail frame for an AMS video object (t185). The poster URL is the same object id with
+  // /views/imgo instead of /views/video, rewritten to the same-origin proxy by teams-media.js.
+  "poster",
   // Full-name for the Names-setting hover tooltip on a shortened mention / quote author (PSN-92 E).
   "data-fullname",
   // The quoted message id on a reply blockquote — the click-to-jump target (PSN-92 B5).

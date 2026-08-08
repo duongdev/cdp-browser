@@ -77,11 +77,14 @@ describe("rewriteMediaHtml", () => {
     // the bare src is gone — the host only survives inside the encoded ?url= param
     expect(out).not.toContain(`src="${ASM}"`)
   })
-  it("rewrites an AMS <video> src to the proxy url", () => {
+  it("rewrites an AMS <video> src to the proxy url and adds a poster from /views/imgo", () => {
     const html = `<video src="${ASYNC_VID}" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT27S">`
     const out = rewriteMediaHtml(html)
     expect(out).toContain(`src="${proxy(ASYNC_VID)}"`)
     expect(out).toContain('data-duration="PT27S"')
+    // The poster is the /views/imgo variant of the same AMS object id.
+    const thumbUrl = ASYNC_VID.replace(/\/views\/video\/?$/, "/views/imgo")
+    expect(out).toContain(`poster="${proxy(thumbUrl)}"`)
   })
   it("leaves a giphy GIF src untouched", () => {
     const html = `<img src="${GIPHY}" width="220" alt="gif">`
