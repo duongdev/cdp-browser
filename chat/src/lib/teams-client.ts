@@ -64,12 +64,17 @@ export interface ConversationsPage {
 /** A file / call-recording / Swift-card chip parsed from a message (t141). `url` opens in a new tab
  *  (SharePoint files ride the browser's SSO); `thumbnailUrl` is already media-proxied when it's AMS. */
 export interface TeamsAttachment {
-  kind: "file" | "recording" | "card"
+  kind: "file" | "image" | "recording" | "card"
   name?: string
   type?: string
   url?: string
   thumbnailUrl?: string
   title?: string
+  /** Card body text, when the provider payload carried more than a title (t181). */
+  text?: string
+  /** Intrinsic pixel size of a `kind: "image"` preview — reserves the box before the bytes load. */
+  width?: number
+  height?: number
 }
 
 /** One reaction bucket on a message (t142): a named Teams emotion key resolved to a display emoji,

@@ -22,6 +22,7 @@ import type {
   ProviderSearchHit,
   ProviderSearchPage,
   UploadImage,
+  UploadOpts,
   UploadResult,
 } from "./provider.ts"
 import { ProviderError } from "./provider.ts"
@@ -215,9 +216,9 @@ function richSeed(): Fixture[] {
         topic: "Design review",
         title: "Design review",
         memberIds: ["other-oid", "third-oid"],
-        lastMessageId: "6008",
-        lastMessageTs: ago(3),
-        lastMessagePreview: "and one more thing",
+        lastMessageId: "6017",
+        lastMessageTs: ago(1),
+        lastMessagePreview: "Plain link, stays external: the docs",
         readTs: ago(30),
       }),
       messages: [
@@ -291,6 +292,101 @@ function richSeed(): Fixture[] {
           id: "6008",
           ts: ago(3),
           body: "and one more thing",
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        // t181 — the five message classes that used to render empty or lossy. Bodies are the real
+        // renderer output for the corresponding probe payloads, so the mock stack shows
+        // exactly what a live thread now shows.
+        msg({
+          id: "6009",
+          ts: ago(2),
+          body: "<p>the pronunciation like this, any feedbacks guys?</p>",
+          senderId: OTHER,
+          senderName: "Other Person",
+          attachments: [
+            {
+              kind: "image",
+              name: "image (6).png",
+              type: "png",
+              url: "https://example.sharepoint.com/:i:/g/personal/x/IQAC",
+              thumbnailUrl:
+                "/api/chat/media?service=teams&url=https%3A%2F%2Fas-api.asm.skype.com%2Fv1%2Fobjects%2F0-ea-d12-mock%2Fviews%2Fimgo",
+              width: 96,
+              height: 96,
+            },
+          ],
+        }),
+        msg({
+          id: "6010",
+          ts: ago(2),
+          body: "<p>Could i ask if we can fix it in local development env?</p>",
+          senderId: THIRD,
+          senderName: "Third Person",
+          attachments: [
+            {
+              kind: "card",
+              title: "Loop component",
+              url: "https://example.sharepoint.com/:fl:/g/personal/x/IQDcSTYg",
+            },
+          ],
+        }),
+        msg({
+          id: "6011",
+          ts: ago(2),
+          body: '<p>Everyone—that\u2019s a wrap. Here\u2019s the rundown. <a href="https://example.sharepoint.com/:fl:/g/personal/x/IQC-7ItY" itemtype="http://schema.skype.com/FluidAutoEmbedLink">Loop page</a></p>',
+          senderId: THIRD,
+          senderName: "Third Person",
+        }),
+        msg({
+          id: "6012",
+          ts: ago(1),
+          body: '<div><video src="/api/chat/media?service=teams&url=https%3A%2F%2Fas-prod.asyncgw.teams.microsoft.com%2Fv1%2Fobjects%2F0-ea-d10-mock%2Fviews%2Fvideo" itemtype="http://schema.skype.com/AMSVideo" data-duration="PT18S" width="540" height="960"></video></div>',
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        msg({
+          id: "6013",
+          ts: ago(1),
+          body: "",
+          senderId: THIRD,
+          senderName: "Polly",
+          attachments: [
+            {
+              kind: "card",
+              title: "🔓 Non-Anonymous",
+              text: "Subjectively, how do you feel about your velocity this week versus last",
+            },
+          ],
+        }),
+        msg({
+          id: "6014",
+          ts: ago(1),
+          body: 'Morning team.. can confirm if this link is valid?\r\n<blockquote class="forward" itemtype="http://schema.skype.com/Forward"><span class="forward-label">Forwarded</span><div>This is the link for Android, copied from eIRIS</div></blockquote>',
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        // t183 fixtures: message links the app should resolve in place. 6015 targets a message in
+        // THIS conversation (jump without a pane switch); 6016 targets another conversation (pane
+        // switch, then jump); 6017 is an ordinary external link that must stay external.
+        msg({
+          id: "6015",
+          ts: ago(1),
+          body: 'Context is up here: <a href="https://teams.microsoft.com/l/message/19:rich@thread.v2/6002?context=%7B%22contextType%22%3A%22chat%22%7D">the earlier message</a>',
+          senderId: THIRD,
+          senderName: "Third Person",
+        }),
+        msg({
+          id: "6016",
+          ts: ago(1),
+          body: 'Cross-thread: <a href="https://teams.microsoft.com/l/message/19:group@thread.v2/3001?context=%7B%22contextType%22%3A%22chat%22%7D">that message in Project X</a>',
+          senderId: OTHER,
+          senderName: "Other Person",
+        }),
+        msg({
+          id: "6017",
+          ts: ago(1),
+          body: 'Plain link, stays external: <a href="https://example.com/docs">the docs</a>',
           senderId: OTHER,
           senderName: "Other Person",
         }),
@@ -524,22 +620,28 @@ export class MockProvider implements ChatProvider {
     ]
   }
 
-  async uploadImage(convId: string, _image: UploadImage, text?: string): Promise<UploadResult> {
-    const r = await this.sendReply(convId, text || "[image]")
+  // The mock forwards quotes/mentions to sendReply so the mock stack exercises the same wiring the
+  // Teams path uses (t182) — an attachment send must not lose them.
+  async uploadImage(convId: string, _image: UploadImage, opts?: UploadOpts): Promise<UploadResult> {
+    const r = await this.sendReply(convId, opts?.text || "[image]", opts)
     return { ok: true, msgId: r.ts }
   }
 
-  async uploadImages(convId: string, _images: UploadImage[], text?: string): Promise<UploadResult> {
-    const r = await this.sendReply(convId, text || "[images]")
+  async uploadImages(
+    convId: string,
+    _images: UploadImage[],
+    opts?: UploadOpts,
+  ): Promise<UploadResult> {
+    const r = await this.sendReply(convId, opts?.text || "[images]", opts)
     return { ok: true, msgId: r.ts }
   }
 
   async uploadFile(
     convId: string,
     file: { filename: string; base64: string; contentType?: string },
-    text?: string,
+    opts?: UploadOpts,
   ): Promise<UploadResult> {
-    const r = await this.sendReply(convId, text || `[file] ${file.filename}`)
+    const r = await this.sendReply(convId, opts?.text || `[file] ${file.filename}`, opts)
     return { ok: true, msgId: r.ts }
   }
 

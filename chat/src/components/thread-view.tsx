@@ -23,6 +23,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { usePointerCoarse } from "@/hooks/use-pointer-coarse"
 import { cn } from "@/lib/utils"
+import type { UploadOpts } from "../lib/chat-client"
 import {
   ChatApiError,
   deleteMessage,
@@ -52,6 +53,7 @@ import {
 } from "../lib/message-merge"
 import { buildReplyBody, quotePreviewHtml } from "../lib/reply-quote"
 import { type OutgoingMessage, textToHtml } from "../lib/rich-compose"
+import { carriesCaption } from "../lib/send-chain"
 import type { MentionRef, ReplyRef, TeamsConversation, TeamsMessage } from "../lib/teams-client"
 import { partialSendMessage, selectReplyTarget } from "../lib/teams-reply"
 import { buildThreadItems } from "../lib/thread-group"
@@ -75,6 +77,10 @@ const PENDING_REACTION_TTL_MS = 20000
 // past which the rest of the burst lands instantly (a 20-message backlog mustn't take seconds).
 const STAGGER_STEP_S = 0.1
 const STAGGER_CAP = 5
+// How long after a jump we keep correcting the landing as nearby media decodes (t184). Images and
+// videos without a reserved box grow on load and push the target off-screen; matches the settle
+// window the unread-separator jump has always used.
+const MEDIA_SETTLE_MS = 3000
 
 /** One in-flight optimistic reaction the viewer made: the target `mine` state, the emoji to draw,
  *  and when it was fired (for the failed-write timeout). Keyed msgId → key. */
@@ -186,6 +192,9 @@ interface ThreadViewProps {
   /** Jump-to-message (t175): land on this message (DB-served window + highlight). `nonce` bumps so
    *  a repeat jump to the same id re-fires. */
   jumpTarget?: { id: string; nonce: number } | null
+  /** Open a message link found in a body (t183). The thread resolves a same-conversation target
+   *  itself; a target in ANOTHER conversation is handed up so the app can switch panes first. */
+  onOpenMessageLink?: (convId: string, msgId: string) => void
   /** Toggle the chat info / details panel (PSN-116 WS-C). Renders an info button on the right of the
    *  header; absent → no button (e.g. the search-view's embedded thread). `infoOpen` highlights it. */
   onToggleInfo?: () => void
@@ -211,6 +220,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     onDraftReply,
     onSummarizeConv,
     jumpTarget,
+    onOpenMessageLink,
     onToggleInfo,
     infoOpen,
     showSuggestions,
@@ -257,6 +267,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
   // consumed once history is ready.
   const pendingJumpRef = useRef<string | null>(null)
   const jumpToMessageRef = useRef<(id: string) => void>(() => {})
+  // Cancels the in-flight jump settle window (t184): the media-load re-seat listener plus its
+  // timeout. Held so a newer jump — or unmount — can tear the old one down instead of letting two
+  // settle windows fight over the scroll position.
+  const settleRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => settleRef.current?.(), [])
   // Composer/editor focus flag, so chat-app can suppress bare-key shortcuts while typing.
   const composerFocusedRef = useRef(false)
 
@@ -371,12 +386,39 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
 
   // Click-to-jump (PSN-92 B5). Scroll a loaded message into view + flash it; ids are numeric so they
   // need no CSS escaping. Returns false when the row isn't in the DOM (→ the caller walks older pages).
+  //
+  // t184: landing is RE-SEATED while nearby media loads. Scrolling the instant the row exists is not
+  // enough — an image or video above the target that has no reserved box grows when it decodes and
+  // shoves the target off-screen, which is why a jump into a media-heavy thread so often missed.
+  // `jumpToUnread` already carried this treatment for the unread separator; the message jump did not.
   const scrollToMsg = useCallback((id: string): boolean => {
-    const el = scrollRef.current?.querySelector(`[data-msg-id="${id}"]`)
-    if (!el) return false
+    const pane = scrollRef.current
+    const el = pane?.querySelector(`[data-msg-id="${id}"]`)
+    if (!pane || !el) return false
     el.scrollIntoView({ block: "center", behavior: "smooth" })
     setHighlightId(id)
     window.setTimeout(() => setHighlightId((c) => (c === id ? null : c)), 1700)
+
+    // Re-seat on every in-pane media load for a short settle window. Instant (not smooth) so the
+    // correction reads as the layout holding still rather than a second animation. A newer jump
+    // cancels this one — otherwise two settle windows fight over the scroll position.
+    if (settleRef.current) settleRef.current()
+    const reseat = (e: Event) => {
+      const t = e.target as HTMLElement | null
+      if (t?.tagName !== "IMG" && t?.tagName !== "VIDEO") return
+      // Re-query: a re-render (or a jump-window swap) can replace the node we captured.
+      pane.querySelector(`[data-msg-id="${id}"]`)?.scrollIntoView({ block: "center" })
+    }
+    pane.addEventListener("load", reseat, true)
+    const stop = window.setTimeout(() => {
+      pane.removeEventListener("load", reseat, true)
+      settleRef.current = null
+    }, MEDIA_SETTLE_MS)
+    settleRef.current = () => {
+      window.clearTimeout(stop)
+      pane.removeEventListener("load", reseat, true)
+      settleRef.current = null
+    }
     return true
   }, [])
 
@@ -434,6 +476,20 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     [state, scrollToMsgSoon, enterJumpMode],
   )
   jumpToMessageRef.current = jumpToMessage
+
+  // A message link in a body (t183). Same conversation → resolve right here, exactly like a reply
+  // quote. Different conversation → hand up so the app can open that pane first; with no handler
+  // the link stays external rather than jumping to an unrelated message that happens to share the id.
+  const openMessageLink = useCallback(
+    (targetConvId: string, msgId: string) => {
+      if (targetConvId === convId) {
+        jumpToMessageRef.current(msgId)
+        return
+      }
+      onOpenMessageLink?.(targetConvId, msgId)
+    },
+    [convId, onOpenMessageLink],
+  )
 
   // Exit jump mode instantly: back to the live newest page (the "Jump to latest" affordance).
   const exitJumpToLatest = useCallback(() => {
@@ -819,6 +875,11 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
         // Text-only send.
         op = sendReply(convId, out.text, out.html, quotes, mentions).then((r) => r.ts)
       } else {
+        // An attachment send carries quotes + mentions too (t182). The caption HTML is the composer's
+        // wire body: sent verbatim so per-token mention spans survive. Both ride the FIRST message of
+        // the chain only — the caption sits on that one, so repeating them would mention twice.
+        const first: UploadOpts = { text: out.text, html: out.html, quotes, mentions }
+        const rest: UploadOpts = {}
         // Build the chain: images first, then non-image files sequentially.
         const buildChain = async (): Promise<string> => {
           let firstId: string | null = null
@@ -841,7 +902,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
             let combinedOk = false
             if (imageFiles.length > 1) {
               try {
-                const r = await uploadImages(convId, imageFiles, out.text)
+                const r = await uploadImages(convId, imageFiles, first)
                 firstId = r.msgId
                 combinedOk = true
               } catch {
@@ -849,23 +910,27 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
               }
             }
             if (!combinedOk) {
-              // Sequential: caption on the first image only.
-              for (let i = 0; i < imageFiles.length; i++) {
+              // Sequential: the caption (and its quotes/mentions) rides the first image that
+              // actually LANDS (carriesCaption), not the first one attempted. Keying on the loop
+              // index would send them with a failing upload and lose them entirely — the exact
+              // class of silent drop t182 exists to remove.
+              for (const image of imageFiles) {
                 try {
-                  const r = await uploadImage(convId, imageFiles[i], i === 0 ? out.text : undefined)
+                  const r = await uploadImage(convId, image, carriesCaption(firstId) ? first : rest)
                   if (firstId === null) firstId = r.msgId
                 } catch (e) {
                   // Report per-file but keep going (the spec: remaining files keep sending).
-                  note(imageFiles[i], e, "image")
+                  note(image, e, "image")
                 }
               }
             }
           }
 
-          // Non-image files always sequential (after the image message).
+          // Non-image files always sequential (after the image message). The caption's quotes and
+          // mentions only ride when no image message claimed them already.
           for (const file of otherFiles) {
             try {
-              const r = await uploadFile(convId, file, !firstId ? out.text : undefined)
+              const r = await uploadFile(convId, file, carriesCaption(firstId) ? first : rest)
               if (firstId === null) firstId = r.msgId
             } catch (e) {
               note(file, e, "file")
@@ -907,17 +972,17 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
     (raw: OutgoingMessage, files: File[]) => {
       if (!replyTarget) return
       // A quoted reply (PSN-92 B/C) prepends one Reply blockquote per target; an @mention (PSN-92 D)
-      // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send. A file
-      // send can't carry inline HTML, so quotes/mentions only apply to the text/rich path. The optimistic
-      // bubble uses the DISPLAY body (mentions as one pill) — the poll reconciles to the server render.
-      const hasFiles = files.length > 0
-      const mentions = hasFiles ? [] : (raw.mentions ?? [])
+      // rides `raw.mentions` + per-token wire spans (raw.html). Both force a RichText/Html send.
+      // t182: a FILE send carries them too — the upload paths send the caption as RichText/Html and
+      // thread the same `properties` payload, so quoting/mentioning with an attachment now works
+      // instead of silently dropping both.
+      const mentions = raw.mentions ?? []
       const wireBody = raw.html ?? `<p>${textToHtml(raw.text)}</p>`
       const dispBody = raw.displayHtml ?? wireBody
       let sendHtml: string | null = raw.html
       let optimisticHtml: string = raw.displayHtml ?? raw.html ?? textToHtml(raw.text)
       let quotes: ReplyRef[] = []
-      if (quoteTargets.length > 0 && !hasFiles) {
+      if (quoteTargets.length > 0) {
         const meta = quoteTargets.map((m) => ({
           msgId: m.id,
           authorMri: m.senderId || "",
@@ -1295,6 +1360,7 @@ export const ThreadView = forwardRef<ThreadHandle, ThreadViewProps>(function Thr
                     onDraftReply={onDraftReply}
                     onEdit={onEdit}
                     onJumpToMessage={jumpToMessage}
+                    onOpenMessageLink={openMessageLink}
                     onOpenProfile={onOpenProfile}
                     onReact={onReact}
                     onReply={onReply}

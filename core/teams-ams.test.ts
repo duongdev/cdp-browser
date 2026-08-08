@@ -90,3 +90,43 @@ describe("buildAmsImageContentMulti", () => {
     expect(out).not.toContain("height=")
   })
 })
+
+// t182: an attachment caption must be able to carry per-token @mention spans. Those only survive
+// if the composer's pre-built HTML is emitted verbatim instead of being escaped like plain text.
+describe("caption html (t182)", () => {
+  const base = { host: "https://as-prod.asyncgw.teams.microsoft.com", objId: "obj-1" }
+  const MENTION =
+    '<span itemtype="http://schema.skype.com/Mention" itemid="0">Dustin</span> look at this'
+
+  it("emits caption html verbatim on a single image, ahead of the img", () => {
+    const out = buildAmsImageContent({
+      ...base,
+      caption: "@Dustin look at this",
+      captionHtml: MENTION,
+    })
+    expect(out.startsWith(`${MENTION}<br>`)).toBe(true)
+    expect(out).not.toContain("&lt;span")
+    expect(out.indexOf("<img ")).toBeGreaterThan(out.indexOf("</span>"))
+  })
+
+  it("emits caption html verbatim on a multi-image send", () => {
+    const out = buildAmsImageContentMulti([base, { ...base, objId: "obj-2" }], "@Dustin", MENTION)
+    expect(out.startsWith(`${MENTION}<br>`)).toBe(true)
+    expect(out).not.toContain("&lt;span")
+  })
+
+  it("falls back to the escaped plain caption when html is absent or blank", () => {
+    expect(buildAmsImageContent({ ...base, caption: "<b>hi", captionHtml: "" })).toContain(
+      "&lt;b&gt;hi<br>",
+    )
+    expect(buildAmsImageContent({ ...base, caption: "<b>hi", captionHtml: "   " })).toContain(
+      "&lt;b&gt;hi<br>",
+    )
+    expect(buildAmsImageContentMulti([base], "<b>hi")).toContain("&lt;b&gt;hi<br>")
+  })
+
+  it("emits no caption block at all when there is nothing to say", () => {
+    expect(buildAmsImageContent(base).startsWith("<img ")).toBe(true)
+    expect(buildAmsImageContentMulti([base]).startsWith("<img ")).toBe(true)
+  })
+})

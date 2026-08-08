@@ -41,7 +41,8 @@ import { FULL_NAME, formatName, type NamePref } from "../lib/display-name"
 import { formatHms } from "../lib/format-time"
 import { htmlToPlain } from "../lib/html-to-plain"
 import { elideLinkText } from "../lib/link-label"
-import { buildChatMessageUrl, buildTeamsMessageUrl } from "../lib/message-url"
+import { markMessageLinks } from "../lib/message-link-affordance"
+import { buildChatMessageUrl, buildTeamsMessageUrl, parseMessageUrl } from "../lib/message-url"
 import { stampReplyIds } from "../lib/reply-quote"
 import { sanitize } from "../lib/sanitize-message"
 import type { TeamsAttachment, TeamsMessage, TeamsReaction } from "../lib/teams-client"
@@ -132,6 +133,9 @@ interface MessageRowProps {
   onReply?: (msg: TeamsMessage) => void
   /** Jump to a quoted message when its reply block is clicked (PSN-92 B5). */
   onJumpToMessage?: (msgId: string) => void
+  /** Open a message LINK found in the body — a Teams `/l/message/…` url or this app's own deep
+   *  link — inside the app instead of the Teams web client (t183). Absent → links stay external. */
+  onOpenMessageLink?: (convId: string, msgId: string) => void
   /** Briefly flash this row after a jump landed on it (PSN-92 B5). */
   highlighted?: boolean
   /** Retry a failed optimistic send in place (t159). Only meaningful for a `failed` message. */
@@ -182,6 +186,7 @@ function ChatMessageRow({
   onDelete,
   onReply,
   onJumpToMessage,
+  onOpenMessageLink,
   highlighted,
   onRetrySend,
   onDiscardSend,
@@ -207,10 +212,19 @@ function ChatMessageRow({
   const coarse = usePointerCoarse()
   // Link hover-copy overlay (PSN-99), shared with the assistant's answers (PSN-104).
   const linkCopy = useLinkHoverCopy(!coarse, convId)
-  // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then long bare-URL links
-  // middle-elided (PSN-99). Memoized so the DOMParser pass runs once per body, not per poll re-render.
+  // Body HTML: names + reply-ids stamped, sanitized (the XSS boundary), then message links tagged
+  // so an in-app jump doesn't look identical to a link that leaves the app (t183), then long
+  // bare-URL links middle-elided (PSN-99). Order matters: elideLinkText stamps the href as the
+  // title of every anchor that lacks one, so the jump hint must be set BEFORE it runs or it never
+  // wins. Memoized so the DOMParser passes run once per body, not per poll re-render.
   const bodyHtml = useMemo(
-    () => elideLinkText(sanitize(stampReplyIds(formatBodyNames(message.body, namePref)))),
+    () =>
+      elideLinkText(
+        markMessageLinks(
+          sanitize(stampReplyIds(formatBodyNames(message.body, namePref))),
+          window.location.origin,
+        ),
+      ),
     [message.body, namePref],
   )
   const attachments = message.attachments ?? []
@@ -318,7 +332,9 @@ function ChatMessageRow({
   }
 
   // Delegated body clicks: a tap on a reply quote jumps to the original (PSN-92 B5); a tap on a
-  // content image (not an emoji/sticker) or an inline video opens the lightbox with that media.
+  // message link (Teams native or our own deep link) resolves in-app instead of leaving for the
+  // Teams web client (t183); a tap on a content image (not an emoji/sticker) or an inline video
+  // opens the lightbox with that media.
   function onBodyClick(e: MouseEvent<HTMLDivElement>) {
     const el = e.target as HTMLElement
     const quote = el.closest?.("blockquote[data-reply-id]") as HTMLElement | null
@@ -327,6 +343,21 @@ function ChatMessageRow({
       if (id && onJumpToMessage) {
         e.stopPropagation()
         onJumpToMessage(id)
+      }
+      return
+    }
+    const anchor = el.closest?.("a[href]") as HTMLAnchorElement | null
+    if (anchor) {
+      // Modifier clicks keep their browser meaning (new tab/window) — only a plain left click is
+      // reinterpreted as an in-app jump.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const target = onOpenMessageLink
+        ? parseMessageUrl(anchor.getAttribute("href") || "", window.location.origin)
+        : null
+      if (target) {
+        e.preventDefault()
+        e.stopPropagation()
+        onOpenMessageLink?.(target.convId, target.msgId)
       }
       return
     }
@@ -598,8 +629,14 @@ function ChatMessageRow({
       {attachments.length > 0 && (
         <div className="flex max-w-[85%] flex-col gap-1">
           {attachments.map((a, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: attachments are immutable per message, no reorder
-            <AttachmentChip attachment={a} key={i} />
+            <AttachmentChip
+              attachment={a}
+              // biome-ignore lint/suspicious/noArrayIndexKey: attachments are immutable per message, no reorder
+              key={i}
+              onOpenImage={(src) =>
+                setLightboxMedia({ src, kind: "image", convId, msgId: message.id })
+              }
+            />
           ))}
         </div>
       )}
@@ -1049,10 +1086,45 @@ function ChipCopyButton({ url }: { url: string }) {
   )
 }
 
-/** A file / call-recording / card chip below the message body (t141). A file opens SharePoint in a
- *  new tab; recordings/cards show a proxied thumbnail preview (no inline playback). */
-function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
-  if (a.kind === "file") {
+/** A file / image / call-recording / card chip below the message body (t141). A file opens SharePoint
+ *  in a new tab; an uploaded image renders inline and opens the lightbox (t181); recordings/cards
+ *  show a proxied thumbnail preview (no inline playback). */
+function AttachmentChip({
+  attachment: a,
+  onOpenImage,
+}: {
+  attachment: TeamsAttachment
+  onOpenImage?: (src: string) => void
+}) {
+  // An image pasted into compose arrives as a FILE, not inline media (t181) — render the AMS preview
+  // as a real picture rather than a filename chip. `width`/`height` reserve the box before the bytes
+  // land so the thread doesn't jump; the SharePoint `url` stays reachable via the copy affordance.
+  if (a.kind === "image" && a.thumbnailUrl) {
+    const src = a.thumbnailUrl
+    // The button, not the img, is the interactive element, so it needs the accessible name. `alt`
+    // falls back to "" for an unnamed attachment (correct — a decorative img), which would leave
+    // the button announced as just "button".
+    const label = a.name ? `Open image: ${a.name}` : "Open image"
+    return (
+      <button
+        aria-label={label}
+        className="max-w-full cursor-zoom-in overflow-hidden rounded-lg border bg-background/60 p-0 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        onClick={() => onOpenImage?.(src)}
+        type="button"
+      >
+        <img
+          alt={a.name || ""}
+          className="max-h-80 w-auto max-w-full object-contain"
+          height={a.height}
+          loading="lazy"
+          src={src}
+          width={a.width}
+        />
+      </button>
+    )
+  }
+
+  if (a.kind === "file" || a.kind === "image") {
     const inner = (
       <>
         <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={fileIcon(a.type)} />
@@ -1119,8 +1191,8 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
   }
 
   // card
-  return (
-    <span className={cn(CHIP_CLASS, "cursor-default")}>
+  const cardInner = (
+    <>
       {a.thumbnailUrl ? (
         <img
           alt=""
@@ -1131,7 +1203,25 @@ function AttachmentChip({ attachment: a }: { attachment: TeamsAttachment }) {
       ) : (
         <HugeiconsIcon className="size-4 shrink-0 text-muted-foreground" icon={Note01Icon} />
       )}
-      <span className="truncate">{a.title || "Card"}</span>
-    </span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate">{a.title || "Card"}</span>
+        {a.text && <span className="line-clamp-3 text-[11px] text-muted-foreground">{a.text}</span>}
+      </span>
+      {a.url && <ChipCopyButton url={a.url} />}
+    </>
+  )
+  // A Loop/Fluid embed carries a SharePoint componentUrl (t181) → open it like a file chip. A bot
+  // card has no url and stays inert, as before.
+  return a.url ? (
+    <a
+      className={cn(CHIP_CLASS, "group/chip")}
+      href={a.url}
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      {cardInner}
+    </a>
+  ) : (
+    <span className={cn(CHIP_CLASS, "cursor-default")}>{cardInner}</span>
   )
 }

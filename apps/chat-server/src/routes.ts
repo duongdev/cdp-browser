@@ -17,6 +17,8 @@ import type {
   ChatMessage,
   ChatService,
   ChatWsServerMessage,
+  MentionRef,
+  ReplyRef,
   ReplySuggestionBatch,
   SearchHit,
   SearchPage,
@@ -243,6 +245,15 @@ export function createRoutes(deps: RoutesDeps) {
     return c.json({ members })
   })
 
+  // Quotes/mentions are threaded through the upload paths so an attachment send carries them
+  // instead of silently dropping both (t182).
+  const uploadOpts = (b: Record<string, unknown>) => ({
+    text: b.text as string | undefined,
+    html: (b.html as string | null | undefined) ?? null,
+    quotes: (b.quotes as ReplyRef[] | undefined) ?? [],
+    mentions: (b.mentions as MentionRef[] | undefined) ?? [],
+  })
+
   app.post("/upload-image", async (c) => {
     const b = await readBody(c)
     const { provider } = pick(deps, b.service)
@@ -255,7 +266,7 @@ export function createRoutes(deps: RoutesDeps) {
         width: b.width,
         height: b.height,
       },
-      b.text,
+      uploadOpts(b),
     )
     return c.json(r)
   })
@@ -263,7 +274,7 @@ export function createRoutes(deps: RoutesDeps) {
   app.post("/upload-images", async (c) => {
     const b = await readBody(c)
     const { provider } = pick(deps, b.service)
-    const r = await provider.uploadImages(b.convId, b.images ?? [], b.text)
+    const r = await provider.uploadImages(b.convId, b.images ?? [], uploadOpts(b))
     return c.json(r)
   })
 
@@ -273,7 +284,7 @@ export function createRoutes(deps: RoutesDeps) {
     const r = await provider.uploadFile(
       b.convId,
       { filename: b.filename, base64: b.base64, contentType: b.contentType },
-      b.text,
+      uploadOpts(b),
     )
     return c.json(r)
   })

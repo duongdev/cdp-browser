@@ -120,10 +120,35 @@ function tagEmoji(html) {
   })
 }
 
-// Does the rendered HTML carry anything visible (text or an image)? An empty/whitespace-only body
-// (e.g. `<p></p>`) falls back to the attachment chip, matching the pre-t133 behavior.
+// A Loop recap link (`itemtype=…/FluidAutoEmbedLink`) ships as an anchor with NO text node, so it
+// renders zero-width and invisible — 12 of 1963 probed messages (t181). Give an EMPTY one a label so
+// it is clickable; an anchor that already carries content is left exactly as authored.
+function labelFluidLinks(html) {
+  return html.replace(
+    /(<a\b[^>]*itemtype\s*=\s*(["'])[^"']*FluidAutoEmbedLink[^"']*\2[^>]*>)(\s*)(<\/a>)/gi,
+    (_full, open, _q, _ws, close) => `${open}Loop page${close}`,
+  )
+}
+
+// A forwarded block is `<blockquote itemtype=…/Forward>` and today renders identically to a reply
+// quote, which is misleading (t181). Tag it so the renderer can label and style it; `class` survives
+// the DOMPurify allowlist while `itemtype` does not. A blockquote that already has a class is left
+// alone. The label itself is a DOM node, not CSS `content` — generated content is not reliably
+// exposed to screen readers, so the meaning would be sighted-only.
+function labelForwards(html) {
+  return html.replace(/<blockquote\b([^>]*)>/gi, (full, attrs) => {
+    if (!/\bitemtype\s*=\s*(["'])[^"']*Forward[^"']*\1/i.test(attrs)) return full
+    if (/\bclass\s*=/i.test(attrs)) return full
+    return `<blockquote class="forward"${attrs}><span class="forward-label">Forwarded</span>`
+  })
+}
+
+// Does the rendered HTML carry anything visible (text or a media element)? An empty/whitespace-only
+// body (e.g. `<p></p>`) falls back to the attachment chip, matching the pre-t133 behavior. `<video>`
+// counts alongside `<img>` — a video-only message (t181) has no text and would otherwise fall through
+// to an empty chip and render a blank bubble.
 function hasVisibleText(html) {
-  if (/<img\b/i.test(html)) return true
+  if (/<(?:img|video)\b/i.test(html)) return true
   return (
     html
       .replace(/<[^>]+>/g, "")
@@ -182,6 +207,25 @@ function stripCardMarkup(s) {
     .trim()
 }
 
+// Collapse collected card lines into a title + body, or null when nothing survives stripping. The
+// first line is the title; the rest join into the body. Both are capped so a runaway card can't
+// blow out a bubble. Shared by `cardTextOf` (one card) and `cardFallback` (all cards on a message)
+// so the caps and the markup stripping can never drift apart.
+function titleAndText(lines) {
+  const texts = lines.map(stripCardMarkup).filter(Boolean)
+  if (texts.length === 0) return null
+  const [title, ...rest] = texts
+  return { title: title.slice(0, 120), text: rest.join(" · ").slice(0, CARD_TEXT_CAP) }
+}
+
+// Extract ONE already-parsed AdaptiveCard's title + body text, or null when it carries no text.
+// Used by the Fluid-card chip and the Swift-payload decode (t181).
+function cardTextOf(cardContent) {
+  const lines = []
+  collectCardText(cardContent, lines)
+  return titleAndText(lines)
+}
+
 function cardFallback(message) {
   let cards = message.properties?.cards
   if (typeof cards === "string") {
@@ -192,15 +236,14 @@ function cardFallback(message) {
     }
   }
   if (!Array.isArray(cards) || cards.length === 0) return ""
+  // Unlike `cardTextOf`, this flattens EVERY card on the message into one title/body — the chip
+  // stands for the whole set, not the first card.
   const lines = []
   for (const c of cards) collectCardText(c?.content ?? c, lines)
-  const texts = lines.map(stripCardMarkup).filter(Boolean)
-  if (texts.length === 0)
-    return `<span class="teams-card"><span class="teams-card-title">Card</span></span>`
-  const [title, ...rest] = texts
-  const bodyText = rest.join(" · ").slice(0, CARD_TEXT_CAP)
-  const parts = [`<span class="teams-card-title">${escapeHtml(title.slice(0, 120))}</span>`]
-  if (bodyText) parts.push(`<span class="teams-card-body">${escapeHtml(bodyText)}</span>`)
+  const parsed = titleAndText(lines)
+  if (!parsed) return `<span class="teams-card"><span class="teams-card-title">Card</span></span>`
+  const parts = [`<span class="teams-card-title">${escapeHtml(parsed.title)}</span>`]
+  if (parsed.text) parts.push(`<span class="teams-card-body">${escapeHtml(parsed.text)}</span>`)
   return `<span class="teams-card">${parts.join("")}</span>`
 }
 
@@ -293,9 +336,26 @@ function attrValue(attrs, name) {
   return m ? m[2] : ""
 }
 
+// Image file extensions that get an inline preview instead of a chip (t181). An upload's `fileType`
+// is the bare extension ("png"), not a MIME type.
+const IMAGE_FILE_TYPES = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif"])
+
+// A positive finite pixel dimension from a filePreview, or undefined. Guards against the string/null
+// dims live payloads occasionally carry.
+function previewDim(v) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
 // Parse `properties.files` — a JSON STRING in live data (like properties.mentions), so parse it
 // defensively. Best "open" url = fileInfo.shareUrl (browser-openable SharePoint link) → objectUrl →
 // fileInfo.fileUrl. These are SharePoint (not AMS) — no proxy; the browser's SSO opens them.
+//
+// An IMAGE pasted/dropped into compose arrives ONLY here — there is no <img> in `content` — so
+// without this it renders as a filename chip and the picture is lost (t181, reported sample). Its
+// `filePreview.previewUrl` IS AMS-hosted, so it passes the same SSRF gate as inline media and loads
+// through the existing proxy. The SharePoint `url` stays as the "open original" target. A preview
+// that fails the gate (or is absent) degrades to the ordinary file chip — never a broken <img>.
 function parseFiles(message) {
   let files = message.properties?.files
   if (typeof files === "string") {
@@ -311,9 +371,21 @@ function parseFiles(message) {
     if (!f) continue
     const info = f.fileInfo || {}
     const url = info.shareUrl || f.objectUrl || info.fileUrl || undefined
+    const type = f.fileType ? String(f.fileType) : ""
     const att = { kind: "file", name: f.fileName || f.title || "file" }
-    if (f.fileType) att.type = String(f.fileType)
+    if (type) att.type = type
     if (url) att.url = String(url)
+    const preview = f.filePreview?.previewUrl
+    if (IMAGE_FILE_TYPES.has(type.toLowerCase()) && isValidAmsUrl(preview)) {
+      att.kind = "image"
+      att.thumbnailUrl = mediaProxyUrl(preview)
+      const w = previewDim(f.filePreview.previewWidth)
+      const h = previewDim(f.filePreview.previewHeight)
+      if (w && h) {
+        att.width = w
+        att.height = h
+      }
+    }
     out.push(att)
   }
   return out
@@ -345,9 +417,32 @@ function isRecordingReady(inner) {
   return !/^(Initial|ChunkFinished|InProgress|Recording)$/i.test(st[2].trim())
 }
 
+// Decode a `<Swift b64="…">` payload into { title, text }, or null. A SWIFT URIObject's <Title> is a
+// generic bot label ("Card", "New polly!") while the real content is base64 AdaptiveCard JSON in this
+// element — 206 of 1963 probed messages rendered a meaningless chip because of it (t181).
+//
+// The payload is UNTRUSTED third-party data: base64 → JSON is parsed defensively (any failure falls
+// back to the plain <Title> chip), text is capped and escaped downstream, and card `actions` are not
+// walked, so a bot button label never masquerades as message content.
+function swiftCardText(inner) {
+  const m = inner.match(/<Swift\b[^>]*\bb64\s*=\s*(["'])([\s\S]*?)\1/i)
+  if (!m?.[2]) return null
+  try {
+    const payload = JSON.parse(Buffer.from(m[2], "base64").toString("utf8"))
+    const attachments = Array.isArray(payload?.attachments) ? payload.attachments : []
+    for (const a of attachments) {
+      const found = cardTextOf(a?.content ?? a)
+      if (found) return found
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 // Parse call-recording (URIObject type "Video…/CallRecording…") and Swift-card (type "SWIFT…")
 // blocks out of `content`. Recording → { title, url (SharePoint playback), thumbnail, ready };
-// card → its <Title> + thumbnail.
+// card → its decoded AdaptiveCard text, else its <Title> + thumbnail.
 function parseUriObjects(content) {
   const html = typeof content === "string" ? content : ""
   const out = []
@@ -368,6 +463,15 @@ function parseUriObjects(content) {
       if (url) att.url = url
       out.push(att)
     } else if (/SWIFT/i.test(type)) {
+      // The decoded card wins over the generic <Title>; its own thumbnail is the stock bot icon and
+      // carries no information once the real text is showing, so it is dropped with it.
+      const decoded = swiftCardText(m[2])
+      if (decoded) {
+        const att = { kind: "card", title: decoded.title }
+        if (decoded.text) att.text = decoded.text
+        out.push(att)
+        continue
+      }
       const att = { kind: "card", title: title || "Card" }
       if (thumb) att.thumbnailUrl = thumb
       out.push(att)
@@ -376,9 +480,34 @@ function parseUriObjects(content) {
   return out
 }
 
-// Flat chip descriptors for one message: files first, then recordings/cards in content order.
+// Loop / Fluid components (`properties.cards` with a fluidEmbedCard contentType) leave only an EMPTY
+// `<span itemtype=…/FluidEmbedCard>` in the body, so the message renders as if the embed were never
+// there (t181, reported sample). The chip carries the SharePoint `componentUrl`, which opens in
+// Teams/Loop through the browser's SSO like any other file link.
+function parseFluidCards(message) {
+  let cards = message.properties?.cards
+  if (typeof cards === "string") {
+    try {
+      cards = JSON.parse(cards)
+    } catch {
+      cards = null
+    }
+  }
+  if (!Array.isArray(cards)) return []
+  const out = []
+  for (const c of cards) {
+    if (!/fluidEmbedCard/i.test(String(c?.contentType || ""))) continue
+    const url = c?.content?.componentUrl
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url)) continue
+    out.push({ kind: "card", title: "Loop component", url })
+  }
+  return out
+}
+
+// Flat chip descriptors for one message: files first, then recordings/cards in content order, then
+// Loop embeds (which live in properties, not content).
 function parseAttachments(message) {
-  return [...parseFiles(message), ...parseUriObjects(message.content)]
+  return [...parseFiles(message), ...parseUriObjects(message.content), ...parseFluidCards(message)]
 }
 
 // Drop whole <URIObject>…</URIObject> blocks — DOMPurify keeps their messy inner text ("Card -
@@ -410,7 +539,9 @@ function renderBody(message, selfId = "") {
     return chip || `[unsupported: ${escapeHtml(type)}]`
   }
   const html = rewriteMediaHtml(
-    tagEmoji(resolveMentions(content, mentionMriMap(message), selfId)).trim(),
+    labelForwards(
+      labelFluidLinks(tagEmoji(resolveMentions(content, mentionMriMap(message), selfId))),
+    ).trim(),
   )
   return hasVisibleText(html) ? html : attachmentChip(message)
 }

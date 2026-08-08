@@ -331,10 +331,30 @@ function imageDimensions(file: File): Promise<{ width: number; height: number }>
   })
 }
 
+/** Quotes/mentions that ride along with an upload (t182). `html` is the composer's pre-built rich
+ *  caption — sent verbatim, which is the only way per-token mention spans reach the wire. */
+export interface UploadOpts {
+  text?: string
+  html?: string | null
+  quotes?: ReplyRef[]
+  mentions?: MentionRef[]
+}
+
+// A caption is only worth sending when it has content; `html` alone is meaningless without it.
+function uploadCaption(opts?: UploadOpts) {
+  const text = opts?.text?.trim() || undefined
+  return {
+    text,
+    html: text ? (opts?.html ?? null) : null,
+    quotes: opts?.quotes ?? [],
+    mentions: opts?.mentions ?? [],
+  }
+}
+
 export async function uploadImage(
   convId: string,
   file: File,
-  text?: string,
+  opts?: UploadOpts,
 ): Promise<{ msgId: string }> {
   const [base64, { width, height }] = await Promise.all([fileToBase64(file), imageDimensions(file)])
   const data = await post<{ msgId?: string }>("upload-image", {
@@ -344,7 +364,7 @@ export async function uploadImage(
     contentType: file.type || "image/png",
     width,
     height,
-    text: text?.trim() || undefined,
+    ...uploadCaption(opts),
   })
   if (!data.msgId) throw new ChatApiError("no_msg_id", 500)
   return { msgId: data.msgId }
@@ -353,7 +373,7 @@ export async function uploadImage(
 export async function uploadImages(
   convId: string,
   files: File[],
-  text?: string,
+  opts?: UploadOpts,
 ): Promise<{ msgId: string }> {
   const images = await Promise.all(
     files.map(async (file) => {
@@ -373,7 +393,7 @@ export async function uploadImages(
   const data = await post<{ msgId?: string }>("upload-images", {
     convId,
     images,
-    text: text?.trim() || undefined,
+    ...uploadCaption(opts),
   })
   if (!data.msgId) throw new ChatApiError("no_msg_id", 500)
   return { msgId: data.msgId }
@@ -382,7 +402,7 @@ export async function uploadImages(
 export async function uploadFile(
   convId: string,
   file: File,
-  text?: string,
+  opts?: UploadOpts,
 ): Promise<{ msgId: string }> {
   const base64 = await fileToBase64(file)
   const data = await post<{ msgId?: string }>("upload-file", {
@@ -390,7 +410,7 @@ export async function uploadFile(
     filename: file.name || "file",
     base64,
     contentType: file.type || "application/octet-stream",
-    text: text?.trim() || undefined,
+    ...uploadCaption(opts),
   })
   if (!data.msgId) throw new ChatApiError("no_msg_id", 500)
   return { msgId: data.msgId }
