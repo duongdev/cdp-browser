@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 // @ts-expect-error — plain CJS module, no types
-import { isExternalUrl, resolveServerUrl } from "./chat-shell.js"
+import { isChatRoute, isExternalUrl, resolveServerUrl } from "./chat-shell.js"
 
 describe("resolveServerUrl", () => {
   it("prefers env over stored over fallback", () => {
@@ -27,5 +27,25 @@ describe("isExternalUrl", () => {
   })
   it("treats a malformed url as external", () => {
     expect(isExternalUrl("not a url", server)).toBe(true)
+  })
+})
+
+describe("isChatRoute", () => {
+  const server = "https://portal.example.com"
+  it("accepts same-origin /chat paths", () => {
+    expect(isChatRoute("https://portal.example.com/chat/", server)).toBe(true)
+    expect(isChatRoute("https://portal.example.com/chat/c/19:abc@thread.v2?msg=123", server)).toBe(
+      true,
+    )
+  })
+  it("rejects a foreign origin even with a matching path", () => {
+    expect(isChatRoute("https://evil.com/chat/c/19:abc?msg=1", server)).toBe(false)
+  })
+  it("rejects same-origin non-chat paths", () => {
+    expect(isChatRoute("https://portal.example.com/", server)).toBe(false)
+    expect(isChatRoute("https://portal.example.com/browser/", server)).toBe(false)
+  })
+  it("rejects malformed urls", () => {
+    expect(isChatRoute("not a url", server)).toBe(false)
   })
 })

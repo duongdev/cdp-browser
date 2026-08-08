@@ -13,7 +13,7 @@
 const { app, BrowserWindow, Notification, ipcMain, shell, nativeTheme } = require("electron")
 const path = require("node:path")
 const fs = require("node:fs")
-const { resolveServerUrl, isExternalUrl } = require("./core/chat-shell")
+const { resolveServerUrl, isExternalUrl, isChatRoute } = require("./core/chat-shell")
 
 const CONFIG_PATH = path.join(app.getPath("userData"), "chat-config.json")
 
@@ -79,12 +79,20 @@ function createWindow() {
   })
   win.loadURL(`${serverUrl}${lastPath}`)
 
-  // Non-chat targets (external links, target=_blank) open in the OS browser.
+  // Non-chat targets (external links, target=_blank) open in the OS browser. A same-origin
+  // /chat deep link (a message link the renderer intercepted) loads inside the shell instead
+  // of bouncing to the OS browser — the SPA router handles the route change.
   win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isChatRoute(url, serverUrl)) {
+      win.loadURL(url)
+      return { action: "deny" }
+    }
     shell.openExternal(url)
     return { action: "deny" }
   })
   win.webContents.on("will-navigate", (e, url) => {
+    // A same-origin /chat navigation is an in-app SPA route — allow it through.
+    if (isChatRoute(url, serverUrl)) return
     if (isExternalUrl(url, serverUrl)) {
       e.preventDefault()
       shell.openExternal(url)

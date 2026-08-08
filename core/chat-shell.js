@@ -20,4 +20,18 @@ function isExternalUrl(url, serverUrl) {
   }
 }
 
-module.exports = { resolveServerUrl, isExternalUrl }
+// True when a URL is a same-origin SPA route inside the shell (starts with /chat).
+// The Electron will-navigate / setWindowOpenHandler use this to distinguish an
+// in-app deep link (a message link from the renderer) from an external link that
+// should bounce to the OS browser. A foreign-origin URL is never a chat route,
+// even if the path matches.
+function isChatRoute(url, serverUrl) {
+  try {
+    const u = new URL(url)
+    return u.origin === new URL(serverUrl).origin && u.pathname.startsWith("/chat")
+  } catch {
+    return false
+  }
+}
+
+module.exports = { resolveServerUrl, isExternalUrl, isChatRoute }
