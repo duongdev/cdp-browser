@@ -1190,6 +1190,33 @@ function AttachmentChip({
     )
   }
 
+  // A Loop/Fluid component (t185) renders as an inline block — not a chip — because it represents
+  // a live, collaborative component, not a static file. The content itself lives in the Fluid
+  // Framework relay; until a probe of the SharePoint REST API lets us fetch it, this block shows
+  // the component identity (icon + title + description) with a link to open it in the SSO browser.
+  // ponytail: add Fluid SDK / SharePoint REST fetch to render the editable content inline; the
+  // componentUrl is the SharePoint deep link, so an iframe is the upgrade path when the relay is
+  // reachable from this session.
+  if (a.kind === "loop") {
+    return (
+      <a
+        className="flex items-center gap-2.5 rounded-lg border bg-muted/40 px-3 py-2 text-sm transition-colors hover:bg-muted/70"
+        href={a.url}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <HugeiconsIcon className="size-4" icon={Note01Icon} />
+        </span>
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-medium">{a.title || "Loop component"}</span>
+          <span className="text-[11px] text-muted-foreground">Open component in Teams</span>
+        </span>
+        {a.url && <ChipCopyButton url={a.url} />}
+      </a>
+    )
+  }
+
   // card
   const cardInner = (
     <>

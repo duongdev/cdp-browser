@@ -61,7 +61,7 @@ export interface ChatConversation {
 
 /** A file / call-recording / card chip parsed from a message. Generic lift of `TeamsAttachment`. */
 export interface ChatAttachment {
-  kind: "file" | "image" | "recording" | "card"
+  kind: "file" | "image" | "recording" | "card" | "loop"
   name?: string
   type?: string
   /** Opens in a new tab (provider SSO). */

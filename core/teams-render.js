@@ -499,7 +499,7 @@ function parseFluidCards(message) {
     if (!/fluidEmbedCard/i.test(String(c?.contentType || ""))) continue
     const url = c?.content?.componentUrl
     if (typeof url !== "string" || !/^https?:\/\//i.test(url)) continue
-    out.push({ kind: "card", title: "Loop component", url })
+    out.push({ kind: "loop", title: "Loop component", url })
   }
   return out
 }

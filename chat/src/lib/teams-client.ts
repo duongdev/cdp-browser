@@ -64,7 +64,7 @@ export interface ConversationsPage {
 /** A file / call-recording / Swift-card chip parsed from a message (t141). `url` opens in a new tab
  *  (SharePoint files ride the browser's SSO); `thumbnailUrl` is already media-proxied when it's AMS. */
 export interface TeamsAttachment {
-  kind: "file" | "image" | "recording" | "card"
+  kind: "file" | "image" | "recording" | "card" | "loop"
   name?: string
   type?: string
   url?: string
