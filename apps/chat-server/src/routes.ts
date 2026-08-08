@@ -25,6 +25,7 @@ import type {
   SearchScope,
 } from "./contract.ts"
 import { MAX_VERSIONS_PER_MESSAGE } from "./edit-history.ts"
+import { cacheKey, type MediaCache } from "./media-cache.ts"
 import { amsObjectId, amsUrlFromSrc } from "./media-images.ts"
 import { findByObjectId } from "./media-store.ts"
 import type {
@@ -90,6 +91,8 @@ export interface RoutesDeps {
    *  singleton, so route tests observe frames without booting a server. Absent → the routes still
    *  work, clients just fall back to the `GET /suggestions` hydrate. */
   broadcast?: (msg: ChatWsServerMessage) => void
+  /** Disk cache for proxied media (t185). Absent in tests → every request hits the provider. */
+  mediaCache?: MediaCache
 }
 
 const DEFAULT_SERVICE = "teams"
@@ -345,7 +348,15 @@ export function createRoutes(deps: RoutesDeps) {
     const { provider } = pick(deps, c.req.query("service"))
     const murl = c.req.query("url")
     if (!murl) throw new ProviderError("missing_url", 400)
-    return bytes(c, await provider.media(murl))
+    const oid = amsObjectId(murl)
+    // AMS objects are immutable — serve from disk cache on hit, fetch + cache on miss.
+    if (deps.mediaCache && oid) {
+      const hit = deps.mediaCache.get(cacheKey(oid))
+      if (hit) return mediaResponse(c, hit.body, hit.contentType)
+    }
+    const r = await provider.media(murl)
+    if (deps.mediaCache && oid) deps.mediaCache.set(cacheKey(oid), r.body, r.contentType)
+    return mediaResponse(c, r.body, r.contentType)
   })
 
   // An inline image's transcription (PSN-104), keyed by the media url the client already renders.
@@ -859,6 +870,20 @@ function bytes(c: any, r: MediaBytes) {
   const buf = r.body.slice().buffer
   return c.body(buf, {
     headers: { "Content-Type": r.contentType, "X-Content-Type-Options": "nosniff" },
+  })
+}
+
+// Media (images/video) are immutable AMS objects — cache aggressively (t185). Avatars are NOT
+// cached at the HTTP layer (a user may change their photo), so they still use `bytes()`.
+// biome-ignore lint/suspicious/noExplicitAny: Hono's Context.body typing needs the DOM lib we don't ship
+function mediaResponse(c: any, body: Uint8Array, contentType: string) {
+  const buf = body.slice().buffer
+  return c.body(buf, {
+    headers: {
+      "Content-Type": contentType,
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "public, max-age=86400, immutable",
+    },
   })
 }
 
